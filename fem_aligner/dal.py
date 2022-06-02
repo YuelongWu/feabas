@@ -1,5 +1,4 @@
-from abc import ABC
-from collections import OrderedDict
+from collections import OrderedDict, defaultdict
 from functools import partial
 import glob
 import json
@@ -10,19 +9,29 @@ import cv2
 import numpy as np
 from rtree import index
 
-from fem_aligner.miscs import DequeDict
+from fem_aligner.miscs import CacheFIFO, crop_image_from_bbox
 
 
 # bbox :int: [xmin, ymin, xmax, ymax]
 
+##------------------------------ tile dividers -------------------------------##
+# tile divider functions to divide an image tile to smaller block for caching
+# Args:
+#    imght, imgwd (int): height/width of image bounding box
+#    x0, y0 (int): x, y coordinates of top-left conrer of image bounding box
+# Returns:
+#    divider: dict[block_id] = [xmin, ymin, xmax, ymax]
+# Tiles with tile_id <=0 will not be cached. (DynamicImageLoader._cache_block)
+
 def _tile_divider_blank(imght, imgwd, x0=0, y0=0):
+    """Cache image as a whole without division."""
     divider = OrderedDict()
     divider[1] = (x0, y0, x0+imgwd, y0+imght)
     return divider
 
 
-def _tile_divider_border(imght, imgwd, x0=0, y0=0, cache_border_margin=0):
-    # devide image borders to cache separately
+def _tile_divider_border(imght, imgwd, x0=0, y0=0, cache_border_margin=10):
+    """Divide image borders to cache separately. Interior is not cached."""
     divider = OrderedDict()
     if cache_border_margin == 0:
         divider[1] = (x0, y0, x0+imgwd, y0+imght)
@@ -44,7 +53,7 @@ def _tile_divider_border(imght, imgwd, x0=0, y0=0, cache_border_margin=0):
 
 
 def _tile_divider_border_block(imght, imgwd, x0=0, y0=0, cache_block_size=0):
-    # devide image to blocks to cache separately
+    """Divide image to equal(ish) square(ish) blocks to cache separately."""
     divider = OrderedDict()
     if cache_block_size == 0:
         divider[1] = (x0, y0, x0+imgwd, y0+imght)
@@ -55,108 +64,117 @@ def _tile_divider_border_block(imght, imgwd, x0=0, y0=0, cache_block_size=0):
         yy = np.round(np.linspace(y0, y0+imght, Ny+1)).astype(int)
         xe0, ye0 = np.meshgrid(xx[:-1], yy[:-1])
         xe1, ye1 = np.meshgrid(xx[1:], yy[1:])
+        xe0 = xe0.ravel()
+        ye0 = ye0.ravel()
+        xe1 = xe1.ravel()
+        ye1 = ye1.ravel()
+        indx = np.argsort(xe0 + ye0 + xe1 + ye1, axis=None)
         key = 1
-        for xmin, ymin, xmax, ymax in zip(xe0.ravel(), ye0.ravel(), xe1.ravel(), ye1.ravel()):
+        for xmin, ymin, xmax, ymax in zip(xe0[indx], ye0[indx], xe1[indx], ye1[indx]):
             divider[key] = (xmin, ymin, xmax, ymax)
             key += 1
     return divider
 
 
+##------------------------------ image loaders -------------------------------##
 
-class AbstractImageLoader(ABC):
+class DynamicImageLoader:
     """
-    Abstract class for image loader
+    Class for image loader without predetermined image list.
+    Mostly for caching & output formate control.
+
+    Kwargs:
+        dtype: datatype of the output images. Default to None same as input.
+        number_of_channels: # of channels of the output images. Default to
+            None same as input.
+        apply_CLAHE(bool): whether to apply CLAHE on output images.
+        inverse(bool): whether to invert images.
+        fillval(scalar): fill value for missing data.
+        cache_size(int): length of image cache (FIFO).
+            self._cache: dict[(imgpath, block_id)] = blk
+        cache_border_margin(int)/cache_block_size(int): the border width
+            for _tile_divider_border caching, or the square block size for
+            _tile_divider_border_block caching. If neither is set, cache
+            the entile image with _tile_divider_blank.
     """
-    def __init__(self, filepaths, **kwargs):
-        self.imgrootdir = os.path.dirname(os.path.commonprefix(filepaths))
-        self.imgrelpaths = [os.path.relpath(s, self.imgrootdir) for s in filepaths]
-        self.check_filename_uniqueness()
-      # output control
-        if not kwargs.get('load_img', False):
-            self.dtype = kwargs.get('dtype', np.uint8)
-            self._number_of_channels = kwargs.get('number_of_channels', 1)
-        else:
-            # if load_img, read in the first image to complete missing meta info
-            number_of_channels = kwargs.get('number_of_channels', None)
-            dtype = kwargs.get('dtype', None)
-            if (dtype is None) or (number_of_channels is None):
-                img = cv2.imread(filepaths[0], cv2.IMREAD_UNCHANGED)
-                assert img is not None
-                if number_of_channels is None:
-                    if len(img.shape) < 3:
-                        self._number_of_channels = 1
-                    else:
-                        self._number_of_channels = img.shape[-1]
-                else:
-                    self._number_of_channels = number_of_channels
-                if dtype is None:
-                    self.dtype = img.dtype
-                else:
-                    self.dtype = dtype
-        self._apply_clahe = kwargs.get('apply_clahe', False)
-        if self._apply_clahe:
-            self.clahe_on()
+    def __init__(self, **kwargs):
+        self.dtype = kwargs.get('dtype', None)
+        self._number_of_channels = kwargs.get('number_of_channels', None)
+        self._apply_CLAHE = kwargs.get('apply_CLAHE', False)
+        self._CLAHE = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
         self._inverse = kwargs.get('inverse', False)
         self._default_fillval = kwargs.get('fillval', 0)
-      # caching
         self._cache_size = kwargs.get('cache_size', 0)
         self._init_tile_divider(**kwargs)
-        self._cache = DequeDict(maxlen=self._cache_size)
+        self._cache = CacheFIFO(maxlen=self._cache_size)
+        self._file_bboxes = {}
+        self._cached_block_rtree = {}
 
 
-    def _cache_block(self, fileid, blkid, blk):
-        self._cache[(fileid, blkid)] = blk
-
-
-    def check_filename_uniqueness(self):
-        assert len(set(self.imgrelpaths)) == len(self.imgrelpaths), 'duplicated filenames'
-
-
-    def clahe_off(self):
-        if self._apply_clahe:
+    def CLAHE_off(self):
+        if self._apply_CLAHE:
             self.clear_cache()
-            self._apply_clahe = False
+            self._apply_CLAHE = False
 
 
-    def clahe_on(self):
-        if not self._apply_clahe:
+    def CLAHE_on(self):
+        if not self._apply_CLAHE:
             self.clear_cache()
-            self._apply_clahe = True
-            self._clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+            self._apply_CLAHE = True
 
 
     def clear_cache(self):
         self._cache.clear()
 
 
-    def _get_block(self, fileid, blkid):
-        if (self._cache_size > 0) and (fileid, blkid) in self._cache:
-            return self._cache[(fileid, blkid)]
-        img = self._read_image(fileid)
-        imght = img.shape[0]
-        imgwd = img.shape[1]
-        divider = self._tile_divider(imght, imgwd)
-        divider.move_to_end(blkid, last=False) # FIFO queue, discard queried first 
-        if self._cache_size > 0:
-            for bid, blkbbox in divider.items():
-                if (fileid, bid) not in self._cache:
-                    blk = img[blkbbox[1]:blkbbox[3], blkbbox[0]:blkbbox[2]]
-                    self._cache_block(fileid, bid, blk)
-                if bid == blkid:
-                    blkout = blk
-            return blkout
+    def crop(self, bbox, imgpath, return_empty=False, **kwargs):
+        fillval = kwargs.get('fillval', self._default_fillval)
+        if (self._cache_size <= 0) or (imgpath not in self._file_bboxes):
+            imgout = self._crop_without_cache(bbox, imgpath, return_empty=return_empty, **kwargs)
         else:
-            blkbbox = divider[blkid]
-            return img[blkbbox[1]:blkbbox[3], blkbbox[0]:blkbbox[2]]
-
-
-    def _init_tile_divider(self, **kwargs):
-        if 'cache_border_margin' in kwargs:
-            self._tile_divider = partial(_tile_divider_border, cache_border_margin=kwargs['cache_border_margin'])
-        elif 'cache_block_size' in kwargs:
-            self._tile_divider = partial(_tile_divider_border_block, cache_block_size=kwargs['cache_block_size'])
-        else:
-            self._tile_divider = _tile_divider_blank
+            # once chached before, try to read the cach first
+            bbox_img = self._file_bboxes[imgpath]
+            if bbox_img not in self._cached_block_rtree:
+                    self._cached_block_rtree[bbox_img] = index.Index(
+                        self._cached_block_rtree_generator(bbox_img), interleaved=True)
+            hits = list(self.cached_block_rtree[bbox_img].intersection(bbox, objects=True))
+            if not hits:
+                if return_empty:
+                    if self.dtype is None or self._number_of_channels is None:
+                      # not sufficient info to generate empty tile, read an image to get info
+                        img = self._read_image(imgpath, **kwargs)
+                        imgout = crop_image_from_bbox(img, bbox_img, bbox, return_index=False,
+                            return_empty=True, fillval=fillval)
+                    else:
+                        outht = bbox[3] - bbox[1]
+                        outwd = bbox[2] - bbox[0]
+                        if self._number_of_channels <= 1:
+                            outsz = (outht, outwd)
+                        else:
+                            outsz = (outht, outwd, self._number_of_channels)
+                        imgout = np.full(outsz, fillval, dtype=self.dtype)
+                else:
+                    imgout = None
+            elif any((imgpath, item.object) not in self._cache for item in hits):
+                # has missing blocks from cache, need to read image anyway
+                imgout = self._crop_without_cache(bbox, imgpath, return_empty=return_empty, **kwargs)
+            else:
+                # read from cache
+                initialized = False
+                for item in hits:
+                    blkid = item.object
+                    blkbbox = [int(s) for s in item.bbox]
+                    blk = self._get_block(imgpath, blkid, **kwargs)
+                    if not initialized:
+                        imgout = crop_image_from_bbox(blk, blkbbox, bbox,
+                            return_index=False, return_empty=True, fillval=fillval)
+                        initialized = True
+                    else:
+                        blkt, indx =  crop_image_from_bbox(blk, blkbbox, bbox,
+                            return_index=True, return_empty=False, fillval=fillval)
+                        if indx is not None and blkt is not None:
+                            imgout[indx] = blkt
+        return imgout
 
 
     def inverse_off(self):
@@ -171,33 +189,188 @@ class AbstractImageLoader(ABC):
             self._inverse = True
 
 
-    def _read_image(self, fileid):
-        imgpath = os.path.join(self.imgrootdir, self.imgrelpaths[fileid])
-        if self._number_of_channels == 3:
+    def _cache_block(self, imgpath, blkid, blk):
+        if self._cache_size > 0 and blkid > 0:
+            self._cache[(imgpath, blkid)] = blk
+
+
+    def _cached_block_rtree_generator(self, bbox):
+        x0 = bbox[0]
+        y0 = bbox[1]
+        imght = bbox[3] - bbox[1]
+        imgwd = bbox[2] - bbox[0]
+        for indx, divider in enumerate(self._tile_divider(imght, imgwd, x0=x0, y0=y0).items()):
+            blkid, blkbbox = divider
+            yield (indx, blkbbox, blkid)
+
+
+    def _cache_image(self, imgpath, img=None, blkid=None, **kwargs):
+        if img is None:
+            img = self._read_image(imgpath, **kwargs)
+        imght = img.shape[0]
+        imgwd = img.shape[1]
+        divider = self._tile_divider(imght, imgwd)
+        if blkid is not None:
+            divider.move_to_end(blkid, last=False)
+        blkout = None
+        for bid, blkbbox in divider.items():
+            if self._cache_size > 0:
+                if (imgpath, bid) not in self._cache:
+                    blk = img[blkbbox[1]:blkbbox[3], blkbbox[0]:blkbbox[2],...]
+                    self._cache_block(imgpath, bid, blk)
+                if bid == blkid:
+                    blkout = self._cache[(imgpath, bid)]
+            else:
+                if bid == blkid:
+                    blkout = img[blkbbox[1]:blkbbox[3], blkbbox[0]:blkbbox[2],...]
+        return blkout
+
+
+    def _crop_without_cache(self,bbox, imgpath, return_empty=False, **kwargs):
+        # directly crop the image without checking the cache first
+        fillval = kwargs.get('fillval', self._default_fillval)
+        img = self._read_image(imgpath, **kwargs)
+        imght, imgwd = img.shape[0], img.shape[1]
+        bbox_img = (0, 0, imgwd, imght)
+        imgout = crop_image_from_bbox(img, bbox_img, bbox, return_index=False,
+            return_empty=return_empty, fillval=fillval)
+        if self._cache_size > 0:
+            self._file_bboxes[imgpath] = bbox_img
+            if bbox_img not in self._cached_block_rtree:
+                self._cached_block_rtree[bbox_img] = index.Index(
+                    self._cached_block_rtree_generator(bbox_img), interleaved=True)
+            self._cache_image(imgpath, img=img, **kwargs)
+        return imgout
+
+
+
+    def _get_block(self, imgpath, blkid, **kwargs):
+        if (self._cache_size > 0) and (imgpath, blkid) in self._cache:
+            blkout = self._cache[(imgpath, blkid)]
+        else:
+            blkout = self._cache_image(imgpath, blkid=blkid, **kwargs)
+        return blkout
+
+
+    def _init_tile_divider(self, **kwargs):
+        if self._cache_size <= 0:
+            self._tile_divider = _tile_divider_blank
+        elif 'cache_border_margin' in kwargs:
+            self._tile_divider = partial(_tile_divider_border, cache_border_margin=kwargs['cache_border_margin'])
+        elif 'cache_block_size' in kwargs:
+            self._tile_divider = partial(_tile_divider_border_block, cache_block_size=kwargs['cache_block_size'])
+        else:
+            self._tile_divider = _tile_divider_blank
+
+
+    def _read_image(self, imgpath, **kwargs):
+        number_of_channels = kwargs.get('number_of_channels', self._number_of_channels)
+        dtype = kwargs.get('dtype', self.dtype)
+        apply_CLAHE = kwargs.get('apply_CLAHE', self._apply_CLAHE)
+        inverse = kwargs.get('inverse', self._inverse)
+        if number_of_channels == 3:
             img = cv2.imread(imgpath, cv2.IMREAD_COLOR)
         else:
             img = cv2.imread(imgpath, cv2.IMREAD_UNCHANGED)
-        if (self._number_of_channels == 1) and (len(img.shape) > 2) and (img.shape[-1] > 1):
+        if img is None:
+            invalid_image_file_error = 'Image file {} not valid!'.format(imgpath)
+            raise RuntimeError(invalid_image_file_error)
+        if (number_of_channels == 1) and (len(img.shape) > 2) and (img.shape[-1] > 1):
             img = img.mean(axis=-1)
-        if self._apply_clahe:
-            img = self._clahe.apply(img)
-        if self._inverse:
-            if self.dtype == np.dtype('uint8'):
+        if dtype is not None:
+            img = img.astype(dtype, copy=False)
+        if apply_CLAHE:
+            img = self._CLAHE.apply(img)
+        if inverse:
+            if np.dtype(dtype) == np.dtype('uint8'):
                 img = 255 - img
-            elif self.dtype == np.dtype('uint16'):
+            elif np.dtype(dtype) == np.dtype('uint16'):
                 img = 65535 - img
             else:
                 img = img.max() - img
         return img
 
 
-    @property
-    def fileid_LUT(self):
-        if (not hasattr(self, '_fileid_LUT')) or (self._fileid_LUT is None):
-            # truncate filenames from right to left until unique
-            self._fileid_LUT = {}
-            inverse_fname = [os.path.splitext(s)[0][::-1] for s in self.imgrelpaths]
 
+class StaticImageLoader(DynamicImageLoader):
+    """
+    Class for image loader with predetermined image list.
+    Assuming all the images are of the same dimensions(default), dtype and bitdepth.
+
+    Args:
+        filepaths(list): fullpaths of the image file list
+    Kwargs:
+        identical_tiles(bool): if all the source images have identical dimensions,
+            default True.
+        tile_size(tuple): the size of tiles if identical_tiles is True.
+            If None(default), infer from the first image encountered.
+    """
+    def __init__(self, filepaths, **kwargs):
+        self.imgrootdir = os.path.dirname(os.path.commonprefix(filepaths))
+        self.imgrelpaths = [os.path.relpath(s, self.imgrootdir) for s in filepaths]
+        self.check_filename_uniqueness()
+        super().__init__(**kwargs)
+        self._identical_tiles = kwargs.get('identical_tiles', True)
+        self._tile_size = kwargs.get('tile_size', None)
+
+
+    def check_filename_uniqueness(self):
+        assert len(set(self.imgrelpaths)) == len(self.imgrelpaths), 'duplicated filenames'
+
+
+    def crop(self, bbox, fileid, return_empty=False, **kwargs):
+        if isinstance(fileid, str):
+            imgpath = fileid
+        else:
+            imgpath = os.path.join(self.imgrootdir, self.imgrelpaths[fileid])
+        return super().crop(bbox, imgpath, return_empty=return_empty, **kwargs)
+
+
+    def _cache_image(self, fileid, img=None, blkid=None, **kwargs):
+        if isinstance(fileid, str):
+            imgpath = fileid
+        else:
+            imgpath = os.path.join(self.imgrootdir, self.imgrelpaths[fileid])
+        return super()._cache_image(imgpath, img, blkid, **kwargs)
+
+
+    def _get_block(self, fileid, blkid, **kwargs):
+        if isinstance(fileid, str):
+            imgpath = fileid
+        else:
+            imgpath = os.path.join(self.imgrootdir, self.imgrelpaths[fileid])
+        return super()._get_block(imgpath, blkid, **kwargs)
+
+
+    def _read_image(self, fileid, **kwargs):
+        imgpath = os.path.join(self.imgrootdir, self.imgrelpaths[fileid])
+        img = super()._read_image(imgpath, **kwargs)
+        if self._identical_tiles:
+            if self._tile_size is None:
+                self._tile_size = img.shape[:2]
+                tile_ht, tile_wd = self._tile_size
+                bbox_img = (0, 0, tile_wd, tile_ht)
+                self._cached_block_rtree[bbox_img] = index.Index(
+                    self._cached_block_rtree_generator(bbox_img), interleaved=True)
+        if self.dtype is None:
+            self.dtype = img.dtype
+        if self._number_of_channels is None:
+            if len(img.shape) <= 2:
+                self._number_of_channels = 1
+            else:
+                self._number_of_channels = img.shape[-1]
+        return img
+
+
+    def fileid_lookup(self, fname):
+        if (not hasattr(self, '_fileid_LUT')) or (self._fileid_LUT is None):
+            self._fileid_LUT = {}
+            for idx, fnm in enumerate(self.filepaths_generator):
+                self._fileid_LUT[fnm] = idx
+        if fname in self._fileid_LUT:
+            return self._fileid_LUT[fname]
+        else:
+            return -1
 
 
     @property
@@ -211,35 +384,10 @@ class AbstractImageLoader(ABC):
         return list(self.filepaths_generator)
 
 
-    @property
-    def margin(self):
-        return self._cache_border_margin
 
-
-
-class ImageLoader(AbstractImageLoader):
+class MosaicLoader(StaticImageLoader):
     """
-    Image loader to crop partial image from a collection of images
-        bbox :int: [xmin, ymin, xmax, ymax]
-    """
-    def __init__(self, filepaths=[], **kwargs):
-        super().__init__(filepaths, **kwargs)
-
-
-    @classmethod
-    def from_filepaths(cls, foldername, **kwargs):
-        if '*' in foldername:
-            imgpaths = glob.glob(foldername)
-            assert bool(imgpaths), 'No image found: {}'.format(imgpaths)
-            imgpaths.sort()
-        else:
-            imgpaths = [foldername]
-        return cls(filepaths=imgpaths, **kwargs)
-
-
-class MontageLoader(AbstractImageLoader):
-    """
-    Image loader to render cropped images from non-overlapping montage tiles
+    Image loader to render cropped images from non-overlapping tiles
         bbox :int: [xmin, ymin, xmax, ymax]
     """
     def __init__(self, filepaths=[], bboxes=[], **kwargs):
@@ -267,7 +415,7 @@ class MontageLoader(AbstractImageLoader):
         if len(imgpaths) == 1:
             r_c = np.array([(0, 0)])
         else:
-            r_c = np.array([MontageLoader._filename_parser(s, pattern, rc_order=rc_order) for s in imgpaths])
+            r_c = np.array([MosaicLoader._filename_parser(s, pattern, rc_order=rc_order) for s in imgpaths])
             if rc_offset is None:
                 r_c -= r_c.min(axis=0)
             else:
@@ -308,8 +456,8 @@ class MontageLoader(AbstractImageLoader):
             kwargs_new['number_of_channels'] = int(json_obj['number_of_channels'])
         if 'fillval' in json_obj:
             kwargs_new['fillval'] = json_obj['fillval']
-        if 'apply_clahe' in json_obj:
-            kwargs_new['apply_clahe'] = json_obj['apply_clahe']
+        if 'apply_CLAHE' in json_obj:
+            kwargs_new['apply_CLAHE'] = json_obj['apply_CLAHE']
         if 'inverse' in json_obj:
             kwargs_new['inverse'] = json_obj['inverse']
         if 'cache_size' in json_obj:
@@ -331,7 +479,7 @@ class MontageLoader(AbstractImageLoader):
             out['dtype'] = np.dtype(self.dtype).str
             out['number_of_channels'] = self._number_of_channels
             out['fillval'] = self._default_fillval
-            out['apply_clahe'] = self._apply_clahe
+            out['apply_CLAHE'] = self._apply_CLAHE
             out['inverse'] = self._inverse
         if cache_status:
             out['cache_size'] = self._cache_size
