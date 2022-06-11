@@ -162,7 +162,7 @@ class DoublyLinkedList:
         if nextnode is not None:
             nextnode.prev = prevnode
         else:
-            self.tail = nextnode
+            self.tail = prevnode
         node.prev = None
         node.next = None
         self._number_of_nodes -= 1
@@ -305,7 +305,7 @@ class CacheLRU(CacheNull):
     def _evict_item_by_key(self, key):
         if key in self._cached_nodes:
             node = self._cached_nodes.pop(key)
-            self._freq_list.remove_node(node)
+            self._cache_list.remove_node(node)
 
 
     def _evict_item_by_policy(self):
@@ -367,7 +367,7 @@ class CacheLFU(CacheNull):
     def __init__(self, maxlen=None):
         self._maxlen = maxlen
         self._cached_nodes = {}
-        self._freq_list = DoublyLinkedList((None, 0))
+        self._freq_list = DoublyLinkedList()
 
 
     def clear(self, instant_gc=False):
@@ -421,6 +421,7 @@ class CacheLFU(CacheNull):
                     freq_node.next.pointer = DoublyLinkedList()
             target_cache_list = freq_node.next.pointer
             node = cache_list.pop_node(node)
+            node.pointer = freq_node.next
             if (len(cache_list) == 0) and (freq_node.data != 0):
                 self._freq_list.remove_node(freq_node)
             target_cache_list.insert_tail(node)

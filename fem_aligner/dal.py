@@ -184,7 +184,7 @@ class AbstractImageLoader(ABC):
                     imgout = None, None
                 else:
                     imgout = None
-            elif any(item.object not in self._get_cached_dict(imgpath) for item in hits):
+            elif any(item not in self._get_cached_dict(imgpath) for item in hits):
                 # has missing blocks from cache, need to read image anyway
                 imgout = self._crop_from_one_image_without_cache(bbox, imgpath, return_empty=return_empty, return_index=return_index, **kwargs)
             else:
@@ -201,7 +201,7 @@ class AbstractImageLoader(ABC):
                 else:
                     bbox_partial = bbox
                 initialized = False
-                cache_dict = self.self._get_cached_dict(imgpath)
+                cache_dict = self._get_cached_dict(imgpath)
                 for blkid, blkbbox in hits.items():
                     blkbbox = [int(s) for s in blkbbox]
                     blk = cache_dict[blkid]
@@ -228,8 +228,7 @@ class AbstractImageLoader(ABC):
         # directly crop the image without checking the cache first
         fillval = kwargs.get('fillval', self._default_fillval)
         img = self._read_image(imgpath, **kwargs)
-        imght, imgwd = img.shape[0], img.shape[1]
-        bbox_img = (0, 0, imgwd, imght)
+        bbox_img = self._get_image_bbox(imgpath)
         imgout = crop_image_from_bbox(img, bbox_img, bbox, return_index=return_index,
             return_empty=return_empty, fillval=fillval)
         if self._use_cache:
@@ -419,7 +418,7 @@ class DynamicImageLoader(AbstractImageLoader):
         divider = self._tile_divider(imght, imgwd, x0=x0, y0=y0)
         new_cache = False
         for bid, blkbbox in divider.items():
-            if bid not in cache_dict:
+            if (bid > 0) and (bid not in cache_dict):
                 if img is None:
                     img = self._read_image(imgpath, **kwargs)
                 blk = img[blkbbox[1]:blkbbox[3], blkbbox[0]:blkbbox[2],...]
@@ -476,7 +475,7 @@ class StaticImageLoader(AbstractImageLoader):
         self.imgrelpaths = [os.path.relpath(s, self.imgrootdir) for s in filepaths]
         self.check_filename_uniqueness()
         self._tile_size = kwargs.get('tile_size', None)
-        self._cached_block_rtree = None
+        self._cached_block_rtree = {}
         self._divider = None
 
 
@@ -519,7 +518,7 @@ class StaticImageLoader(AbstractImageLoader):
             cache_dict = {}
         new_cache = False
         for bid, blkbbox in self.divider.items():
-            if bid not in cache_dict:
+            if (bid > 0) and (bid not in cache_dict):
                 if img is None:
                     img = self._read_image(fileid, **kwargs)
                 blk = img[blkbbox[1]:blkbbox[3], blkbbox[0]:blkbbox[2],...]
@@ -557,7 +556,9 @@ class StaticImageLoader(AbstractImageLoader):
 
 
     def _get_image_cached_block_rtree(self, fileid):
-        return self.cached_block_rtree
+        tile_ht, tile_wd = self.tile_size
+        bbox_img = (0, 0, tile_wd, tile_ht)
+        return self.cached_block_rtree[bbox_img]
 
 
     def _read_image(self, fileid, **kwargs):
@@ -568,10 +569,10 @@ class StaticImageLoader(AbstractImageLoader):
         img = super()._read_image(imgpath, **kwargs)
         if self._tile_size is None:
             self._tile_size = img.shape[:2]
-        if self._cached_block_rtree is None:
-            tile_ht, tile_wd = self._tile_size
-            bbox_img = (0, 0, tile_wd, tile_ht)
-            self._cached_block_rtree = index.Index(
+        tile_ht, tile_wd = self._tile_size
+        bbox_img = (0, 0, tile_wd, tile_ht)
+        if bbox_img not in self._cached_block_rtree:
+            self._cached_block_rtree[bbox_img] = index.Index(
                 self._cached_block_rtree_generator(bbox_img), interleaved=True)
         if self._divider is None:
             tile_ht, tile_wd = self._tile_size
@@ -715,15 +716,21 @@ class MosaicLoader(StaticImageLoader):
     def crop(self, bbox, return_empty=False, **kwargs):
         hits = self._file_rtree.intersection(bbox, objects=False)
         initialized = False
-        for fileid in hits:
-            if not initialized:
-                out = super().crop(bbox, fileid, return_empty=return_empty, return_index=False, **kwargs)
-                if out is not None:
-                    initialized = True
+        if hits:
+            for fileid in hits:
+                if not initialized:
+                    out = super().crop(bbox, fileid, return_empty=return_empty, return_index=False, **kwargs)
+                    if out is not None:
+                        initialized = True
+                else:
+                    blk, indx = super().crop(bbox, fileid, return_empty=return_empty, return_index=True, **kwargs)
+                    if blk is not None:
+                        out[indx] = blk
+        else:
+            if return_empty:
+                out = super().crop(bbox, 0, return_empty=True, return_index=False, **kwargs)
             else:
-                blk, indx = super().crop(bbox, fileid, return_empty=return_empty, return_index=True, **kwargs)
-                if blk is not None:
-                    out[indx] = blk
+                out = None
         return out
 
 
@@ -805,4 +812,4 @@ class MosaicLoader(StaticImageLoader):
 
     @property
     def bounds(self):
-        return self._file_rtree().bounds
+        return self._file_rtree.bounds
