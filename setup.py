@@ -21,7 +21,7 @@ setup(
         'triangle'
     ],
     classifiers=[
-        'Development Status :: 1 - Planning',
+        'Development Status :: 2 - Pre-Alpha',
         'Intended Audience :: Science/Research',
         'Programming Language :: Python :: 3'
     ]

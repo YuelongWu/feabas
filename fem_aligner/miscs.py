@@ -4,6 +4,16 @@ import gc
 import numpy as np
 
 
+def numpy_to_str_ascii(ar):
+    t = ar.clip(0,127).astype(np.uint8).ravel()
+    return t.tostring().decode('ascii')
+
+
+def str_to_numpy_ascii(s):
+    t =  np.frombuffer(s.encode('ascii'), dtype=np.uint8)
+    return t
+
+
 def crop_image_from_bbox(img, bbox_img, bbox_out, **kwargs):
     """
     Crop an image based on the bounding box

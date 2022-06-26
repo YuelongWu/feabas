@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from collections import OrderedDict, defaultdict
+from collections import OrderedDict
 from functools import partial
 import glob
 import json
@@ -94,6 +94,7 @@ class AbstractImageLoader(ABC):
             for _tile_divider_border caching, or the square block size for
             _tile_divider_block caching. If neither is set, cache
             the entile image with _tile_divider_blank.
+        resolution(float): resolution of the images. default to 4nm
     """
     def __init__(self, **kwargs):
         self._dtype = kwargs.get('dtype', None)
@@ -102,11 +103,12 @@ class AbstractImageLoader(ABC):
         self._CLAHE = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
         self._inverse = kwargs.get('inverse', False)
         self._default_fillval = kwargs.get('fillval', 0)
-        self._cache_size = kwargs.get('cache_size', None)
+        self._cache_size = kwargs.get('cache_size', 0)
         self._use_cache = (self._cache_size is None) or (self._cache_size > 0)
         self._init_tile_divider(**kwargs)
         self._cache_type = kwargs.get('cache_type', 'mfu')
         self._cache = generate_cache(self._cache_type, maxlen=self._cache_size)
+        self.resolution = kwargs.get('resolution', 4.0)
 
 
     def clear_cache(self, instant_gc=False):
@@ -240,6 +242,7 @@ class AbstractImageLoader(ABC):
         output_controls = kwargs.get('output_controls', True)
         cache_settings = kwargs.get('cache_settings', True)
         out = {}
+        out['resolution'] = self.resolution
         if output_controls:
             if self._dtype is not None:
                 out['dtype'] = np.dtype(self._dtype).str
@@ -278,6 +281,8 @@ class AbstractImageLoader(ABC):
         with open(jsonname, 'r') as f:
             json_obj = json.load(f)
         settings = {}
+        if 'resolution' in json_obj:
+            settings['resolution'] = json_obj['resolution']
         if 'dtype' in json_obj:
             settings['dtype'] = np.dtype(json_obj['dtype'])
         if 'number_of_channels' in json_obj:
