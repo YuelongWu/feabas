@@ -7,7 +7,7 @@ import shapely.geometry as shpgeo
 from shapely.ops import unary_union, linemerge
 from shapely import wkb
 
-from fem_aligner import dal, miscs
+from fem_aligner import dal, miscs, material
 
 
 JOIN_STYLE = shpgeo.JOIN_STYLE.mitre
@@ -198,9 +198,10 @@ def get_polygon_representative_point(poly):
     if hasattr(poly, 'geoms'):
         points = []
         for elem in poly.geoms:
-            points.extend(get_polygon_representative_point(elem))
+            pts = get_polygon_representative_point(elem)
+            points.extend(pts)
     elif isinstance(poly, shpgeo.Polygon):
-        points = [poly.representative_point()]
+        points = list(poly.representative_point().coords)
     else:
         points = []
     return points
@@ -255,7 +256,7 @@ def polygon_area_filter(poly, area_thresh=0):
         return new_list
     else:
         raise TypeError
-        
+
 
 
 
@@ -278,6 +279,7 @@ class Geometry:
         self._regions = regions
         self._resolution = kwargs.get('resolution', 4.0)
         self._zorder = kwargs.get('zorder', list(self._regions.keys()))
+        self._region_names = kwargs('region_names', None)
         self._committed = False
 
 
@@ -468,7 +470,7 @@ class Geometry:
         if not self._committed:
             self.commit(**kwargs)
         points = {}
-        points['roi'] = (self._roi)
+        points['default'] = get_polygon_representative_point(self._roi)
         for lbl, pp in self._regions.items():
             points[lbl] = get_polygon_representative_point(pp)
         return points
@@ -558,3 +560,34 @@ class Geometry:
         vertices, indx = np.unique(vertices, return_inverse=True, axis=0)
         segments = indx[segments]
         return vertices, segments, markers
+
+
+    @staticmethod
+    def region_names_from_material_dict(material_dict):
+        if isinstance(material_dict, str):
+            if '.json' in material_dict:
+                MT = material.MaterialTable.from_json(material_dict, stream=False)
+            else:
+                MT = material.MaterialTable.from_json(material_dict, stream=True)
+            material_dict = MT.label_table
+        elif isinstance(material_dict, material.MaterialTable):
+            material_dict = material_dict.label_table
+        elif isinstance(material_dict, dict):
+            pass
+        else:
+            raise TypeError('Invalid material dictionary type.')
+        region_names = OrderedDict()
+        for label, mat in material_dict.items():
+            if isinstance(mat, material.Material):
+                matval = mat._mask_label
+                if matval is None:
+                    raise RuntimeError('material label not defined in material table.')
+            else:
+                matval = mat
+            if isinstance(matval, int):
+                region_names[label] = matval
+            elif isinstance(matval, (list, tuple, np.ndarray)):
+                region_names[label] = np.asarray(matval)
+            else:
+                raise TypeError('invalid material label value type.')
+        return region_names

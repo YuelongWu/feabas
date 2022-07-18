@@ -1,4 +1,5 @@
 import collections
+import importlib
 import gc
 
 import numpy as np
@@ -12,6 +13,13 @@ def numpy_to_str_ascii(ar):
 def str_to_numpy_ascii(s):
     t =  np.frombuffer(s.encode('ascii'), dtype=np.uint8)
     return t
+
+
+def load_plugin(plugin_name):
+    modl, plugname = plugin_name.rsplit('.', 1)
+    plugin_mdl = importlib.import_module(modl)
+    plugin = getattr(plugin_mdl, plugname)
+    return plugin
 
 
 def crop_image_from_bbox(img, bbox_img, bbox_out, **kwargs):
