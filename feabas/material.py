@@ -1,9 +1,9 @@
-from collections import OrderedDict
+from collections import defaultdict
 
 import json
 import numpy as np
 
-from fem_aligner import miscs
+from feabas import miscs
 
 # material model type
 MATERIAL_MODEL_ENG = 0    # Engineering strain & stress
@@ -250,27 +250,48 @@ class Material:
 
 
 
+MATERIAL_HOLE = Material(enable_mesh=False, id=0)
+
+MATERIAL_DEFAULT = Material(enable_mesh=True,
+                            area_constraint=1,
+                            type=MATERIAL_MODEL_ENG,
+                            stiffness_multiplier=1.0,
+                            poisson_ratio=0.0,
+                            id=-1)
+
+
+
 class MaterialTable:
     """
     A collection of materials.
     """
-    def __init__(self, table=OrderedDict()):
-        self._table = table
+    def __init__(self, table={}, default_material=MATERIAL_DEFAULT):
+        if default_material is not None:
+            table['default'] = default_material
+            default_factory = lambda: default_material
+        elif 'default' in table:
+            default_factory = lambda: table['default']
+        else:
+            default_factory = None
+        self._table = defaultdict(default_factory)
+        if 'hole' not in table:
+            table['hole'] =  MATERIAL_HOLE
+        self._table.update(table)
         self._id_table = None
 
 
     @classmethod
-    def from_json(cls, jsonname, stream=False):
+    def from_json(cls, jsonname, stream=False, default_material=MATERIAL_DEFAULT):
         if stream:
             dct = json.loads(jsonname)
         else:
             with open(jsonname, 'r') as f:
                 dct = json.load(f)
-        table = OrderedDict()
+        table = {}
         for lbl, props in dct.items():
             material = Material(**props)
             table[lbl] = material
-        return cls(table=table)
+        return cls(table=table, default_material=default_material)
 
 
     def save_to_json(self, jsonname=None):
@@ -282,6 +303,10 @@ class MaterialTable:
             with open(jsonname, 'w') as f:
                 f.write(json_str)
         return json_str
+
+
+    def __getitem__(self, key):
+        return self._table[key]
 
 
     def add_material(self, label, material, force_update=True):
@@ -298,11 +323,12 @@ class MaterialTable:
     @property
     def id_table(self):
         if self._id_table is None:
-            id_tabel = {}
+            if 'default' in self._table:
+                default_factory = lambda: self._table['default']
+            else:
+                default_factory = None
+            id_tabel = defaultdict(default_factory=default_factory)
             for val in self._table.values():
                 id_tabel[val.uid] = val
             self._id_table = id_tabel
         return self._id_table
-
-
-MATERIAL_HOLE = Material(enable_mesh=False, id=0)

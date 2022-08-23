@@ -7,7 +7,7 @@ import shapely.geometry as shpgeo
 from shapely.ops import unary_union, linemerge
 from shapely import wkb
 
-from fem_aligner import dal, miscs, material
+from feabas import dal, miscs, material
 
 
 JOIN_STYLE = shpgeo.JOIN_STYLE.mitre
@@ -279,7 +279,7 @@ class Geometry:
         self._regions = regions
         self._resolution = kwargs.get('resolution', 4.0)
         self._zorder = kwargs.get('zorder', list(self._regions.keys()))
-        self._region_names = kwargs('region_names', None)
+        self._region_names = kwargs.get('region_names', None)
         self._committed = False
 
 
@@ -292,7 +292,7 @@ class Geometry:
         kwargs:
             resolution(float): resolution of the geometries. Different scalings
                 align at the top-left corner pixel as (0, 0).
-            oor(int): label assigned to out-of-roi region.
+            oor_label(int): label assigned to out-of-roi region.
             label_list(list): list of region labels to extract from the images.
             region_names(OrderedDict): OrderedDict mapping region names to their
                 corresponding labels.
@@ -301,7 +301,7 @@ class Geometry:
                 define scaling factor.
         """
         resolution = kwargs.get('resolution', 4.0)
-        oor_label = kwargs.get('oor', None)
+        oor_label = kwargs.get('oor_label', None)
         roi_erosion = kwargs.get('roi_erosion', 0.5)
         dilate = kwargs.get('dilate', 0.1)
         scale = kwargs.get('scale', 1.0)
@@ -440,6 +440,7 @@ class Geometry:
         if self._roi is None:
             raise RuntimeError('ROI not defined')
         mask = self._roi
+        covered_list = [mask]
         for lbl in reversed(self._zorder):
             if lbl not in self._regions:
                 continue
@@ -449,10 +450,34 @@ class Geometry:
                 self._regions.pop(lbl)
             else:
                 self._regions[lbl] = poly_updated
+                covered_list.append(poly_updated)
                 mask = mask.difference(poly_updated)
         filtered_roi = polygon_area_filter(mask, area_thresh=area_thresh)
         if filtered_roi is not None:
             self._roi = filtered_roi
+        covered = unary_union(covered_list)
+        covered_boundary = covered.boundary
+        if hasattr(covered_boundary, 'geoms'):
+            # if boundary has multiple line strings, check for holes
+            holes_list = []
+            max_area = 0
+            outer_boundary = 0
+            for linestr in covered_boundary.geoms:
+                pp = shpgeo.Polygon(linestr)
+                if pp.area < area_thresh:
+                    # if smaller than the area threshold, fill with default material
+                    self._roi = self._roi.union(pp)
+                else:
+                    holes_list.append(pp)
+                    if pp.area > max_area: # largest area is the outer boundary
+                        outer_boundary = len(holes_list) - 1
+            holes_list.pop(outer_boundary)
+            if bool(holes_list):
+                holes = unary_union(holes_list)
+                if 'hole' in self._regions:
+                    self._regions['hole'] = self._regions['hole'].union(holes)
+                else:
+                    self._regions['hole'] = holes
         self._committed = True
 
 

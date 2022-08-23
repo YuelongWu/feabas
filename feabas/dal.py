@@ -10,7 +10,7 @@ import cv2
 import numpy as np
 from rtree import index
 
-from fem_aligner.miscs import generate_cache, crop_image_from_bbox
+from feabas.miscs import generate_cache, crop_image_from_bbox
 
 
 # bbox :int: [xmin, ymin, xmax, ymax]

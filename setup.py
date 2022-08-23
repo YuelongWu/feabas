@@ -3,7 +3,7 @@ from setuptools import setup, find_packages
 VERSION = '0.0'
 
 setup(
-    name='fem-aligner',
+    name='feabas',
     version=VERSION,
     description='A python library for stitching & alignment of connectome datasets using finite-element method.',
     author='Yuelong Wu',
