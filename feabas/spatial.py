@@ -1,4 +1,6 @@
+from ast import Or
 from collections import defaultdict, OrderedDict
+from re import L
 
 import cv2
 import h5py
@@ -284,18 +286,19 @@ class Geometry:
 
 
     @classmethod
-    def from_image_mosaic(cls, image_loader, label_list=[200], region_names=None, **kwargs):
+    def from_image_mosaic(cls, image_loader, material_table=None, region_names=None, **kwargs):
         """
         Args:
-            image_loader(femaligner.dal.MosaicLoader): image loader to load mask
+            image_loader(feabas.dal.MosaicLoader): image loader to load mask
                 images in mosaic form. Can also be a single-tile image
         kwargs:
             resolution(float): resolution of the geometries. Different scalings
                 align at the top-left corner pixel as (0, 0).
             oor_label(int): label assigned to out-of-roi region.
-            label_list(list): list of region labels to extract from the images.
+            material_table(feabas.material.MaterialTable): table of materials
+                that defines the region names and labels.
             region_names(OrderedDict): OrderedDict mapping region names to their
-                corresponding labels.
+                corresponding labels, in addition to material_table.
             dilate(float): dilation radius to grow regions.
             scale(float): if image_loader is not a MosaicLoader, use this to
                 define scaling factor.
@@ -304,14 +307,19 @@ class Geometry:
         oor_label = kwargs.get('oor_label', None)
         roi_erosion = kwargs.get('roi_erosion', 0.5)
         dilate = kwargs.get('dilate', 0.1)
-        scale = kwargs.get('scale', 1.0)
-        if region_names is None:
-            region_names = OrderedDict((str(s),s) for s in label_list)
+        scale = kwargs.get('scale', 1.0) # may change if imageloader has different resolution
+        name2label = OrderedDict() # region name to label mapping
+        if material_table is not None:
+            name2label = material_table.name_to_label_mapping
+        if region_names is not None:
+            name2label.update(region_names)
         if isinstance(image_loader, dal.MosaicLoader):
             scale = image_loader.resolution / resolution
+        roi_erosion = roi_erosion * scale
+        dilate = dilate * scale
         if oor_label is not None:
-            region_names.update({'out_of_roi_label': oor_label})
-        regions, roi = images_to_polygons(image_loader, region_names, scale=scale)
+            name2label.update({'out_of_roi_label': oor_label})
+        regions, roi = images_to_polygons(image_loader, name2label, scale=scale)
         if roi_erosion > 0:
             roi = roi.buffer(-roi_erosion, join_style=JOIN_STYLE)
         if oor_label is not None and 'out_of_roi_label' in regions:
@@ -322,7 +330,7 @@ class Geometry:
         if dilate > 0:
             for lbl, pp in regions.items():
                 regions[lbl] = pp.buffer(dilate, join_style=JOIN_STYLE)
-        return cls(roi=roi, regions=regions, resolution=resolution, zorder=list(region_names.keys()))
+        return cls(roi=roi, regions=regions, resolution=resolution, zorder=list(name2label.keys()))
 
 
     @classmethod
@@ -378,7 +386,7 @@ class Geometry:
         self._committed = False
 
 
-    def add_regions_from_image(self, image, label_list=[200], region_names=None, **kwargs):
+    def add_regions_from_image(self, image, material_table=None, region_names=None, **kwargs):
         resolution = kwargs.get('resolution', 4.0)
         dilate = kwargs.get('dilate', 0.1)
         scale = kwargs.get('scale', 1.0)
@@ -386,9 +394,13 @@ class Geometry:
         pos = kwargs.get('pos', None)
         if isinstance(image, dal.MosaicLoader):
             scale = image.resolution / resolution
-        if region_names is None:
-            region_names = OrderedDict((str(s),s) for s in label_list)
-        regions, _ = images_to_polygons(image, region_names, scale=scale)
+        dilate = dilate * scale
+        name2label = OrderedDict() # region name to label mapping
+        if material_table is not None:
+            name2label = material_table.name_to_label_mapping
+        if region_names is not None:
+            name2label.update(region_names)
+        regions, _ = images_to_polygons(image, name2label, scale=scale)
         if dilate > 0:
             for lbl, pp in regions.items():
                 regions[lbl] = pp.buffer(dilate, join_style=JOIN_STYLE)
@@ -419,6 +431,7 @@ class Geometry:
         mode = kwargs.get('mode', 'r')
         if isinstance(image, dal.MosaicLoader):
             scale = image.resolution / resolution
+        roi_erosion = roi_erosion * scale
         poly, extent = images_to_polygons(image, {'roi': roi_label}, scale=scale)
         if 'roi' in poly and poly['roi'].area > 0:
             roi = poly['roi']
@@ -459,21 +472,13 @@ class Geometry:
         covered_boundary = covered.boundary
         if hasattr(covered_boundary, 'geoms'):
             # if boundary has multiple line strings, check for holes
-            holes_list = []
-            max_area = 0
-            outer_boundary = 0
+            filled_cover = []
             for linestr in covered_boundary.geoms:
-                pp = shpgeo.Polygon(linestr)
-                if pp.area < area_thresh:
-                    # if smaller than the area threshold, fill with default material
-                    self._roi = self._roi.union(pp)
-                else:
-                    holes_list.append(pp)
-                    if pp.area > max_area: # largest area is the outer boundary
-                        outer_boundary = len(holes_list) - 1
-            holes_list.pop(outer_boundary)
-            if bool(holes_list):
-                holes = unary_union(holes_list)
+                area_sign = shpgeo.LinearRing(linestr).is_ccw
+                if area_sign:
+                    filled_cover.append(shpgeo.Polygon(linestr))
+            holes = unary_union(filled_cover).difference(covered)
+            if holes.area > 0:
                 if 'hole' in self._regions:
                     self._regions['hole'] = self._regions['hole'].union(holes)
                 else:
@@ -501,7 +506,7 @@ class Geometry:
         return points
 
 
-    def simplify(self, region_tol=1.5, roi_tol=1.5, inplace=True):
+    def simplify(self, region_tol=1.5, roi_tol=1.5, inplace=True, scale=1.0):
         """
         simplify regions and roi so they have fewer line segments.
         Kwargs:
@@ -522,13 +527,13 @@ class Geometry:
         regions_new = {}
         for key, pp in self._regions.items():
             if (region_tols[key] > 0) and (pp is not None):
-                pp_updated = pp.simplify(region_tols[key], preserve_topology=True)
+                pp_updated = pp.simplify(region_tols[key]*scale, preserve_topology=True)
                 if inplace:
                     self._regions[key] = pp_updated
                 else:
                     regions_new[key] = pp_updated
         if roi_tol > 0:
-            roi = self._roi.simplify(roi_tol, preserve_topology=True)
+            roi = self._roi.simplify(roi_tol*scale, preserve_topology=True)
             if inplace:
                 self._roi = roi
         if inplace:
@@ -558,8 +563,9 @@ class Geometry:
         simplify_roi_tol = kwargs.get('simplify_roi_tol', 0)
         area_thresh = kwargs.get('area_thresh', 0)
         snap_decimal = kwargs.get('snap_decimal', None)
+        scale = kwargs.get('scale', 1.0)
         if (simplify_region_tol > 0) or (simplify_roi_tol > 0):
-            self.simplify(region_tol=simplify_region_tol, roi_tol=simplify_roi_tol, inplace=True)
+            self.simplify(region_tol=simplify_region_tol, roi_tol=simplify_roi_tol, inplace=True, scale=scale)
         self.commit(area_thresh=area_thresh)
         boundaries = self.collect_boundaries()
         markers = self.collect_region_markers()

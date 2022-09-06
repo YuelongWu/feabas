@@ -1,4 +1,4 @@
-from collections import defaultdict
+from collections import defaultdict, OrderedDict
 
 import json
 import numpy as np
@@ -41,14 +41,14 @@ class Material:
     """
     uid = 1
     def __init__(self, **kwargs):
-        self._enable_mesh = kwargs.get('enable_mesh', True)
-        self._area_constraint = kwargs.get('area_constraint', 1.0)
+        self.enable_mesh = kwargs.get('enable_mesh', True)
+        self.area_constraint = kwargs.get('area_constraint', 1.0)
         self._type = kwargs.get('type', MATERIAL_MODEL_ENG)
         self._stiffness_multiplier = kwargs.get('stiffness_multiplier', 1.0)
         self._stiffness_func_factory = kwargs.get('stiffness_func_factory', None)
         self._stiffness_func_params = kwargs.get('stiffness_func_params', {})
         self._poisson_ratio = kwargs.get('poisson_ratio', 0.0)
-        self._mask_label = kwargs.get('mask_label', None)
+        self.mask_label = kwargs.get('mask_label', None)
         uid = kwargs.get('id', None)
         if uid is None:
             self.uid = Material.uid
@@ -71,8 +71,8 @@ class Material:
 
     def to_dict(self):
         out = {
-            'enable_mesh': self._enable_mesh,
-            'area_constraint': self._area_constraint,
+            'enable_mesh': self.enable_mesh,
+            'area_constraint': self.area_constraint,
             'type': self._type,
             'poisson_ratio': self._poisson_ratio,
             'id': self.uid
@@ -229,7 +229,7 @@ class Material:
         else:
             raise NotImplementedError
         if self._stiffness_func is not None:
-            modifier = self._stiffness_func(J, **self._stiffness_func_params)
+            modifier = self._stiffness_func(J)
             K = K * modifier.reshape(-1,1,1)
             P = P * modifier.reshape(-1,1,1)
         return K, P, flipped
@@ -250,38 +250,47 @@ class Material:
 
 
 
-MATERIAL_HOLE = Material(enable_mesh=False, id=0)
+MATERIAL_HOLE = Material(enable_mesh=False,
+                         id=0,
+                         mask_label=255)
 
 MATERIAL_DEFAULT = Material(enable_mesh=True,
                             area_constraint=1,
                             type=MATERIAL_MODEL_ENG,
                             stiffness_multiplier=1.0,
                             poisson_ratio=0.0,
-                            id=-1)
+                            id=-1,
+                            mask_label=0)
 
 
 
 class MaterialTable:
     """
     A collection of materials.
+    Kwargs:
+        table (dict): dictionary storing material label - material pairs.
+        default_material (feabas.material.Material): the default material to use
+            when querying a nonexistent material label. If set to None, and
+            'default' label in the table, use that as the default material.
+            Otherwise, use MATERIAL_DEFAULT as the default material.
     """
-    def __init__(self, table={}, default_material=MATERIAL_DEFAULT):
+    def __init__(self, table={}, default_material=None):
         if default_material is not None:
             table['default'] = default_material
             default_factory = lambda: default_material
         elif 'default' in table:
             default_factory = lambda: table['default']
         else:
-            default_factory = None
+            table['default'] = MATERIAL_DEFAULT
+            default_factory = lambda: MATERIAL_DEFAULT
         self._table = defaultdict(default_factory)
         if 'hole' not in table:
             table['hole'] =  MATERIAL_HOLE
         self._table.update(table)
-        self._id_table = None
 
 
     @classmethod
-    def from_json(cls, jsonname, stream=False, default_material=MATERIAL_DEFAULT):
+    def from_json(cls, jsonname, stream=False, default_material=None):
         if stream:
             dct = json.loads(jsonname)
         else:
@@ -309,6 +318,11 @@ class MaterialTable:
         return self._table[key]
 
 
+    def __iter__(self):
+        for labelname, mat in self._table.items():
+            yield labelname, mat
+
+
     def add_material(self, label, material, force_update=True):
         if force_update or (label not in self.table):
             self._table[label] = material
@@ -316,19 +330,27 @@ class MaterialTable:
 
 
     @property
-    def label_table(self):
+    def name_to_label_mapping(self):
+        mapper = OrderedDict()
+        for name, mat in self._table.items():
+            lbl = mat.mask_label
+            if lbl is not None:
+                mapper[name] = lbl
+        return mapper
+
+
+    @property
+    def named_table(self):
         return self._table
 
 
     @property
     def id_table(self):
-        if self._id_table is None:
-            if 'default' in self._table:
-                default_factory = lambda: self._table['default']
-            else:
-                default_factory = None
-            id_tabel = defaultdict(default_factory=default_factory)
-            for val in self._table.values():
-                id_tabel[val.uid] = val
-            self._id_table = id_tabel
-        return self._id_table
+        if 'default' in self._table:
+            default_factory = lambda: self._table['default']
+        else:
+            default_factory = None
+        id_tabel = defaultdict(default_factory=default_factory)
+        for val in self._table.values():
+            id_tabel[val.uid] = val
+        return id_tabel
