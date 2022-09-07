@@ -77,8 +77,8 @@ class Material:
             'poisson_ratio': self._poisson_ratio,
             'id': self.uid
             }
-        if self._mask_label is not None:
-            out['mask_label'] = self._mask_label
+        if self.mask_label is not None:
+            out['mask_label'] = self.mask_label
         if callable(self._stiffness_func_factory):
             if self._stiffness_func_factory.__name__ == '<lambda>':
                 raise TypeError
@@ -305,7 +305,7 @@ class MaterialTable:
 
     def save_to_json(self, jsonname=None):
         outdict = {}
-        for lbl, material in self._table:
+        for lbl, material in self._table.items():
             outdict[lbl] = material.to_dict()
         json_str = json.dumps(outdict, indent = 2)
         if jsonname is not None:

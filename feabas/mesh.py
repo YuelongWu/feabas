@@ -18,7 +18,6 @@ class Mesh:
             set to the id of the default material defined in feabas.material.
         material_table (feabas.material.MaterialTable): table of
             material properties.
-        edges (Ne x 2 ndarray): each row is 2 vertex indices belong to an edge.
         resolution (float): resolution of the mesh, for automatical scaling when
             working with images with specified resolution. default to 4nm.
         name(str): name of the mesh, used for printing/saving.
@@ -44,10 +43,17 @@ class Mesh:
         indx = np.argsort(material_ids, axis=None)
         self.triangles = triangles[indx]
         self._material_ids = material_ids[indx]
-
-        self._material_table = kwargs.get('material_table', material.MaterialTable())
-
-        self._edges = kwargs.get('edges', None)
+        mtb = kwargs.get('material_table', None)
+        if isinstance(mtb, str):
+            if material[-5:] == '.json':
+                material_table = material.MaterialTable.from_json(mtb, stream=False)
+            else:
+                material_table = material.MaterialTable.from_json(mtb, stream=True)
+        elif isinstance(mtb, material.MaterialTable):
+            material_table = mtb
+        else:
+            material_table = material.MaterialTable()
+        self._material_table = material_table
         self._resolution = kwargs.get('resolution', 4)
         self._name = kwargs.get('name', '')
         self._uid = kwargs.get('uid', None)
@@ -74,7 +80,7 @@ class Mesh:
         regions = []
         holes = []
         PSLG = {'vertices': vertices, 'segments': segments}
-        tri_opt = 'pe'
+        tri_opt = 'p'
         if markers is not None:
             for mname, pts in markers.items():
                 if not bool(pts): # no points in this marker
@@ -112,7 +118,46 @@ class Mesh:
             material_ids = T['triangle_attributes'].squeeze().astype(np.int8)
         else:
             material_ids = None
-        edges = T['edges']
-        return cls(vertices, triangles, material_ids=material_ids, edges=edges,
-            **kwargs)
+        return cls(vertices, triangles, material_ids=material_ids, **kwargs)
 
+
+    @classmethod
+    def from_bbox(cls, bbox, **kwargs):
+        pass
+
+
+    @classmethod
+    def from_boarder_bbox(cls, bbox, bd_width=np.inf, **kwargs):
+        pass
+
+
+    def get_init_dict(self, save_material=True, **kwargs):
+        """
+        dictionary that can be used for initialization of a duplicate.
+        """
+        init_dict = {}
+        init_dict['vertices'] = self._vertices[self.INITIAL]
+        init_dict['triangles'] = self.triangles
+        if self._vertices[self.MOVING] is not None:
+            init_dict['moving_vertices'] = self._vertices[self.MOVING]
+        if save_material:
+            init_dict['material_ids'] = self._material_ids
+            init_dict['material_table'] = self.material_table.save_to_json()
+        init_dict['resolution'] = self._resolution
+        if bool(self._name):
+            init_dict['name'] = self._name
+        if self._uid is not None:
+            init_dict['uid'] = self._uid
+        init_dict.update(kwargs)
+        return init_dict
+
+
+    @classmethod
+    def from_h5(cls, fname, **kwargs):
+        prefix = kwargs.get('prefix', '')
+        pass
+
+
+    def save_to_h5(self, fname, **kwargs):
+        prefix = kwargs.get('prefix', '')
+        pass
