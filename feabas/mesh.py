@@ -1,9 +1,24 @@
+import copy
+import h5py
 import json
 import numpy as np
 from scipy import sparse
 import triangle
 
 from feabas import miscs, spatial, material
+
+
+def dynamic_cache(func):
+    """ 
+    The decorator that determines the caching behaviour of the Mesh properties.
+    cache: If None, save to self as an attribute;
+           If type of miscs.Cache, save to the cache object;
+           By default, set to CacheNull (No caching).
+    """
+    def decorator():
+        pass
+    return decorator
+
 
 
 class Mesh:
@@ -37,12 +52,18 @@ class Mesh:
         tri_num = triangles.shape[0]
         mtb = kwargs.get('material_table', None)
         if isinstance(mtb, str):
-            if material[-5:] == '.json':
+            if mtb[-5:] == '.json':
                 material_table = material.MaterialTable.from_json(mtb, stream=False)
             else:
                 material_table = material.MaterialTable.from_json(mtb, stream=True)
         elif isinstance(mtb, material.MaterialTable):
             material_table = mtb
+        elif isinstance(mtb, np.ndarray):
+            ss = miscs.numpy_to_str_ascii(mtb)
+            if ss[-5:] == '.json':
+                material_table = material.MaterialTable.from_json(ss, stream=False)
+            else:
+                material_table = material.MaterialTable.from_json(ss, stream=True)
         else:
             material_table = material.MaterialTable()
         self._material_table = material_table
@@ -139,7 +160,7 @@ class Mesh:
         # mostly for stitching application.
         # bbox: [xmin, ymin, xmax, ymax]
         # bd_width: border width. in pixel or ratio to the size of the bbox
-        # roundup_bbox: if extend the bounding box size to make it multiples of 
+        # roundup_bbox: if extend the bounding box size to make it multiples of
         #   the mesh size. Otherwise, adjust the mesh size
         # mesh_growth: increase of the mesh size in the interior region.
         resolution = kwargs.get('resolution', 4)
@@ -228,17 +249,16 @@ class Mesh:
             segments = None
         kwargs['mesh_size'] = mesh_size * mesh_growth
         return cls.from_PSLG(vertices, segments, **kwargs)
-    
 
 
-    def get_init_dict(self, save_material=True, **kwargs):
+    def get_init_dict(self, save_material=True, vertex_flag=INITIAL, **kwargs):
         """
         dictionary that can be used for initialization of a duplicate.
         """
         init_dict = {}
-        init_dict['vertices'] = self._vertices[self.INITIAL]
+        init_dict['vertices'] = self._vertices[vertex_flag]
         init_dict['triangles'] = self.triangles
-        if self._vertices[self.MOVING] is not None:
+        if (self._vertices[self.MOVING]) is not None and (vertex_flag != self.MOVING):
             init_dict['moving_vertices'] = self._vertices[self.MOVING]
         if save_material:
             init_dict['material_ids'] = self._material_ids
@@ -253,11 +273,60 @@ class Mesh:
 
 
     @classmethod
-    def from_h5(cls, fname, **kwargs):
-        prefix = kwargs.get('prefix', '')
-        pass
+    def from_h5(cls, fname, prefix=''):
+        init_dict = {}
+        if (len(prefix) > 0) and prefix[-1] != '/':
+            prefix = prefix + '/'
+        if isinstance(fname, h5py.File):
+            if not prefix:
+                for key in fname.keys():
+                    init_dict[key] = fname[key][()]
+            else:
+                for key in fname[prefix[:-1]].keys():
+                    init_dict[key] = fname[prefix+key][()]
+        else:
+            with h5py.File(fname, 'r') as f:
+                if not prefix:
+                    for key in f.keys():
+                        init_dict[key] = f[key][()]
+                else:
+                    for key in f[prefix[:-1]].keys():
+                        init_dict[key] = f[prefix+key][()]
+        return cls(**init_dict)
 
 
-    def save_to_h5(self, fname, **kwargs):
+    def save_to_h5(self, fname, vertex_flag=INITIAL, override_dict={}, **kwargs):
         prefix = kwargs.get('prefix', '')
-        pass
+        save_material = kwargs.get('save_material', True)
+        compression = kwargs.get('compression', True)
+        out = self.get_init_dict(save_material=save_material, vertex_flag=vertex_flag, **override_dict)
+        if (len(prefix) > 0) and prefix[-1] != '/':
+            prefix = prefix + '/'
+        if isinstance(fname, h5py.File):
+            for key, val in out.items():
+                if val is None:
+                    continue
+                if isinstance(val, str):
+                    val = miscs.str_to_numpy_ascii()
+                if np.isscalar(val) or not compression:
+                    _ = fname.create_dataset(prefix+key, data=val)
+                else:
+                    _ = fname.create_dataset(prefix+key, data=val, compression="gzip")
+        else:
+            with h5py.File(fname, 'w') as f:
+                for key, val in out.items():
+                    if val is None:
+                        continue
+                    if isinstance(val, str):
+                        val = miscs.str_to_numpy_ascii()
+                    if np.isscalar(val) or not compression:
+                        _ = f.create_dataset(prefix+key, data=val)
+                    else:
+                        _ = f.create_dataset(prefix+key, data=val, compression="gzip")
+
+
+    def copy(self, deep=True, save_material=True, override_dict={}):
+        init_dict = self.get_init_dict(save_material=save_material, **override_dict)
+        if deep:
+            init_dict = copy.deepcopy(init_dict)
+        return self.__class__(**init_dict)

@@ -6,7 +6,7 @@ import numpy as np
 
 
 def numpy_to_str_ascii(ar):
-    t = ar.clip(0,127).astype(np.uint8).ravel()
+    t = ar.clip(0,255).astype(np.uint8).ravel()
     return t.tostring().decode('ascii')
 
 
