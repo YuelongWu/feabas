@@ -15,9 +15,38 @@ def dynamic_cache(func):
            If type of miscs.Cache, save to the cache object;
            By default, set to CacheNull (No caching).
     """
-    def decorator():
-        pass
-    return decorator
+    prop_name = '_' + func.__name__
+    def decorated(self, cache=miscs.CacheNull(), force_update=False, **kwargs):
+        if cache is None: # save to self as an attribute
+            if not force_update and hasattr(self, prop_name):
+                # if already cached, use that
+                prop = getattr(self, prop_name)
+                if prop is not None:
+                    return prop
+            prop = func(self, **kwargs)
+            setattr(self, prop_name, prop)
+            return prop
+        elif type(cache) == miscs.CacheNull:
+            # no cache to use by default
+            if not force_update and hasattr(self, prop_name):
+                # if already cached, use that
+                prop = getattr(self, prop_name)
+                if prop is not None:
+                    return prop
+            prop = func(self, **kwargs)
+            return prop
+        elif isinstance(cache, miscs.CacheNull):
+            key = (self.uid, prop_name)
+            if not force_update and (key in cache):
+                prop = cache[key]
+                if prop is not None:
+                    return prop
+            prop = func(self, **kwargs)
+            cache.update_item(key, prop)
+            return prop
+        else:
+            raise TypeError('Cache type not recognized')
+    return decorated
 
 
 

@@ -93,6 +93,10 @@ class Node:
         self.next = None
 
 
+    def modify_data(self, data):
+        self.data = data
+
+
 
 class DoublyLinkedList:
     """
@@ -254,6 +258,10 @@ class CacheNull:
         """Cache an item"""
         pass
 
+    def update_item(self, key, data):
+        """force update a cached item"""
+        pass
+
 
 
 class CacheFIFO(CacheNull):
@@ -297,6 +305,16 @@ class CacheFIFO(CacheNull):
         self._vals.append(data)
 
 
+    def update_item(self, key, data):
+        if (self._maxlen) == 0:
+            return
+        if key in self._keys:
+            indx = self._keys.index(key)
+            self._vals[indx] = data
+        else:
+            self.__setitem__(key, data)
+
+
 
 class CacheLRU(CacheNull):
     """
@@ -331,7 +349,7 @@ class CacheLRU(CacheNull):
         if node is not None:
             key = node.key
             self._evict_item_by_key(key)
-            
+
 
     def _move_item_to_tail(self, key):
         if key in self._cached_nodes:
@@ -369,6 +387,16 @@ class CacheLRU(CacheNull):
         data_node = Node(key, data)
         self._cache_list.insert_tail(data_node)
         self._cached_nodes[key] = data_node
+
+
+    def update_item(self, key, data):
+        if self._maxlen == 0:
+            return
+        if key in self._cached_nodes:
+            data_node = self._cached_nodes[key]
+            data_node.modify_data(data)
+        else:
+            self.__setitem__(key, data)
 
 
 
@@ -478,6 +506,15 @@ class CacheLFU(CacheNull):
         cache_list.insert_tail(data_node)
         self._cached_nodes[key] = data_node
 
+
+    def update_item(self, key, data):
+        if self._maxlen == 0:
+            return
+        if key in self._cached_nodes:
+            data_node = self._cached_nodes[key]
+            data_node.modify_data(data)
+        else:
+            self.__setitem__(key, data)
 
 
 class CacheMFU(CacheLFU):
