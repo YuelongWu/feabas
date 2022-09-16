@@ -9,7 +9,7 @@ from feabas import miscs, spatial, material
 
 
 def dynamic_cache(func):
-    """ 
+    """
     The decorator that determines the caching behaviour of the Mesh properties.
     cache: If None, save to self as an attribute;
            If type of miscs.Cache, save to the cache object;
@@ -58,7 +58,7 @@ class Mesh:
         triangles (NT x 3 ndarray): each row is 3 vertex indices belong to a
             triangle.
     Kwargs:
-        material_ids (NT ndarray of int8): material for each triangle. If None,
+        material_ids (NT ndarray of int16): material for each triangle. If None,
             set to the id of the default material defined in feabas.material.
         material_table (feabas.material.MaterialTable): table of
             material properties.
@@ -116,12 +116,12 @@ class Mesh:
         """
         initialize from PSLG (feabas.spatial.Geometry.PSLG).
         Args:
-            vertices (Nx2 np.ndarray): vertices of PSLG
+            vertices (Nx2 np.ndarray): vertices of PSLG.
             segments (Mx2 np.ndarray): list of endpoints' vertex id for each
-                segment of PSLG
+                segment of PSLG.
             markers (dict of lists): marker points for each region names.
         Kwargs:
-            mesh_size: the maximum edge length allowed in the mesh
+            mesh_size: the maximum edge length allowed in the mesh.
             min_mesh_angle: minimum angle allowed in mesh. May negatively affect
                 meshing performance, default to 0.
         """
@@ -132,6 +132,7 @@ class Mesh:
         mesh_area = mesh_size ** 2
         regions = []
         holes = []
+        regions_no_steiner = []
         if segments is not None:
             PSLG = {'vertices': vertices, 'segments': segments}
             tri_opt = 'p'
@@ -148,6 +149,8 @@ class Mesh:
                 else:
                     area_constraint = mesh_area * mat.area_constraint
                     region_id = mat.uid
+                    if area_constraint == 0:
+                        regions_no_steiner.append(region_id)
                     for rx, ry in pts:
                         regions.append([rx, ry, region_id, area_constraint])
             if bool(holes):
@@ -164,12 +167,25 @@ class Mesh:
                 tri_opt += area_opt
         if min_angle > 0:
             T = triangle.triangulate(PSLG, opts=tri_opt+'q{}'.format(min_angle))
+            angle_limited = True
         else:
             T = triangle.triangulate(PSLG, opts=tri_opt)
+            angle_limited = False
         vertices = T['vertices']
         triangles = T['triangles']
         if 'triangle_attributes' in T:
-            material_ids = T['triangle_attributes'].squeeze().astype(np.int8)
+            material_ids = T['triangle_attributes'].squeeze().astype(np.int16)
+            if angle_limited and bool(regions_no_steiner):
+                t_indx = ~np.isin(material_ids, regions_no_steiner)
+                tri_keep = np.unique(T['triangles'][t_indx])
+                if T['vertices'].shape[0] != tri_keep.shape[0]:
+                    v_keep = T['vertices'][tri_keep]
+                    indx = np.zeros_like(T['segments'], shape=(T['vertices'].shape[0],))
+                    indx[tri_keep] = np.arange(tri_keep.size)
+                    seg_keep = indx[T['segments']]
+                    PSLG.update({'vertices': v_keep, 'segments': seg_keep})
+                    T = triangle.triangulate(PSLG, opts=tri_opt)
+                    material_ids = T['triangle_attributes'].squeeze().astype(np.int16)
         else:
             material_ids = None
         return cls(vertices, triangles, material_ids=material_ids, **kwargs)
@@ -359,3 +375,12 @@ class Mesh:
         if deep:
             init_dict = copy.deepcopy(init_dict)
         return self.__class__(**init_dict)
+
+
+    @staticmethod
+    def triangle2edge(triangles, to_sort=True):
+        """Convert triangle indices to edge indices."""
+        edges = np.concatenate((triangles[:,[0,1]], triangles[:,[1,2]], triangles[:,[2,0]]), axis=0)
+        if to_sort:
+            edges = np.unique(np.sort(edges, axis=-1), axis=0)
+        return edges

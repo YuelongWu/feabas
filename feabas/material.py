@@ -49,12 +49,12 @@ class Material:
         self._stiffness_func_params = kwargs.get('stiffness_func_params', {})
         self._poisson_ratio = kwargs.get('poisson_ratio', 0.0)
         self.mask_label = kwargs.get('mask_label', None)
-        uid = kwargs.get('id', None)
+        uid = kwargs.get('uid', None)
         if uid is None:
             self.uid = Material.uid
             Material.uid += 1
         else:
-            self._uid = uid
+            self.uid = uid
         if self._stiffness_func_factory is None:
             self._stiffness_func = None
         elif isinstance(self._stiffness_func_factory, str):
@@ -251,7 +251,7 @@ class Material:
 
 
 MATERIAL_HOLE = Material(enable_mesh=False,
-                         id=0,
+                         uid=0,
                          mask_label=255)
 
 MATERIAL_DEFAULT = Material(enable_mesh=True,
@@ -259,7 +259,7 @@ MATERIAL_DEFAULT = Material(enable_mesh=True,
                             type=MATERIAL_MODEL_ENG,
                             stiffness_multiplier=1.0,
                             poisson_ratio=0.0,
-                            id=-1,
+                            uid=-1,
                             mask_label=0)
 
 

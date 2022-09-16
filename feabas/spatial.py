@@ -319,6 +319,8 @@ class Geometry:
         dilate = dilate * scale
         if oor_label is not None:
             name2label.update({'out_of_roi_label': oor_label})
+        if 'default' in name2label:
+            name2label.pop('default')
         regions, roi = images_to_polygons(image_loader, name2label, scale=scale)
         if roi_erosion > 0:
             roi = roi.buffer(-roi_erosion, join_style=JOIN_STYLE)
@@ -462,12 +464,13 @@ class Geometry:
             if poly_updated is None:
                 self._regions.pop(lbl)
             else:
-                self._regions[lbl] = poly_updated
+                self._regions[lbl] = poly_updated.buffer(0)
                 covered_list.append(poly_updated)
-                mask = mask.difference(poly_updated)
+                if lbl != 'default':
+                    mask = mask.difference(poly_updated)
         filtered_roi = polygon_area_filter(mask, area_thresh=area_thresh)
         if filtered_roi is not None:
-            self._roi = filtered_roi
+            self._roi = filtered_roi.buffer(0)
         covered = unary_union(covered_list)
         covered_boundary = covered.boundary
         if hasattr(covered_boundary, 'geoms'):
@@ -480,9 +483,9 @@ class Geometry:
             holes = unary_union(filled_cover).difference(covered)
             if holes.area > 0:
                 if 'hole' in self._regions:
-                    self._regions['hole'] = self._regions['hole'].union(holes)
+                    self._regions['hole'] = (self._regions['hole'].union(holes)).buffer(0)
                 else:
-                    self._regions['hole'] = holes
+                    self._regions['hole'] = holes.buffer(0)
         self._committed = True
 
 
@@ -564,6 +567,7 @@ class Geometry:
         area_thresh = kwargs.get('area_thresh', 0)
         snap_decimal = kwargs.get('snap_decimal', None)
         scale = kwargs.get('scale', 1.0)
+        area_thresh = area_thresh * (scale**2)
         if (simplify_region_tol > 0) or (simplify_roi_tol > 0):
             self.simplify(region_tol=simplify_region_tol, roi_tol=simplify_roi_tol, inplace=True, scale=scale)
         self.commit(area_thresh=area_thresh)
