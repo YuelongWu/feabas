@@ -171,13 +171,11 @@ class Mesh:
         else:
             T = triangle.triangulate(PSLG, opts=tri_opt)
             angle_limited = False
-        vertices = T['vertices']
-        triangles = T['triangles']
         if 'triangle_attributes' in T:
             material_ids = T['triangle_attributes'].squeeze().astype(np.int16)
             if angle_limited and bool(regions_no_steiner):
                 t_indx = ~np.isin(material_ids, regions_no_steiner)
-                tri_keep = np.unique(T['triangles'][t_indx])
+                tri_keep = np.unique(np.concatenate((T['triangles'][t_indx], np.nonzero(T['vertex_markers'])[0]), axis=None))
                 if T['vertices'].shape[0] != tri_keep.shape[0]:
                     v_keep = T['vertices'][tri_keep]
                     indx = np.zeros_like(T['segments'], shape=(T['vertices'].shape[0],))
@@ -188,6 +186,8 @@ class Mesh:
                     material_ids = T['triangle_attributes'].squeeze().astype(np.int16)
         else:
             material_ids = None
+        vertices = T['vertices']
+        triangles = T['triangles']
         return cls(vertices, triangles, material_ids=material_ids, **kwargs)
 
 
