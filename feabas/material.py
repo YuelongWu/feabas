@@ -252,7 +252,8 @@ class Material:
 
 MATERIAL_HOLE = Material(enable_mesh=False,
                          uid=0,
-                         mask_label=255)
+                         mask_label=None,
+                         stiffness_multiplier=0.0)
 
 MATERIAL_DEFAULT = Material(enable_mesh=True,
                             area_constraint=1,

@@ -279,6 +279,7 @@ class Geometry:
     """
     def __init__(self, roi=None, regions={}, **kwargs):
         self._roi = roi
+        self._default_region = None
         self._regions = regions
         self._resolution = kwargs.get('resolution', 4.0)
         self._zorder = kwargs.get('zorder', list(self._regions.keys()))
@@ -317,7 +318,7 @@ class Geometry:
             scale = image_loader.resolution / resolution
         roi_erosion = roi_erosion * scale
         dilate = dilate * scale
-        if oor_label is not None:
+        if (oor_label is not None) and (oor_label not in name2label.values()):
             name2label.update({'out_of_roi_label': oor_label})
         if 'default' in name2label:
             name2label.pop('default')
@@ -470,7 +471,7 @@ class Geometry:
                     mask = mask.difference(poly_updated)
         filtered_roi = polygon_area_filter(mask, area_thresh=area_thresh)
         if filtered_roi is not None:
-            self._roi = filtered_roi.buffer(0)
+            self._default_region = filtered_roi.buffer(0)
         covered = unary_union(covered_list)
         covered_boundary = covered.boundary
         if hasattr(covered_boundary, 'geoms'):
@@ -492,7 +493,9 @@ class Geometry:
     def collect_boundaries(self, **kwargs):
         if not self._committed:
             self.commit(**kwargs)
-        boundaries = [self._roi.boundary]
+        boundaries = []
+        if self._default_region is not None:
+            boundaries.append(self._default_region.boundary)
         for pp in self._regions.values():
             boundaries.append(pp.boundary)
         return linemerge(unary_union(boundaries))
@@ -503,7 +506,7 @@ class Geometry:
         if not self._committed:
             self.commit(**kwargs)
         points = {}
-        points['default'] = get_polygon_representative_point(self._roi)
+        points['default'] = get_polygon_representative_point(self._default_region)
         for lbl, pp in self._regions.items():
             points[lbl] = get_polygon_representative_point(pp)
         return points
@@ -570,12 +573,14 @@ class Geometry:
             roi = self._roi.simplify(roi_tol*scale, preserve_topology=True)
             if inplace:
                 self._roi = roi
+        else:
+            roi = self._roi
         boundaries = OrderedDict()
         covered = None
         for lbl in reversed(self._zorder):
             if lbl not in self._regions:
                 continue
-            poly = self._regions[lbl]
+            poly = (self._regions[lbl]).intersection(roi)
             if covered is None:
                 covered = poly
             else:

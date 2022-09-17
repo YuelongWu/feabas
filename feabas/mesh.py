@@ -147,7 +147,7 @@ class Mesh:
                 if not mat.enable_mesh:
                     holes.extend(pts)
                 else:
-                    area_constraint = mesh_area * mat.area_constraint
+                    area_constraint = float(mesh_area * mat.area_constraint)
                     region_id = mat.uid
                     if area_constraint == 0:
                         regions_no_steiner.append(region_id)
@@ -157,7 +157,7 @@ class Mesh:
                 PSLG['holes'] = holes
             if bool(regions):
                 PSLG['regions'] = regions
-            tri_opt += 'A'
+            tri_opt += 'Aa'
         else:
             if mesh_area > 0:
                 num_decimal = max(0, 2-round(np.log10(mesh_area)))
