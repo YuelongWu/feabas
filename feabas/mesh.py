@@ -108,7 +108,8 @@ class Mesh:
 
         self._resolution = kwargs.get('resolution', 4)
         self._name = kwargs.get('name', '')
-        self._uid = kwargs.get('uid', None)
+        self.uid = kwargs.get('uid', None)
+        self._internal_cache = kwargs.get('internal_cache', None)
 
 
     @classmethod
@@ -311,8 +312,8 @@ class Mesh:
         init_dict['resolution'] = self._resolution
         if bool(self._name):
             init_dict['name'] = self._name
-        if self._uid is not None:
-            init_dict['uid'] = self._uid
+        if self.uid is not None:
+            init_dict['uid'] = self.uid
         init_dict.update(kwargs)
         return init_dict
 
@@ -377,10 +378,17 @@ class Mesh:
         return self.__class__(**init_dict)
 
 
+    @dynamic_cache
+    def edges(self):
+        """edge indices of the triangulation mesh"""
+        edges = Mesh.triangle2edge(self.triangles, directional=False)
+        return edges
+
+
     @staticmethod
-    def triangle2edge(triangles, to_sort=True):
+    def triangle2edge(triangles, directional=False):
         """Convert triangle indices to edge indices."""
         edges = np.concatenate((triangles[:,[0,1]], triangles[:,[1,2]], triangles[:,[2,0]]), axis=0)
-        if to_sort:
+        if not directional:
             edges = np.unique(np.sort(edges, axis=-1), axis=0)
         return edges

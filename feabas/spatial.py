@@ -1,7 +1,5 @@
 from ast import Or
 from collections import defaultdict, OrderedDict
-import enum
-from re import L
 
 import cv2
 import h5py
@@ -315,7 +313,10 @@ class Geometry:
         if region_names is not None:
             name2label.update(region_names)
         if isinstance(image_loader, dal.MosaicLoader):
-            scale = image_loader.resolution / resolution
+            if 'scale' in kwargs and 'resolution' not in kwargs:
+                resolution = image_loader.resolution / scale
+            else:
+                scale = image_loader.resolution / resolution
         roi_erosion = roi_erosion * scale
         dilate = dilate * scale
         if (oor_label is not None) and (oor_label not in name2label.values()):
