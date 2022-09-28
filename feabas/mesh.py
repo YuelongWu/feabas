@@ -11,30 +11,31 @@ from feabas import miscs, spatial, material
 def dynamic_cache(func):
     """
     The decorator that determines the caching behaviour of the Mesh properties.
-    cache: If None, save to self as an attribute;
-           If type of miscs.Cache, save to the cache object;
-           By default, set to CacheNull (No caching).
+    cache: If False, no caching; 
+           If True, save to self as an attribute (default);
+           If type of miscs.Cache, save to the cache object with (uid, prop_name) as key;
+           If type defaultdict,  save to cache object with key uid under dict[prop_name].
     """
     prop_name = '_' + func.__name__
-    def decorated(self, cache=miscs.CacheNull(), force_update=False, **kwargs):
-        if cache is None: # save to self as an attribute
-            if not force_update and hasattr(self, prop_name):
-                # if already cached, use that
-                prop = getattr(self, prop_name)
-                if prop is not None:
-                    return prop
-            prop = func(self, **kwargs)
-            setattr(self, prop_name, prop)
-            return prop
-        elif type(cache) == miscs.CacheNull:
-            # no cache to use by default
-            if not force_update and hasattr(self, prop_name):
-                # if already cached, use that
-                prop = getattr(self, prop_name)
-                if prop is not None:
-                    return prop
-            prop = func(self, **kwargs)
-            return prop
+    def decorated(self, cache=True, force_update=False, **kwargs):
+        if isinstance(cache, bool) or cache is None:
+            if cache:  # save to self as an attribute
+                if not force_update and hasattr(self, prop_name):
+                    # if already cached, use that
+                    prop = getattr(self, prop_name)
+                    if prop is not None:
+                        return prop
+                prop = func(self, **kwargs)
+                setattr(self, prop_name, prop)
+                return prop
+            else: # no caching
+                if not force_update and hasattr(self, prop_name):
+                    # if already cached, use that
+                    prop = getattr(self, prop_name)
+                    if prop is not None:
+                        return prop
+                prop = func(self, **kwargs)
+                return prop            
         elif isinstance(cache, miscs.CacheNull):
             key = (self.uid, prop_name)
             if not force_update and (key in cache):
@@ -43,6 +44,16 @@ def dynamic_cache(func):
                     return prop
             prop = func(self, **kwargs)
             cache.update_item(key, prop)
+            return prop
+        elif isinstance(cache, dict):
+            cache_obj = cache[prop_name]
+            key = self.uid
+            if not force_update and (key in cache_obj):
+                prop = cache_obj[key]
+                if prop is not None:
+                    return prop
+            prop = func(self, **kwargs)
+            cache_obj.update_item(key, prop)
             return prop
         else:
             raise TypeError('Cache type not recognized')
