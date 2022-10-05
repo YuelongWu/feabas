@@ -539,6 +539,8 @@ class Mesh:
     @property
     def staging_vertices_w_offset(self):
         return self.staging_vertices + self._moving_offset
+
+
   ## -------------------------------- caching ------------------------------ ##
     def caching_keys(self, use_hash=False, force_update=False, gear=INITIAL):
         """
@@ -617,10 +619,29 @@ class Mesh:
 
   ## ------------------------------ properties ----------------------------- ##
     @dynamic_cache('INITIAL')
-    def edges(self):
-        """edge indices of the triangulation mesh"""
-        edges = Mesh.triangle2edge(self.triangles, directional=False)
+    def edges(self, tri_mask=None):
+        """
+        edge indices of the triangulation mesh.
+        """
+        if tri_mask is None:
+            T = self.triangles
+        else:
+            T = self.triangles[tri_mask]
+        edges = Mesh.triangle2edge(T, directional=False)
         return edges
+
+
+    @dynamic_cache('INITIAL')
+    def segments(self, tri_mask=None):
+        """edge indices for edges on the borders"""
+        if tri_mask is None:
+            T = self.triangles
+        else:
+            T = self.triangles[tri_mask]
+        edges = Mesh.triangle2edge(T, directional=True)
+        _, indx, cnt = np.unique(np.sort(edges, axis=-1), axis=0, return_index=True, return_counts=True)
+        indx = indx[cnt == 1]
+        return edges[indx]
 
 
   ## ------------------------- utility functions --------------------------- ##

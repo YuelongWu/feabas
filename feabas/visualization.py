@@ -4,8 +4,10 @@ Visualization tools for debugging.
 from matplotlib.patches import PathPatch
 from matplotlib.path import Path
 import matplotlib.pyplot as plt
+import matplotlib.tri
 import numpy as np
 import shapely.geometry as shpgeo
+
 
 def rgb2hex(r,g,b):
     r = min(max(r, 0), 255)
@@ -40,6 +42,30 @@ def dynamic_typing_decorator(func):
         else:
             func(geo_obj, **kwargs)
     return wrapped
+
+
+def visualize_mesh(M, show_mat=False, gear='m', show=False):
+    M = M[gear]
+    if show_mat:
+        mat_ids = M._material_ids
+        for mid in np.unique(mat_ids):
+            indx = mat_ids == mid
+            R, G = np.random.randint(256, size=2)
+            B = 255 * 2 - R - G
+            color = rgb2hex(R, G, B)
+            T = matplotlib.tri.Triangulation(M.vertices_w_offset[:,0],
+                M.vertices_w_offset[:,1], M.triangles[indx])
+            plt.triplot(T, color=color, alpha=0.5, linewidth=0.5)
+    else:
+        T = matplotlib.tri.Triangulation(M.vertices_w_offset[:,0],
+                M.vertices_w_offset[:,1], M.triangles)
+        plt.triplot(T, color='b', alpha=0.5, linewidth=0.5)
+    segs = M.vertices[M.segments()]
+    xx = segs[:,:,0]
+    yy = segs[:,:,1]
+    plt.plot(xx.T, yy.T, 'k', alpha=1, linewidth=1)
+    if show:
+        plt.show()
 
 
 @dynamic_typing_decorator
