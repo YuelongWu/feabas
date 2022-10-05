@@ -1,69 +1,103 @@
+from collections import defaultdict
 import copy
+import gc
 import h5py
-import json
 import numpy as np
 from scipy import sparse
 import triangle
 
 from feabas import miscs, spatial, material
 
-
-def dynamic_cache(func):
+def dynamic_cache(gear):
     """
     The decorator that determines the caching behaviour of the Mesh properties.
-    cache: If False, no caching; 
-           If True, save to self as an attribute (default);
-           If type of miscs.Cache, save to the cache object with (uid, prop_name) as key;
-           If type defaultdict,  save to cache object with key uid under dict[prop_name].
+    gear: used to generate caching key. Possible values include:
+        'INITIAL': the property is only related to the initial vertice positions
+            and their connection;
+        'FIXED': the property is also related to the position of fixed vertice
+            positions;
+        'MOVING': the property is also related to the position of moving vertice
+            positions;
+        'TBD': the vertices on which the property is caculated is determined on
+            the fly. If 'gear' is provided in the keyward argument, use that;
+            otherwise, use self._current_gear.
+    cache: If False, no caching;
+        If True, save to self as an attribute (default);
+        If type of miscs.Cache, save to the cache object with key;
+        If type defaultdict,  save to cache object with key under dict[prop_name].
     """
-    prop_name = '_' + func.__name__
-    def decorated(self, cache=True, force_update=False, **kwargs):
-        if isinstance(cache, bool) or cache is None:
-            if cache:  # save to self as an attribute
-                if not force_update and hasattr(self, prop_name):
-                    # if already cached, use that
-                    prop = getattr(self, prop_name)
-                    if prop is not None:
-                        return prop
-                prop = func(self, **kwargs)
-                setattr(self, prop_name, prop)
-                return prop
-            else: # no caching
-                if not force_update and hasattr(self, prop_name):
-                    # if already cached, use that
-                    prop = getattr(self, prop_name)
-                    if prop is not None:
-                        return prop
-                prop = func(self, **kwargs)
-                return prop            
-        elif isinstance(cache, miscs.CacheNull):
-            key = (self.uid, prop_name)
-            if not force_update and (key in cache):
-                prop = cache[key]
-                if prop is not None:
+    def dynamic_cache_wrap(func):
+        prop_name0 = func.__name__
+        def decorated(self, cache=None, force_update=False, **kwargs):
+            if cache is None:
+                # if cache not provided, use default cache in self.
+                cache = self._default_cache
+            if gear == 'TBD':
+                if 'gear' in kwargs:
+                    cgear = kwargs['gear']
+                else:
+                    cgear = self._current_gear
+            else:
+                cgear = gear
+            if isinstance(cache, bool):
+                if cgear == Mesh.INITIAL:
+                    sgear = 'INITIAL'
+                elif cgear == Mesh.FIXED:
+                    sgear = 'FIXED'
+                elif cgear == Mesh.MOVING:
+                    sgear = 'MOVING'
+                elif cgear == Mesh.STAGING:
+                    sgear = 'STAGING'
+                else:
+                    sgear = cgear
+                prop_name = '_cached_' + prop_name0 + '_' + sgear
+                if cache:  # save to self as an attribute
+                    if not force_update and hasattr(self, prop_name):
+                        # if already cached, use that
+                        prop = getattr(self, prop_name)
+                        if prop is not None:
+                            return prop
+                    prop = func(self, **kwargs)
+                    setattr(self, prop_name, prop)
                     return prop
-            prop = func(self, **kwargs)
-            cache.update_item(key, prop)
-            return prop
-        elif isinstance(cache, dict):
-            cache_obj = cache[prop_name]
-            key = self.uid
-            if not force_update and (key in cache_obj):
-                prop = cache_obj[key]
-                if prop is not None:
+                else: # no caching
+                    if not force_update and hasattr(self, prop_name):
+                        # if already cached, use that
+                        prop = getattr(self, prop_name)
+                        if prop is not None:
+                            return prop
+                    prop = func(self, **kwargs)
                     return prop
-            prop = func(self, **kwargs)
-            cache_obj.update_item(key, prop)
-            return prop
-        else:
-            raise TypeError('Cache type not recognized')
-    return decorated
-
+            else:
+                cache_key = self.caching_keys(gear=cgear)
+                if isinstance(cache, miscs.CacheNull):
+                    key = (*cache_key, prop_name0)
+                    if not force_update and (key in cache):
+                        prop = cache[key]
+                        if prop is not None:
+                            return prop
+                    prop = func(self, **kwargs)
+                    cache.update_item(key, prop)
+                    return prop
+                elif isinstance(cache, dict):
+                    cache_obj = cache[prop_name0]
+                    key = cache_key
+                    if not force_update and (key in cache_obj):
+                        prop = cache_obj[key]
+                        if prop is not None:
+                            return prop
+                    prop = func(self, **kwargs)
+                    cache_obj.update_item(key, prop)
+                    return prop
+                else:
+                    raise TypeError('Cache type not recognized')
+        return decorated
+    return dynamic_cache_wrap
 
 
 class Mesh:
     """
-    A class to represent a FEM Mesh
+    A class to represent a FEM Mesh.
     Args:
         vertices (NVx2 ndarray): x-y cooridnates of the vertices.
         triangles (NT x 3 ndarray): each row is 3 vertex indices belong to a
@@ -76,8 +110,7 @@ class Mesh:
         resolution (float): resolution of the mesh, for automatical scaling when
             working with images with specified resolution. default to 4nm.
         name(str): name of the mesh, used for printing/saving.
-        uid(int): unique id number, used as the key for caching. If set to None,
-            no caching will be performed.
+        uid(int): unique id number, used as the key for caching.
     """
     INITIAL = -1    # initial fixed vertices
     FIXED = 0       # fixed vertices
@@ -88,7 +121,9 @@ class Mesh:
         self._vertices = {self.INITIAL: vertices, self.FIXED: vertices}
         self._vertices[self.MOVING] = kwargs.get('moving_vertices', None)
         self._vertices[self.STAGING] = None
-
+        self._fixed_offset = kwargs.get('fixed_offset', np.zeros((1,2), dtype=type(vertices)))
+        self._moving_offset = kwargs.get('moving_offset', np.zeros((1,2), dtype=type(vertices)))
+        self._current_gear = self.FIXED
         tri_num = triangles.shape[0]
         mtb = kwargs.get('material_table', None)
         if isinstance(mtb, str):
@@ -114,13 +149,18 @@ class Mesh:
             default_mat = self._material_table['default']
             material_ids = np.full(tri_num, default_mat.uid, dtype=np.int8)
         indx = np.argsort(material_ids, axis=None)
-        self.triangles = triangles[indx]
-        self._material_ids = material_ids[indx]
-
+        if np.any(indx!=np.arange(indx.size)):
+            triangles = triangles[indx]
+            material_ids = material_ids[indx]
+        self.triangles = triangles
+        self._material_ids = material_ids
         self._resolution = kwargs.get('resolution', 4)
         self._name = kwargs.get('name', '')
         self.uid = kwargs.get('uid', None)
         self._internal_cache = kwargs.get('internal_cache', None)
+        self._default_cache = kwargs.get('cache', True)
+        self._caching_keys = defaultdict(lambda: None)
+        self._caching_keys[self.INITIAL] = self.uid
 
 
     @classmethod
@@ -317,9 +357,13 @@ class Mesh:
         init_dict['triangles'] = self.triangles
         if (self._vertices[self.MOVING]) is not None and (vertex_flag != self.MOVING):
             init_dict['moving_vertices'] = self._vertices[self.MOVING]
+        if np.any(self._fixed_offset):
+            init_dict['fixed_offset'] = self._fixed_offset
+        if np.any(self._moving_offset):
+            init_dict['moving_offset'] = self._moving_offset
         if save_material:
             init_dict['material_ids'] = self._material_ids
-            init_dict['material_table'] = self.material_table.save_to_json()
+            init_dict['material_table'] = self._material_table.save_to_json()
         init_dict['resolution'] = self._resolution
         if bool(self._name):
             init_dict['name'] = self._name
@@ -389,13 +433,197 @@ class Mesh:
         return self.__class__(**init_dict)
 
 
-    @dynamic_cache
+  ## ------------------------------ gear switch ---------------------------- ##
+    def switch_gear(self, gear):
+        if gear in self._vertices:
+            self._current_gear == gear
+        else:
+            raise ValueError
+
+    def switch_to_ini(self):
+        self._current_gear = self.INITIAL
+    
+    def switch_to_fix(self):
+        self._current_gear = self.FIXED
+
+    def switch_to_mov(self):
+        self._current_gear = self.MOVING
+
+    def switch_to_stg(self):
+        self._current_gear = self.STAGING
+
+    def __getitem__(self, gear):
+        if isinstance(gear, str):
+            if gear.lower() in ('m', 'moving'):
+                gear = self.MOVING
+            elif gear.lower() in ('f', 'fixed'):
+                gear = self.FIXED
+            elif gear.lower() in ('i', 'initial'):
+                gear = self.INITIAL
+            elif gear.lower() in ('s', 'staging'):
+                gear = self.STAGING
+            else:
+                raise KeyError
+        self.switch_gear(gear)
+        return self
+
+
+    @property
+    def vertices(self):
+        if self._current_gear == self.INITIAL:
+            return self.initial_vertices
+        elif self._current_gear == self.FIXED:
+            return self.fixed_vertices
+        elif self._current_gear == self.MOVING:
+            return self.moving_vertices
+        elif self._current_gear == self.STAGING:
+            return self.staging_vertices
+        else:
+            raise ValueError
+
+    @property
+    def vertices_w_offset(self):
+        if self._current_gear == self.INITIAL:
+            return self.initial_vertices
+        elif self._current_gear == self.FIXED:
+            return self.fixed_vertices_w_offset
+        elif self._current_gear == self.MOVING:
+            return self.moving_vertices_w_offset
+        elif self._current_gear == self.STAGING:
+            return self.staging_vertices_w_offset
+        else:
+            raise ValueError
+
+    @property
+    def initial_vertices(self):
+        return self._vertices[self.INITIAL]
+
+    @property
+    def fixed_vertices(self):
+        return self._vertices[self.FIXED]
+
+    @fixed_vertices.setter
+    def fixed_vertices(self, v):
+        self._vertices[self.FIXED] = v
+
+    @property
+    def fixed_vertices_w_offset(self):
+        return self.fixed_vertices + self._fixed_offset
+
+    @property
+    def moving_vertices(self):
+        if self._vertices[self.MOVING] is None:
+            return self.initial_vertices
+        else:
+            return self._vertices[self.MOVING]
+
+    @moving_vertices.setter
+    def moving_vertices(self, v):
+        self._vertices[self.MOVING] = v
+
+    @property
+    def moving_vertices_w_offset(self):
+        return self.moving_vertices + self._moving_offset
+
+    @property
+    def staging_vertices(self):
+        if self._vertices[self.STAGING] is None:
+            return self.initial_vertices
+        else:
+            return self._vertices[self.STAGING]
+
+    @staging_vertices.setter
+    def staging_vertices(self, v):
+        self._vertices[self.STAGING] = v
+
+    @property
+    def staging_vertices_w_offset(self):
+        return self.staging_vertices + self._moving_offset
+  ## -------------------------------- caching ------------------------------ ##
+    def caching_keys(self, use_hash=False, force_update=False, gear=INITIAL):
+        """
+        hashing of the Mesh object served as the keys for caching.
+            key0: Meshes with same initial vertices & triangles shares key0. If
+                uid is not None, will use uid in the place of key0
+            key1: Meshes with same fixed vertices (except for a global offset)
+                shares key1.
+            key2: Meshes with same moving vertices (except for a global offset)
+                shares key2.
+        If use_hash is True, hash the vertices to generate key (slow), otherwise
+        use their id.
+        If force_update is True, will re-caculate all keys.
+        gear: specify which vertices the key is associated to (fixed, moving...)
+        !!! Note that offsets are not considered here because elastic energies
+            are not related to translation. Special care needs to be taken if
+            the absolute position of the Mesh is relevant.
+        """
+        if use_hash:
+            key_func = lambda s: hash(tuple(np.array(s, copy=False).ravel()))
+        else:
+            key_func = id
+        if force_update or self._caching_keys[self.INITIAL] is None:
+            default_mat = self._material_table['default']
+            if np.all(self._material_ids == default_mat.uid):
+                mat_key = 0 # trivial material pattern
+            else:
+                mat_key = key_func(self._material_ids)
+            self._caching_keys[self.INITIAL] = (key_func(self._vertices[self.INITIAL]),
+                                                key_func(self.triangles), mat_key)
+        if key_func == id:
+            # very cheap anyway, can update every call
+            force_update = True
+        if isinstance(gear, str):
+            if gear.upper() == 'INITIAL':
+                gear = self.INITIAL
+            elif gear.upper() == 'FIXED':
+                gear = self.FIXED
+            elif gear.upper() == 'MOVING':
+                gear = self.MOVING
+            elif gear.upper() == 'STAGING':
+                gear = self.STAGING
+            else:
+                raise ValueError
+        if gear == self.INITIAL:
+            return (self._caching_keys[self.INITIAL], )
+        else:
+            if force_update or self._caching_keys[gear] is None:
+                vertices = self._vertices[gear]
+                if (vertices is None) or (vertices is self.initial_vertices) or \
+                   np.all(vertices==self.initial_vertices):
+                    self._caching_keys[gear] = 0
+                else:
+                    self._caching_keys[gear] = key_func(vertices)
+            return (self._caching_keys[self.INITIAL], self._caching_keys[gear])
+
+
+    def clear_cached_attr(self, gear=None, gc_now=False):
+        prefix = '_cached_'
+        if gear == self.INITIAL:
+            suffix = '_INITIAL'
+        elif gear == self.FIXED:
+            suffix = '_FIXED'
+        elif gear == self.MOVING:
+            suffix = '_MOVING'
+        elif gear == self.STAGING:
+            suffix = '_STAGING'
+        else:
+            suffix = ''
+        for attname in self.__dict__:
+            if attname.startswith(prefix) and attname.endswith(suffix):
+                setattr(self, attname, None)
+        if gc_now:
+            gc.collect()
+
+
+  ## ------------------------------ properties ----------------------------- ##
+    @dynamic_cache('INITIAL')
     def edges(self):
         """edge indices of the triangulation mesh"""
         edges = Mesh.triangle2edge(self.triangles, directional=False)
         return edges
 
 
+  ## ------------------------- utility functions --------------------------- ##
     @staticmethod
     def triangle2edge(triangles, directional=False):
         """Convert triangle indices to edge indices."""

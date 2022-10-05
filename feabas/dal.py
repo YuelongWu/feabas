@@ -108,6 +108,7 @@ class AbstractImageLoader(ABC):
         self._init_tile_divider(**kwargs)
         self._cache_type = kwargs.get('cache_type', 'mfu')
         self._cache = generate_cache(self._cache_type, maxlen=self._cache_size)
+        self._preprocess = kwargs.get('preprocess', None)
         self.resolution = kwargs.get('resolution', 4.0)
 
 
@@ -322,6 +323,8 @@ class AbstractImageLoader(ABC):
             img = img.astype(dtype, copy=False)
         if apply_CLAHE:
             img = self._CLAHE.apply(img)
+        if self._preprocess is not None:
+            img = self._preprocess(img)
         if inverse:
             if np.dtype(dtype) == np.dtype('uint8'):
                 img = 255 - img
