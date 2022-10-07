@@ -5,7 +5,7 @@ import cv2
 import h5py
 import numpy as np
 import shapely.geometry as shpgeo
-from shapely.ops import unary_union, linemerge, polygonize
+from shapely.ops import unary_union, linemerge, polygonize, snap, split
 from shapely import wkb
 
 from feabas import dal, miscs, material
@@ -541,11 +541,12 @@ class Geometry:
         return G
 
 
-    def simplify_by_regions(self, region_tols, roi_tol=1.5, inplace=True, scale=1.0):
+    def simplify_by_regions(self, region_tols, roi_tol=1.5, inplace=True, **kwargs):
         """
         simplify regions and roi by directly simplify individual regions. might
         produce small fragments between two non-default regions but faster.
         """
+        scale = kwargs.get('scale', 1.0)
         if roi_tol > 0:
             roi = self._roi.simplify(roi_tol*scale, preserve_topology=True)
             if inplace:
@@ -565,17 +566,24 @@ class Geometry:
                 resolution=self._resolution, zorder=self._zorder)
 
 
-    def simplify_by_segments(self, region_tols, roi_tol=1.5, inplace=True, scale=1.0):
+    def simplify_by_segments(self, region_tols, roi_tol=1.5, inplace=True, **kwargs):
         """
         simplify regions and roi by simplify segments first then polygonize them
         into regions.
         """
+        scale = kwargs.get('scale', 1.0)
         if roi_tol > 0:
             roi = self._roi.simplify(roi_tol*scale, preserve_topology=True)
             if inplace:
                 self._roi = roi
         else:
             roi = self._roi
+        # shapely not working as expected, need to manually break at intersections
+        bu0 = [roi.boundary]
+        for lbl in reversed(self._zorder):
+            bb = self._regions[lbl].boundary
+            bu0.append(bb)
+        bu0 = unary_union(bu0)
         boundaries = OrderedDict()
         covered = None
         for lbl in reversed(self._zorder):
@@ -589,7 +597,9 @@ class Geometry:
                 covered = covered.union(poly)
             poly = poly.buffer(0)
             if poly.area > 0:
-                boundaries[lbl] = poly.boundary
+                bb = poly.boundary
+                bb = split(bb, bu0.difference(bb))
+                boundaries[lbl] = bb
         b_merged = linemerge(unary_union(boundaries.values()))
         if not hasattr(b_merged, 'geoms'):
             bag_of_segs = [b_merged]
@@ -655,7 +665,7 @@ class Geometry:
                 simplify_by_regions.
             area_thresh: area minimum threshold passed to self.commit.
             snap_decimal: decimal number to round the coordinates so that close
-                points would snap together
+                points would snap together.
         Return:
             vertices(Nx2 np.ndarray): vertices of PSLG
             segments(Mx2 np.ndarray): list of endpoints' vertex id for each

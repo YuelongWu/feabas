@@ -492,7 +492,7 @@ class Mesh:
   ## ------------------------------ gear switch ---------------------------- ##
     def switch_gear(self, gear):
         if gear in self._vertices:
-            self._current_gear == gear
+            self._current_gear = gear
         else:
             raise ValueError
 
@@ -749,11 +749,12 @@ class Mesh:
         """ sparse adjacency matrix of triangles."""
         if tri_mask is None:
             edges = np.sort(Mesh.triangle2edge(self.triangles, directional=True), axis=-1)
-            tids0 = np.arange(edges.shape[0]).reshape(-1,1) % self.num_triangles
-            edges_tid = np.concatenate((edges, tids0), axis=1)
-            edges_tid = np.array(sorted(edges_tid.tolist()), copy=False)
-            tids = edges_tid[:,-1]
-            indx = np.nonzero(np.all(np.diff(edges_tid[:,:2], axis=0)==0,axis=-1))[0]
+            tids0 = np.arange(edges.shape[0]) % self.num_triangles
+            edges_complex = edges[:,0] + edges[:,1] *1j
+            idxt = np.argsort(edges_complex)
+            tids = tids0[idxt]
+            edges_complex = edges_complex[idxt]
+            indx = np.nonzero(np.diff(edges_complex)==0)[0]
             idx0 = tids[indx]
             idx1 = tids[indx+1]
             Ntr = self.num_triangles
