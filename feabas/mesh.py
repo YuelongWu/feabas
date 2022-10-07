@@ -4,6 +4,7 @@ import gc
 import h5py
 import numpy as np
 from scipy import sparse
+import scipy.sparse.csgraph as csgraph
 import triangle
 
 from feabas import miscs, spatial, material
@@ -25,6 +26,8 @@ def dynamic_cache(gear):
         If True, save to self as an attribute (default);
         If type of miscs.Cache, save to the cache object with key;
         If type defaultdict,  save to cache object with key under dict[prop_name].
+    assign_value: if kwargs assign_value is given, instead of computing the property,
+        directly return that value and force cache it if required.
     """
     def dynamic_cache_wrap(func):
         prop_name0 = func.__name__
@@ -32,6 +35,16 @@ def dynamic_cache(gear):
             if cache is None:
                 # if cache not provided, use default cache in self.
                 cache = self._default_cache
+            if (kwargs.get('tri_mask', None) is not None) or \
+               (kwargs.get('vtx_mask', None) is not None):
+                # if contain masked triangles or vertices, don't cache
+                cache = False
+            if 'assign_value' in kwargs:
+                force_update = True
+                assign_mode = True
+                prop0 = kwargs['assign_value']
+            else:
+                assign_mode = False
             if gear == 'TBD':
                 if 'gear' in kwargs:
                     cgear = kwargs['gear']
@@ -57,7 +70,10 @@ def dynamic_cache(gear):
                         prop = getattr(self, prop_name)
                         if prop is not None:
                             return prop
-                    prop = func(self, **kwargs)
+                    if assign_mode:
+                        prop = prop0
+                    else:
+                        prop = func(self, **kwargs)
                     setattr(self, prop_name, prop)
                     return prop
                 else: # no caching
@@ -66,7 +82,10 @@ def dynamic_cache(gear):
                         prop = getattr(self, prop_name)
                         if prop is not None:
                             return prop
-                    prop = func(self, **kwargs)
+                    if assign_mode:
+                        prop = prop0
+                    else:
+                        prop = func(self, **kwargs)
                     return prop
             else:
                 cache_key = self.caching_keys(gear=cgear)
@@ -76,7 +95,10 @@ def dynamic_cache(gear):
                         prop = cache[key]
                         if prop is not None:
                             return prop
-                    prop = func(self, **kwargs)
+                    if assign_mode:
+                        prop = prop0
+                    else:
+                        prop = func(self, **kwargs)
                     cache.update_item(key, prop)
                     return prop
                 elif isinstance(cache, dict):
@@ -86,7 +108,10 @@ def dynamic_cache(gear):
                         prop = cache_obj[key]
                         if prop is not None:
                             return prop
-                    prop = func(self, **kwargs)
+                    if assign_mode:
+                        prop = prop0
+                    else:
+                        prop = func(self, **kwargs)
                     cache_obj.update_item(key, prop)
                     return prop
                 else:
@@ -118,9 +143,10 @@ class Mesh:
     STAGING = 2     # moving vertices before validity checking and committing
   ## ------------------------- initialization & IO ------------------------- ##
     def __init__(self, vertices, triangles, **kwargs):
-        self._vertices = {self.INITIAL: vertices, self.FIXED: vertices}
+        self._vertices = {self.INITIAL: vertices}
+        self._vertices[self.FIXED] = kwargs.get('fixed_vertices', vertices)
         self._vertices[self.MOVING] = kwargs.get('moving_vertices', None)
-        self._vertices[self.STAGING] = None
+        self._vertices[self.STAGING] = kwargs.get('staging_vertices', None)
         self._fixed_offset = kwargs.get('fixed_offset', np.zeros((1,2), dtype=type(vertices)))
         self._moving_offset = kwargs.get('moving_offset', np.zeros((1,2), dtype=type(vertices)))
         self._current_gear = self.FIXED
@@ -348,15 +374,19 @@ class Mesh:
         return cls.from_PSLG(vertices, segments, **kwargs)
 
 
-    def get_init_dict(self, save_material=True, vertex_flag=INITIAL, **kwargs):
+    def get_init_dict(self, save_material=True,  **kwargs):
         """
         dictionary that can be used for initialization of a duplicate.
         """
         init_dict = {}
-        init_dict['vertices'] = self._vertices[vertex_flag]
+        init_dict['vertices'] = self._vertices[self.INITIAL]
+        if self._vertices[self.FIXED] is not self._vertices[self.INITIAL]:
+            init_dict['fixed_vertices'] = self._vertices[self.FIXED]
         init_dict['triangles'] = self.triangles
-        if (self._vertices[self.MOVING]) is not None and (vertex_flag != self.MOVING):
+        if (self._vertices[self.MOVING]) is not None:
             init_dict['moving_vertices'] = self._vertices[self.MOVING]
+        if (self._vertices[self.STAGING]) is not None:
+            init_dict['staging_vertices'] = self._vertices[self.STAGING]
         if np.any(self._fixed_offset):
             init_dict['fixed_offset'] = self._fixed_offset
         if np.any(self._moving_offset):
@@ -371,6 +401,32 @@ class Mesh:
             init_dict['uid'] = self.uid
         init_dict.update(kwargs)
         return init_dict
+
+
+    def submesh(self, tri_mask, **kwargs):
+        """
+        return a subset of the mesh with tri_mask as the triangle mask.
+        """
+        if np.all(tri_mask):
+            return self
+        masked_tri = self.triangles[tri_mask]
+        vindx = np.unique(masked_tri, axis=None)
+        rindx = np.full_like(masked_tri, -1, shape=np.max(vindx)+1)
+        rindx[vindx] = np.arange(vindx.size)
+        init_dict = self.get_init_dict(**kwargs)
+        init_dict['triangles'] = rindx[masked_tri]
+        vtx_keys = ['vertices','fixed_vertices','moving_vertices','staging_vertices']
+        for vkey in vtx_keys:
+            if init_dict.get(vkey, None) is not None:
+                init_dict[vkey] = init_dict[vkey][vindx]
+        tri_keys = ['material_ids']
+        for tkey in tri_keys:
+            if init_dict.get(tkey, None) is not None:
+                init_dict[tkey] = init_dict[tkey][tri_mask]
+        if ('uid' not in kwargs) and ('uid' in init_dict):
+            # do not copy the uid from the parent
+            init_dict.pop('uid')
+        return self.__class__(**init_dict)
 
 
     @classmethod
@@ -442,7 +498,7 @@ class Mesh:
 
     def switch_to_ini(self):
         self._current_gear = self.INITIAL
-    
+
     def switch_to_fix(self):
         self._current_gear = self.FIXED
 
@@ -467,16 +523,16 @@ class Mesh:
         self.switch_gear(gear)
         return self
 
-
     @property
     def vertices(self):
-        if self._current_gear == self.INITIAL:
+        gear = self._current_gear
+        if gear == self.INITIAL:
             return self.initial_vertices
-        elif self._current_gear == self.FIXED:
+        elif gear == self.FIXED:
             return self.fixed_vertices
-        elif self._current_gear == self.MOVING:
+        elif gear == self.MOVING:
             return self.moving_vertices
-        elif self._current_gear == self.STAGING:
+        elif gear == self.STAGING:
             return self.staging_vertices
         else:
             raise ValueError
@@ -618,11 +674,19 @@ class Mesh:
 
 
   ## ------------------------------ properties ----------------------------- ##
+    @property
+    def num_vertices(self):
+        return self.initial_vertices.shape[0]
+
+
+    @property
+    def num_triangles(self):
+        return self.triangles.shape[0]
+
+
     @dynamic_cache('INITIAL')
     def edges(self, tri_mask=None):
-        """
-        edge indices of the triangulation mesh.
-        """
+        """edge indices of the triangulation mesh."""
         if tri_mask is None:
             T = self.triangles
         else:
@@ -633,7 +697,7 @@ class Mesh:
 
     @dynamic_cache('INITIAL')
     def segments(self, tri_mask=None):
-        """edge indices for edges on the borders"""
+        """edge indices for edges on the borders."""
         if tri_mask is None:
             T = self.triangles
         else:
@@ -642,6 +706,103 @@ class Mesh:
         _, indx, cnt = np.unique(np.sort(edges, axis=-1), axis=0, return_index=True, return_counts=True)
         indx = indx[cnt == 1]
         return edges[indx]
+
+
+    @dynamic_cache('INITIAL')
+    def vertex_adjacencies(self, vtx_mask=None):
+        """sparse adjacency matrix of vertices."""
+        if vtx_mask is None:
+            edges = self.edges()
+            idx0 = edges[:,0]
+            idx1 = edges[:,1]
+            V = np.ones_like(idx0, dtype=bool)
+            Npt = self.num_vertices
+            A = sparse.csr_matrix((V, (idx0, idx1)), shape=(Npt, Npt))
+            return A
+        else:
+            A = self.vertex_adjacencies(vtx_mask=None)
+            return A[vtx_mask][:, vtx_mask]
+
+
+    @dynamic_cache('TBD')
+    def vertex_distances(self, gear=INITIAL, vtx_mask=None):
+        """sparse matrix storing lengths of the edges."""
+        if vtx_mask is None:
+            gear0 = self._current_gear
+            if gear0 != gear:
+                self.switch_gear(gear)
+                vertices = self.vertices
+            self.switch_gear(gear0)
+            A = self.vertex_adjacencies()
+            idx0, idx1 = A.nonzero()
+            edges_len = np.sum((vertices[idx0] - vertices[idx1])**2, axis=-1)**0.5
+            Npt = self.num_vertices
+            D = sparse.csr_matrix((edges_len, (idx0, idx1)), shape=(Npt, Npt))
+            return D
+        else:
+            D = self.vertex_adjacencies(gear=gear, vtx_mask=None)
+            return D[vtx_mask][:, vtx_mask]
+
+
+    @dynamic_cache('INITIAL')
+    def triangle_adjacencies(self, tri_mask=None):
+        """ sparse adjacency matrix of triangles."""
+        if tri_mask is None:
+            edges = np.sort(Mesh.triangle2edge(self.triangles, directional=True), axis=-1)
+            tids0 = np.arange(edges.shape[0]).reshape(-1,1) % self.num_triangles
+            edges_tid = np.concatenate((edges, tids0), axis=1)
+            edges_tid = np.array(sorted(edges_tid.tolist()), copy=False)
+            tids = edges_tid[:,-1]
+            indx = np.nonzero(np.all(np.diff(edges_tid[:,:2], axis=0)==0,axis=-1))[0]
+            idx0 = tids[indx]
+            idx1 = tids[indx+1]
+            Ntr = self.num_triangles
+            V = np.ones_like(idx0, dtype=bool)
+            A = sparse.csr_matrix((V, (idx0, idx1)), shape=(Ntr, Ntr))
+            return A
+        else:
+            A = self.triangle_adjacencies(tri_mask=None)
+            return A[tri_mask][:, tri_mask]
+
+
+    @dynamic_cache('TBD')
+    def triangle_centers(self, gear=INITIAL):
+        """corodinates of the centers of the triangles (Ntri x 2)"""
+        gear0 = self._current_gear
+        if gear0 != gear:
+            self.switch_gear(gear)
+            vertices = self.vertices
+        self.switch_gear(gear0)
+        vtri = vertices[self.triangles]
+        return vtri.mean(axis=1)
+
+
+    @dynamic_cache('TBD')
+    def triangle_distances(self, gear=INITIAL, vtx_mask=None):
+        """sparse matrix storing distances of neighboring triangles."""
+        if vtx_mask is None:
+            tri_centers = self.triangle_centers(gear=gear)
+            A = self.triangle_adjacencies()
+            idx0, idx1 = A.nonzero()
+            dis = np.sum((tri_centers[idx0] - tri_centers[idx1])**2, axis=-1)**0.5
+            Ntri = self.num_triangles
+            D = sparse.csr_matrix((dis, (idx0, idx1)), shape=(Ntri, Ntri))
+            return D
+        else:
+            D = self.triangle_distances(gear=gear, vtx_mask=None)
+            return D[vtx_mask][:, vtx_mask]
+
+
+    @dynamic_cache('INITIAL')
+    def connected_components(self):
+        """
+        connected components of the vertices & triangles.
+        return as (number_of_components, vertex_labels, triangle_labels).
+        """
+        A = self.vertex_adjacencies()
+        N_conn, V_conn = csgraph.connected_components(A, directed=False, return_labels=True)
+        T_conn = V_conn[self.triangles[:,0]]
+        return N_conn, V_conn, T_conn
 
 
   ## ------------------------- utility functions --------------------------- ##

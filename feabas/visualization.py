@@ -44,12 +44,22 @@ def dynamic_typing_decorator(func):
     return wrapped
 
 
-def visualize_mesh(M, show_mat=False, gear='m', show=False):
+def visualize_mesh(M, show_mat=False, show_conn=False, gear='m', show=False):
     M = M[gear]
     if show_mat:
         mat_ids = M._material_ids
         for mid in np.unique(mat_ids):
             indx = mat_ids == mid
+            R, G = np.random.randint(256, size=2)
+            B = 255 * 2 - R - G
+            color = rgb2hex(R, G, B)
+            T = matplotlib.tri.Triangulation(M.vertices_w_offset[:,0],
+                M.vertices_w_offset[:,1], M.triangles[indx])
+            plt.triplot(T, color=color, alpha=0.5, linewidth=0.5)
+    elif show_conn:
+        _,_,t_conn = M.connected_components()
+        for lbl in np.unique(t_conn):
+            indx = t_conn == lbl
             R, G = np.random.randint(256, size=2)
             B = 255 * 2 - R - G
             color = rgb2hex(R, G, B)
