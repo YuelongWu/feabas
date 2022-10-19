@@ -116,7 +116,7 @@ def countours_to_polygon(contours, hierarchy, offset=(0,0), scale=1.0):
         if parent_indx not in polygons_staging:
             raise RuntimeError('found an orphan hole...') # should never happen
         polygons_staging[parent_indx] = polygons_staging[parent_indx].difference(hole)
-    return unary_union(list(polygons_staging.values())).buffer(buffer_r, join_style=JOIN_STYLE)
+    return unary_union([s.buffer(0) for s in polygons_staging.values()]).buffer(buffer_r, join_style=JOIN_STYLE)
 
 
 
@@ -174,7 +174,7 @@ def images_to_polygons(imgs, labels, offset=(0, 0), scale=1.0):
         xmin = offset[0] - 0.5
         xmax = offset[0] + tile.shape[1] - 0.5
         ymin = offset[1] - 0.5
-        ymax = offset[1] + tile.shape[1] - 0.5
+        ymax = offset[1] + tile.shape[0] - 0.5
         xmin, ymin, xmax, ymax = scale_coordinates((xmin, ymin, xmax, ymax), scale)
         extent = shpgeo.box(xmin, ymin, xmax, ymax)
         for name, lbl in labels.items():
@@ -581,6 +581,8 @@ class Geometry:
         # shapely not working as expected, need to manually break at intersections
         bu0 = [roi.boundary]
         for lbl in reversed(self._zorder):
+            if lbl not in self._regions:
+                continue
             bb = self._regions[lbl].boundary
             bu0.append(bb)
         bu0 = unary_union(bu0)
@@ -679,7 +681,7 @@ class Geometry:
         snap_decimal = kwargs.get('snap_decimal', None)
         scale = kwargs.get('scale', 1.0)
         area_thresh = area_thresh * (scale**2)
-        if (region_tol > 0) or (roi_tol > 0):
+        if isinstance(region_tol, dict) or (region_tol > 0) or (roi_tol > 0):
             self.simplify(region_tol=region_tol, roi_tol=roi_tol,
                 inplace=True, scale=scale, use_segments=use_segments)
         self.commit(area_thresh=area_thresh)
@@ -706,7 +708,11 @@ class Geometry:
             vertices = np.round(vertices, decimals=snap_decimal)
         vertices, indx = np.unique(vertices, return_inverse=True, axis=0)
         segments = indx[segments]
-        return vertices, segments, markers
+        PSLG = {'vertices': vertices,
+                'segments': segments,
+                'markers': markers,
+                'resolution': self._resolution}
+        return PSLG
 
 
     @staticmethod
