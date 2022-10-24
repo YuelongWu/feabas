@@ -489,6 +489,29 @@ class Mesh:
         return self.__class__(**init_dict)
 
 
+  ## --------------------------- manipulate meshe -------------------------- ##
+    def delete_vertices(self, vidx):
+        """delete vertices indexed by vidx"""
+        if isinstance(vidx, np.ndarray) and (vidx.dtype == bool):
+            to_keep = ~vidx
+        else:
+            to_keep = np.ones(self.num_vertices, dtype=bool)
+            to_keep[vidx] = False
+        if not np.all(to_keep):
+            for gear, v in self._vertices.items():
+                if v is not None:
+                    self._vertices[gear] = v[to_keep]
+            indx = np.cumsum(to_keep) - 1
+            self.triangles = indx[self.triangles]
+            self.clear_cached_attr()
+
+
+    def delete_orphaned_vertices(self):
+        """remove vertices not included in any triangles"""
+        connected = np.isin(np.arange(self.num_vertices), self.triangles)
+        self.delete_vertices(~connected)
+
+
   ## ------------------------------ gear switch ---------------------------- ##
     def switch_gear(self, gear):
         if gear in self._vertices:

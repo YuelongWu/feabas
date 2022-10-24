@@ -1,4 +1,3 @@
-from ast import Or
 from collections import defaultdict, OrderedDict
 
 import cv2
@@ -229,7 +228,7 @@ def polygon_area_filter(poly, area_thresh=0):
                 return poly
         else:
             return poly
-    elif isinstance(poly, shpgeo.MultiPolygon):
+    elif hasattr(poly, 'geoms'):
         new_poly_list = []
         for pp in poly.geoms:
             pp_updated = polygon_area_filter(pp, area_thresh=area_thresh)
@@ -255,6 +254,8 @@ def polygon_area_filter(poly, area_thresh=0):
         if isinstance(poly, tuple):
             new_list = tuple(new_list)
         return new_list
+    elif hasattr(poly, 'area') and poly.area == 0:
+        return None
     else:
         raise TypeError
 
@@ -572,36 +573,55 @@ class Geometry:
         into regions.
         """
         scale = kwargs.get('scale', 1.0)
+        espilon = 1e-6
         if roi_tol > 0:
             roi = self._roi.simplify(roi_tol*scale, preserve_topology=True)
             if inplace:
                 self._roi = roi
         else:
             roi = self._roi
-        # shapely not working as expected, need to manually break at intersections
-        bu0 = [roi.boundary]
-        for lbl in reversed(self._zorder):
-            if lbl not in self._regions:
-                continue
-            bb = self._regions[lbl].boundary
-            bu0.append(bb)
-        bu0 = unary_union(bu0)
-        boundaries = OrderedDict()
         covered = None
+        bu0 = [roi.boundary]
+        polygons_cleaned = {}
         for lbl in reversed(self._zorder):
             if lbl not in self._regions:
                 continue
-            poly = (self._regions[lbl]).intersection(roi)
+            pp = self._regions[lbl].intersection(roi)
             if covered is None:
-                covered = poly
+                bb = pp.boundary
+                bu0.append(bb)
+                polygons_cleaned[lbl] = pp
+                covered = pp
             else:
-                poly = poly.difference(covered)
-                covered = covered.union(poly)
-            poly = poly.buffer(0)
-            if poly.area > 0:
-                bb = poly.boundary
-                bb = split(bb, bu0.difference(bb))
-                boundaries[lbl] = bb
+                bb = pp.boundary.difference(covered.buffer(-espilon * scale))
+                bu0.append(bb)
+                polygons_cleaned[lbl] = pp.difference(covered)
+                convered = covered.union(pp)
+        bu0 = unary_union(bu0)
+        polygons_formalized = list(polygonize(bu0))
+        formalized_polygon_areas = [p.area for p in polygons_formalized]
+        min_poly_area = np.min(formalized_polygon_areas)
+        boundaries = OrderedDict()
+        poly_assigned = np.zeros(len(polygons_formalized), dtype=bool)
+        for lbl in reversed(self._zorder):
+            if lbl not in polygons_cleaned:
+                continue
+            poly = polygons_cleaned[lbl]
+            if poly.area == 0:
+                continue
+            bndr = []
+            area_left = poly.area
+            for kf, pf in enumerate(polygons_formalized):
+                if area_left < min_poly_area * 0.5:
+                    break
+                if poly_assigned[kf]:
+                    continue
+                area_ints = pf.intersection(poly).area
+                if  area_ints / formalized_polygon_areas[kf] > 0.99:
+                    bndr.append(pf.boundary)
+                    poly_assigned[kf] = True
+                    area_left -= area_ints
+            boundaries[lbl] = unary_union(bndr)
         b_merged = linemerge(unary_union(boundaries.values()))
         if not hasattr(b_merged, 'geoms'):
             bag_of_segs = [b_merged]
