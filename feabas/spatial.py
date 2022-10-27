@@ -596,7 +596,7 @@ class Geometry:
                 bb = pp.boundary.difference(covered.buffer(-espilon * scale))
                 bu0.append(bb)
                 polygons_cleaned[lbl] = pp.difference(covered)
-                convered = covered.union(pp)
+                covered = covered.union(pp)
         bu0 = unary_union(bu0)
         polygons_formalized = list(polygonize(bu0))
         formalized_polygon_areas = [p.area for p in polygons_formalized]
