@@ -8,10 +8,12 @@ from shapely.ops import unary_union, linemerge, polygonize, snap, split
 from shapely import wkb
 
 from feabas import dal, miscs, material
+from feabas import SPATIAL_SIMPLIFY_REGION, SPATIAL_SIMPLIFY_GROUP, SPATIAL_SIMPLIFY_SEGMENT
+
 
 
 JOIN_STYLE = shpgeo.JOIN_STYLE.mitre
-
+EPSILON0 = 1e-5
 
 def fit_affine(pts0, pts1, return_rigid=False):
     # pts0 = pts1 @ A
@@ -84,7 +86,7 @@ def find_contours(mask):
 
 
 
-def countours_to_polygon(contours, hierarchy, offset=(0,0), scale=1.0):
+def countours_to_polygon(contours, hierarchy, offset, scale, upsample):
     """
     convert opencv contours to shapely (Multi)Polygons.
     Args:
@@ -92,15 +94,17 @@ def countours_to_polygon(contours, hierarchy, offset=(0,0), scale=1.0):
     Kwargs:
         offsets: x, y translation offset to add to the output polygon.
         scale: scaling factor of the geometries.
+        upsample: upsample factor for better accuracy.
     """
     polygons_staging = {}
     holes = {}
-    buffer_r = 0.5 * scale # expand by half pixel
+    buffer_r = 0.5 * scale / upsample # expand by half pixel
     for indx, ct in enumerate(contours):
         number_of_points = ct.shape[0]
         if number_of_points < 3:
             continue
-        xy = scale_coordinates(ct.reshape(number_of_points, -1) + np.asarray(offset), scale=scale)
+        xy = scale_coordinates(ct.reshape(number_of_points, -1), scale=1/upsample)
+        xy = scale_coordinates(xy + np.asarray(offset), scale=scale)
         lr = shpgeo.polygon.LinearRing(xy)
         pp = shpgeo.polygon.orient(shpgeo.Polygon(lr))
         if lr.is_ccw:
@@ -119,7 +123,7 @@ def countours_to_polygon(contours, hierarchy, offset=(0,0), scale=1.0):
 
 
 
-def images_to_polygons(imgs, labels, offset=(0, 0), scale=1.0):
+def images_to_polygons(imgs, labels, offset=(0, 0), scale=1.0, upsample=2):
     """
     Convert images to shapely Polygons.
     Args:
@@ -129,6 +133,7 @@ def images_to_polygons(imgs, labels, offset=(0, 0), scale=1.0):
         offsets: global x, y translation offset to add to the output polygons.
             the scaling of the offsets is the same as the images.
         scale: scaling factor of the geometries.
+        upsample: upsample factor to prevent one-line of pixels
     """
     if not isinstance(labels, dict):
         labels = OrderedDict((str(s), s) for s in labels)
@@ -155,8 +160,10 @@ def images_to_polygons(imgs, labels, offset=(0, 0), scale=1.0):
                     mask = np.all(tile == np.array(lbl), axis=-1)
                 else:
                     mask = (tile == lbl)
+                if upsample != 1:
+                    mask = cv2.resize(mask.astype(np.uint8), None, fx=upsample, fy=upsample, interpolation=cv2.INTER_NEAREST)
                 ct, h = find_contours(mask)
-                pp = countours_to_polygon(ct, h, offset=xy0, scale=scale)
+                pp = countours_to_polygon(ct, h, offset=xy0, scale=scale, upsample=upsample)
                 if pp is not None:
                     regions_staging[name].append(pp)
         for name, pp in regions_staging.items():
@@ -183,8 +190,10 @@ def images_to_polygons(imgs, labels, offset=(0, 0), scale=1.0):
                 mask = np.all(tile == np.array(lbl), axis=-1)
             else:
                 mask = (tile == lbl)
+            if upsample != 1:
+                mask = cv2.resize(mask.astype(np.uint8), None, fx=upsample, fy=upsample, interpolation=cv2.INTER_NEAREST)
             ct, h = find_contours(mask)
-            p_lbl = countours_to_polygon(ct, h, offset=np.array(offset), scale=scale)
+            p_lbl = countours_to_polygon(ct, h, offset=np.array(offset), scale=scale, upsample=upsample)
             if p_lbl is not None:
                 polygons[name] = p_lbl
     return polygons, extent
@@ -212,8 +221,8 @@ def polygon_area_filter(poly, area_thresh=0):
     if area_thresh == 0:
         return poly
     if isinstance(poly, shpgeo.Polygon):
-        if shpgeo.Polygon(poly.exterior).area < area_thresh:
-            return None
+        if poly.is_empty or shpgeo.Polygon(poly.exterior).area < area_thresh:
+            return shpgeo.Polygon()
         Bs = poly.boundary
         if hasattr(Bs,'geoms'):
             # may need to fill small holes
@@ -232,33 +241,98 @@ def polygon_area_filter(poly, area_thresh=0):
         new_poly_list = []
         for pp in poly.geoms:
             pp_updated = polygon_area_filter(pp, area_thresh=area_thresh)
-            if pp_updated is not None:
+            if not pp_updated.is_empty:
                 new_poly_list.append(pp_updated)
         if len(new_poly_list) > 0:
             return unary_union(new_poly_list)
         else:
-            return None
+            return shpgeo.Polygon()
     elif isinstance(poly, dict):
         new_dict = {}
         for key, pp in poly.items():
             pp_updated = polygon_area_filter(pp, area_thresh=area_thresh)
-            if pp_updated is not None:
+            if not pp_updated.is_empty:
                 new_dict[key] = pp_updated
         return new_dict
     elif isinstance(poly, (tuple, list)):
         new_list = []
         for pp in poly:
             pp_updated = polygon_area_filter(pp, area_thresh=area_thresh)
-            if pp_updated is not None:
+            if not pp_updated.is_empty:
                 new_list.append(pp_updated)
         if isinstance(poly, tuple):
             new_list = tuple(new_list)
         return new_list
     elif hasattr(poly, 'area') and poly.area == 0:
-        return None
+        return shpgeo.Polygon()
     else:
         raise TypeError
 
+
+
+def clean_up_small_regions(regions, roi=None, area_thresh=4, buffer=1e-3):
+    if area_thresh == 0:
+        return regions, shpgeo.Polygon()
+    if not isinstance(regions, dict):
+        regions_dict = {k: rg for k, rg in enumerate(regions)}
+    else:
+        regions_dict = regions
+    small_pieces = []
+    if roi is None:
+        roi = unary_union(list(regions_dict.values()))
+    default_region = roi
+    for lbl, pp in regions_dict.items():
+        if pp.is_empty:
+            continue
+        pp_updated = polygon_area_filter(pp, area_thresh=area_thresh)
+        pp_residue = pp.difference(pp_updated)
+        default_region = default_region.difference(pp_updated)
+        if not pp_residue.is_empty:
+            regions_dict[lbl] = pp_updated
+            if hasattr(pp_residue, 'geoms'):
+                small_pieces.extend(list(pp_residue.geoms))
+            else:
+                small_pieces.append(pp_residue)
+    if 'default' in regions_dict:
+        regions_dict['default'] = regions_dict['default'].union(default_region)
+        orgin_contain_default = True
+    else:
+        regions_dict['default'] = default_region
+        orgin_contain_default = False
+    if not regions_dict['default'].is_empty:
+        pp_updated = polygon_area_filter(regions_dict['default'], area_thresh=area_thresh)
+        pp_residue = regions_dict['default'].difference(pp_updated)
+        if not pp_residue.is_empty:
+            regions_dict['default'] = pp_updated
+            if hasattr(pp_residue, 'geoms'):
+                small_pieces.extend(list(pp_residue.geoms))
+            else:
+                small_pieces.append(pp_residue)
+    for p0 in small_pieces:
+        p0b = p0.buffer(buffer)
+        assigned_label = None
+        max_intersection = 0
+        for lbl, pp in regions_dict.items():
+            if pp.is_empty:
+                continue
+            intersect_area = p0b.intersection(pp).area
+            if intersect_area > max_intersection:
+                assigned_label = lbl
+                max_intersection = intersect_area
+        if assigned_label is not None:
+            regions_dict[assigned_label] = regions_dict[assigned_label].union(p0)
+    if not orgin_contain_default:
+        regions_dict.pop('default')
+    if not isinstance(regions, dict):
+        return_type = type(regions)
+        out = return_type([s for s in regions_dict.values() if not s.is_empty])
+    else:
+        out = regions_dict
+    if bool(small_pieces):
+        modified_area = unary_union(small_pieces)
+    else:
+        modified_area = shpgeo.Polygon()
+    return out, modified_area
 
 
 
@@ -464,7 +538,7 @@ class Geometry:
                 continue
             poly = (self._regions[lbl]).intersection(mask)
             poly_updated = polygon_area_filter(poly, area_thresh=area_thresh)
-            if poly_updated is None:
+            if poly_updated.is_empty:
                 self._regions.pop(lbl)
             else:
                 self._regions[lbl] = poly_updated.buffer(0)
@@ -472,7 +546,7 @@ class Geometry:
                 if lbl != 'default':
                     mask = mask.difference(poly_updated)
         filtered_roi = polygon_area_filter(mask, area_thresh=area_thresh)
-        if filtered_roi is not None:
+        if not filtered_roi.is_empty:
             self._default_region = filtered_roi.buffer(0)
         covered = unary_union(covered_list)
         covered_boundary = covered.boundary
@@ -514,7 +588,37 @@ class Geometry:
         return points
 
 
-    def simplify(self, region_tol=1.5, roi_tol=1.5, inplace=True, scale=1.0, use_segments=True):
+    def compare(self, other):
+        region_lbls = set(self._regions) | set(other._regions)
+        roi0 = self._roi
+        roi1 = other._roi
+        IOUs = {}
+        for lbl in region_lbls:
+            if lbl == 'default':
+                continue
+            if (lbl not in self._regions) or (lbl not in other._regions):
+                IOUs[lbl] = 0
+                continue
+            pp0 = self._regions[lbl]
+            pp1 = other._regions[lbl]
+            if (pp0 is None) or (hasattr(pp0, 'is_empty') and pp0.is_empty):
+                IOUs[lbl] = 0
+                continue
+            else:
+                roi0 = roi0.difference(pp0)
+            if (pp1 is None) or (hasattr(pp1, 'is_empty') and pp1.is_empty):
+                IOUs[lbl] = 0
+                continue
+            else:
+                roi1 = roi1.difference(pp1)
+            iou = pp0.intersection(pp1).area / pp0.union(pp1).area
+            IOUs[lbl] = iou
+        IOUs['default'] = roi0.intersection(roi1).area / roi0.union(roi1).area
+        return IOUs
+
+
+
+    def simplify(self, region_tol=1.5, roi_tol=1.5, inplace=True, scale=1.0, method=SPATIAL_SIMPLIFY_GROUP, area_thresh=0):
         """
         simplify regions and roi so they have fewer line segments.
         Kwargs:
@@ -523,7 +627,8 @@ class Geometry:
                 Could be a scalar that decines the universal behavior, or a dict
                 to specify the tolerance for each region key.
             roi_tol(scalar): maximum tolerated distance for outer roi boundary.
-            use_segments(bool): if simplify by regions or simplify by segments.
+            method(int): if simplify by regions or simplify by segments or
+                grouped segments.
         """
         if self._committed:
             import warnings
@@ -533,38 +638,16 @@ class Geometry:
             region_tols = defaultdict(lambda: region_tol)
         else:
             region_tols = region_tol
-        if use_segments:
+        if method == SPATIAL_SIMPLIFY_SEGMENT:
             G = self.simplify_by_segments(region_tols, roi_tol=roi_tol,
-                inplace=inplace, scale=scale)
-        else:
+                inplace=inplace, scale=scale, area_thresh=area_thresh)
+        elif method == SPATIAL_SIMPLIFY_REGION:
             G = self.simplify_by_regions(region_tols, roi_tol=roi_tol,
-                inplace=inplace, scale=scale)
-        return G
-
-
-    def simplify_by_regions(self, region_tols, roi_tol=1.5, inplace=True, **kwargs):
-        """
-        simplify regions and roi by directly simplify individual regions. might
-        produce small fragments between two non-default regions but faster.
-        """
-        scale = kwargs.get('scale', 1.0)
-        if roi_tol > 0:
-            roi = self._roi.simplify(roi_tol*scale, preserve_topology=True)
-            if inplace:
-                self._roi = roi
-        regions_new = {}
-        for key, pp in self._regions.items():
-            if (region_tols[key] > 0) and (pp is not None):
-                pp_updated = pp.simplify(region_tols[key]*scale, preserve_topology=True)
-                if inplace:
-                    self._regions[key] = pp_updated
-                else:
-                    regions_new[key] = pp_updated
-        if inplace:
-            return self
+                inplace=inplace, scale=scale, area_thresh=area_thresh)
         else:
-            return Geometry(roi=roi, regions=regions_new,
-                resolution=self._resolution, zorder=self._zorder)
+            G = self.simplify_by_segment_groups(region_tols, roi_tol=roi_tol,
+                inplace=inplace, scale=scale, area_thresh=area_thresh)
+        return G
 
 
     def simplify_by_segments(self, region_tols, roi_tol=1.5, inplace=True, **kwargs):
@@ -573,7 +656,7 @@ class Geometry:
         into regions.
         """
         scale = kwargs.get('scale', 1.0)
-        espilon = 1e-6
+        area_thresh = kwargs.get('area_thresh', 0.0)
         if roi_tol > 0:
             roi = self._roi.simplify(roi_tol*scale, preserve_topology=True)
             if inplace:
@@ -593,12 +676,13 @@ class Geometry:
                 polygons_cleaned[lbl] = pp
                 covered = pp
             else:
-                bb = pp.boundary.difference(covered.buffer(-espilon * scale))
+                bb = pp.boundary.difference(covered.buffer(-EPSILON0 * scale))
                 bu0.append(bb)
                 polygons_cleaned[lbl] = pp.difference(covered)
                 covered = covered.union(pp)
         bu0 = unary_union(bu0)
         polygons_formalized = list(polygonize(bu0))
+        polygons_formalized, _ = clean_up_small_regions(polygons_formalized, area_thresh=area_thresh, buffer=EPSILON0*scale)
         formalized_polygon_areas = [p.area for p in polygons_formalized]
         min_poly_area = np.min(formalized_polygon_areas)
         boundaries = OrderedDict()
@@ -651,7 +735,8 @@ class Geometry:
             seg_new = segs_simplified.difference(segs_except_target)
             if hasattr(seg_new, 'geoms'):
                 seg_new = linemerge(seg_new)
-            bag_of_segs[sidx] = seg_new
+            if seg_new.length > 0:
+                bag_of_segs[sidx] = seg_new
         regions_new = {} # reassemble boundaries
         for lbl, sidx in segs_in_regions.items():
             boundaries_new = unary_union([bag_of_segs[s] for s in sidx])
@@ -676,6 +761,143 @@ class Geometry:
                 resolution=self._resolution, zorder=self._zorder)
 
 
+    def simplify_by_segment_groups(self, region_tols, roi_tol=1.5, inplace=True, **kwargs):
+        """
+        simplify regions and roi by simplify segment groups first then polygonize
+        them into regions. should be faster than simplify_by_segments, but may
+        fail when very small features exist
+        """
+        scale = kwargs.get('scale', 1.0)
+        area_thresh = kwargs.get('area_thresh', 0)
+        if roi_tol > 0:
+            roi = self._roi.simplify(roi_tol*scale, preserve_topology=True)
+            if inplace:
+                self._roi = roi
+        else:
+            roi = self._roi
+        covered = None
+        bu0 = [roi.boundary]
+        polygons_cleaned = {}
+        for lbl in reversed(self._zorder):
+            if lbl not in self._regions:
+                continue
+            pp = self._regions[lbl].intersection(roi)
+            if covered is None:
+                bb = pp.boundary
+                bu0.append(bb)
+                polygons_cleaned[lbl] = pp
+                covered = pp
+            else:
+                bb = pp.boundary.difference(covered.buffer(-EPSILON0 * scale))
+                bu0.append(bb)
+                polygons_cleaned[lbl] = pp.difference(covered)
+                covered = covered.union(pp)
+        bu0 = unary_union(bu0)
+        polygons_formalized = list(polygonize(bu0))
+        polygons_formalized, modified_area = clean_up_small_regions(polygons_formalized, area_thresh=area_thresh, buffer=EPSILON0*scale)
+        formalized_polygon_areas = [p.difference(modified_area).area for p in polygons_formalized]
+        min_poly_area = np.min(formalized_polygon_areas)
+        boundaries = OrderedDict()
+        poly_assigned = np.zeros(len(polygons_formalized), dtype=bool)
+        for lbl in reversed(self._zorder):
+            if lbl not in polygons_cleaned:
+                continue
+            poly = polygons_cleaned[lbl]
+            if poly.area == 0:
+                continue
+            bndr = []
+            area_left = poly.area
+            for kf, pf in enumerate(polygons_formalized):
+                if area_left < min_poly_area * 0.25:
+                    break
+                if poly_assigned[kf]:
+                    continue
+                area_ints = pf.intersection(poly).area
+                if  area_ints / formalized_polygon_areas[kf] > 0.99:
+                    bndr.append(pf.boundary)
+                    poly_assigned[kf] = True
+                    area_left -= area_ints
+            boundaries[lbl] = unary_union(bndr)
+        b_merged = linemerge(unary_union(boundaries.values()))
+        if not hasattr(b_merged, 'geoms'):
+            bag_of_segs = [b_merged]
+        else:
+            bag_of_segs = list(b_merged.geoms)
+        region_names = sorted(list(self._regions.keys()), key=lambda s:region_tols[s])
+        region_names_lut = {rn:krn for krn, rn in enumerate(region_names)}
+        labels_of_segs = defaultdict(list)
+        for seg_idx, seg in enumerate(bag_of_segs):
+            for lbl, bndr in boundaries.items():
+                if bndr.intersection(seg).length > 0:
+                    labels_of_segs[seg_idx].append(region_names_lut[lbl])
+        seg_groups = defaultdict(list)
+        for seg_idx, lbl_ids in labels_of_segs.items():
+            seg_groups[tuple(lbl_ids)].append(bag_of_segs[seg_idx])
+        seg_groups = {lbl_id: linemerge(lines) for lbl_id, lines in seg_groups.items()}
+        group_indices = sorted(seg_groups.keys())
+        group_tols = [region_tols[region_names[lbl[0]]] for lbl in group_indices]
+        for gidx, tol in zip(group_indices, group_tols):
+            segs_except_target = unary_union([s for k, s in seg_groups.items() if (k!=gidx)])
+            segs_all = unary_union(seg_groups.values())
+            # fix segments other than the one to be simplified by duplicating them
+            segs_combined = unary_union([segs_except_target, segs_all])
+            segs_simplified = segs_combined.simplify(tol*scale, preserve_topology=True)
+            seg_new = segs_simplified.difference(segs_except_target)
+            if hasattr(seg_new, 'geoms'):
+                seg_new = linemerge(seg_new)
+            seg_groups[gidx] = seg_new
+        regions_new = {} # reassemble boundaries
+        for lbl in region_names:
+            lbl_id = region_names_lut[lbl]
+            boundaries_new = unary_union([s for gidx, s in seg_groups.items() if lbl_id in gidx])
+            polys = list(polygonize(boundaries_new))
+            cnt = np.zeros(len(polys), dtype=np.uint16)
+            for p0 in polys:
+                p0c = shpgeo.Polygon(p0.exterior)
+                for k1, p1 in enumerate(polys):
+                    if p0 is p1:
+                        continue
+                    if p0c.contains(p1):
+                        cnt[k1] += 1
+            pp_updated = unary_union([p for k, p in enumerate(polys) if (cnt[k]%2 == 0)])
+            if inplace:
+                self._regions[lbl] = pp_updated
+            else:
+                regions_new[lbl] = pp_updated
+        if inplace:
+            return self
+        else:
+            return Geometry(roi=roi, regions=regions_new,
+                resolution=self._resolution, zorder=self._zorder)
+
+
+    def simplify_by_regions(self, region_tols, roi_tol=1.5, inplace=True, **kwargs):
+        """
+        simplify regions and roi by directly simplify individual regions. might
+        produce small fragments between two non-default regions but faster.
+        """
+        scale = kwargs.get('scale', 1.0)
+        area_thresh = kwargs.get('area_thresh', 0)
+        if roi_tol > 0:
+            roi = self._roi.simplify(roi_tol*scale, preserve_topology=True)
+            if inplace:
+                self._roi = roi
+        regions_new = {}
+        for key, pp in self._regions.items():
+            if (region_tols[key] > 0) and (pp is not None):
+                pp_updated = pp.simplify(region_tols[key]*scale, preserve_topology=True)
+                if inplace:
+                    self._regions[key] = pp_updated
+                else:
+                    regions_new[key] = pp_updated
+        regions_new, _ = clean_up_small_regions(regions_new, roi=roi, area_thresh=area_thresh, buffer=EPSILON0*scale)
+        if inplace:
+            return self
+        else:
+            return Geometry(roi=roi, regions=regions_new,
+                resolution=self._resolution, zorder=self._zorder)
+
+
     def PSLG(self, **kwargs):
         """
         generate a Planar Straight Line Graph representation of the geometry to
@@ -683,8 +905,8 @@ class Geometry:
         Kwargs:
             region_tol, roi_tol: distance tolerances passed to
                 self.simplify.
-            use_segments(bool): whether to use simplify_by_segments or
-                simplify_by_regions.
+            method(int): whether to use simplify_by_segments or
+                simplify_by_regions or simplify_by_segment_groups.
             area_thresh: area minimum threshold passed to self.commit.
             snap_decimal: decimal number to round the coordinates so that close
                 points would snap together.
@@ -696,14 +918,14 @@ class Geometry:
         """
         region_tol = kwargs.get('region_tol', 0)
         roi_tol = kwargs.get('roi_tol', 0)
-        use_segments = kwargs.get('use_segments', True)
+        method = kwargs.get('method', SPATIAL_SIMPLIFY_GROUP)
         area_thresh = kwargs.get('area_thresh', 0)
         snap_decimal = kwargs.get('snap_decimal', None)
         scale = kwargs.get('scale', 1.0)
         area_thresh = area_thresh * (scale**2)
         if isinstance(region_tol, dict) or (region_tol > 0) or (roi_tol > 0):
             self.simplify(region_tol=region_tol, roi_tol=roi_tol,
-                inplace=True, scale=scale, use_segments=use_segments)
+                inplace=True, scale=scale, method=method)
         self.commit(area_thresh=area_thresh)
         boundaries = self.collect_boundaries()
         markers = self.collect_region_markers()

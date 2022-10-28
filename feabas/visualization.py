@@ -119,7 +119,9 @@ def plot_polygons(polygons, **kwargs):
 
 @dynamic_typing_decorator
 def plot_geometries(geo_obj, **kwargs):
-    if isinstance(geo_obj, shpgeo.Polygon):
+    if hasattr(geo_obj, 'is_empty') and geo_obj.is_empty:
+        pass
+    elif isinstance(geo_obj, shpgeo.Polygon):
         plot_polygons(geo_obj, **kwargs)
     elif isinstance(geo_obj, (shpgeo.LinearRing, shpgeo.LineString)):
         plot_lines(geo_obj, **kwargs)
