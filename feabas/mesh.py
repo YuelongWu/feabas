@@ -10,6 +10,7 @@ import triangle
 from feabas import miscs, material
 from feabas import MESH_GEAR_INITIAL, MESH_GEAR_FIXED, MESH_GEAR_MOVING, MESH_GEAR_STAGING
 
+
 def dynamic_cache(gear):
     """
     The decorator that determines the caching behaviour of the Mesh properties.
@@ -824,6 +825,19 @@ class Mesh:
         N_conn, V_conn = csgraph.connected_components(A, directed=False, return_labels=True)
         T_conn = V_conn[self.triangles[:,0]]
         return N_conn, V_conn, T_conn
+
+
+  ## ------------------------ collision management ------------------------- ##
+    def detect_segment_collision(self):
+        pass
+
+
+    def detect_internal_collision(self):
+        pass
+
+
+    def fixe_segment_collision(self):
+        pass
 
 
   ## ------------------------- utility functions --------------------------- ##
