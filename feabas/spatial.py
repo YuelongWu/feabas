@@ -574,7 +574,10 @@ class Geometry:
             boundaries.append(self._default_region.boundary)
         for pp in self._regions.values():
             boundaries.append(pp.boundary)
-        return linemerge(unary_union(boundaries))
+        boundaries = unary_union(boundaries)
+        if hasattr(boundaries, 'geoms'):
+            boundaries = linemerge(boundaries)
+        return boundaries
 
 
     def collect_region_markers(self, **kwargs):
@@ -706,7 +709,9 @@ class Geometry:
                     poly_assigned[kf] = True
                     area_left -= area_ints
             boundaries[lbl] = unary_union(bndr)
-        b_merged = linemerge(unary_union(boundaries.values()))
+        b_merged = unary_union(boundaries.values())
+        if hasattr(b_merged, 'geoms'):
+            b_merged = linemerge(b_merged)
         if not hasattr(b_merged, 'geoms'):
             bag_of_segs = [b_merged]
         else:
@@ -818,7 +823,9 @@ class Geometry:
                     poly_assigned[kf] = True
                     area_left -= area_ints
             boundaries[lbl] = unary_union(bndr)
-        b_merged = linemerge(unary_union(boundaries.values()))
+        b_merged = unary_union(boundaries.values())
+        if hasattr(b_merged, 'geoms'):
+            b_merged = linemerge(b_merged)
         if not hasattr(b_merged, 'geoms'):
             bag_of_segs = [b_merged]
         else:
@@ -833,7 +840,12 @@ class Geometry:
         seg_groups = defaultdict(list)
         for seg_idx, lbl_ids in labels_of_segs.items():
             seg_groups[tuple(lbl_ids)].append(bag_of_segs[seg_idx])
-        seg_groups = {lbl_id: linemerge(lines) for lbl_id, lines in seg_groups.items()}
+        seg_groups = {}
+        for lbl_id, lines in seg_groups.items():
+            if hasattr(lines, 'geoms'):
+                seg_groups[lbl_id] = linemerge(lines)
+            else:
+                seg_groups[lbl_id] = lines
         group_indices = sorted(seg_groups.keys())
         group_tols = [region_tols[region_names[lbl[0]]] for lbl in group_indices]
         for gidx, tol in zip(group_indices, group_tols):
