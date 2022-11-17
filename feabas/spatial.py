@@ -8,7 +8,7 @@ from shapely.ops import unary_union, linemerge, polygonize, snap, split
 from shapely import wkb
 
 from feabas import dal, miscs, material
-from feabas import SPATIAL_SIMPLIFY_REGION, SPATIAL_SIMPLIFY_GROUP, SPATIAL_SIMPLIFY_SEGMENT
+from feabas.constant import *
 
 
 
@@ -840,12 +840,7 @@ class Geometry:
         seg_groups = defaultdict(list)
         for seg_idx, lbl_ids in labels_of_segs.items():
             seg_groups[tuple(lbl_ids)].append(bag_of_segs[seg_idx])
-        seg_groups = {}
-        for lbl_id, lines in seg_groups.items():
-            if hasattr(lines, 'geoms'):
-                seg_groups[lbl_id] = linemerge(lines)
-            else:
-                seg_groups[lbl_id] = lines
+        seg_groups = {lbl_id: linemerge(lines) for lbl_id, lines in seg_groups.items()}
         group_indices = sorted(seg_groups.keys())
         group_tols = [region_tols[region_names[lbl[0]]] for lbl in group_indices]
         for gidx, tol in zip(group_indices, group_tols):

@@ -8,7 +8,7 @@ import scipy.sparse.csgraph as csgraph
 import triangle
 
 from feabas import miscs, material
-from feabas import MESH_GEAR_INITIAL, MESH_GEAR_FIXED, MESH_GEAR_MOVING, MESH_GEAR_STAGING
+from feabas.constant import *
 
 
 def dynamic_cache(gear):
@@ -730,6 +730,11 @@ class Mesh:
 
 
     @dynamic_cache('INITIAL')
+    def segment_chains(self):
+        pass
+
+
+    @dynamic_cache('INITIAL')
     def vertex_adjacencies(self, vtx_mask=None):
         """sparse adjacency matrix of vertices."""
         if vtx_mask is None:
@@ -828,15 +833,24 @@ class Mesh:
 
 
   ## ------------------------ collision management ------------------------- ##
-    def detect_segment_collision(self):
+    def check_segment_collision(self, gear=MESH_GEAR_MOVING):
+        gear0 = self._current_gear
+        self.switch_gear(gear=gear)
+        sgmt = self.segments()
+        vertices = self.vertices
+        pass
+        self.switch_gear(gear=gear0)
+    
+    
+    def locate_segment_collision(self):
         pass
 
 
-    def detect_internal_collision(self):
+    def locate_internal_collision(self):
         pass
 
 
-    def fixe_segment_collision(self):
+    def fix_segment_collision(self):
         pass
 
 
