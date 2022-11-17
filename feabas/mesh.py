@@ -122,6 +122,31 @@ def dynamic_cache(gear):
     return dynamic_cache_wrap
 
 
+def chain_segment_rings(segments, directed=True):
+    """
+    Given id pairs of line segment points, assemble them into (closed) chains.
+    Args:
+        segments (Nsegx2 ndarray): vertices' ids of each segment. Each segment
+            should only appear once regardless of the direction.
+    Kwargs:
+        directed (bool): if the segments given are directed.
+    """
+    inv_map, seg_n = np.unique(segments, return_inverse=True)
+    seg_n = seg_n.reshape(segments.shape)
+    Nseg = seg_n.shape[0]
+    Npts = inv_map.size
+    chains = []
+    A = sparse.csr_matrix((np.ones(Nseg), (seg_n[:,0], seg_n[:,1])), shape=(Npts, Npts))
+    not_covered = np.ones(Npts, dtype=bool)
+    while np.any(not_covered):
+        stt_idx = np.argmax(not_covered)
+        chain_idx = csgraph.depth_first_order(A, stt_idx, directed=directed, return_predecessors=False)
+        chains.append(inv_map[chain_idx])
+        not_covered[chain_idx] = False
+    return chains
+    
+    
+
 class Mesh:
     """
     A class to represent a FEM Mesh.
@@ -735,10 +760,10 @@ class Mesh:
 
 
     @dynamic_cache('INITIAL')
-    def vertex_adjacencies(self, vtx_mask=None):
+    def vertex_adjacencies(self, vtx_mask=None, tri_mask=None):
         """sparse adjacency matrix of vertices."""
         if vtx_mask is None:
-            edges = self.edges()
+            edges = self.edges(tri_mask=tri_mask)
             idx0 = edges[:,0]
             idx1 = edges[:,1]
             V = np.ones_like(idx0, dtype=bool)
@@ -746,12 +771,12 @@ class Mesh:
             A = sparse.csr_matrix((V, (idx0, idx1)), shape=(Npt, Npt))
             return A
         else:
-            A = self.vertex_adjacencies(vtx_mask=None)
+            A = self.vertex_adjacencies(vtx_mask=None, tri_mask=tri_mask)
             return A[vtx_mask][:, vtx_mask]
 
 
     @dynamic_cache('TBD')
-    def vertex_distances(self, gear=MESH_GEAR_INITIAL, vtx_mask=None):
+    def vertex_distances(self, gear=MESH_GEAR_INITIAL, vtx_mask=None, tri_mask=None):
         """sparse matrix storing lengths of the edges."""
         if vtx_mask is None:
             gear0 = self._current_gear
@@ -759,14 +784,14 @@ class Mesh:
                 self.switch_gear(gear)
                 vertices = self.vertices
             self.switch_gear(gear0)
-            A = self.vertex_adjacencies()
+            A = self.vertex_adjacencies(tri_mask=tri_mask)
             idx0, idx1 = A.nonzero()
             edges_len = np.sum((vertices[idx0] - vertices[idx1])**2, axis=-1)**0.5
             Npt = self.num_vertices
             D = sparse.csr_matrix((edges_len, (idx0, idx1)), shape=(Npt, Npt))
             return D
         else:
-            D = self.vertex_adjacencies(gear=gear, vtx_mask=None)
+            D = self.vertex_distances(gear=gear, vtx_mask=None, tri_mask=tri_mask)
             return D[vtx_mask][:, vtx_mask]
 
 
@@ -805,9 +830,9 @@ class Mesh:
 
 
     @dynamic_cache('TBD')
-    def triangle_distances(self, gear=MESH_GEAR_INITIAL, vtx_mask=None):
+    def triangle_distances(self, gear=MESH_GEAR_INITIAL, tri_mask=None):
         """sparse matrix storing distances of neighboring triangles."""
-        if vtx_mask is None:
+        if tri_mask is None:
             tri_centers = self.triangle_centers(gear=gear)
             A = self.triangle_adjacencies()
             idx0, idx1 = A.nonzero()
@@ -816,19 +841,19 @@ class Mesh:
             D = sparse.csr_matrix((dis, (idx0, idx1)), shape=(Ntri, Ntri))
             return D
         else:
-            D = self.triangle_distances(gear=gear, vtx_mask=None)
-            return D[vtx_mask][:, vtx_mask]
+            D = self.triangle_distances(gear=gear, tri_mask=None)
+            return D[tri_mask][:, tri_mask]
 
 
     @dynamic_cache('INITIAL')
-    def connected_components(self):
+    def connected_components(self, vtx_mask=None, tri_mask=None):
         """
         connected components of the vertices & triangles.
         return as (number_of_components, vertex_labels, triangle_labels).
         """
-        A = self.vertex_adjacencies()
+        A = self.vertex_adjacencies(vtx_mask=vtx_mask, tri_mask=tri_mask)
         N_conn, V_conn = csgraph.connected_components(A, directed=False, return_labels=True)
-        T_conn = V_conn[self.triangles[:,0]]
+        T_conn = V_conn[self.triangles[tri_mask,0]]
         return N_conn, V_conn, T_conn
 
 
