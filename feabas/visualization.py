@@ -57,7 +57,7 @@ def visualize_mesh(M, show_mat=False, show_conn=False, gear='m', show=False):
                 M.vertices_w_offset[:,1], M.triangles[indx])
             plt.triplot(T, color=color, alpha=0.5, linewidth=0.5)
     elif show_conn:
-        _,_,t_conn = M.connected_components()
+        _, t_conn = M.connected_triangles()
         for lbl in np.unique(t_conn):
             indx = t_conn == lbl
             R, G = np.random.randint(256, size=2)

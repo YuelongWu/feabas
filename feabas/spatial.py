@@ -4,7 +4,7 @@ import cv2
 import h5py
 import numpy as np
 import shapely.geometry as shpgeo
-from shapely.ops import unary_union, linemerge, polygonize, snap, split
+from shapely.ops import unary_union, linemerge, polygonize
 from shapely import wkb
 
 from feabas import dal, miscs, material
