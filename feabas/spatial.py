@@ -11,9 +11,8 @@ from feabas import dal, miscs, material
 from feabas.constant import *
 
 
-
 JOIN_STYLE = shpgeo.JOIN_STYLE.mitre
-EPSILON0 = 1e-5
+
 
 def fit_affine(pts0, pts1, return_rigid=False):
     # pts0 = pts1 @ A
@@ -106,7 +105,7 @@ def countours_to_polygon(contours, hierarchy, offset, scale, upsample):
         xy = scale_coordinates(ct.reshape(number_of_points, -1), scale=1/upsample)
         xy = scale_coordinates(xy + np.asarray(offset), scale=scale)
         lr = shpgeo.polygon.LinearRing(xy)
-        pp = shpgeo.polygon.orient(shpgeo.Polygon(lr))
+        pp = shpgeo.Polygon(lr)
         if lr.is_ccw:
             holes[indx] = pp
         else:
@@ -357,6 +356,7 @@ class Geometry:
         self._resolution = kwargs.get('resolution', 4.0)
         self._zorder = kwargs.get('zorder', list(self._regions.keys()))
         self._committed = False
+        self._epsilon = kwargs.get('epsilon', EPSILON0) # small value used for buffer
 
 
     @classmethod
@@ -409,7 +409,8 @@ class Geometry:
         if dilate > 0:
             for lbl, pp in regions.items():
                 regions[lbl] = pp.buffer(dilate, join_style=JOIN_STYLE)
-        return cls(roi=roi, regions=regions, resolution=resolution, zorder=list(name2label.keys()))
+        return cls(roi=roi, regions=regions, resolution=resolution,
+            zorder=list(name2label.keys()), epsilon=EPSILON0*scale)
 
 
     @classmethod
@@ -421,6 +422,8 @@ class Geometry:
                 kwargs['resolution'] = f['resolution'][()]
             if 'zorder' in f:
                 kwargs['zorder'] = miscs.numpy_to_str_ascii(f['zorder'][()]).split('\n')
+            if 'epsilon' in f:
+                kwargs['epsilon'] = f['epsilon'][()]
             if 'roi' in f:
                 roi = wkb.loads(bytes.fromhex(f['roi'][()].decode()))
             if 'regions' in f:
@@ -432,6 +435,7 @@ class Geometry:
     def save_to_h5(self, h5name):
         with h5py.File(h5name, 'w') as f:
             _ = f.create_dataset('resolution', data=self._resolution)
+            _ = f.create_dataset('epsilon', data=self._epsilon)
             if bool(self._zorder):
                 zorder_encoded = miscs.str_to_numpy_ascii('\n'.join(self._zorder))
                 _ = f.create_dataset('zorder', data=zorder_encoded)
@@ -483,6 +487,9 @@ class Geometry:
         if dilate > 0:
             for lbl, pp in regions.items():
                 regions[lbl] = pp.buffer(dilate, join_style=JOIN_STYLE)
+        epsilon1 = EPSILON0 * scale
+        if epsilon1 < self._epsilon:
+            self._epsilon = epsilon1
         self.add_regions(regions, mode=mode, pos=pos)
 
 
@@ -518,6 +525,9 @@ class Geometry:
             roi = extent
         if roi_erosion > 0:
             roi = roi.buffer(-roi_erosion, join_style=JOIN_STYLE)
+        epsilon1 = EPSILON0 * scale
+        if epsilon1 < self._epsilon:
+            self._epsilon = epsilon1
         self.modify_roi(roi, mode=mode)
 
 
@@ -666,6 +676,9 @@ class Geometry:
                 self._roi = roi
         else:
             roi = self._roi
+        epsilon1 = EPSILON0 * scale
+        if epsilon1 < self._epsilon:
+            self._epsilon = epsilon1
         covered = None
         bu0 = [roi.boundary]
         polygons_cleaned = {}
@@ -679,13 +692,13 @@ class Geometry:
                 polygons_cleaned[lbl] = pp
                 covered = pp
             else:
-                bb = pp.boundary.difference(covered.buffer(-EPSILON0 * scale))
+                bb = pp.boundary.difference(covered.buffer(-self._epsilon))
                 bu0.append(bb)
                 polygons_cleaned[lbl] = pp.difference(covered)
                 covered = covered.union(pp)
         bu0 = unary_union(bu0)
         polygons_formalized = list(polygonize(bu0))
-        polygons_formalized, _ = clean_up_small_regions(polygons_formalized, area_thresh=area_thresh, buffer=EPSILON0*scale)
+        polygons_formalized, _ = clean_up_small_regions(polygons_formalized, area_thresh=area_thresh, buffer=self._epsilon)
         formalized_polygon_areas = [p.area for p in polygons_formalized]
         min_poly_area = np.min(formalized_polygon_areas)
         boundaries = OrderedDict()
@@ -780,6 +793,9 @@ class Geometry:
                 self._roi = roi
         else:
             roi = self._roi
+        epsilon1 = EPSILON0 * scale
+        if epsilon1 < self._epsilon:
+            self._epsilon = epsilon1
         covered = None
         bu0 = [roi.boundary]
         polygons_cleaned = {}
@@ -793,13 +809,13 @@ class Geometry:
                 polygons_cleaned[lbl] = pp
                 covered = pp
             else:
-                bb = pp.boundary.difference(covered.buffer(-EPSILON0 * scale))
+                bb = pp.boundary.difference(covered.buffer(-self._epsilon))
                 bu0.append(bb)
                 polygons_cleaned[lbl] = pp.difference(covered)
                 covered = covered.union(pp)
         bu0 = unary_union(bu0)
         polygons_formalized = list(polygonize(bu0))
-        polygons_formalized, modified_area = clean_up_small_regions(polygons_formalized, area_thresh=area_thresh, buffer=EPSILON0*scale)
+        polygons_formalized, modified_area = clean_up_small_regions(polygons_formalized, area_thresh=area_thresh, buffer=self._epsilon)
         formalized_polygon_areas = [p.difference(modified_area).area for p in polygons_formalized]
         min_poly_area = np.min(formalized_polygon_areas)
         boundaries = OrderedDict()
@@ -889,6 +905,9 @@ class Geometry:
             roi = self._roi.simplify(roi_tol*scale, preserve_topology=True)
             if inplace:
                 self._roi = roi
+        epsilon1 = EPSILON0 * scale
+        if epsilon1 < self._epsilon:
+            self._epsilon = epsilon1
         regions_new = {}
         for key, pp in self._regions.items():
             if (region_tols[key] > 0) and (pp is not None):
@@ -897,7 +916,7 @@ class Geometry:
                     self._regions[key] = pp_updated
                 else:
                     regions_new[key] = pp_updated
-        regions_new, _ = clean_up_small_regions(regions_new, roi=roi, area_thresh=area_thresh, buffer=EPSILON0*scale)
+        regions_new, _ = clean_up_small_regions(regions_new, roi=roi, area_thresh=area_thresh, buffer=self._epsilon)
         if inplace:
             return self
         else:
@@ -960,7 +979,8 @@ class Geometry:
         PSLG = {'vertices': vertices,
                 'segments': segments,
                 'markers': markers,
-                'resolution': self._resolution}
+                'resolution': self._resolution,
+                'epsilon': self._epsilon}
         return PSLG
 
 

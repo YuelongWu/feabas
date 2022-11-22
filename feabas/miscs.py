@@ -1,5 +1,7 @@
 import collections
 import importlib
+from scipy import sparse
+import scipy.sparse.csgraph as csgraph
 import gc
 
 import numpy as np
@@ -77,6 +79,65 @@ def crop_image_from_bbox(img, bbox_img, bbox_out, **kwargs):
         imgout = np.full_like(img, fillval, shape=outsz)
         imgout[indx] = cropped
         return imgout
+
+
+def chain_segment_rings(segments, directed=True, conn_lable=None):
+    """
+    Given id pairs of line segment points, assemble them into (closed) chains.
+    Args:
+        segments (Nsegx2 ndarray): vertices' ids of each segment. Each segment
+            should only appear once, and the rings should be simple (no self
+            intersection).
+    """
+    inv_map, seg_n = np.unique(segments, return_inverse=True)
+    seg_n = seg_n.reshape(segments.shape)
+    if not directed:
+        seg_n = np.sort(seg_n, axis=-1)
+    Nseg = seg_n.shape[0]
+    Npts = inv_map.size
+    chains = []
+    if conn_lable is None:
+        A = sparse.csr_matrix((np.ones(Nseg), (seg_n[:,0], seg_n[:,1])), shape=(Npts, Npts))
+        N_conn, V_conn = csgraph.connected_components(A, directed=directed, return_labels=True)
+    else:
+        u_lbl, S_conn = np.unique(conn_lable,  return_inverse=True)
+        N_conn = u_lbl.size
+        A = sparse.csc_matrix((S_conn+1, (seg_n[:,0], seg_n[:,1])), shape=(Npts, Npts))
+    for n in range(N_conn):
+        if conn_lable is None:
+            vtx_mask = V_conn == n    
+            An = A[vtx_mask][:, vtx_mask]
+        else:
+            An0 = A == (n+1)
+            An0.eliminate_zeros()
+            vtx_mask = np.zeros(Npts, dtype=bool)
+            sidx = np.unique(seg_n[S_conn == n], axis=None)
+            vtx_mask[sidx] = True
+            An = An0[vtx_mask][:, vtx_mask]
+        vtx_idx = np.nonzero(vtx_mask)[0]
+        while An.max() > 0:
+            idx0, idx1 = np.unravel_index(np.argmax(An), An.shape)
+            An[idx0, idx1] = 0
+            An.eliminate_zeros()
+            dis, pred = csgraph.shortest_path(An, directed=directed, return_predecessors=True, indices=idx1)
+            if dis[idx0] < 0:
+                raise ValueError('segment rings not closed.')
+            seq = [idx0]
+            crnt_node = idx0
+            while True:
+                crnt_node = pred[crnt_node]
+                if crnt_node >= 0:
+                    seq.insert(0, crnt_node)
+                else:
+                    break
+            chain_idx = vtx_idx[seq]
+            chains.append(inv_map[chain_idx])
+            covered_edges = np.stack((seq[:-1], seq[1:]), axis=-1)
+            if not directed:
+                covered_edges = np.sort(covered_edges, axis=-1)
+            R = sparse.csr_matrix((np.ones(len(seq)-1), (covered_edges[:,0], covered_edges[:,1])), shape=An.shape)
+            An = An - R
+    return chains
 
 
 ##--------------------------------- caches -----------------------------------##

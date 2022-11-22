@@ -12,7 +12,7 @@ from feabas import miscs, material
 from feabas.constant import *
 
 
-def dynamic_cache(gear):
+def config_cache(gear):
     """
     The decorator that determines the caching behaviour of the Mesh properties.
     gear: used to generate caching key. Possible values include:
@@ -32,7 +32,7 @@ def dynamic_cache(gear):
     assign_value: if kwargs assign_value is given, instead of computing the property,
         directly return that value and force cache it if required.
     """
-    def dynamic_cache_wrap(func):
+    def config_cache_wrap(func):
         prop_name0 = func.__name__
         def decorated(self, cache=None, force_update=False, **kwargs):
             if cache is None:
@@ -121,67 +121,7 @@ def dynamic_cache(gear):
                 else:
                     raise TypeError('Cache type not recognized')
         return decorated
-    return dynamic_cache_wrap
-
-
-def chain_segment_rings(segments, directed=True, conn_lable=None):
-    """
-    Given id pairs of line segment points, assemble them into (closed) chains.
-    Args:
-        segments (Nsegx2 ndarray): vertices' ids of each segment. Each segment
-            should only appear once, and the rings should be simple (no self
-            intersection).
-    """
-    inv_map, seg_n, cnts = np.unique(segments, return_inverse=True, return_counts=True)
-    seg_n = seg_n.reshape(segments.shape)
-    if not directed:
-        seg_n = np.sort(seg_n, axis=-1)
-    Nseg = seg_n.shape[0]
-    Npts = inv_map.size
-    chains = []
-    if conn_lable is None:
-        A = sparse.csr_matrix((np.ones(Nseg), (seg_n[:,0], seg_n[:,1])), shape=(Npts, Npts))
-        N_conn, V_conn = csgraph.connected_components(A, directed=directed, return_labels=True)
-    else:
-        u_lbl, S_conn = np.unique(conn_lable,  return_inverse=True)
-        N_conn = u_lbl.size
-        A = sparse.csc_matrix((S_conn+1, (seg_n[:,0], seg_n[:,1])), shape=(Npts, Npts))
-    for n in range(N_conn):
-        if conn_lable is None:
-            vtx_mask = V_conn == n    
-            An = A[vtx_mask][:, vtx_mask]
-        else:
-            An0 = A == (n+1)
-            An0.eliminate_zeros()
-            vtx_mask = np.zeros(Npts, dtype=bool)
-            sidx = np.unique(seg_n[S_conn == n], axis=None)
-            vtx_mask[sidx] = True
-            An = An0[vtx_mask][:, vtx_mask]
-        vtx_idx = np.nonzero(vtx_mask)[0]
-        while An.max() > 0:
-            idx0, idx1 = np.unravel_index(np.argmax(An), An.shape)
-            An[idx0, idx1] = 0
-            An.eliminate_zeros()
-            dis, pred = csgraph.shortest_path(An, directed=directed, return_predecessors=True, indices=idx1)
-            if dis[idx0] < 0:
-                raise ValueError('segment rings not closed.')
-            seq = [idx0]
-            crnt_node = idx0
-            while True:
-                crnt_node = pred[crnt_node]
-                if crnt_node >= 0:
-                    seq.insert(0, crnt_node)
-                else:
-                    break
-            chain_idx = vtx_idx[seq]
-            chains.append(inv_map[chain_idx])
-            covered_edges = np.stack((seq[:-1], seq[1:]), axis=-1)
-            if not directed:
-                covered_edges = np.sort(covered_edges, axis=-1)
-            R = sparse.csr_matrix((np.ones(len(seq)-1), (covered_edges[:,0], covered_edges[:,1])), shape=An.shape)
-            An = An - R
-    return chains
-
+    return config_cache_wrap
 
 
 class Mesh:
@@ -241,6 +181,7 @@ class Mesh:
         self.triangles = triangles
         self._material_ids = material_ids
         self._resolution = kwargs.get('resolution', 4)
+        self._epsilon = kwargs.get('epsilon', EPSILON0)
         self._name = kwargs.get('name', '')
         self.uid = kwargs.get('uid', None)
         self._default_cache = kwargs.get('cache', True)
@@ -766,7 +707,7 @@ class Mesh:
         return self.triangles.shape[0]
 
 
-    @dynamic_cache('INITIAL')
+    @config_cache('INITIAL')
     def edges(self, tri_mask=None):
         """edge indices of the triangulation mesh."""
         if tri_mask is None:
@@ -777,12 +718,31 @@ class Mesh:
         return edges
 
 
+    @config_cache('INITIAL')
+    def _edge_to_tid_lut(self):
+        """edge to triangle id look-up table."""
+        edges = Mesh.triangle2edge(self.triangles, directional=True)
+        tids0 = np.arange(edges.shape[0]) % self.num_triangles
+        Npt = self.num_vertices
+        lut = sparse.csr_matrix((tids0+1, (edges[:,0], edges[:,1])), shape=(Npt, Npt))
+        return lut
+
+
+    def edge_to_tid(self, edges, directed=False):
+        lut = self._edge_to_tid_lut()
+        tid = np.array(lut[edges[:,0], edges[:,1]]).ravel() - 1
+        if not directed:
+            tid1 = np.array(lut[edges[:,1], edges[:,0]]).ravel() - 1
+            tid = np.stack((tid, tid1), axis=-1)
+        return tid
+
+
     def segments(self, tri_mask=None):
         """edge indices for edges on the borders."""
         return self.segments_w_triangle_ids(tri_mask=tri_mask)[0]
 
 
-    @dynamic_cache('INITIAL')
+    @config_cache('INITIAL')
     def segments_w_triangle_ids(self, tri_mask=None):
         """edge indices for edges on the borders, also return the triangle ids"""
         if tri_mask is None:
@@ -800,8 +760,7 @@ class Mesh:
 
 
 
-
-    @dynamic_cache('INITIAL')
+    @config_cache('INITIAL')
     def vertex_adjacencies(self, vtx_mask=None, tri_mask=None):
         """sparse adjacency matrix of vertices."""
         if vtx_mask is None:
@@ -817,7 +776,7 @@ class Mesh:
             return A[vtx_mask][:, vtx_mask]
 
 
-    @dynamic_cache('TBD')
+    @config_cache('TBD')
     def vertex_distances(self, gear=MESH_GEAR_INITIAL, vtx_mask=None, tri_mask=None):
         """sparse matrix storing lengths of the edges."""
         if vtx_mask is None:
@@ -837,7 +796,7 @@ class Mesh:
             return D[vtx_mask][:, vtx_mask]
 
 
-    @dynamic_cache('INITIAL')
+    @config_cache('INITIAL')
     def triangle_adjacencies(self, tri_mask=None):
         """
         sparse adjacency matrix of triangles.
@@ -862,7 +821,7 @@ class Mesh:
             return A[tri_mask][:, tri_mask]
 
 
-    @dynamic_cache('TBD')
+    @config_cache('TBD')
     def triangle_centers(self, gear=MESH_GEAR_INITIAL):
         """corodinates of the centers of the triangles (Ntri x 2)"""
         gear0 = self._current_gear
@@ -874,7 +833,7 @@ class Mesh:
         return vtri.mean(axis=1)
 
 
-    @dynamic_cache('TBD')
+    @config_cache('TBD')
     def triangle_distances(self, gear=MESH_GEAR_INITIAL, tri_mask=None):
         """sparse matrix storing distances of neighboring triangles."""
         if tri_mask is None:
@@ -890,7 +849,7 @@ class Mesh:
             return D[tri_mask][:, tri_mask]
 
 
-    @dynamic_cache('INITIAL')
+    @config_cache('INITIAL')
     def connected_vertices(self, tri_mask=None, local_index=False):
         """
         connected components vertices.
@@ -912,7 +871,7 @@ class Mesh:
         return N_conn, V_conn
 
 
-    @dynamic_cache('INITIAL')
+    @config_cache('INITIAL')
     def connected_triangles(self, tri_mask=None, local_index=False):
         """
         connected components of triangles.
@@ -928,7 +887,7 @@ class Mesh:
         return N_conn, T_conn
 
 
-    @dynamic_cache('INITIAL')
+    @config_cache('INITIAL')
     def grouped_segment_chains(self, tri_mask=None):
         """
         group segments into chains.
@@ -938,7 +897,7 @@ class Mesh:
         """
         sgmnts, tids = self.segments_w_triangle_ids(tri_mask=tri_mask)
         N_conn, T_conn = self.connected_triangles(tri_mask=tri_mask, local_index=False)
-        chains = chain_segment_rings(sgmnts, directed=True, conn_lable=T_conn[tids])
+        chains = miscs.chain_segment_rings(sgmnts, directed=True, conn_lable=T_conn[tids])
         vertices = self.initial_vertices
         grouped_chains = [[] for _ in range(N_conn)]
         if tri_mask is None:
@@ -959,17 +918,53 @@ class Mesh:
 
 
   ## ------------------------ collision management ------------------------- ##
-    def check_segment_collision(self, gear=MESH_GEAR_MOVING):
+    def check_segment_collision(self, gear=MESH_GEAR_MOVING, tri_mask=None):
+        """check if segments have collisions among themselves."""
         gear0 = self._current_gear
         self.switch_gear(gear=gear)
-        sgmt = self.segments()
         vertices = self.vertices
+        SRs = self.grouped_segment_chains(tri_mask=tri_mask)
+        covered = None
+        valid = True
+        for sr in SRs:
+            outL = vertices[sr[0]]
+            if len(sr) > 1:
+                holes = [vertices[s] for s in sr[1:]]
+            else:
+                holes = None
+            p = shpgeo.Polygon(outL, holes=holes)
+            if not p.is_valid:
+                valid = False
+                break
+            if covered is None:
+                covered = p
+            elif p.intersects(covered):
+                valid = False
+                break
+            else:
+                covered = covered.union(p)
+        self.switch_gear(gear=gear0)
+        return valid
+
+
+    def locate_segment_collision(self, gear=MESH_GEAR_MOVING, tri_mask=None):
+        """find the segments that collide."""
+        gear0 = self._current_gear
+        self.switch_gear(gear=gear)
+        SRs = self.grouped_segment_chains(tri_mask=tri_mask)
+        vertices = self.vertices
+        boundaries = []
+        thickened = []
+        for sr in SRs:
+            for line_indx in sr:
+                line_indx = np.append(line_indx, line_indx[0])
+                line = shpgeo.LineString(vertices[line_indx])
+                boundaries.append(line)
+                line_indx = np.append(line_indx, line_indx[1])
+                line = shpgeo.LineString(vertices[line_indx])
+                thickened.append(line.buffer(self._epsilon, single_sided=True, join_style=2))
         pass
         self.switch_gear(gear=gear0)
-
-
-    def locate_segment_collision(self):
-        pass
 
 
     def locate_internal_collision(self):

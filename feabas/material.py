@@ -4,11 +4,8 @@ import json
 import numpy as np
 
 from feabas import miscs
+from feabas.constant import *
 
-# material model type
-MATERIAL_MODEL_ENG = 0    # Engineering strain & stress
-MATERIAL_MODEL_SVK = 1    # St. Venant-Kirchhoff model
-MATERIAL_MODEL_NHK = 2    # Neo-Hookean model
 
 DTYPE = np.float32  # single-precision
 
