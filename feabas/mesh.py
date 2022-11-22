@@ -6,6 +6,7 @@ import numpy as np
 from scipy import sparse
 import scipy.sparse.csgraph as csgraph
 import shapely.geometry as shpgeo
+from shapely.ops import polygonize, unary_union
 import triangle
 
 from feabas import miscs, material
@@ -954,17 +955,36 @@ class Mesh:
         SRs = self.grouped_segment_chains(tri_mask=tri_mask)
         vertices = self.vertices
         boundaries = []
+        polygons_rings = []
         thickened = []
         for sr in SRs:
             for line_indx in sr:
-                line_indx = np.append(line_indx, line_indx[0])
-                line = shpgeo.LineString(vertices[line_indx])
+                line = shpgeo.LinearRing(vertices[line_indx])
                 boundaries.append(line)
-                line_indx = np.append(line_indx, line_indx[1])
-                line = shpgeo.LineString(vertices[line_indx])
-                thickened.append(line.buffer(self._epsilon, single_sided=True, join_style=2))
-        pass
+                polygons_rings.append(shpgeo.Polygon(line))
+                line_t = line.parallel_offset(self._epsilon, 'left', join_style=2)
+                thickened.append(line_t.buffer(-self._epsilon, single_sided=True, join_style=2))
+        polygons_partition = list(polygonize(unary_union(boundaries)))
+        polygons_tokeep = []
+        for pp in polygons_partition:
+            pts = pp.representative_point()
+            winding_number = 0
+            for pr in polygons_rings:
+                if pr.contains(pts):
+                    winding_number += 1
+            if winding_number % 2:
+                polygons_tokeep.append(pp)
+        polygon_odd_wind = unary_union(polygons_tokeep + thickened)
+        polygon_odd_wind = polygon_odd_wind.buffer(self._epsilon/4, join_style=2)
+        polygon_odd_wind = polygon_odd_wind.buffer(-self._epsilon/2, join_style=2)
+        segments = self.segments(tri_mask=tri_mask)
+        collided_segments = []
+        for seg in segments:
+            lineseg = shpgeo.LineString(vertices[seg])
+            if polygon_odd_wind.intersects(lineseg):
+                collided_segments.append(seg)
         self.switch_gear(gear=gear0)
+        return collided_segments
 
 
     def locate_internal_collision(self):
