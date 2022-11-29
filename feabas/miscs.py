@@ -81,13 +81,17 @@ def crop_image_from_bbox(img, bbox_img, bbox_out, **kwargs):
         return imgout
 
 
-def chain_segment_rings(segments, directed=True, conn_lable=None):
+def chain_segment_rings(segments, directed=True, conn_lable=None) -> list:
     """
     Given id pairs of line segment points, assemble them into (closed) chains.
     Args:
         segments (Nsegx2 ndarray): vertices' ids of each segment. Each segment
             should only appear once, and the rings should be simple (no self
             intersection).
+        directed (bool): whether the segments provided are directed. Default to
+            True.
+        conn_label (np.ndarray): preset groupings of the segments. If set to
+            None, use the connected components from vertex adjacency.
     """
     inv_map, seg_n = np.unique(segments, return_inverse=True)
     seg_n = seg_n.reshape(segments.shape)
@@ -138,6 +142,13 @@ def chain_segment_rings(segments, directed=True, conn_lable=None):
             R = sparse.csr_matrix((np.ones(len(seq)-1), (covered_edges[:,0], covered_edges[:,1])), shape=An.shape)
             An = An - R
     return chains
+
+
+def signed_area(vertices, triangles) -> np.ndarray:
+    tripts = vertices[triangles]
+    v0 = tripts[:,1,:] - tripts[:,0,:]
+    v1 = tripts[:,2,:] - tripts[:,1,:]
+    return np.cross(v0, v1)
 
 
 ##--------------------------------- caches -----------------------------------##

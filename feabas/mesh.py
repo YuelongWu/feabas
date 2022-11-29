@@ -948,7 +948,7 @@ class Mesh:
         return valid
 
 
-    def locate_segment_collision(self, gear=MESH_GEAR_MOVING, tri_mask=None):
+    def locate_segment_collision(self, gear=MESH_GEAR_MOVING, tri_mask=None, check_flipped=True):
         """find the segments that collide."""
         gear0 = self._current_gear
         self.switch_gear(gear=gear)
@@ -975,20 +975,47 @@ class Mesh:
             if winding_number % 2:
                 polygons_tokeep.append(pp)
         polygon_odd_wind = unary_union(polygons_tokeep + thickened)
-        polygon_odd_wind = polygon_odd_wind.buffer(self._epsilon/4, join_style=2)
-        polygon_odd_wind = polygon_odd_wind.buffer(-self._epsilon/2, join_style=2)
+        polygon_odd_wind = polygon_odd_wind.buffer(self._epsilon/10, join_style=2)
+        polygon_odd_wind = polygon_odd_wind.buffer(-self._epsilon/2, join_style=2, mitre_limit=10)
         segments = self.segments(tri_mask=tri_mask)
         collided_segments = []
+        rest_of_segments = []
         for seg in segments:
             lineseg = shpgeo.LineString(vertices[seg])
             if polygon_odd_wind.intersects(lineseg):
                 collided_segments.append(seg)
+            else:
+                rest_of_segments.append(seg)
+        if check_flipped:
+            # check if exist flipped triangles where all three points on segments
+            Tseg_flag = np.sum(np.isin(self.triangles, segments), axis=-1) == 3
+            if tri_mask is None:
+                T = self.locate_flipped_triangles(gear=gear, tri_mask=Tseg_flag)
+            else:
+                T = self.locate_flipped_triangles(gear=gear, tri_mask=(Tseg_flag & tri_mask))
+            if T.size > 0:
+                S_flp = Mesh.triangle2edge(T, directional=True)
+                for seg in rest_of_segments:
+                    if np.any(np.all(S_flp==seg, axis=-1)):
+                        collided_segments.append(seg)
         self.switch_gear(gear=gear0)
         return collided_segments
 
 
-    def locate_internal_collision(self):
-        pass
+    def locate_flipped_triangles(self, gear=MESH_GEAR_MOVING, tri_mask=None):
+        gear0 = self._current_gear
+        vertices0 = self.initial_vertices
+        self.switch_gear(gear=gear)
+        if tri_mask is None:
+            T = self.triangles
+        else:
+            T = self.triangles[tri_mask]
+        vertices = self.vertices
+        A0 = miscs.signed_area(vertices0, T)
+        A1 = miscs.signed_area(vertices, T)
+        flipped_sel = (A0 * A1) <= 0
+        self.switch_gear(gear=gear0)
+        return T[flipped_sel]
 
 
     def fix_segment_collision(self):
@@ -1003,3 +1030,5 @@ class Mesh:
         if not directional:
             edges = np.unique(np.sort(edges, axis=-1), axis=0)
         return edges
+
+
