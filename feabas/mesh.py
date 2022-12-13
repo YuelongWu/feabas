@@ -15,16 +15,32 @@ from feabas import miscs, material
 from feabas.constant import *
 
 
+def gear_constant_to_str(gear_const):
+    if isinstance(gear_const, (tuple, list)):
+        gearstr = '_'.join([gear_constant_to_str(s) for s in gear_const])
+    elif gear_const == MESH_GEAR_INITIAL:
+        gearstr = 'INITIAL'
+    elif gear_const == MESH_GEAR_FIXED:
+        gearstr = 'FIXED'
+    elif gear_const == MESH_GEAR_MOVING:
+        gearstr = 'MOVING'
+    elif gear_const == MESH_GEAR_STAGING:
+        gearstr = 'STAGING'
+    else:
+        raise ValueError
+    return gearstr
+
+
 def config_cache(gear):
     """
     The decorator that determines the caching behaviour of the Mesh properties.
     gear: used to generate caching key. Possible values include:
-        'INITIAL': the property is only related to the initial vertice positions
-            and their connection;
-        'FIXED': the property is also related to the position of fixed vertice
-            positions;
-        'MOVING': the property is also related to the position of moving vertice
-            positions;
+        MESH_GEAR_INITIAL: the property is only related to the initial vertice
+            positions and their connection;
+        MESH_GEAR_FIXED: the property is also related to the position of fixed
+            vertice positions;
+        MESH_GEAR_MOVING: the property is also related to the position of moving
+            vertice positions;
         'TBD': the vertices on which the property is caculated is determined on
             the fly. If 'gear' is provided in the keyward argument, use that;
             otherwise, use self._current_gear.
@@ -34,18 +50,13 @@ def config_cache(gear):
         If type defaultdict,  save to cache object with key under dict[prop_name].
     assign_value: if kwargs assign_value is given, instead of computing the property,
         directly return that value and force cache it if required.
+    no_compute: if set to True, only probe if there exists cached value. If not,
+        directly return None without compute. Otherwise return cached value.
+        default to False.
     """
     def config_cache_wrap(func):
         prop_name0 = func.__name__
-        def decorated(self, cache=None, force_update=False, **kwargs):
-            if cache is None:
-                # if cache not provided, use default cache in self.
-                cache = self._default_cache
-            if (kwargs.get('tri_mask', None) is not None) or \
-               (kwargs.get('vtx_mask', None) is not None):
-                # if contain masked triangles or vertices, don't cache
-                cache = False
-                force_update = True
+        def decorated(self, cache=None, force_update=False, no_compute=False, **kwargs):
             if 'assign_value' in kwargs:
                 force_update = True
                 assign_mode = True
@@ -59,17 +70,42 @@ def config_cache(gear):
                     cgear = self._current_gear
             else:
                 cgear = gear
-            if isinstance(cache, bool):
-                if cgear == MESH_GEAR_INITIAL:
-                    sgear = 'INITIAL'
-                elif cgear == MESH_GEAR_FIXED:
-                    sgear = 'FIXED'
-                elif cgear == MESH_GEAR_MOVING:
-                    sgear = 'MOVING'
-                elif cgear == MESH_GEAR_STAGING:
-                    sgear = 'STAGING'
+            if cache is None:
+                # if cache not provided, use default cache in self.
+                cache = self._default_cache[cgear]
+            masked_operation = False
+            if ('tri_mask' in kwargs) and (kwargs['tri_mask'] is not None):
+                tri_mask = np.array(tri_mask, copy=False)
+                if tri_mask.dtype == bool:
+                    if not np.all(tri_mask):
+                        masked_operation = True
                 else:
-                    sgear = cgear
+                    if tri_mask.size < self.num_triangles:
+                        masked_operation = True
+                    else:
+                        tri_mask0 = np.zeros(self.num_triangles, dtype=bool)
+                        tri_mask0[tri_mask] = True
+                        if not np.all(tri_mask0):
+                            masked_operation = True
+            if (not masked_operation) and (kwargs.get('vtx_mask', None) is not None):
+                vtx_mask = np.array(vtx_mask, copy=False)
+                if vtx_mask.dtype == bool:
+                    if not np.all(vtx_mask):
+                        masked_operation = True
+                else:
+                    if vtx_mask.size < self.num_vertices:
+                        masked_operation = True
+                    else:
+                        vtx_mask0 = np.zeros(self.num_vertices, dtype=bool)
+                        vtx_mask0[vtx_mask] = True
+                        if not np.all(vtx_mask0):
+                            masked_operation = True
+            if masked_operation:
+                # if contain masked triangles or vertices, don't cache
+                cache = False
+                force_update = True
+            if isinstance(cache, bool):
+                sgear = gear_constant_to_str(cgear)
                 prop_name = '_cached_' + prop_name0 + '_' + sgear
                 if cache:  # save to self as an attribute
                     if not force_update and hasattr(self, prop_name):
@@ -79,6 +115,8 @@ def config_cache(gear):
                             return prop
                     if assign_mode:
                         prop = prop0
+                    elif no_compute:
+                        return None
                     else:
                         prop = func(self, **kwargs)
                     setattr(self, prop_name, prop)
@@ -91,6 +129,8 @@ def config_cache(gear):
                             return prop
                     if assign_mode:
                         prop = prop0
+                    elif no_compute:
+                        return None
                     else:
                         prop = func(self, **kwargs)
                     return prop
@@ -104,6 +144,8 @@ def config_cache(gear):
                             return prop
                     if assign_mode:
                         prop = prop0
+                    elif no_compute:
+                        return None
                     else:
                         prop = func(self, **kwargs)
                     cache.update_item(key, prop)
@@ -117,6 +159,8 @@ def config_cache(gear):
                             return prop
                     if assign_mode:
                         prop = prop0
+                    elif no_compute:
+                        return None
                     else:
                         prop = func(self, **kwargs)
                     cache_obj.update_item(key, prop)
@@ -150,8 +194,8 @@ class Mesh:
         self._vertices[MESH_GEAR_FIXED] = kwargs.get('fixed_vertices', vertices)
         self._vertices[MESH_GEAR_MOVING] = kwargs.get('moving_vertices', None)
         self._vertices[MESH_GEAR_STAGING] = kwargs.get('staging_vertices', None)
-        self._fixed_offset = kwargs.get('fixed_offset', np.zeros((1,2), dtype=type(vertices)))
-        self._moving_offset = kwargs.get('moving_offset', np.zeros((1,2), dtype=type(vertices)))
+        self._fixed_offset = kwargs.get('fixed_offset', np.zeros((1,2), dtype=np.float64))
+        self._moving_offset = kwargs.get('moving_offset', np.zeros((1,2), dtype=np.float64))
         self._current_gear = MESH_GEAR_FIXED
         tri_num = triangles.shape[0]
         mtb = kwargs.get('material_table', None)
@@ -187,7 +231,7 @@ class Mesh:
         self._epsilon = kwargs.get('epsilon', EPSILON0)
         self._name = kwargs.get('name', '')
         self.uid = kwargs.get('uid', None)
-        self._default_cache = kwargs.get('cache', True)
+        self._default_cache = kwargs.get('cache', defaultdict(lambda: True))
         self._caching_keys = defaultdict(lambda: None)
         self._caching_keys[MESH_GEAR_INITIAL] = self.uid # if set to None, intialize later
 
@@ -563,6 +607,22 @@ class Mesh:
         else:
             raise ValueError
 
+
+    def offset(self, gear=None):
+        if gear is None:
+            gear = self._current_gear
+        if gear == MESH_GEAR_INITIAL:
+            return np.zeros((1,2), dtype=np.float64)
+        elif gear == MESH_GEAR_FIXED:
+            return self._fixed_offset
+        elif gear == MESH_GEAR_MOVING:
+            return self._moving_offset
+        elif gear == MESH_GEAR_STAGING:
+            return self._moving_offset
+        else:
+            raise ValueError
+
+
     @property
     def vertices_w_offset(self):
         if self._current_gear == MESH_GEAR_INITIAL:
@@ -590,7 +650,7 @@ class Mesh:
 
     @property
     def fixed_vertices_w_offset(self):
-        return self.fixed_vertices + self._fixed_offset
+        return self.fixed_vertices + self.offset(gear=MESH_GEAR_FIXED)
 
     @property
     def moving_vertices(self):
@@ -605,7 +665,7 @@ class Mesh:
 
     @property
     def moving_vertices_w_offset(self):
-        return self.moving_vertices + self._moving_offset
+        return self.moving_vertices + self.offset(gear=MESH_GEAR_MOVING)
 
     @property
     def staging_vertices(self):
@@ -620,7 +680,7 @@ class Mesh:
 
     @property
     def staging_vertices_w_offset(self):
-        return self.staging_vertices + self._moving_offset
+        return self.staging_vertices + self.offset(gear=MESH_GEAR_STAGING)
 
 
   ## -------------------------------- caching ------------------------------ ##
@@ -699,6 +759,13 @@ class Mesh:
             gc.collect()
 
 
+    def set_default_cache(self, gear=None, cache=True):
+        if gear is None:
+            self._default_cache = defaultdict(lambda: cache)
+        else:
+            self._default_cache[gear] = cache
+
+
   ## ------------------------------ properties ----------------------------- ##
     @property
     def num_vertices(self):
@@ -710,7 +777,7 @@ class Mesh:
         return self.triangles.shape[0]
 
 
-    @config_cache('INITIAL')
+    @config_cache(MESH_GEAR_INITIAL)
     def edges(self, tri_mask=None):
         """edge indices of the triangulation mesh."""
         if tri_mask is None:
@@ -721,7 +788,7 @@ class Mesh:
         return edges
 
 
-    @config_cache('INITIAL')
+    @config_cache(MESH_GEAR_INITIAL)
     def _edge_to_tid_lut(self):
         """edge to triangle id look-up table."""
         edges = Mesh.triangle2edge(self.triangles, directional=True)
@@ -731,8 +798,10 @@ class Mesh:
         return lut
 
 
-    def edge_to_tid(self, edges, directed=False):
-        lut = self._edge_to_tid_lut()
+    def edge_to_tid(self, edges, directed=False, **kwargs):
+        lut = self._edge_to_tid_lut(**kwargs)
+        if lut is None:
+            return None
         tid = np.array(lut[edges[:,0], edges[:,1]]).ravel() - 1
         if not directed:
             tid1 = np.array(lut[edges[:,1], edges[:,0]]).ravel() - 1
@@ -740,12 +809,16 @@ class Mesh:
         return tid
 
 
-    def segments(self, tri_mask=None):
+    def segments(self, tri_mask=None, **kwargs):
         """edge indices for edges on the borders."""
-        return self.segments_w_triangle_ids(tri_mask=tri_mask)[0]
+        swid = self.segments_w_triangle_ids(tri_mask=tri_mask, **kwargs)
+        if swid is not None:
+            return swid[0]
+        else:
+            return None
 
 
-    @config_cache('INITIAL')
+    @config_cache(MESH_GEAR_INITIAL)
     def segments_w_triangle_ids(self, tri_mask=None):
         """edge indices for edges on the borders, also return the triangle ids"""
         if tri_mask is None:
@@ -759,7 +832,7 @@ class Mesh:
         return edges[indx], tid
 
 
-    @config_cache('INITIAL')
+    @config_cache(MESH_GEAR_INITIAL)
     def vertex_adjacencies(self, vtx_mask=None, tri_mask=None):
         """sparse adjacency matrix of vertices."""
         if vtx_mask is None:
@@ -795,55 +868,66 @@ class Mesh:
             return D[vtx_mask][:, vtx_mask]
 
 
-    @config_cache('INITIAL')
+    @config_cache(MESH_GEAR_INITIAL)
     def triangle_adjacencies(self, tri_mask=None):
         """
         sparse adjacency matrix of triangles.
         triangles that share an edge are considered adjacent
         """
         if tri_mask is None:
-            edges = np.sort(Mesh.triangle2edge(self.triangles, directional=True), axis=-1)
-            tids0 = np.arange(edges.shape[0]) % self.num_triangles
-            edges_complex = edges[:,0] + edges[:,1] *1j
-            idxt = np.argsort(edges_complex)
-            tids = tids0[idxt]
-            edges_complex = edges_complex[idxt]
-            indx = np.nonzero(np.diff(edges_complex)==0)[0]
-            idx0 = tids[indx]
-            idx1 = tids[indx+1]
-            Ntr = self.num_triangles
-            V = np.ones_like(idx0, dtype=bool)
-            A = sparse.csr_matrix((V, (idx0, idx1)), shape=(Ntr, Ntr))
-            return A
+            T = self.triangles
         else:
-            A = self.triangle_adjacencies(tri_mask=None)
-            return A[tri_mask][:, tri_mask]
+            A0 = self.triangle_adjacencies(tri_mask=None, no_compute=True)
+            if A0 is not None:
+                return A0[tri_mask][:, tri_mask]
+            T = self.triangles[tri_mask]
+        edges = np.sort(Mesh.triangle2edge(T, directional=True), axis=-1)
+        tids0 = np.arange(edges.shape[0]) % T.shape[0]
+        edges_complex = edges[:,0] + edges[:,1] *1j
+        idxt = np.argsort(edges_complex)
+        tids = tids0[idxt]
+        edges_complex = edges_complex[idxt]
+        indx = np.nonzero(np.diff(edges_complex)==0)[0]
+        idx0 = tids[indx]
+        idx1 = tids[indx+1]
+        Ntr = T.shape[0]
+        V = np.ones_like(idx0, dtype=bool)
+        A = sparse.csr_matrix((V, (idx0, idx1)), shape=(Ntr, Ntr))
+        return A
 
 
     @config_cache('TBD')
-    def triangle_centers(self, gear=MESH_GEAR_INITIAL):
+    def triangle_centers(self, gear=MESH_GEAR_INITIAL, tri_mask=None):
         """corodinates of the centers of the triangles (Ntri x 2)"""
+        if tri_mask is None:
+            T = self.triangles
+        else:
+            m0 = self.triangle_centers(gear=gear, tri_mask=None, no_compute=True)
+            if m0 is not None:
+                return m0[tri_mask]
+            T = self.triangles[tri_mask]
         gear0 = self._current_gear
         if gear0 != gear:
             self.switch_gear(gear)
             vertices = self.vertices
         self.switch_gear(gear0)
-        vtri = vertices[self.triangles]
+        vtri = vertices[T]
         return vtri.mean(axis=1)
 
 
     @config_cache('TBD')
     def triangle_bboxes(self, gear=MESH_GEAR_MOVING, tri_mask=None):
         """bounding boxes of triangles as in [xmin, ymin, xmax, ymax]."""
+        if tri_mask is None:
+            T = self.triangles
+        else:
+            bboxes0 = self.triangle_bboxes(gear=gear, tri_mask=None, no_compute=True)
+            if bboxes0 is not None:
+                return bboxes0[tri_mask]
+            T = self.triangles[tri_mask]
         gear0 = self._current_gear
         self.switch_gear(gear=gear)
         vertices = self.vertices
-        if tri_mask is None:
-            T = self.triangles
-        elif tri_mask.dtype == bool:
-            T = self.triangles[tri_mask]
-        else:
-            T = self.triangles[np.sort(tri_mask)]
         V = vertices[T]
         self.switch_gear(gear=gear0)
         xy_min = V.min(axis=-2)
@@ -855,21 +939,20 @@ class Mesh:
     @config_cache('TBD')
     def triangle_distances(self, gear=MESH_GEAR_INITIAL, tri_mask=None):
         """sparse matrix storing distances of neighboring triangles."""
-        if tri_mask is None:
-            tri_centers = self.triangle_centers(gear=gear)
-            A = self.triangle_adjacencies()
-            idx0, idx1 = A.nonzero()
-            dis = np.sum((tri_centers[idx0] - tri_centers[idx1])**2, axis=-1)**0.5
-            Ntri = self.num_triangles
-            D = sparse.csr_matrix((dis, (idx0, idx1)), shape=(Ntri, Ntri))
-            return D
-        else:
-            D = self.triangle_distances(gear=gear, tri_mask=None)
-            return D[tri_mask][:, tri_mask]
+        if tri_mask is not None:
+            D0 = self.triangle_distances(gear=gear, tri_mask=None, no_compute=True)
+            if D0 is not None:
+                return D0[tri_mask][:, tri_mask]
+        tri_centers = self.triangle_centers(gear=gear, tri_mask=tri_mask)
+        A = self.triangle_adjacencies(tri_mask=tri_mask)
+        idx0, idx1 = A.nonzero()
+        dis = np.sum((tri_centers[idx0] - tri_centers[idx1])**2, axis=-1)**0.5
+        D = sparse.csr_matrix((dis, (idx0, idx1)), shape=A.shape)
+        return D
 
 
-    @config_cache('INITIAL')
-    def connected_vertices(self, tri_mask=None, local_index=False):
+    @config_cache(MESH_GEAR_INITIAL)
+    def connected_vertices(self, tri_mask=None, local_index=True):
         """
         connected components vertices.
         return as (number_of_components, vertex_labels).
@@ -890,7 +973,7 @@ class Mesh:
         return N_conn, V_conn
 
 
-    @config_cache('INITIAL')
+    @config_cache(MESH_GEAR_INITIAL)
     def connected_triangles(self, tri_mask=None):
         """
         connected components of triangles.
@@ -901,7 +984,7 @@ class Mesh:
         return N_conn, T_conn
 
 
-    @config_cache('INITIAL')
+    @config_cache(MESH_GEAR_INITIAL)
     def grouped_segment_chains(self, tri_mask=None):
         """
         group segments into chains.
@@ -928,6 +1011,37 @@ class Mesh:
                 grouped_chains[cidx].append(chain)
         return grouped_chains
 
+
+    @config_cache('TBD')
+    def triangle_tform_svd(self, gear_fix=MESH_GEAR_INITIAL, gear=MESH_GEAR_MOVING, tri_mask=None):
+        """
+        singular values of the affine transforms for each triangle.
+        """
+        if tri_mask is not None:
+            s0 = self.triangle_tform_svd(gear=gear, tri_mask=None, no_compute=True)
+            if s0 is not None:
+                return s0[tri_mask]
+        gear0 = self._current_gear
+        self.switch_gear(gear=gear_fix)
+        v0 = self.vertices
+        self.switch_gear(gear=gear)
+        v1 = self.vertices
+        self.switch_gear(gear=gear0)
+        if tri_mask is None:
+            T = self.triangles
+        else:
+            T = self.triangles[tri_mask]
+        T0 = v0[T]
+        T1 = v1[T]
+        m0 = T0.mean(axis=-2, keepdims=True)
+        m1 = T1.mean(axis=-2, keepdims=True)
+        T0 = T0 - m0
+        T1 = T1 - m1
+        T0_pad = np.insert(T0, 2, 1, axis=-1)
+        T1_pad = np.insert(T1, 2, 1, axis=-1)
+        A = np.linalg.solve(T0_pad, T1_pad)
+        s = np.linalg.svd(A[:,:2,:2],compute_uv=False)
+        return s
 
 
   ## ------------------------ collision management ------------------------- ##
@@ -1086,6 +1200,13 @@ class Mesh:
                     collisions.append((tid0, tid1))
             rtree_c.delete(tid0, t0.bounds)
         return candidate_tids[np.array(collisions)]
+
+
+    def group_overlapped_triangles(self, collisions=None, gear=MESH_GEAR_MOVING, tri_mask=None):
+        if collisions is None:
+            collisions = self.find_triangle_overlaps(gear=gear, tri_mask=tri_mask)
+        collisions_g = Mesh.masked_index_to_global_index(tri_mask, np.unique(collisions, axis=None))
+
 
 
     def fix_segment_collision(self):
