@@ -314,6 +314,8 @@ def clean_up_small_regions(regions, roi=None, area_thresh=4, buffer=1e-3):
         for lbl, pp in regions_dict.items():
             if pp.is_empty:
                 continue
+            if not p0b.intersects(pp):
+                continue
             intersect_area = p0b.intersection(pp).area
             if intersect_area > max_intersection:
                 assigned_label = lbl
@@ -716,6 +718,8 @@ class Geometry:
                     break
                 if poly_assigned[kf]:
                     continue
+                if not pf.intersects(poly):
+                    continue
                 area_ints = pf.intersection(poly).area
                 if  area_ints / formalized_polygon_areas[kf] > 0.99:
                     bndr.append(pf.boundary)
@@ -733,7 +737,7 @@ class Geometry:
         segs_in_regions = defaultdict(list)
         for seg_idx, seg in enumerate(bag_of_segs):
             for lbl, bndr in boundaries.items():
-                if bndr.intersection(seg).length > 0:
+                if bndr.intersects(seg) and bndr.intersection(seg).length > 0:
                     segs_in_regions[lbl].append(seg_idx)
         simplify_order = []
         simplify_tol = []
@@ -833,13 +837,15 @@ class Geometry:
                     break
                 if poly_assigned[kf]:
                     continue
+                if not pf.intersects(poly):
+                    continue
                 area_ints = pf.intersection(poly).area
                 if  area_ints / formalized_polygon_areas[kf] > 0.99:
                     bndr.append(pf.boundary)
                     poly_assigned[kf] = True
                     area_left -= area_ints
             boundaries[lbl] = unary_union(bndr)
-        b_merged = unary_union(boundaries.values())
+        b_merged = unary_union(list(boundaries.values()))
         if hasattr(b_merged, 'geoms'):
             b_merged = linemerge(b_merged)
         if not hasattr(b_merged, 'geoms'):
@@ -851,7 +857,7 @@ class Geometry:
         labels_of_segs = defaultdict(list)
         for seg_idx, seg in enumerate(bag_of_segs):
             for lbl, bndr in boundaries.items():
-                if bndr.intersection(seg).length > 0:
+                if bndr.intersects(seg) and bndr.intersection(seg).length > 0:
                     labels_of_segs[seg_idx].append(region_names_lut[lbl])
         seg_groups = defaultdict(list)
         for seg_idx, lbl_ids in labels_of_segs.items():
@@ -861,7 +867,7 @@ class Geometry:
         group_tols = [region_tols[region_names[lbl[0]]] for lbl in group_indices]
         for gidx, tol in zip(group_indices, group_tols):
             segs_except_target = unary_union([s for k, s in seg_groups.items() if (k!=gidx)])
-            segs_all = unary_union(seg_groups.values())
+            segs_all = unary_union(list(seg_groups.values()))
             # fix segments other than the one to be simplified by duplicating them
             segs_combined = unary_union([segs_except_target, segs_all])
             segs_simplified = segs_combined.simplify(tol*scale, preserve_topology=True)

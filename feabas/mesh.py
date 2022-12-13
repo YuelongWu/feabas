@@ -3,8 +3,10 @@ import copy
 import gc
 import h5py
 import numpy as np
+from rtree import index
 from scipy import sparse
 import scipy.sparse.csgraph as csgraph
+import shapely
 import shapely.geometry as shpgeo
 from shapely.ops import polygonize, unary_union
 import triangle
@@ -754,11 +756,7 @@ class Mesh:
         _, indx, cnt = np.unique(np.sort(edges, axis=-1), axis=0, return_index=True, return_counts=True)
         indx = indx[cnt == 1]
         tid = indx % T.shape[0]
-        if tri_mask is not None:
-            t_map = np.nonzero(tri_mask)[0]
-            tid = t_map[tid]
         return edges[indx], tid
-
 
 
     @config_cache('INITIAL')
@@ -835,6 +833,26 @@ class Mesh:
 
 
     @config_cache('TBD')
+    def triangle_bboxes(self, gear=MESH_GEAR_MOVING, tri_mask=None):
+        """bounding boxes of triangles as in [xmin, ymin, xmax, ymax]."""
+        gear0 = self._current_gear
+        self.switch_gear(gear=gear)
+        vertices = self.vertices
+        if tri_mask is None:
+            T = self.triangles
+        elif tri_mask.dtype == bool:
+            T = self.triangles[tri_mask]
+        else:
+            T = self.triangles[np.sort(tri_mask)]
+        V = vertices[T]
+        self.switch_gear(gear=gear0)
+        xy_min = V.min(axis=-2)
+        xy_max = V.max(axis=-2)
+        bboxes = np.concatenate((xy_min, xy_max), axis=-1)
+        return bboxes
+
+
+    @config_cache('TBD')
     def triangle_distances(self, gear=MESH_GEAR_INITIAL, tri_mask=None):
         """sparse matrix storing distances of neighboring triangles."""
         if tri_mask is None:
@@ -873,18 +891,13 @@ class Mesh:
 
 
     @config_cache('INITIAL')
-    def connected_triangles(self, tri_mask=None, local_index=False):
+    def connected_triangles(self, tri_mask=None):
         """
         connected components of triangles.
         triangles sharing an edge are considered adjacent.
         """
         A = self.triangle_adjacencies(tri_mask=tri_mask)
-        N_conn, T_conn0 = csgraph.connected_components(A, directed=False, return_labels=True)
-        if (tri_mask is not None) and (not local_index):
-            T_conn = np.full_like(T_conn0, -1, shape=(self.num_triangles,))
-            T_conn[tri_mask] = T_conn0
-        else:
-            T_conn = T_conn0
+        N_conn, T_conn = csgraph.connected_components(A, directed=False, return_labels=True)
         return N_conn, T_conn
 
 
@@ -897,7 +910,7 @@ class Mesh:
         outer boundary are put at the head, followed by holes.
         """
         sgmnts, tids = self.segments_w_triangle_ids(tri_mask=tri_mask)
-        N_conn, T_conn = self.connected_triangles(tri_mask=tri_mask, local_index=False)
+        N_conn, T_conn = self.connected_triangles(tri_mask=tri_mask)
         chains = miscs.chain_segment_rings(sgmnts, directed=True, conn_lable=T_conn[tids])
         vertices = self.initial_vertices
         grouped_chains = [[] for _ in range(N_conn)]
@@ -905,7 +918,6 @@ class Mesh:
             T = self.triangles
         else:
             T = self.triangles[tri_mask]
-            T_conn = T_conn[tri_mask]
         for chain in chains:
             tidx = np.sum((T == chain[0]) + (T == chain[1]), axis=-1) > 1
             cidx = np.max(T_conn[tidx])
@@ -919,6 +931,21 @@ class Mesh:
 
 
   ## ------------------------ collision management ------------------------- ##
+    def _triangles_rtree_generator(self, gear=MESH_GEAR_MOVING, tri_mask=None):
+        if tri_mask is None:
+            tids = np.arange(self.num_triangles)
+        elif tri_mask.dtype == bool:
+            tids = np.nonzero(tri_mask)[0]
+        else:
+            tids = np.sort(tri_mask)
+        for k, bbox in enumerate(self.triangle_bboxes(gear=gear, tri_mask=tri_mask)):
+            yield (k, bbox, tids[k])
+
+
+    def triangles_rtree(self, gear=MESH_GEAR_MOVING, tri_mask=None):
+        return index.Index(self._triangles_rtree_generator(gear=gear, tri_mask=tri_mask))
+
+
     def check_segment_collision(self, gear=MESH_GEAR_MOVING, tri_mask=None):
         """check if segments have collisions among themselves."""
         gear0 = self._current_gear
@@ -949,7 +976,10 @@ class Mesh:
 
 
     def locate_segment_collision(self, gear=MESH_GEAR_MOVING, tri_mask=None, check_flipped=True):
-        """find the segments that collide."""
+        """
+        find the segments that collide. Return a list of collided segments and
+        their (local) triangle ids.
+        """
         gear0 = self._current_gear
         self.switch_gear(gear=gear)
         SRs = self.grouped_segment_chains(tri_mask=tri_mask)
@@ -962,8 +992,13 @@ class Mesh:
                 line = shpgeo.LinearRing(vertices[line_indx])
                 boundaries.append(line)
                 polygons_rings.append(shpgeo.Polygon(line))
-                line_t = line.parallel_offset(self._epsilon, 'left', join_style=2)
-                thickened.append(line_t.buffer(-self._epsilon, single_sided=True, join_style=2))
+                if shapely.__version__ >= '2.0.0':
+                    line = shpgeo.LinearRing(vertices[np.append(line_indx, line_indx[0])])
+                    line_t = line.buffer(self._epsilon, join_style=2, single_sided=True)
+                    thickened.append(line_t)
+                else:
+                    line_t = line.parallel_offset(self._epsilon, 'left', join_style=2)
+                    thickened.append(line_t.buffer(-self._epsilon, single_sided=True, join_style=2))
         polygons_partition = list(polygonize(unary_union(boundaries)))
         polygons_tokeep = []
         for pp in polygons_partition:
@@ -977,32 +1012,34 @@ class Mesh:
         polygon_odd_wind = unary_union(polygons_tokeep + thickened)
         polygon_odd_wind = polygon_odd_wind.buffer(self._epsilon/10, join_style=2)
         polygon_odd_wind = polygon_odd_wind.buffer(-self._epsilon/2, join_style=2, mitre_limit=10)
-        segments = self.segments(tri_mask=tri_mask)
+        segments, tids0 = self.segments_w_triangle_ids(tri_mask=tri_mask)
         collided_segments = []
         rest_of_segments = []
-        for seg in segments:
+        for seg, tid in zip(segments, tids0):
             lineseg = shpgeo.LineString(vertices[seg])
             if polygon_odd_wind.intersects(lineseg):
-                collided_segments.append(seg)
+                collided_segments.append((seg, tid))
             else:
-                rest_of_segments.append(seg)
+                rest_of_segments.append((seg, tid))
         if check_flipped:
             # check if exist flipped triangles where all three points on segments
             Tseg_flag = np.sum(np.isin(self.triangles, segments), axis=-1) == 3
             if tri_mask is None:
-                T = self.locate_flipped_triangles(gear=gear, tri_mask=Tseg_flag)
+                _, T = self.locate_flipped_triangles(gear=gear, tri_mask=Tseg_flag, return_triangles=True)
             else:
-                T = self.locate_flipped_triangles(gear=gear, tri_mask=(Tseg_flag & tri_mask))
+                _, T = self.locate_flipped_triangles(gear=gear, tri_mask=(Tseg_flag & tri_mask), return_triangles=True)
             if T.size > 0:
                 S_flp = Mesh.triangle2edge(T, directional=True)
-                for seg in rest_of_segments:
-                    if np.any(np.all(S_flp==seg, axis=-1)):
-                        collided_segments.append(seg)
+                for segwid in rest_of_segments:
+                    if np.any(np.all(S_flp==segwid[0], axis=-1)):
+                        collided_segments.append(segwid)
         self.switch_gear(gear=gear0)
-        return collided_segments
+        segs = np.array([s[0] for s in collided_segments])
+        tids = np.array([s[1] for s in collided_segments])
+        return segs, tids
 
 
-    def locate_flipped_triangles(self, gear=MESH_GEAR_MOVING, tri_mask=None):
+    def locate_flipped_triangles(self, gear=MESH_GEAR_MOVING, tri_mask=None, return_triangles=False):
         gear0 = self._current_gear
         vertices0 = self.initial_vertices
         self.switch_gear(gear=gear)
@@ -1015,7 +1052,40 @@ class Mesh:
         A1 = miscs.signed_area(vertices, T)
         flipped_sel = (A0 * A1) <= 0
         self.switch_gear(gear=gear0)
-        return T[flipped_sel]
+        if return_triangles:
+            return np.nonzero(flipped_sel)[0], T[flipped_sel] 
+        else:
+            return np.nonzero(flipped_sel)[0]
+
+
+    def find_triangle_overlaps(self, gear=MESH_GEAR_MOVING, tri_mask=None):
+        _, seg_tids = self.locate_segment_collision(gear=gear, tri_mask=tri_mask, check_flipped=False)
+        flip_tids = self.locate_flipped_triangles(gear=gear, tri_mask=tri_mask)
+        rtree0 = self.triangles_rtree(gear=gear, tri_mask=tri_mask)
+        init_tids = np.concatenate((seg_tids, flip_tids), axis=0)
+        init_tids = Mesh.masked_index_to_global_index(tri_mask, init_tids)
+        init_bboxes = self.triangle_bboxes(gear=gear, tri_mask=init_tids)
+        candidate_tids = []
+        for bbox in init_bboxes:
+            candidate_tids.extend(list(rtree0.intersection(bbox, objects=False)))
+        candidate_tids = np.sort(np.unique(candidate_tids))
+        tri_mask_c = Mesh.masked_index_to_global_index(tri_mask, candidate_tids)
+        rtree_c = self.triangles_rtree(gear=gear, tri_mask=tri_mask_c)
+        gear0 = self._current_gear
+        self.switch_gear(gear=gear)
+        vertices = self.vertices[self.triangles[tri_mask_c]]
+        self.switch_gear(gear=gear0)
+        Ts = [shpgeo.Polygon(v) for v in vertices]
+        collisions = []
+        for tid0, t0 in enumerate(Ts):
+            hits = rtree_c.intersection(t0.bounds)
+            for tid1 in hits:
+                if tid0 == tid1:
+                    continue
+                if t0.intersects(Ts[tid1]) and t0.intersection(Ts[tid1]).area > 0:
+                    collisions.append((tid0, tid1))
+            rtree_c.delete(tid0, t0.bounds)
+        return candidate_tids[np.array(collisions)]
 
 
     def fix_segment_collision(self):
@@ -1032,3 +1102,43 @@ class Mesh:
         return edges
 
 
+    @staticmethod
+    def masked_index_to_global_index(mask_sel, local_indx):
+        """
+        convert local index of a subarray to the global index.
+        Args:
+        mask_sel (np.ndarray[bool]): mask to select subarray from a larger array
+            (True to select). If None, the subarray is the global array.
+        local_indx: the local index of the subarray
+        Return:
+        global_indx(np.ndarray[int]): the index in the parent array.
+        """
+        if mask_sel is None:
+            return local_indx
+        if mask_sel.dtype == bool:
+            sel_indx = np.nonzero(mask_sel)[0]
+        else:
+            sel_indx = np.sort(sel_indx)
+        return sel_indx[local_indx]
+
+
+    @staticmethod
+    def global_index_to_masked_index(mask_sel, global_indx):
+        """
+        convert global index to the local index a subarray.
+        Args:
+        mask_sel (np.ndarray[bool]): mask to select subarray from a larger array
+            (True to select). If None, the subarray is the global array.
+        global_indx: the global index
+        Return:
+        local_indx(np.ndarray[int]): the index in the subarray. If an element is
+            not masked, return -1
+        """
+        if mask_sel is None:
+            return global_indx
+        g_indx = np.full_like(global_indx, -1, shape=mask_sel.shape)
+        if mask_sel.dtype == bool:
+            g_indx[mask_sel] = np.arange(np.sum(mask_sel))
+        else:
+            g_indx[np.sort(mask_sel,axis=None)] = np.arange(mask_sel.size)
+        return g_indx[global_indx]
