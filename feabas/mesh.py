@@ -17,18 +17,35 @@ from feabas.constant import *
 
 def gear_constant_to_str(gear_const):
     if isinstance(gear_const, (tuple, list)):
-        gearstr = '_'.join([gear_constant_to_str(s) for s in gear_const])
+        gear_str = '_'.join([gear_constant_to_str(s) for s in gear_const])
     elif gear_const == MESH_GEAR_INITIAL:
-        gearstr = 'INITIAL'
+        gear_str = 'INITIAL'
     elif gear_const == MESH_GEAR_FIXED:
-        gearstr = 'FIXED'
+        gear_str = 'FIXED'
     elif gear_const == MESH_GEAR_MOVING:
-        gearstr = 'MOVING'
+        gear_str = 'MOVING'
     elif gear_const == MESH_GEAR_STAGING:
-        gearstr = 'STAGING'
+        gear_str = 'STAGING'
     else:
         raise ValueError
-    return gearstr
+    return gear_str
+
+
+def gear_str_to_constant(gear_str):
+    if '_' in gear_str:
+        gear_const = tuple(gear_str_to_constant(s) for s in gear_str.split('_'))
+    elif gear_str.upper() == 'INITIAL':
+        gear_const = MESH_GEAR_INITIAL
+    elif gear_str.upper() == 'FIXED':
+        gear_const = MESH_GEAR_FIXED
+    elif gear_str.upper() == 'MOVING':
+        gear_const = MESH_GEAR_MOVING
+    elif gear_str.upper() == 'STAGING':
+        gear_const = MESH_GEAR_STAGING
+    else:
+        raise ValueError
+    return gear_const
+
 
 
 def config_cache(gear):
@@ -106,7 +123,7 @@ def config_cache(gear):
                 force_update = True
             if isinstance(cache, bool):
                 sgear = gear_constant_to_str(cgear)
-                prop_name = '_cached_' + prop_name0 + '_' + sgear
+                prop_name = '_cached_' + prop_name0 + '_G_' + sgear
                 if cache:  # save to self as an attribute
                     if not force_update and hasattr(self, prop_name):
                         # if already cached, use that
@@ -186,7 +203,8 @@ class Mesh:
         resolution (float): resolution of the mesh, for automatical scaling when
             working with images with specified resolution. default to 4nm.
         name(str): name of the mesh, used for printing/saving.
-        uid(int): unique id number, used as the key for caching.
+        uid(int): unique id number, used as the key for caching. If not set, use
+            the id of the object.
     """
   ## ------------------------- initialization & IO ------------------------- ##
     def __init__(self, vertices, triangles, **kwargs):
@@ -230,10 +248,9 @@ class Mesh:
         self._resolution = kwargs.get('resolution', 4)
         self._epsilon = kwargs.get('epsilon', EPSILON0)
         self._name = kwargs.get('name', '')
-        self.uid = kwargs.get('uid', None)
+        self.uid = kwargs.get('uid', id(self))
+        self._history = np.zeros((3, MESH_HISTORY_LEN + 1), dtype=np.int64)
         self._default_cache = kwargs.get('cache', defaultdict(lambda: True))
-        self._caching_keys = defaultdict(lambda: None)
-        self._caching_keys[MESH_GEAR_INITIAL] = self.uid # if set to None, intialize later
 
 
     @classmethod
@@ -313,6 +330,12 @@ class Mesh:
             material_ids = None
         vertices = T['vertices']
         triangles = T['triangles']
+        connected = ~np.isin(np.arange(vertices.shape[0]), triangles)
+        if not np.all(connected):
+            vertices = vertices[connected]
+            T_indx = np.full_like(triangles, -1, shape=connected.shape)
+            T_indx[connected] = np.arange(np.sum(connected))
+            triangles = T_indx[triangles]
         return cls(vertices, triangles, material_ids=material_ids, **kwargs)
 
 
@@ -444,8 +467,7 @@ class Mesh:
         init_dict['resolution'] = self._resolution
         if bool(self._name):
             init_dict['name'] = self._name
-        if self.uid is not None:
-            init_dict['uid'] = self.uid
+        init_dict['uid'] = self.uid
         init_dict.update(kwargs)
         return init_dict
 
@@ -536,6 +558,9 @@ class Mesh:
         return self.__class__(**init_dict)
 
 
+    def decouple_from_copy_src(self):
+        self.uid = id(self)
+
   ## --------------------------- manipulate meshe -------------------------- ##
     def delete_vertices(self, vidx):
         """delete vertices indexed by vidx"""
@@ -550,6 +575,7 @@ class Mesh:
                     self._vertices[gear] = v[to_keep]
             indx = np.cumsum(to_keep) - 1
             self.triangles = indx[self.triangles]
+            self.decouple_from_copy_src()
             self.clear_cached_attr()
 
 
@@ -684,77 +710,38 @@ class Mesh:
 
 
   ## -------------------------------- caching ------------------------------ ##
-    def caching_keys(self, use_hash=False, force_update=False, gear=MESH_GEAR_INITIAL):
+    def caching_keys(self, gear=MESH_GEAR_INITIAL):
         """
-        hashing of the Mesh object served as the keys for caching.
-            key0: Meshes with same initial vertices & triangles shares key0. If
-                uid is not None, will use uid in the place of key0
-            key1: Meshes with same fixed vertices (except for a global offset)
-                shares key1.
-            key2: Meshes with same moving vertices (except for a global offset)
-                shares key2.
-        If use_hash is True, hash the vertices to generate key (slow), otherwise
-        use their id.
-        If force_update is True, will re-caculate all keys.
+        hashing of the Mesh object served as the keys for caching. the key has
+        the following format:
+            (self_uid, gears:str, hash(self._history[gears]))
         gear: specify which vertices the key is associated to (fixed, moving...)
         !!! Note that offsets are not considered here because elastic energies
             are not related to translation. Special care needs to be taken if
             the absolute position of the Mesh is relevant.
         """
-        if use_hash:
-            key_func = lambda s: hash(tuple(np.array(s, copy=False).ravel()))
-        else:
-            key_func = id
-        if force_update or self._caching_keys[MESH_GEAR_INITIAL] is None:
-            default_mat = self._material_table['default']
-            if np.all(self._material_ids == default_mat.uid):
-                mat_key = 0 # trivial material pattern
-            else:
-                mat_key = key_func(self._material_ids)
-            self._caching_keys[MESH_GEAR_INITIAL] = (key_func(self._vertices[MESH_GEAR_INITIAL]),
-                                                key_func(self.triangles), mat_key)
-        if key_func == id:
-            # very cheap anyway, can update every call
-            force_update = True
         if isinstance(gear, str):
-            if gear.upper() == 'INITIAL':
-                gear = MESH_GEAR_INITIAL
-            elif gear.upper() == 'FIXED':
-                gear = MESH_GEAR_FIXED
-            elif gear.upper() == 'MOVING':
-                gear = MESH_GEAR_MOVING
-            elif gear.upper() == 'STAGING':
-                gear = MESH_GEAR_STAGING
-            else:
-                raise ValueError
-        if gear == MESH_GEAR_INITIAL:
-            return (self._caching_keys[MESH_GEAR_INITIAL], )
-        else:
-            if force_update or self._caching_keys[gear] is None:
-                vertices = self._vertices[gear]
-                if (vertices is None) or (vertices is self.initial_vertices) or \
-                   np.all(vertices==self.initial_vertices):
-                    self._caching_keys[gear] = 0
-                else:
-                    self._caching_keys[gear] = key_func(vertices)
-            return (self._caching_keys[MESH_GEAR_INITIAL], self._caching_keys[gear])
+            gear = gear_str_to_constant(gear)
+        if not isinstance(gear, tuple):
+            gear = (gear,)
+        output_keys = [self.uid] + [gear_constant_to_str(g) for g in gear]
+        for g in gear:
+            if g != MESH_GEAR_INITIAL:
+                hashval = hash(tuple(self._history[g]))
+                output_keys.append(hashval)
+        return tuple(output_keys)
 
 
     def clear_cached_attr(self, gear=None, gc_now=False):
         prefix = '_cached_'
-        if gear == MESH_GEAR_INITIAL:
-            suffix = '_INITIAL'
-        elif gear == MESH_GEAR_FIXED:
-            suffix = '_FIXED'
-        elif gear == MESH_GEAR_MOVING:
-            suffix = '_MOVING'
-        elif gear == MESH_GEAR_STAGING:
-            suffix = '_STAGING'
-        else:
+        if gear is None:
             suffix = ''
+        else:
+            suffix = gear_constant_to_str(gear)
         for attname in self.__dict__:
-            if attname.startswith(prefix) and attname.endswith(suffix):
-                setattr(self, attname, None)
+            substrs = attname.split('_G_')
+            if attname.startswith(prefix) and (len(substrs) > 1) and (suffix in substrs[1]):
+                delattr(self, attname)
         if gc_now:
             gc.collect()
 

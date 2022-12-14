@@ -334,6 +334,9 @@ class CacheNull:
         """force update a cached item"""
         pass
 
+    def _evict_item_by_key(self, key):
+        """remove an item by providing the key"""
+        pass
 
 
 class CacheFIFO(CacheNull):
