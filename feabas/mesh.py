@@ -714,7 +714,7 @@ class Mesh:
         """
         hashing of the Mesh object served as the keys for caching. the key has
         the following format:
-            (self_uid, gears:str, hash(self._history[gears]))
+            (self_uid, (gear, hash(self._history[gears])))
         gear: specify which vertices the key is associated to (fixed, moving...)
         !!! Note that offsets are not considered here because elastic energies
             are not related to translation. Special care needs to be taken if
@@ -724,12 +724,12 @@ class Mesh:
             gear = gear_str_to_constant(gear)
         if not isinstance(gear, tuple):
             gear = (gear,)
-        output_keys = [self.uid] + [gear_constant_to_str(g) for g in gear]
+        mesh_version = []
         for g in gear:
             if g != MESH_GEAR_INITIAL:
                 hashval = hash(tuple(self._history[g]))
-                output_keys.append(hashval)
-        return tuple(output_keys)
+                mesh_version.append((g, hashval))
+        return (self.uid, tuple(mesh_version))
 
 
     def clear_cached_attr(self, gear=None, gc_now=False):

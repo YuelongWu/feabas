@@ -330,6 +330,10 @@ class CacheNull:
         """Cache an item"""
         pass
 
+    def __iter__(self):
+        """return the iterator"""
+        pass
+
     def update_item(self, key, data):
         """force update a cached item"""
         pass
@@ -380,6 +384,10 @@ class CacheFIFO(CacheNull):
         self._vals.append(data)
 
 
+    def __iter__(self):
+        return self._keys
+
+
     def update_item(self, key, data):
         if (self._maxlen) == 0:
             return
@@ -388,6 +396,15 @@ class CacheFIFO(CacheNull):
             self._vals[indx] = data
         else:
             self.__setitem__(key, data)
+
+
+    def _evict_item_by_key(self, key):
+        """remove an item from dequeue may be anti-pattern. set it to None"""
+        if (self._maxlen) == 0:
+            return
+        if key in self._keys:
+            indx = self._keys.index(key)
+            self._vals[indx] = None
 
 
 
@@ -462,6 +479,10 @@ class CacheLRU(CacheNull):
         data_node = Node(key, data)
         self._cache_list.insert_tail(data_node)
         self._cached_nodes[key] = data_node
+
+
+    def __iter__(self):
+        return self._cached_nodes
 
 
     def update_item(self, key, data):
@@ -580,6 +601,10 @@ class CacheLFU(CacheNull):
         cache_list = freq_node.pointer
         cache_list.insert_tail(data_node)
         self._cached_nodes[key] = data_node
+
+
+    def __iter__(self):
+        return self._cached_nodes
 
 
     def update_item(self, key, data):
