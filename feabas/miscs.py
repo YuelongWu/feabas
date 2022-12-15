@@ -340,7 +340,7 @@ class CacheNull:
 
     def __iter__(self):
         """return the iterator"""
-        pass
+        yield from ()
 
     def update_item(self, key, data):
         """force update a cached item"""
@@ -393,7 +393,8 @@ class CacheFIFO(CacheNull):
 
 
     def __iter__(self):
-        return self._keys
+        for key in self._keys:
+            yield key
 
 
     def update_item(self, key, data):
@@ -490,7 +491,8 @@ class CacheLRU(CacheNull):
 
 
     def __iter__(self):
-        return self._cached_nodes
+        for key in self._cached_nodes:
+            yield key
 
 
     def update_item(self, key, data):
@@ -612,7 +614,8 @@ class CacheLFU(CacheNull):
 
 
     def __iter__(self):
-        return self._cached_nodes
+        for key in self._cached_nodes:
+            yield key
 
 
     def update_item(self, key, data):

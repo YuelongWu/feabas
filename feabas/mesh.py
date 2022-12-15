@@ -252,12 +252,15 @@ class Mesh:
         self._default_cache = kwargs.get('cache', defaultdict(lambda: True))
         if self.uid is None:
             self._hash_uid()
-        self._caching_keys_dict = {}
+        self._caching_keys_dict = {g: None for g in MESH_GEARS}
+        self._caching_keys_dict[MESH_GEAR_INITIAL] = self.uid
+        # store the last caching keys for cleaning up
+        self._latest_expired_caching_keys = {g: None for g in MESH_GEARS}
         self._update_caching_keys(gear=MESH_GEAR_FIXED)
 
 
     def _hash_uid(self):
-        var0 = miscs.hash_numpy_array(self._vertices)
+        var0 = miscs.hash_numpy_array(self._vertices[MESH_GEAR_INITIAL])
         var1 = miscs.hash_numpy_array(self.triangles)
         var2 = miscs.hash_numpy_array(self._material_ids)
         var3 = miscs.hash_numpy_array(self._stiffness_multiplier)
@@ -537,6 +540,8 @@ class Mesh:
         save_material = kwargs.get('save_material', True)
         compression = kwargs.get('compression', True)
         out = self.get_init_dict(save_material=save_material, vertex_flag=vertex_flag, **override_dict)
+        if ('uid' in out) and (not 'uid' in override_dict):
+            out.pop('uid') # hash not conistent between runs, no point to save
         if (len(prefix) > 0) and prefix[-1] != '/':
             prefix = prefix + '/'
         if isinstance(fname, h5py.File):
@@ -567,7 +572,7 @@ class Mesh:
         if deep:
             init_dict = copy.deepcopy(init_dict)
         return self.__class__(**init_dict)
-        
+
 
   ## --------------------------- manipulate meshes -------------------------- ##
     def delete_vertices(self, vidx):
@@ -681,6 +686,7 @@ class Mesh:
     @fixed_vertices.setter
     def fixed_vertices(self, v):
         self._vertices[MESH_GEAR_FIXED] = v
+        self.vertices_changed(gear=MESH_GEAR_FIXED)
 
     @property
     def fixed_vertices_w_offset(self):
@@ -696,6 +702,7 @@ class Mesh:
     @moving_vertices.setter
     def moving_vertices(self, v):
         self._vertices[MESH_GEAR_MOVING] = v
+        self.vertices_changed(gear=MESH_GEAR_MOVING)
 
     @property
     def moving_vertices_w_offset(self):
@@ -711,6 +718,7 @@ class Mesh:
     @staging_vertices.setter
     def staging_vertices(self, v):
         self._vertices[MESH_GEAR_STAGING] = v
+        self.vertices_changed(gear=MESH_GEAR_STAGING)
 
     @property
     def staging_vertices_w_offset(self):
@@ -722,42 +730,54 @@ class Mesh:
         """
         used to update caching keys when changes are made to the Mesh.
         changes to lower gears will affect higher gears, but not vice versa.
-        in the end, return old (gear, hash) pairs in case old caches need to be freed.
+        in the end, return old (gear, hash) pairs in case old caches need to be
+        freed.
+        !!! Note that offsets are not considered here because elastic energies
+        are not related to translation. Special care needs to be taken if
+        the absolute position of the Mesh is relevant.
         """
-        old_caching_keys = [(k, v) for k, v in self._caching_keys_dict.items()]
         for g in MESH_GEARS:
             if g >= gear:
                 if g == MESH_GEAR_INITIAL:
                     self._hash_uid()
+                    key = self.uid
                 else:
                     v = self._vertices[g]
                     if v is None:
-                        self._caching_keys_dict[g] = self._caching_keys_dict[MESH_GEAR_FIXED]
+                        key = self._caching_keys_dict[MESH_GEAR_FIXED]
                     else:
-                        self._caching_keys_dict[g] = miscs.hash_numpy_array(v)
-        return old_caching_keys
+                        key = miscs.hash_numpy_array(v)
+                if key != self._caching_keys_dict[g]:
+                    self._latest_expired_caching_keys[g] = self._caching_keys_dict[g]
+                    self._caching_keys_dict[g] = key
 
 
-    def caching_keys(self, gear=MESH_GEAR_INITIAL):
+    def caching_keys(self, gear=MESH_GEAR_INITIAL, current_mesh=True):
         """
         hashing of the Mesh object served as the keys for caching. the key has
         the following format:
-            (self_uid, (gear, hash(self._history[gears])))
-        gear: specify which vertices the key is associated to (fixed, moving...)
-        !!! Note that offsets are not considered here because elastic energies
-            are not related to translation. Special care needs to be taken if
-            the absolute position of the Mesh is relevant.
+            (self_uid, (gear, hash(self._vertices[gears])))
+        gear: specify which vertices the key(s) is associated
+        current_mesh: whether to get the latest expired mesh keys or the current
+            ones.
         """
+        if gear is None:
+            gear = MESH_GEAR_INITIAL
         if isinstance(gear, str):
             gear = gear_str_to_constant(gear)
         if not isinstance(gear, tuple):
             gear = (gear,)
         mesh_version = []
+        gear_name = []
         for g in gear:
             if g != MESH_GEAR_INITIAL:
-                hashval = self._caching_keys_dict[g]
+                if current_mesh:
+                    hashval = self._caching_keys_dict[g]
+                else:
+                    hashval = self._latest_expired_caching_keys[g]
                 mesh_version.append((g, hashval))
-        return (self.uid, *mesh_version)
+                gear_name.append(gear_constant_to_str(g))
+        return (self.uid, *gear_name, *mesh_version)
 
 
     def clear_cached_attr(self, gear=None, gc_now=False):
@@ -766,15 +786,87 @@ class Mesh:
             suffix = ''
         else:
             suffix = gear_constant_to_str(gear)
+        attnames_to_delete = []
         for attname in self.__dict__:
             substrs = attname.split('_G_')
             if attname.startswith(prefix) and (len(substrs) > 1) and (suffix in substrs[1]):
-                delattr(self, attname)
+                attnames_to_delete.append(attname)
+        for attname in attnames_to_delete:
+            delattr(self, attname)
         if gc_now:
             gc.collect()
 
 
-    def set_default_cache(self, gear=None, cache=True):
+    def clear_specified_caches(self, gear=None, cache=None, include_hash=True, keys_to_probe=None, gc_now=False):
+        """
+        clear cached properties in the specified cache.
+        Note that if gear is not None, the current uid is used regardless of
+        current_mesh settings.
+        Kwargs:
+            gear: to clear all the cached properties associated with a specific
+                gear. If set to None, only look at the uid and clear every gear.
+            cache: the cache from with to clear. If set to True, clear local
+                attrubutes. If set to None, clear default caches.
+            include_hash: if set to True, will also match the hash values
+                associated with the gear. Otherwise clear all entries that match
+                uid and gear.
+            keys_to_probe (tuple): specify a uid followed by a set of tokens to
+                probe. given same uid, if one of the token provided is contained
+                in one of the key in the cache, free the element associated to
+                that key. If None, use the current caching keys as token.
+            gc_now: if do garbage collection right away.
+        """
+        if isinstance(cache, bool):
+            if cache:
+                self.clear_cached_attr(gear=gear)
+            return
+        if cache is None:
+            if gear is None:
+                gear = MESH_GEARS
+            elif isinstance(gear, int):
+                gear = (gear, )
+            elif isinstance(gear, str):
+                gear = (gear_str_to_constant(gear),)
+            else:
+                gear = tuple(gear)
+            for g in gear:
+                c0 = self._default_cache[g]
+                self.clear_specified_caches(gear=g, cache=c0, include_hash=include_hash, keys_to_probe=keys_to_probe)
+        else:
+            if keys_to_probe is None:
+                current_keys = self.caching_keys(gear=gear)
+                if include_hash:
+                    keys_to_probe = (current_keys[0], *[s for s in current_keys[1:] if isinstance(s, tuple)])
+                else:
+                    keys_to_probe = (current_keys[0], *[s for s in current_keys[1:] if isinstance(s, str)])
+            if isinstance(cache, miscs.CacheNull):
+                if len(cache) == 0:
+                    return
+                keys_to_delete = []
+                for key in cache:
+                    if (len(keys_to_probe) == 1) and (keys_to_probe[0] == key[0]):
+                        keys_to_delete.append(key)
+                    else:
+                        for token in keys_to_probe[1:]:
+                            if token in key[1:]:
+                                keys_to_delete.append(key)
+                                break
+                for key in keys_to_delete:
+                    cache._evict_item_by_key(key)
+            elif isinstance(cache, dict):
+                for c0 in cache.values():
+                    self.clear_specified_caches(gear=gear, cache=c0, include_hash=include_hash, keys_to_probe=keys_to_probe)
+        if gc_now:
+            gc.collect()
+
+
+    def vertices_changed(self, gear):
+        self._update_caching_keys(gear=gear)
+        self.clear_cached_attr(gear=gear)
+
+
+    def set_default_cache(self, cache=True, gear=None):
+        assert (cache is not None)
         if gear is None:
             self._default_cache = defaultdict(lambda: cache)
         else:
@@ -1182,7 +1274,7 @@ class Mesh:
         flipped_sel = (A0 * A1) <= 0
         self.switch_gear(gear=gear0)
         if return_triangles:
-            return np.nonzero(flipped_sel)[0], T[flipped_sel] 
+            return np.nonzero(flipped_sel)[0], T[flipped_sel]
         else:
             return np.nonzero(flipped_sel)[0]
 
