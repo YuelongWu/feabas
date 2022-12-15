@@ -47,7 +47,6 @@ def gear_str_to_constant(gear_str):
     return gear_const
 
 
-
 def config_cache(gear):
     """
     The decorator that determines the caching behaviour of the Mesh properties.
@@ -204,7 +203,7 @@ class Mesh:
             working with images with specified resolution. default to 4nm.
         name(str): name of the mesh, used for printing/saving.
         uid(int): unique id number, used as the key for caching. If not set, use
-            the id of the object.
+            the hash of object attributes.
     """
   ## ------------------------- initialization & IO ------------------------- ##
     def __init__(self, vertices, triangles, **kwargs):
@@ -246,11 +245,23 @@ class Mesh:
         self.triangles = triangles
         self._material_ids = material_ids
         self._resolution = kwargs.get('resolution', 4)
+        self._stiffness_multiplier = 1.0
         self._epsilon = kwargs.get('epsilon', EPSILON0)
         self._name = kwargs.get('name', '')
-        self.uid = kwargs.get('uid', id(self))
-        self._history = np.zeros((3, MESH_HISTORY_LEN + 1), dtype=np.int64)
+        self.uid = kwargs.get('uid', None)
         self._default_cache = kwargs.get('cache', defaultdict(lambda: True))
+        if self.uid is None:
+            self._hash_uid()
+        self._caching_keys_dict = {}
+        self._update_caching_keys(gear=MESH_GEAR_FIXED)
+
+
+    def _hash_uid(self):
+        var0 = miscs.hash_numpy_array(self._vertices)
+        var1 = miscs.hash_numpy_array(self.triangles)
+        var2 = miscs.hash_numpy_array(self._material_ids)
+        var3 = miscs.hash_numpy_array(self._stiffness_multiplier)
+        self.uid = hash((var0, var1, var2, var3, self._resolution))
 
 
     @classmethod
@@ -330,7 +341,7 @@ class Mesh:
             material_ids = None
         vertices = T['vertices']
         triangles = T['triangles']
-        connected = ~np.isin(np.arange(vertices.shape[0]), triangles)
+        connected = np.isin(np.arange(vertices.shape[0]), triangles)
         if not np.all(connected):
             vertices = vertices[connected]
             T_indx = np.full_like(triangles, -1, shape=connected.shape)
@@ -556,12 +567,9 @@ class Mesh:
         if deep:
             init_dict = copy.deepcopy(init_dict)
         return self.__class__(**init_dict)
+        
 
-
-    def decouple_from_copy_src(self):
-        self.uid = id(self)
-
-  ## --------------------------- manipulate meshe -------------------------- ##
+  ## --------------------------- manipulate meshes -------------------------- ##
     def delete_vertices(self, vidx):
         """delete vertices indexed by vidx"""
         if isinstance(vidx, np.ndarray) and (vidx.dtype == bool):
@@ -575,7 +583,7 @@ class Mesh:
                     self._vertices[gear] = v[to_keep]
             indx = np.cumsum(to_keep) - 1
             self.triangles = indx[self.triangles]
-            self.decouple_from_copy_src()
+            self._update_caching_keys(gear=MESH_GEAR_INITIAL)
             self.clear_cached_attr()
 
 
@@ -681,7 +689,7 @@ class Mesh:
     @property
     def moving_vertices(self):
         if self._vertices[MESH_GEAR_MOVING] is None:
-            return self.initial_vertices
+            return self.fixed_vertices
         else:
             return self._vertices[MESH_GEAR_MOVING]
 
@@ -696,7 +704,7 @@ class Mesh:
     @property
     def staging_vertices(self):
         if self._vertices[MESH_GEAR_STAGING] is None:
-            return self.initial_vertices
+            return self.fixed_vertices
         else:
             return self._vertices[MESH_GEAR_STAGING]
 
@@ -710,6 +718,26 @@ class Mesh:
 
 
   ## -------------------------------- caching ------------------------------ ##
+    def _update_caching_keys(self, gear=MESH_GEAR_INITIAL):
+        """
+        used to update caching keys when changes are made to the Mesh.
+        changes to lower gears will affect higher gears, but not vice versa.
+        in the end, return old (gear, hash) pairs in case old caches need to be freed.
+        """
+        old_caching_keys = [(k, v) for k, v in self._caching_keys_dict.items()]
+        for g in MESH_GEARS:
+            if g >= gear:
+                if g == MESH_GEAR_INITIAL:
+                    self._hash_uid()
+                else:
+                    v = self._vertices[g]
+                    if v is None:
+                        self._caching_keys_dict[g] = self._caching_keys_dict[MESH_GEAR_FIXED]
+                    else:
+                        self._caching_keys_dict[g] = miscs.hash_numpy_array(v)
+        return old_caching_keys
+
+
     def caching_keys(self, gear=MESH_GEAR_INITIAL):
         """
         hashing of the Mesh object served as the keys for caching. the key has
@@ -727,9 +755,9 @@ class Mesh:
         mesh_version = []
         for g in gear:
             if g != MESH_GEAR_INITIAL:
-                hashval = hash(tuple(self._history[g]))
+                hashval = self._caching_keys_dict[g]
                 mesh_version.append((g, hashval))
-        return (self.uid, tuple(mesh_version))
+        return (self.uid, *mesh_version)
 
 
     def clear_cached_attr(self, gear=None, gc_now=False):

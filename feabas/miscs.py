@@ -1,11 +1,10 @@
 import collections
-import importlib
-from scipy import sparse
-import scipy.sparse.csgraph as csgraph
 import gc
+import importlib
 
 import numpy as np
-
+from scipy import sparse
+import scipy.sparse.csgraph as csgraph
 
 def numpy_to_str_ascii(ar):
     t = ar.clip(0,255).astype(np.uint8).ravel()
@@ -22,6 +21,15 @@ def load_plugin(plugin_name):
     plugin_mdl = importlib.import_module(modl)
     plugin = getattr(plugin_mdl, plugname)
     return plugin
+
+
+def hash_numpy_array(ar):
+    if isinstance(ar, np.ndarray):
+        return hash(ar.data.tobytes())
+    elif isinstance(ar, list):
+        return hash(tuple(ar))
+    else:
+        return hash(ar)
 
 
 def crop_image_from_bbox(img, bbox_img, bbox_out, **kwargs):
