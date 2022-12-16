@@ -91,7 +91,7 @@ def config_cache(gear):
                 cache = self._default_cache[cgear]
             masked_operation = False
             if ('tri_mask' in kwargs) and (kwargs['tri_mask'] is not None):
-                tri_mask = np.array(tri_mask, copy=False)
+                tri_mask = np.array(kwargs['tri_mask'], copy=False)
                 if tri_mask.dtype == bool:
                     if not np.all(tri_mask):
                         masked_operation = True
@@ -211,8 +211,11 @@ class Mesh:
         self._vertices[MESH_GEAR_FIXED] = kwargs.get('fixed_vertices', vertices)
         self._vertices[MESH_GEAR_MOVING] = kwargs.get('moving_vertices', None)
         self._vertices[MESH_GEAR_STAGING] = kwargs.get('staging_vertices', None)
-        self._fixed_offset = kwargs.get('fixed_offset', np.zeros((1,2), dtype=np.float64))
-        self._moving_offset = kwargs.get('moving_offset', np.zeros((1,2), dtype=np.float64))
+        self._offsets = {}
+        self._offsets[MESH_GEAR_INITIAL] = kwargs.get('initial_offset', np.zeros((1,2), dtype=np.float64))
+        self._offsets[MESH_GEAR_FIXED] = kwargs.get('fixed_offset', np.zeros((1,2), dtype=np.float64))
+        self._offsets[MESH_GEAR_MOVING] = kwargs.get('moving_offset', np.zeros((1,2), dtype=np.float64))
+        self._offsets[MESH_GEAR_STAGING] = kwargs.get('staging_offset', np.zeros((1,2), dtype=np.float64))
         self._current_gear = MESH_GEAR_FIXED
         tri_num = triangles.shape[0]
         mtb = kwargs.get('material_table', None)
@@ -255,7 +258,7 @@ class Mesh:
         self._caching_keys_dict = {g: None for g in MESH_GEARS}
         self._caching_keys_dict[MESH_GEAR_INITIAL] = self.uid
         # store the last caching keys for cleaning up
-        self._latest_expired_caching_keys = {g: None for g in MESH_GEARS}
+        self._latest_expired_caching_keys_dict = {g: None for g in MESH_GEARS}
         self._update_caching_keys(gear=MESH_GEAR_FIXED)
 
 
@@ -471,10 +474,14 @@ class Mesh:
             init_dict['moving_vertices'] = self._vertices[MESH_GEAR_MOVING]
         if (self._vertices[MESH_GEAR_STAGING]) is not None:
             init_dict['staging_vertices'] = self._vertices[MESH_GEAR_STAGING]
-        if np.any(self._fixed_offset):
-            init_dict['fixed_offset'] = self._fixed_offset
-        if np.any(self._moving_offset):
-            init_dict['moving_offset'] = self._moving_offset
+        if np.any(self._offsets[MESH_GEAR_INITIAL]):
+            init_dict['initial_offset'] = self._offsets[MESH_GEAR_INITIAL]
+        if np.any(self._offsets[MESH_GEAR_FIXED]):
+            init_dict['fixed_offset'] = self._offsets[MESH_GEAR_FIXED]
+        if np.any(self._offsets[MESH_GEAR_MOVING]):
+            init_dict['moving_offset'] = self._offsets[MESH_GEAR_MOVING]
+        if np.any(self._offsets[MESH_GEAR_STAGING]):
+            init_dict['staging_offset'] = self._offsets[MESH_GEAR_STAGING]
         if save_material:
             init_dict['material_ids'] = self._material_ids
             init_dict['material_table'] = self._material_table.save_to_json()
@@ -588,8 +595,7 @@ class Mesh:
                     self._vertices[gear] = v[to_keep]
             indx = np.cumsum(to_keep) - 1
             self.triangles = indx[self.triangles]
-            self._update_caching_keys(gear=MESH_GEAR_INITIAL)
-            self.clear_cached_attr()
+            self.vertices_changed(gear=MESH_GEAR_INITIAL)
 
 
     def delete_orphaned_vertices(self):
@@ -632,9 +638,10 @@ class Mesh:
         self.switch_gear(gear)
         return self
 
-    @property
-    def vertices(self):
-        gear = self._current_gear
+
+    def vertices(self, gear=None):
+        if gear is None:
+            gear = self._current_gear
         if gear == MESH_GEAR_INITIAL:
             return self.initial_vertices
         elif gear == MESH_GEAR_FIXED:
@@ -650,30 +657,29 @@ class Mesh:
     def offset(self, gear=None):
         if gear is None:
             gear = self._current_gear
-        if gear == MESH_GEAR_INITIAL:
-            return np.zeros((1,2), dtype=np.float64)
-        elif gear == MESH_GEAR_FIXED:
-            return self._fixed_offset
-        elif gear == MESH_GEAR_MOVING:
-            return self._moving_offset
-        elif gear == MESH_GEAR_STAGING:
-            return self._moving_offset
+        if self._vertices[gear] is None:
+            return self._offsets[MESH_GEAR_FIXED]
         else:
-            raise ValueError
+            return self._offsets[gear]
 
 
-    @property
-    def vertices_w_offset(self):
-        if self._current_gear == MESH_GEAR_INITIAL:
-            return self.initial_vertices
-        elif self._current_gear == MESH_GEAR_FIXED:
-            return self.fixed_vertices_w_offset
-        elif self._current_gear == MESH_GEAR_MOVING:
-            return self.moving_vertices_w_offset
-        elif self._current_gear == MESH_GEAR_STAGING:
-            return self.staging_vertices_w_offset
+    def center_meshes_w_offsets(self, gear=None):
+        if gear is None:
+            for g in MESH_GEARS:
+                self.center_meshes_w_offsets(gear=g)
         else:
-            raise ValueError
+            v = self._vertices[gear]
+            if v is not None:
+                m = v.mean(axis=0, keepdims=True)
+                if np.max(np.abs(m), axis=None) > self._epsilon:
+                    self._vertices[gear] = v - m
+                    self._offsets[gear] = self._offsets[gear] + m
+                    self.vertices_changed(gear=gear)
+
+
+    def vertices_w_offset(self, gear=None):
+        return self.vertices(gear=gear) + self.offset(gear=gear)
+
 
     @property
     def initial_vertices(self):
@@ -729,27 +735,24 @@ class Mesh:
     def _update_caching_keys(self, gear=MESH_GEAR_INITIAL):
         """
         used to update caching keys when changes are made to the Mesh.
-        changes to lower gears will affect higher gears, but not vice versa.
-        in the end, return old (gear, hash) pairs in case old caches need to be
+        also keep a copy of old (gear, hash) pairs in case old caches need to be
         freed.
         !!! Note that offsets are not considered here because elastic energies
         are not related to translation. Special care needs to be taken if
         the absolute position of the Mesh is relevant.
         """
-        for g in MESH_GEARS:
-            if g >= gear:
-                if g == MESH_GEAR_INITIAL:
-                    self._hash_uid()
-                    key = self.uid
-                else:
-                    v = self._vertices[g]
-                    if v is None:
-                        key = self._caching_keys_dict[MESH_GEAR_FIXED]
-                    else:
-                        key = miscs.hash_numpy_array(v)
-                if key != self._caching_keys_dict[g]:
-                    self._latest_expired_caching_keys[g] = self._caching_keys_dict[g]
-                    self._caching_keys_dict[g] = key
+        if gear == MESH_GEAR_INITIAL:
+            self._hash_uid()
+            key = self.uid
+        else:
+            v = self._vertices[gear]
+            if v is None:
+                key = self._caching_keys_dict[MESH_GEAR_FIXED]
+            else:
+                key = miscs.hash_numpy_array(v)
+        if key != self._caching_keys_dict[gear]:
+            self._latest_expired_caching_keys_dict[gear] = self._caching_keys_dict[gear]
+            self._caching_keys_dict[gear] = key
 
 
     def caching_keys(self, gear=MESH_GEAR_INITIAL, current_mesh=True):
@@ -774,7 +777,7 @@ class Mesh:
                 if current_mesh:
                     hashval = self._caching_keys_dict[g]
                 else:
-                    hashval = self._latest_expired_caching_keys[g]
+                    hashval = self._latest_expired_caching_keys_dict[g]
                 mesh_version.append((g, hashval))
                 gear_name.append(gear_constant_to_str(g))
         return (self.uid, *gear_name, *mesh_version)
@@ -782,7 +785,7 @@ class Mesh:
 
     def clear_cached_attr(self, gear=None, gc_now=False):
         prefix = '_cached_'
-        if gear is None:
+        if (gear is None) or (gear == MESH_GEAR_INITIAL):
             suffix = ''
         else:
             suffix = gear_constant_to_str(gear)
@@ -863,6 +866,10 @@ class Mesh:
     def vertices_changed(self, gear):
         self._update_caching_keys(gear=gear)
         self.clear_cached_attr(gear=gear)
+        if gear == MESH_GEAR_FIXED:
+            for g in MESH_GEARS:
+                if self._vertices[g] is None:
+                    self.vertices_changed(gear=g)
 
 
     def set_default_cache(self, cache=True, gear=None):
@@ -959,11 +966,7 @@ class Mesh:
     def vertex_distances(self, gear=MESH_GEAR_INITIAL, vtx_mask=None, tri_mask=None):
         """sparse matrix storing lengths of the edges."""
         if vtx_mask is None:
-            gear0 = self._current_gear
-            if gear0 != gear:
-                self.switch_gear(gear)
-                vertices = self.vertices
-            self.switch_gear(gear0)
+            vertices = self.vertices(gear=gear)
             A = self.vertex_adjacencies(tri_mask=tri_mask)
             idx0, idx1 = A.nonzero()
             edges_len = np.sum((vertices[idx0] - vertices[idx1])**2, axis=-1)**0.5
@@ -1013,11 +1016,7 @@ class Mesh:
             if m0 is not None:
                 return m0[tri_mask]
             T = self.triangles[tri_mask]
-        gear0 = self._current_gear
-        if gear0 != gear:
-            self.switch_gear(gear)
-            vertices = self.vertices
-        self.switch_gear(gear0)
+        vertices = self.vertices(gear=gear)
         vtri = vertices[T]
         return vtri.mean(axis=1)
 
@@ -1032,11 +1031,8 @@ class Mesh:
             if bboxes0 is not None:
                 return bboxes0[tri_mask]
             T = self.triangles[tri_mask]
-        gear0 = self._current_gear
-        self.switch_gear(gear=gear)
-        vertices = self.vertices
+        vertices = self.vertices(gear=gear)
         V = vertices[T]
-        self.switch_gear(gear=gear0)
         xy_min = V.min(axis=-2)
         xy_max = V.max(axis=-2)
         bboxes = np.concatenate((xy_min, xy_max), axis=-1)
@@ -1120,20 +1116,19 @@ class Mesh:
 
 
     @config_cache('TBD')
-    def triangle_tform_svd(self, gear_fix=MESH_GEAR_INITIAL, gear=MESH_GEAR_MOVING, tri_mask=None):
+    def triangle_affine_tform(self, gear=(MESH_GEAR_INITIAL, MESH_GEAR_MOVING), tri_mask=None):
         """
-        singular values of the affine transforms for each triangle.
+        affine transform matrices for each triangles in mesh.
+        Return a tuple (m0, A, m1), so that:
+            (vetices[gear0] - m0) = (vertices[gear1] - m1) @ A
         """
         if tri_mask is not None:
-            s0 = self.triangle_tform_svd(gear=gear, tri_mask=None, no_compute=True)
+            s0 = self.triangle_affine_tform(gear=gear, tri_mask=None, no_compute=True)
             if s0 is not None:
-                return s0[tri_mask]
-        gear0 = self._current_gear
-        self.switch_gear(gear=gear_fix)
-        v0 = self.vertices
-        self.switch_gear(gear=gear)
-        v1 = self.vertices
-        self.switch_gear(gear=gear0)
+                m0, A, m1 = s0
+                return m0[tri_mask], A[tri_mask], m1[tri_mask]
+        v0 = self.vertices(gear=gear[0])
+        v1 = self.vertices(gear=gear[1])
         if tri_mask is None:
             T = self.triangles
         else:
@@ -1144,9 +1139,24 @@ class Mesh:
         m1 = T1.mean(axis=-2, keepdims=True)
         T0 = T0 - m0
         T1 = T1 - m1
+        m0 = m0.squeeze() + self.offset(gear=gear[0])
+        m1 = m1.squeeze() + self.offset(gear=gear[1])
         T0_pad = np.insert(T0, 2, 1, axis=-1)
         T1_pad = np.insert(T1, 2, 1, axis=-1)
-        A = np.linalg.solve(T0_pad, T1_pad)
+        A = np.linalg.solve(T1_pad, T0_pad) # ax = b
+        return m0, A, m1
+
+
+    @config_cache('TBD')
+    def triangle_tform_svd(self, gear=(MESH_GEAR_INITIAL, MESH_GEAR_MOVING), tri_mask=None):
+        """
+        singular values of the affine transforms for each triangle.
+        """
+        if tri_mask is not None:
+            s0 = self.triangle_tform_svd(gear=gear, tri_mask=None, no_compute=True)
+            if s0 is not None:
+                return s0[tri_mask]
+        _, A, _ = self.triangle_affine_tform(gear=gear, tri_mask=tri_mask)
         s = np.linalg.svd(A[:,:2,:2],compute_uv=False)
         return s
 
@@ -1169,9 +1179,7 @@ class Mesh:
 
     def check_segment_collision(self, gear=MESH_GEAR_MOVING, tri_mask=None):
         """check if segments have collisions among themselves."""
-        gear0 = self._current_gear
-        self.switch_gear(gear=gear)
-        vertices = self.vertices
+        vertices = self.vertices(gear=gear)
         SRs = self.grouped_segment_chains(tri_mask=tri_mask)
         covered = None
         valid = True
@@ -1192,7 +1200,6 @@ class Mesh:
                 break
             else:
                 covered = covered.union(p)
-        self.switch_gear(gear=gear0)
         return valid
 
 
@@ -1201,10 +1208,8 @@ class Mesh:
         find the segments that collide. Return a list of collided segments and
         their (local) triangle ids.
         """
-        gear0 = self._current_gear
-        self.switch_gear(gear=gear)
         SRs = self.grouped_segment_chains(tri_mask=tri_mask)
-        vertices = self.vertices
+        vertices = self.vertices(gear=gear)
         boundaries = []
         polygons_rings = []
         thickened = []
@@ -1254,25 +1259,21 @@ class Mesh:
                 for segwid in rest_of_segments:
                     if np.any(np.all(S_flp==segwid[0], axis=-1)):
                         collided_segments.append(segwid)
-        self.switch_gear(gear=gear0)
         segs = np.array([s[0] for s in collided_segments])
         tids = np.array([s[1] for s in collided_segments])
         return segs, tids
 
 
     def locate_flipped_triangles(self, gear=MESH_GEAR_MOVING, tri_mask=None, return_triangles=False):
-        gear0 = self._current_gear
         vertices0 = self.initial_vertices
-        self.switch_gear(gear=gear)
         if tri_mask is None:
             T = self.triangles
         else:
             T = self.triangles[tri_mask]
-        vertices = self.vertices
+        vertices = self.vertices(gear=gear)
         A0 = miscs.signed_area(vertices0, T)
         A1 = miscs.signed_area(vertices, T)
         flipped_sel = (A0 * A1) <= 0
-        self.switch_gear(gear=gear0)
         if return_triangles:
             return np.nonzero(flipped_sel)[0], T[flipped_sel]
         else:
@@ -1292,10 +1293,7 @@ class Mesh:
         candidate_tids = np.sort(np.unique(candidate_tids))
         tri_mask_c = Mesh.masked_index_to_global_index(tri_mask, candidate_tids)
         rtree_c = self.triangles_rtree(gear=gear, tri_mask=tri_mask_c)
-        gear0 = self._current_gear
-        self.switch_gear(gear=gear)
-        vertices = self.vertices[self.triangles[tri_mask_c]]
-        self.switch_gear(gear=gear0)
+        vertices = self.vertices(gear=gear)[self.triangles[tri_mask_c]]
         Ts = [shpgeo.Polygon(v) for v in vertices]
         collisions = []
         for tid0, t0 in enumerate(Ts):
