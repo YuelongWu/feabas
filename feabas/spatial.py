@@ -337,6 +337,60 @@ def clean_up_small_regions(regions, roi=None, area_thresh=4, buffer=1e-3):
 
 
 
+def generate_equilat_grid_bbox(bbox, side_len, anchor_point=None):
+    """
+    generate equilateral triangle grid points that covers the bounding box
+    """
+    Xmin, Ymin, Xmax, Ymax = bbox
+    center_point = [(Xmin+Xmax)/2, (Ymin+Ymax)/2]
+    dx = side_len
+    dy = side_len * np.sin(np.deg2rad(60))
+    half_Nx = int(np.ceil((Xmax - Xmin) / (2 * dx)) + 2)
+    half_Ny = int(np.ceil((Ymax - Ymin) / (2 * dy)) + 2)
+    Xmin_os = center_point[0] - half_Nx * dx
+    Xmax_os = center_point[0] + half_Nx * dx
+    Ymin_os = center_point[1] - half_Ny * dy
+    Ymax_os = center_point[1] + half_Ny * dy
+    x0 = np.linspace(Xmin_os, Xmax_os, 2*half_Nx+1, endpoint=True)
+    y0 = np.linspace(Ymin_os, Ymax_os, 2*half_Ny+1, endpoint=True)
+    if anchor_point is not None:
+        x_nearest = np.argmin(np.abs(x0 - anchor_point[0]))
+        x0 = x0 - x0[x_nearest] + anchor_point[0]
+        y_nearest = np.argmin(np.abs(y0 - anchor_point[1]))
+        y0 = y0 - y0[y_nearest] + anchor_point[1]
+    else:
+        y_nearest = half_Ny
+    xv, yv = np.meshgrid(x0, y0)
+    xv[((y_nearest+1)%2)::2, :] += dx/2
+    indx = (xv >= (Xmin-dx)) & (xv <= (Xmax+dx)) & (yv >= (Ymin-dy)) & (yv <= (Ymax+dy))
+    vertices = np.stack((xv[indx], yv[indx]), axis=-1)
+    return vertices
+
+
+def generate_equilat_grid_mask(mask, side_len, anchor_point=None):
+    """
+    generate equilateral triangle grid points that covers the shapely geometries
+    """
+    if hasattr(mask, 'geoms'):
+        # if multiple geometries, filter out ones with 0 areas
+        to_keep = []
+        for g in mask.geoms:
+            if g.area > 0:
+                to_keep.append(g)
+        mask = unary_union(to_keep)
+    if anchor_point is None:
+        rpts = mask.representative_point()
+        anchor_point = (rpts.x, rpts.y)
+    mask = mask.buffer(1.1 * side_len) 
+    v = generate_equilat_grid_bbox(mask.bounds, side_len, anchor_point=anchor_point)
+    pts = shpgeo.MultiPoint(v).intersection(mask)
+    if hasattr(pts, 'geoms'):
+        return np.array([(p.x, p.y) for p in pts.geoms])
+    else:
+        return np.array((pts.x, pts.y))
+    
+
+
 class Geometry:
     """
     Class to represent a collection of 2d geometries that defines the shapes of

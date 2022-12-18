@@ -11,7 +11,7 @@ import shapely.geometry as shpgeo
 from shapely.ops import polygonize, unary_union
 import triangle
 
-from feabas import miscs, material
+from feabas import miscs, material, spatial
 from feabas.constant import *
 
 
@@ -262,14 +262,6 @@ class Mesh:
         self._update_caching_keys(gear=MESH_GEAR_FIXED)
 
 
-    def _hash_uid(self):
-        var0 = miscs.hash_numpy_array(self._vertices[MESH_GEAR_INITIAL])
-        var1 = miscs.hash_numpy_array(self.triangles)
-        var2 = miscs.hash_numpy_array(self._material_ids)
-        var3 = miscs.hash_numpy_array(self._stiffness_multiplier)
-        self.uid = hash((var0, var1, var2, var3, self._resolution))
-
-
     @classmethod
     def from_PSLG(cls, vertices, segments, markers=None, **kwargs):
         """
@@ -357,6 +349,23 @@ class Mesh:
 
 
     @classmethod
+    def from_polygon_equilateral(cls, mask, **kwargs):
+        """
+        initialize an equilateral mesh that covers the (Multi)Polygon region
+        defined by mask.
+        """
+        resolution = kwargs.get('resolution', 4)
+        mesh_size = kwargs.get('mesh_size', (400*4/resolution))
+        vertices = spatial.generate_equilat_grid_mask(mask, mesh_size)
+        triangles = triangle.delaunay(vertices)
+        edges = Mesh.triangle2edge(T, directional=True)
+        edge_len = np.sum(np.diff(vertices[edges], axis=-2)**2, axis=-1)**0.5
+        indx = np.any(edge_len.reshape(3, -1) > 1.25 * mesh_size, axis=0)
+        triangles = triangles[indx]
+        return cls(vertices, triangles, **kwargs)
+
+
+    @classmethod
     def from_bbox(cls, bbox, **kwargs):
         # generate mesh with rectangular boundary defined by bbox
         # [xmin, ymin, xmax, ymax]
@@ -365,14 +374,17 @@ class Mesh:
 
     @classmethod
     def from_boarder_bbox(cls, bbox, bd_width=np.inf, roundup_bbox=True, mesh_growth=3.0, **kwargs):
-        # rectangular ROI with different boader mesh settings
-        # (smaller edgesz + regular at boarders)
-        # mostly for stitching application.
-        # bbox: [xmin, ymin, xmax, ymax]
-        # bd_width: border width. in pixel or ratio to the size of the bbox
-        # roundup_bbox: if extend the bounding box size to make it multiples of
-        #   the mesh size. Otherwise, adjust the mesh size
-        # mesh_growth: increase of the mesh size in the interior region.
+        """
+        rectangular ROI with different boader mesh settings (smaller edgesz +
+        regular at boarders), mostly for stitching application.
+        Args:
+            bbox: [xmin, ymin, xmax, ymax]
+        Kwargs:
+            bd_width: border width. in pixel or ratio to the size of the bbox
+            roundup_bbox(bool): if extend the bounding box size to make it
+                multiples of the mesh size. Otherwise, adjust the mesh size
+            mesh_growth: increase of the mesh size in the interior region.
+        """
         resolution = kwargs.get('resolution', 4)
         mesh_size = kwargs.get('mesh_size', (400*4/resolution))
         tan_theta = np.tan(55*np.pi/180) / 2
@@ -611,17 +623,22 @@ class Mesh:
         else:
             raise ValueError
 
+
     def switch_to_ini(self):
         self._current_gear = MESH_GEAR_INITIAL
+
 
     def switch_to_fix(self):
         self._current_gear = MESH_GEAR_FIXED
 
+
     def switch_to_mov(self):
         self._current_gear = MESH_GEAR_MOVING
 
+
     def switch_to_stg(self):
         self._current_gear = MESH_GEAR_STAGING
+
 
     def __getitem__(self, gear):
         if isinstance(gear, str):
@@ -685,18 +702,22 @@ class Mesh:
     def initial_vertices(self):
         return self._vertices[MESH_GEAR_INITIAL]
 
+
     @property
     def fixed_vertices(self):
         return self._vertices[MESH_GEAR_FIXED]
+
 
     @fixed_vertices.setter
     def fixed_vertices(self, v):
         self._vertices[MESH_GEAR_FIXED] = v
         self.vertices_changed(gear=MESH_GEAR_FIXED)
 
+
     @property
     def fixed_vertices_w_offset(self):
         return self.fixed_vertices + self.offset(gear=MESH_GEAR_FIXED)
+
 
     @property
     def moving_vertices(self):
@@ -705,14 +726,17 @@ class Mesh:
         else:
             return self._vertices[MESH_GEAR_MOVING]
 
+
     @moving_vertices.setter
     def moving_vertices(self, v):
         self._vertices[MESH_GEAR_MOVING] = v
         self.vertices_changed(gear=MESH_GEAR_MOVING)
 
+
     @property
     def moving_vertices_w_offset(self):
         return self.moving_vertices + self.offset(gear=MESH_GEAR_MOVING)
+
 
     @property
     def staging_vertices(self):
@@ -721,10 +745,12 @@ class Mesh:
         else:
             return self._vertices[MESH_GEAR_STAGING]
 
+
     @staging_vertices.setter
     def staging_vertices(self, v):
         self._vertices[MESH_GEAR_STAGING] = v
         self.vertices_changed(gear=MESH_GEAR_STAGING)
+
 
     @property
     def staging_vertices_w_offset(self):
@@ -732,6 +758,14 @@ class Mesh:
 
 
   ## -------------------------------- caching ------------------------------ ##
+    def _hash_uid(self):
+        var0 = miscs.hash_numpy_array(self._vertices[MESH_GEAR_INITIAL])
+        var1 = miscs.hash_numpy_array(self.triangles)
+        var2 = miscs.hash_numpy_array(self._material_ids)
+        var3 = miscs.hash_numpy_array(self._stiffness_multiplier)
+        self.uid = hash((var0, var1, var2, var3, self._resolution))
+
+
     def _update_caching_keys(self, gear=MESH_GEAR_INITIAL):
         """
         used to update caching keys when changes are made to the Mesh.
@@ -1311,7 +1345,6 @@ class Mesh:
         if collisions is None:
             collisions = self.find_triangle_overlaps(gear=gear, tri_mask=tri_mask)
         collisions_g = Mesh.masked_index_to_global_index(tri_mask, np.unique(collisions, axis=None))
-
 
 
     def fix_segment_collision(self):
