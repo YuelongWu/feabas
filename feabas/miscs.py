@@ -32,6 +32,14 @@ def hash_numpy_array(ar):
         return hash(ar)
 
 
+def indices_to_bool_mask(indx, size=None):
+    if size is None:
+        size = np.max(indx)
+    mask = np.zeros(size, dtype=bool)
+    mask[indx] = True
+    return mask
+
+
 def crop_image_from_bbox(img, bbox_img, bbox_out, **kwargs):
     """
     Crop an image based on the bounding box

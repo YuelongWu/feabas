@@ -381,9 +381,9 @@ def generate_equilat_grid_mask(mask, side_len, anchor_point=None):
     if anchor_point is None:
         rpts = mask.representative_point()
         anchor_point = (rpts.x, rpts.y)
-    mask = mask.buffer(1.1 * side_len) 
-    v = generate_equilat_grid_bbox(mask.bounds, side_len, anchor_point=anchor_point)
-    pts = shpgeo.MultiPoint(v).intersection(mask)
+    maskd = mask.buffer(1.001 * side_len) 
+    v = generate_equilat_grid_bbox(maskd.bounds, side_len, anchor_point=anchor_point)
+    pts = shpgeo.MultiPoint(v).intersection(maskd)
     if hasattr(pts, 'geoms'):
         return np.array([(p.x, p.y) for p in pts.geoms])
     else:

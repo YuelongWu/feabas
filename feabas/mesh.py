@@ -358,9 +358,9 @@ class Mesh:
         mesh_size = kwargs.get('mesh_size', (400*4/resolution))
         vertices = spatial.generate_equilat_grid_mask(mask, mesh_size)
         triangles = triangle.delaunay(vertices)
-        edges = Mesh.triangle2edge(T, directional=True)
+        edges = Mesh.triangle2edge(triangles, directional=True)
         edge_len = np.sum(np.diff(vertices[edges], axis=-2)**2, axis=-1)**0.5
-        indx = np.any(edge_len.reshape(3, -1) > 1.25 * mesh_size, axis=0)
+        indx = ~np.any(edge_len.reshape(3, -1) > 1.25 * mesh_size, axis=0)
         triangles = triangles[indx]
         return cls(vertices, triangles, **kwargs)
 
@@ -1034,9 +1034,11 @@ class Mesh:
         indx = np.nonzero(np.diff(edges_complex)==0)[0]
         idx0 = tids[indx]
         idx1 = tids[indx+1]
+        indx0 = np.minimum(idx0, idx1)
+        indx1 = np.maximum(idx0, idx1)
         Ntr = T.shape[0]
         V = np.ones_like(idx0, dtype=bool)
-        A = sparse.csr_matrix((V, (idx0, idx1)), shape=(Ntr, Ntr))
+        A = sparse.csr_matrix((V, (indx0, indx1)), shape=(Ntr, Ntr))
         return A
 
 
@@ -1149,6 +1151,23 @@ class Mesh:
         return grouped_chains
 
 
+    def shapely_regions(self, gear=None, tri_mask=None):
+        """
+        return the shapely (Multi)Polygon that cover the region of the triangles.
+        """
+        if gear is None:
+            gear = self._current_gear
+        grouped_chains = self.grouped_segment_chains(tri_mask=tri_mask)
+        vertices = self.vertices_w_offset(gear=gear)
+        polygons = []
+        for chains in grouped_chains:
+            P0 = shpgeo.Polygon(vertices[chains[0]])
+            for hole in chains[1:]:
+                P0 = P0.difference(shpgeo.Polygon(vertices[hole]))
+            polygons.append(P0)
+        return unary_union(polygons)
+
+
     @config_cache('TBD')
     def triangle_affine_tform(self, gear=(MESH_GEAR_INITIAL, MESH_GEAR_MOVING), tri_mask=None):
         """
@@ -1192,11 +1211,14 @@ class Mesh:
                 return s0[tri_mask]
         _, A, _ = self.triangle_affine_tform(gear=gear, tri_mask=tri_mask)
         s = np.linalg.svd(A[:,:2,:2],compute_uv=False)
-        return s
+        det = np.linalg.det(A[:,:2,:2])
+        return s * det.reshape(-1,1)
 
 
   ## ------------------------ collision management ------------------------- ##
-    def _triangles_rtree_generator(self, gear=MESH_GEAR_MOVING, tri_mask=None):
+    def _triangles_rtree_generator(self, gear=None, tri_mask=None):
+        if gear is None:
+            gear = self._current_gear
         if tri_mask is None:
             tids = np.arange(self.num_triangles)
         elif tri_mask.dtype == bool:
@@ -1207,12 +1229,16 @@ class Mesh:
             yield (k, bbox, tids[k])
 
 
-    def triangles_rtree(self, gear=MESH_GEAR_MOVING, tri_mask=None):
+    def triangles_rtree(self, gear=None, tri_mask=None):
+        if gear is None:
+            gear = self._current_gear
         return index.Index(self._triangles_rtree_generator(gear=gear, tri_mask=tri_mask))
 
 
-    def check_segment_collision(self, gear=MESH_GEAR_MOVING, tri_mask=None):
+    def check_segment_collision(self, gear=None, tri_mask=None):
         """check if segments have collisions among themselves."""
+        if gear is None:
+            gear = self._current_gear
         vertices = self.vertices(gear=gear)
         SRs = self.grouped_segment_chains(tri_mask=tri_mask)
         covered = None
@@ -1237,11 +1263,13 @@ class Mesh:
         return valid
 
 
-    def locate_segment_collision(self, gear=MESH_GEAR_MOVING, tri_mask=None, check_flipped=True):
+    def locate_segment_collision(self, gear=None, tri_mask=None, check_flipped=True):
         """
         find the segments that collide. Return a list of collided segments and
         their (local) triangle ids.
         """
+        if gear is None:
+            gear = self._current_gear
         SRs = self.grouped_segment_chains(tri_mask=tri_mask)
         vertices = self.vertices(gear=gear)
         boundaries = []
@@ -1293,12 +1321,14 @@ class Mesh:
                 for segwid in rest_of_segments:
                     if np.any(np.all(S_flp==segwid[0], axis=-1)):
                         collided_segments.append(segwid)
-        segs = np.array([s[0] for s in collided_segments])
-        tids = np.array([s[1] for s in collided_segments])
+        segs = np.array([s[0] for s in collided_segments], dtype=segments.dtype)
+        tids = np.array([s[1] for s in collided_segments], dtype=tids0.dtype)
         return segs, tids
 
 
-    def locate_flipped_triangles(self, gear=MESH_GEAR_MOVING, tri_mask=None, return_triangles=False):
+    def locate_flipped_triangles(self, gear=None, tri_mask=None, return_triangles=False):
+        if gear is None:
+            gear = self._current_gear
         vertices0 = self.initial_vertices
         if tri_mask is None:
             T = self.triangles
@@ -1314,16 +1344,30 @@ class Mesh:
             return np.nonzero(flipped_sel)[0]
 
 
-    def find_triangle_overlaps(self, gear=MESH_GEAR_MOVING, tri_mask=None):
-        _, seg_tids = self.locate_segment_collision(gear=gear, tri_mask=tri_mask, check_flipped=False)
+    def find_triangle_overlaps(self, gear=None, tri_mask=None):
+        if gear is None:
+            gear = self._current_gear
+        collided_segs, _ = self.locate_segment_collision(gear=gear, tri_mask=tri_mask, check_flipped=False)
+        if collided_segs.size > 0:
+            seg_lines = self.vertices(gear=gear)[collided_segs]
+            P_segs = list(polygonize(unary_union(shpgeo.MultiLineString([s for s in seg_lines]))))
+            seg_bboxes = np.array([p.bounds for p in P_segs])
+        else:
+            seg_bboxes = np.empty((0,4))
         flip_tids = self.locate_flipped_triangles(gear=gear, tri_mask=tri_mask)
+        if flip_tids.size > 0:
+            flip_tids_g = Mesh.masked_index_to_global_index(tri_mask, flip_tids)
+            flip_bboxes = self.triangle_bboxes(gear=gear, tri_mask=flip_tids_g)
+        else:
+            flip_bboxes = np.empty((0,4))
+        init_bboxes = np.concatenate((seg_bboxes, flip_bboxes), axis=0)
+        if init_bboxes.size == 0:
+            return np.empty((0,2), dtype=self.triangles.dtype)
         rtree0 = self.triangles_rtree(gear=gear, tri_mask=tri_mask)
-        init_tids = np.concatenate((seg_tids, flip_tids), axis=0)
-        init_tids = Mesh.masked_index_to_global_index(tri_mask, init_tids)
-        init_bboxes = self.triangle_bboxes(gear=gear, tri_mask=init_tids)
         candidate_tids = []
         for bbox in init_bboxes:
-            candidate_tids.extend(list(rtree0.intersection(bbox, objects=False)))
+            bbox_t = (bbox[0]-self._epsilon, bbox[1]-self._epsilon, bbox[2]+self._epsilon, bbox[3]+self._epsilon)
+            candidate_tids.extend(list(rtree0.intersection(bbox_t, objects=False)))
         candidate_tids = np.sort(np.unique(candidate_tids))
         tri_mask_c = Mesh.masked_index_to_global_index(tri_mask, candidate_tids)
         rtree_c = self.triangles_rtree(gear=gear, tri_mask=tri_mask_c)
@@ -1341,10 +1385,52 @@ class Mesh:
         return candidate_tids[np.array(collisions)]
 
 
-    def group_overlapped_triangles(self, collisions=None, gear=MESH_GEAR_MOVING, tri_mask=None):
+    def _graph_coloring_overlapped_triangles(self, collisions=None, gear=None, tri_mask=None):
+        if gear is None:
+            gear = self._current_gear
         if collisions is None:
             collisions = self.find_triangle_overlaps(gear=gear, tri_mask=tri_mask)
-        collisions_g = Mesh.masked_index_to_global_index(tri_mask, np.unique(collisions, axis=None))
+        if tri_mask is None:
+            groupings = np.zeros(self.num_triangles, dtype=self.triangles.dtype)
+        elif isinstance(tri_mask, np.ndarray) and (tri_mask.dtype == bool):
+            groupings = np.zeros(np.sum(tri_mask), dtype=self.triangles.dtype)
+        else:
+            tri_mask = miscs.indices_to_bool_mask(tri_mask, size=self.num_triangles)
+            groupings = np.zeros(np.sum(tri_mask), dtype=self.triangles.dtype)
+        if collisions.size == 0:
+            return groupings
+        indx_loc, collisions_loc = np.unique(collisions, axis=None, return_inverse=True)
+        collisions_loc = collisions_loc.reshape(collisions.shape)
+        indx_glb = Mesh.masked_index_to_global_index(tri_mask, indx_loc)
+        svds = self.triangle_tform_svd(gear=(MESH_GEAR_INITIAL, gear), tri_mask=indx_glb)
+        deforms = Mesh.svds_to_deform(svds)
+        # graph coloring for grouping
+        order = np.argsort(deforms) # start from good ones
+        deforms_ordered = deforms[order]
+        order_nonflip = order[deforms_ordered<1]
+        order_flip = order[deforms_ordered>=1]
+        N_ov = order.size
+        colors = np.full(N_ov, -1, dtype=self.triangles.dtype)
+        G = sparse.csr_matrix((np.ones(collisions.shape[0], dtype=bool), (collisions_loc[:,0],collisions_loc[:,1])), shape=(N_ov, N_ov))
+        G = G + G.transpose()
+        available_color0 = np.ones(N_ov+1, dtype=bool)
+        for t0 in order_nonflip:
+            available_color = available_color0.copy()
+            _, neighbors = G[t0].nonzero()
+            connected_color = colors[neighbors]
+            available_color[connected_color] = False
+            group_id = np.min(np.nonzero(available_color)[0])
+            colors[t0] = group_id
+        available_color0[:(colors.max()+1)] = False
+        for t0 in order_flip:
+            available_color = available_color0.copy()
+            _, neighbors = G[t0].nonzero()
+            connected_color = colors[neighbors]
+            available_color[connected_color] = False
+            group_id = np.min(np.nonzero(available_color)[0])
+            colors[t0] = group_id
+        groupings[indx_loc] = colors
+        return groupings
 
 
     def fix_segment_collision(self):
@@ -1401,3 +1487,13 @@ class Mesh:
         else:
             g_indx[np.sort(mask_sel,axis=None)] = np.arange(mask_sel.size)
         return g_indx[global_indx]
+
+
+    @staticmethod
+    def svds_to_deform(s):
+        """
+        given (N,2) singular values, return a (N,) deformation value that varies
+        between 0~1 if not flipped, and 1~inf if flipped
+        """
+        d = np.piecewise(s, [s<1, s>=1], [lambda x: 1-x, lambda x: 1-1/x])
+        return np.max(d, axis=-1)
