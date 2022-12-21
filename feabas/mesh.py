@@ -1215,6 +1215,11 @@ class Mesh:
         return s * det.reshape(-1,1)
 
 
+    @config_cache('TBD')
+    def matplotlib_tri(self, gear=MESH_GEAR_MOVING, tri_mask=None, include_flipped=False):
+        # return geometry Rtree, prepared geometry list, matplotlib tri list, global index list, prepared seg list?
+        pass
+
   ## ------------------------ collision management ------------------------- ##
     def _triangles_rtree_generator(self, gear=None, tri_mask=None):
         if gear is None:
@@ -1385,7 +1390,7 @@ class Mesh:
         return candidate_tids[np.array(collisions)]
 
 
-    def _graph_coloring_overlapped_triangles(self, collisions=None, gear=None, tri_mask=None):
+    def _graph_coloring_overlapped_triangles(self, collisions=None, gear=None, tri_mask=None, include_flipped=False):
         if gear is None:
             gear = self._current_gear
         if collisions is None:
@@ -1421,15 +1426,53 @@ class Mesh:
             available_color[connected_color] = False
             group_id = np.min(np.nonzero(available_color)[0])
             colors[t0] = group_id
-        available_color0[:(colors.max()+1)] = False
-        for t0 in order_flip:
-            available_color = available_color0.copy()
-            _, neighbors = G[t0].nonzero()
-            connected_color = colors[neighbors]
-            available_color[connected_color] = False
-            group_id = np.min(np.nonzero(available_color)[0])
-            colors[t0] = group_id
+        if include_flipped:
+            available_color0[:(colors.max()+1)] = False
+            for t0 in order_flip:
+                available_color = available_color0.copy()
+                _, neighbors = G[t0].nonzero()
+                connected_color = colors[neighbors]
+                available_color[connected_color] = False
+                group_id = np.min(np.nonzero(available_color)[0])
+                colors[t0] = group_id
+        else:
+            colors[order_flip] = -1
         groupings[indx_loc] = colors
+        return groupings
+
+
+    @config_cache('TBD')
+    def nonoverlap_triangle_groups(self, gear=MESH_GEAR_MOVING, contigeous=True, include_flipped=False):
+        """
+        devide triangles to subgroups so that within each group there are no
+        overlapping triangles. This prevents error when using matplotlib.tri to
+        generate trapezoidal map.
+        Kwargs:
+            gear (int): which gear the groupings should ensure no overlaps in.
+            contigeous (bool): whether to break unconnected triangles into
+                different groups, even if no overlaps occur.
+            include_flipped (bool): whether to also group flipped triangles. If
+                False, the group id for all the flipped triangles will be -1.
+        """
+        if contigeous:
+            N_conn0, T_conn0 = self.connected_triangles(tri_mask=None)
+            groupings0 = np.zeros(self.num_triangles, dtype=self.triangles.dtype)
+            num_groups0 = 0
+            for lbl in range(N_conn0):
+                l_mask = T_conn0 == lbl
+                grp = self._graph_coloring_overlapped_triangles(gear=gear, tri_mask=l_mask, include_flipped=include_flipped)
+                groupings0[l_mask] = grp + num_groups0
+                num_groups0 = num_groups0 + grp.max() + 1
+            groupings = groupings0.copy()
+            lbls = np.unique(groupings0[groupings0 >= 0])
+            num_groups = 0
+            for lbl in lbls:
+                l_mask = groupings0 == lbl
+                N_conn, T_conn = self.connected_triangles(tri_mask=l_mask)
+                groupings[l_mask] = T_conn + num_groups
+                num_groups += N_conn
+        else:
+            groupings = self._graph_coloring_overlapped_triangles(gear=gear, tri_mask=None, include_flipped=include_flipped)
         return groupings
 
 
