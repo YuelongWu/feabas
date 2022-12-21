@@ -2,6 +2,8 @@ from collections import defaultdict
 import copy
 import gc
 import h5py
+import inspect
+import matplotlib.tri
 import numpy as np
 from rtree import index
 from scipy import sparse
@@ -83,9 +85,18 @@ def config_cache(gear):
                 if 'gear' in kwargs:
                     cgear = kwargs['gear']
                 else:
-                    cgear = self._current_gear
+                    argspec = inspect.getargspec(func)
+                    nd = len(argspec.args) - len(argspec.defaults)
+                    kwnm = argspec.args[nd:]
+                    if 'gear' in kwnm:
+                        cindx = kwnm.index('gear')
+                        cgear = argspec.defaults[cindx]
+                    else:
+                        cgear = self._current_gear
             else:
                 cgear = gear
+            if cgear is None:
+                cgear = self._current_gear
             if cache is None:
                 # if cache not provided, use default cache in self.
                 cache = self._default_cache[cgear]
@@ -191,7 +202,7 @@ class Mesh:
     """
     A class to represent a FEM Mesh.
     Args:
-        vertices (NVx2 ndarray): x-y cooridnates of the vertices.
+        vertices (NV x 2 ndarray): x-y cooridnates of the vertices.
         triangles (NT x 3 ndarray): each row is 3 vertex indices belong to a
             triangle.
     Kwargs:
@@ -505,18 +516,32 @@ class Mesh:
         return init_dict
 
 
+    def _fillter_triangles(self, tri_mask):
+        """
+        give a triangle mask, return a mask to filter the vertices and the
+        updated triangle indices
+        """
+        if tri_mask is None:
+            vindx = np.arange(self.num_vertices, dtype=self.triangles.dtype)
+            T = self.triangles
+        else:
+            masked_tri = self.triangles[tri_mask]
+            vindx = np.unique(masked_tri, axis=None)
+            rindx = np.full_like(masked_tri, -1, shape=np.max(vindx)+1)
+            rindx[vindx] = np.arange(vindx.size)
+            T = rindx[masked_tri]
+        return vindx, T
+
+
     def submesh(self, tri_mask, **kwargs):
         """
         return a subset of the mesh with tri_mask as the triangle mask.
         """
         if np.all(tri_mask):
             return self
-        masked_tri = self.triangles[tri_mask]
-        vindx = np.unique(masked_tri, axis=None)
-        rindx = np.full_like(masked_tri, -1, shape=np.max(vindx)+1)
-        rindx[vindx] = np.arange(vindx.size)
+        vindx, new_triangles = self._fillter_triangles(tri_mask)
         init_dict = self.get_init_dict(**kwargs)
-        init_dict['triangles'] = rindx[masked_tri]
+        init_dict['triangles'] = new_triangles
         vtx_keys = ['vertices','fixed_vertices','moving_vertices','staging_vertices']
         for vkey in vtx_keys:
             if init_dict.get(vkey, None) is not None:
@@ -1216,9 +1241,96 @@ class Mesh:
 
 
     @config_cache('TBD')
-    def matplotlib_tri(self, gear=MESH_GEAR_MOVING, tri_mask=None, include_flipped=False):
-        # return geometry Rtree, prepared geometry list, matplotlib tri list, global index list, prepared seg list?
-        pass
+    def matplotlib_tri(self, gear=None, tri_mask=None, include_flipped=False):
+        # return geometry Rtree, matplotlib tri list, global index list
+        if gear is None:
+            gear = self._current_gear
+        groupings = self.nonoverlap_triangle_groups(gear=gear, contigeous=True, include_flipped=include_flipped, tri_mask=tri_mask)
+        geometry_list = []
+        mattri_list = []
+        index_list = []
+        group_ids = np.unique(groupings[groupings >= 0])
+        for g in group_ids:
+            g_mask = groupings == g
+            if not np.any(g_mask):
+                continue
+            geometry_list.append(self.shapely_regions(gear=gear, tri_mask=g_mask))
+            v_indx, T = self._fillter_triangles(g_mask)
+            vertices = self.vertices(gear=gear)[v_indx]
+            mattri_list.append(matplotlib.tri.Triangulation(vertices[:,0], vertices[:,1], triangles=T))
+            index_list.append(np.nonzero(g_mask)[0])
+        tree = shapely.STRtree(geometry_list)
+        return (tree, mattri_list, index_list)
+
+
+    def tri_finder(self, pts, gear=None, tri_mask=None, include_flipped=False, mode=MESH_TRIFINDER_WHATEVER):
+        """
+        given a set of points, find which triangles they are in.
+        Args:
+            pts (N x 2 ndarray): x-y coordinates of querry points
+        """
+        if gear is None:
+            gear = self._current_gear
+        tree, mattri_list, index_list = self.matplotlib_tri(gear=gear, tri_mask=tri_mask, include_flipped=include_flipped)
+        pts = (pts - self.offset(gear=gear)).reshape(-1,2)
+        mpts = shpgeo.MultiPoint(pts)
+        pts_list = list(mpts.geoms)
+        hits = tree.query(pts_list, predicate='intersects')
+        tid_out = np.full(len(pts_list), -1, dtype=self.triangles.dtype)
+        if hits.size == 0:
+            return tid_out
+        tri_finders = [m.get_trifinder() for m in mattri_list]
+        if len(mattri_list) > 1:
+            uhits, uidx, cnts = np.unique(hits[0])
+            conflict = np.any(cnts > 1)
+            if conflict:
+                if mode == MESH_TRIFINDER_WHATEVER:
+                    hits = hits[:, uidx]
+                    conflict = False
+                elif mode == MESH_TRIFINDER_LEAST_INNERMOST:
+                    conflict_pts_indices = uhits[cnts > 1]
+                    for pt_idx in conflict_pts_indices:
+                        pmask = hits[0] == pt_idx
+                        geo_indices = hits[1, pmask]
+                        mxdis = -1
+                        g_sel = geo_indices[0]
+                        for g in geo_indices:
+                            dis0 = tree.geometries[g].boundary.distance(pts_list[pt_idx])
+                            if dis0 >= mxdis:
+                                g_sel = g
+                                mxdis = dis0
+                        hits[1, pmask] = g_sel
+                    hits = hits[:, uidx]
+                    conflict = False
+        else:
+            conflict = False
+        hits_pidx = hits[0]
+        hits_gidx = hits[1]
+        pts_indices = []
+        tri_indices = []
+        for gindx in np.unique(hits[1]):
+            pidx = hits_pidx[hits_gidx == gindx]
+            pxy = pts[pidx]
+            tid0 = tri_finders[gindx](pxy[:,0], pxy[:,1])
+            pts_indices.append(pidx[tid0 >= 0])
+            tri_indices.append(index_list[gindx][tid0[tid0 >= 0]])
+        pts_indices = np.concatenate(pts_indices, axis=0)
+        tri_indices = np.concatenate(tri_indices, axis=0)
+        if conflict:
+            if mode == MESH_TRIFINDER_LEAST_DEFORM:
+                svds0 = self.triangle_tform_svd(gear=(MESH_GEAR_INITIAL, gear), tri_mask=None)
+                deforms0 = Mesh.svds_to_deform(svds0)
+                deforms = deforms0[tri_indices]
+                idxt = np.argsort(deforms)
+                pts_indices = pts_indices[idxt]
+                tri_indices = tri_indices[idxt]
+                pts_indices, uidx = np.unique(pts_indices, return_index=True)
+                tri_indices = tri_indices[uidx]
+            else:
+                raise ValueError("Mesh tri_finder conflict resolution mode not implemented")
+        tid_out[pts_indices] = tri_indices
+        return tid_out
+
 
   ## ------------------------ collision management ------------------------- ##
     def _triangles_rtree_generator(self, gear=None, tri_mask=None):
@@ -1442,7 +1554,7 @@ class Mesh:
 
 
     @config_cache('TBD')
-    def nonoverlap_triangle_groups(self, gear=MESH_GEAR_MOVING, contigeous=True, include_flipped=False):
+    def nonoverlap_triangle_groups(self, gear=MESH_GEAR_MOVING, contigeous=True, include_flipped=False, tri_mask=None):
         """
         devide triangles to subgroups so that within each group there are no
         overlapping triangles. This prevents error when using matplotlib.tri to
@@ -1455,11 +1567,14 @@ class Mesh:
                 False, the group id for all the flipped triangles will be -1.
         """
         if contigeous:
-            N_conn0, T_conn0 = self.connected_triangles(tri_mask=None)
-            groupings0 = np.zeros(self.num_triangles, dtype=self.triangles.dtype)
+            N_conn0, T_conn0 = self.connected_triangles(tri_mask=tri_mask)
+            groupings0 = np.full(self.num_triangles, -1, dtype=self.triangles.dtype)
             num_groups0 = 0
             for lbl in range(N_conn0):
                 l_mask = T_conn0 == lbl
+                if tri_mask is not None:
+                    l_mask = np.nonzero(l_mask)[0]
+                    l_mask = Mesh.masked_index_to_global_index(tri_mask. l_mask)
                 grp = self._graph_coloring_overlapped_triangles(gear=gear, tri_mask=l_mask, include_flipped=include_flipped)
                 groupings0[l_mask] = grp + num_groups0
                 num_groups0 = num_groups0 + grp.max() + 1
@@ -1472,7 +1587,12 @@ class Mesh:
                 groupings[l_mask] = T_conn + num_groups
                 num_groups += N_conn
         else:
-            groupings = self._graph_coloring_overlapped_triangles(gear=gear, tri_mask=None, include_flipped=include_flipped)
+            grp = self._graph_coloring_overlapped_triangles(gear=gear, tri_mask=tri_mask, include_flipped=include_flipped)
+            if tri_mask is not None:
+                groupings = np.full(self.num_triangles, -1, dtype=self.triangles.dtype)
+                groupings[tri_mask] = grp
+            else:
+                groupings = grp
         return groupings
 
 

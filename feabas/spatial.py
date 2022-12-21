@@ -337,14 +337,18 @@ def clean_up_small_regions(regions, roi=None, area_thresh=4, buffer=1e-3):
 
 
 
-def generate_equilat_grid_bbox(bbox, side_len, anchor_point=None):
+def generate_equilat_grid_bbox(bbox, side_len, anchor_point=None, buffer=None):
     """
     generate equilateral triangle grid points that covers the bounding box
     """
     Xmin, Ymin, Xmax, Ymax = bbox
     center_point = [(Xmin+Xmax)/2, (Ymin+Ymax)/2]
-    dx = side_len
-    dy = side_len * np.sin(np.deg2rad(60))
+    if buffer is None:
+        dx = side_len
+        dy = side_len * np.sin(np.deg2rad(60))
+    else:
+        dx = buffer
+        dy = buffer
     half_Nx = int(np.ceil((Xmax - Xmin) / (2 * dx)) + 2)
     half_Ny = int(np.ceil((Ymax - Ymin) / (2 * dy)) + 2)
     Xmin_os = center_point[0] - half_Nx * dx
@@ -367,10 +371,12 @@ def generate_equilat_grid_bbox(bbox, side_len, anchor_point=None):
     return vertices
 
 
-def generate_equilat_grid_mask(mask, side_len, anchor_point=None):
+def generate_equilat_grid_mask(mask, side_len, anchor_point=None, buffer=None):
     """
     generate equilateral triangle grid points that covers the shapely geometries
     """
+    if buffer is None:
+        buffer = side_len
     if hasattr(mask, 'geoms'):
         # if multiple geometries, filter out ones with 0 areas
         to_keep = []
@@ -381,8 +387,8 @@ def generate_equilat_grid_mask(mask, side_len, anchor_point=None):
     if anchor_point is None:
         rpts = mask.representative_point()
         anchor_point = (rpts.x, rpts.y)
-    maskd = mask.buffer(1.001 * side_len) 
-    v = generate_equilat_grid_bbox(maskd.bounds, side_len, anchor_point=anchor_point)
+    maskd = mask.buffer(1.001 * buffer) 
+    v = generate_equilat_grid_bbox(maskd.bounds, side_len, anchor_point=anchor_point, buffer=buffer)
     pts = shpgeo.MultiPoint(v).intersection(maskd)
     if hasattr(pts, 'geoms'):
         return np.array([(p.x, p.y) for p in pts.geoms])
