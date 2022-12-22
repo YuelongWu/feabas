@@ -1338,6 +1338,23 @@ class Mesh:
 
 
   ## ------------------------ collision management ------------------------- ##
+    def is_valid(self, gear=None, tri_mask=None):
+        if gear is None:
+            gear = self._current_gear
+        vertices = self.vertices(gear=gear)
+        if tri_mask is None:
+            T = self.triangles
+        else:
+            vindx, T = self._filter_triangles(tri_mask)
+            vertices = vertices[vindx]
+        matplotlib_tri = matplotlib.tri.Triangulation(vertices[:,0], vertices[:,1], triangles = T)
+        try:
+            matplotlib_tri.get_trifinder()
+            return True
+        except RuntimeError:
+            return False
+
+
     def _triangles_rtree_generator(self, gear=None, tri_mask=None):
         if gear is None:
             gear = self._current_gear
@@ -1579,11 +1596,14 @@ class Mesh:
                 l_mask = T_conn0 == lbl
                 if tri_mask is not None:
                     l_mask = np.nonzero(l_mask)[0]
-                    l_mask = Mesh.masked_index_to_global_index(tri_mask. l_mask)
-                grp = self._graph_coloring_overlapped_triangles(gear=gear, tri_mask=l_mask, include_flipped=include_flipped)
-                grp[grp >= 0] += num_groups0
+                    l_mask = Mesh.masked_index_to_global_index(tri_mask, l_mask)
+                if self.is_valid(gear=gear, tri_mask=l_mask):
+                    grp = np.full(self._num_masked_tri(l_mask), num_groups0, dtype=groupings0.dtype)
+                else:
+                    grp = self._graph_coloring_overlapped_triangles(gear=gear, tri_mask=l_mask, include_flipped=include_flipped)
+                    grp[grp >= 0] += num_groups0
                 groupings0[l_mask] = grp
-                num_groups0 = num_groups0 + grp.max() + 1
+                num_groups0 = grp.max() + 1
             groupings = groupings0.copy()
             lbls = np.unique(groupings0[groupings0 >= 0])
             num_groups = 0
@@ -1593,7 +1613,10 @@ class Mesh:
                 groupings[l_mask] = T_conn + num_groups
                 num_groups += N_conn
         else:
-            grp = self._graph_coloring_overlapped_triangles(gear=gear, tri_mask=tri_mask, include_flipped=include_flipped)
+            if self.is_valid(gear=gear, tri_mask=tri_mask):
+                grp = np.zeros(self._num_masked_tri(tri_mask), dtype=self.triangles.dtype)
+            else:
+                grp = self._graph_coloring_overlapped_triangles(gear=gear, tri_mask=tri_mask, include_flipped=include_flipped)
             if tri_mask is not None:
                 groupings = np.full(self.num_triangles, -1, dtype=self.triangles.dtype)
                 groupings[tri_mask] = grp
@@ -1602,11 +1625,25 @@ class Mesh:
         return groupings
 
 
+    def _smooth_tform_by_coarse_mesh(self):
+        pass
+
+
     def fix_segment_collision(self):
         pass
 
 
   ## ------------------------- utility functions --------------------------- ##
+    def _num_masked_tri(self, tri_mask):
+        if tri_mask is None:
+            return self.num_triangles
+        elif isinstance(tri_mask, np.ndarray) and (tri_mask.dtype == bool):
+            return np.sum(tri_mask)
+        else:
+            indx = np.unique(tri_mask)
+            return indx.size
+
+
     @staticmethod
     def triangle2edge(triangles, directional=False):
         """Convert triangle indices to edge indices."""
