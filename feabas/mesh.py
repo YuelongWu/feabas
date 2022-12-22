@@ -516,7 +516,7 @@ class Mesh:
         return init_dict
 
 
-    def _fillter_triangles(self, tri_mask):
+    def _filter_triangles(self, tri_mask):
         """
         give a triangle mask, return a mask to filter the vertices and the
         updated triangle indices
@@ -537,9 +537,9 @@ class Mesh:
         """
         return a subset of the mesh with tri_mask as the triangle mask.
         """
-        if np.all(tri_mask):
+        if isinstance(tri_mask, np.ndarray) and tri_mask.dtype==bool and np.all(tri_mask):
             return self
-        vindx, new_triangles = self._fillter_triangles(tri_mask)
+        vindx, new_triangles = self._filter_triangles(tri_mask)
         init_dict = self.get_init_dict(**kwargs)
         init_dict['triangles'] = new_triangles
         vtx_keys = ['vertices','fixed_vertices','moving_vertices','staging_vertices']
@@ -1186,9 +1186,9 @@ class Mesh:
         vertices = self.vertices_w_offset(gear=gear)
         polygons = []
         for chains in grouped_chains:
-            P0 = shpgeo.Polygon(vertices[chains[0]])
+            P0 = shpgeo.Polygon(vertices[chains[0]]).buffer(0)
             for hole in chains[1:]:
-                P0 = P0.difference(shpgeo.Polygon(vertices[hole]))
+                P0 = P0.difference(shpgeo.Polygon(vertices[hole]).buffer(0))
             polygons.append(P0)
         return unary_union(polygons)
 
@@ -1241,11 +1241,11 @@ class Mesh:
 
 
     @config_cache('TBD')
-    def matplotlib_tri(self, gear=None, tri_mask=None, include_flipped=False):
+    def matplotlib_tri(self, gear=None, tri_mask=None, include_flipped=False, contigeous=True):
         # return geometry Rtree, matplotlib tri list, global index list
         if gear is None:
             gear = self._current_gear
-        groupings = self.nonoverlap_triangle_groups(gear=gear, contigeous=True, include_flipped=include_flipped, tri_mask=tri_mask)
+        groupings = self.nonoverlap_triangle_groups(gear=gear, contigeous=contigeous, include_flipped=include_flipped, tri_mask=tri_mask)
         geometry_list = []
         mattri_list = []
         index_list = []
@@ -1255,7 +1255,7 @@ class Mesh:
             if not np.any(g_mask):
                 continue
             geometry_list.append(self.shapely_regions(gear=gear, tri_mask=g_mask))
-            v_indx, T = self._fillter_triangles(g_mask)
+            v_indx, T = self._filter_triangles(g_mask)
             vertices = self.vertices(gear=gear)[v_indx]
             mattri_list.append(matplotlib.tri.Triangulation(vertices[:,0], vertices[:,1], triangles=T))
             index_list.append(np.nonzero(g_mask)[0])
@@ -1263,7 +1263,7 @@ class Mesh:
         return (tree, mattri_list, index_list)
 
 
-    def tri_finder(self, pts, gear=None, tri_mask=None, include_flipped=False, mode=MESH_TRIFINDER_WHATEVER):
+    def tri_finder(self, pts, gear=None, tri_mask=None, include_flipped=False, mode=MESH_TRIFINDER_WHATEVER, contigeous=True):
         """
         given a set of points, find which triangles they are in.
         Args:
@@ -1271,17 +1271,22 @@ class Mesh:
         """
         if gear is None:
             gear = self._current_gear
-        tree, mattri_list, index_list = self.matplotlib_tri(gear=gear, tri_mask=tri_mask, include_flipped=include_flipped)
+        tree, mattri_list, index_list = self.matplotlib_tri(gear=gear, tri_mask=tri_mask, include_flipped=include_flipped, contigeous=contigeous)
         pts = (pts - self.offset(gear=gear)).reshape(-1,2)
-        mpts = shpgeo.MultiPoint(pts)
-        pts_list = list(mpts.geoms)
-        hits = tree.query(pts_list, predicate='intersects')
-        tid_out = np.full(len(pts_list), -1, dtype=self.triangles.dtype)
+        if len(mattri_list) > 1:
+            mpts = shpgeo.MultiPoint(pts)
+            pts_list = list(mpts.geoms)
+            hits = tree.query(pts_list, predicate='intersects')
+        else:
+            hits = np.tile(np.arange(pts.shape[0]), (2,1))
+            hits[1] *= 0
+        tid_out = np.full(pts.shape[0], -1, dtype=self.triangles.dtype)
         if hits.size == 0:
             return tid_out
-        tri_finders = [m.get_trifinder() for m in mattri_list]
+        hits_gidx_u = np.unique(hits[1])
+        tri_finders = {k: m.get_trifinder() for k, m in enumerate(mattri_list) if k in hits_gidx_u}
         if len(mattri_list) > 1:
-            uhits, uidx, cnts = np.unique(hits[0])
+            uhits, uidx, cnts = np.unique(hits[0], return_index=True, return_counts=True)
             conflict = np.any(cnts > 1)
             if conflict:
                 if mode == MESH_TRIFINDER_WHATEVER:
@@ -1308,7 +1313,7 @@ class Mesh:
         hits_gidx = hits[1]
         pts_indices = []
         tri_indices = []
-        for gindx in np.unique(hits[1]):
+        for gindx in np.unique(hits_gidx):
             pidx = hits_pidx[hits_gidx == gindx]
             pxy = pts[pidx]
             tid0 = tri_finders[gindx](pxy[:,0], pxy[:,1])
@@ -1576,7 +1581,8 @@ class Mesh:
                     l_mask = np.nonzero(l_mask)[0]
                     l_mask = Mesh.masked_index_to_global_index(tri_mask. l_mask)
                 grp = self._graph_coloring_overlapped_triangles(gear=gear, tri_mask=l_mask, include_flipped=include_flipped)
-                groupings0[l_mask] = grp + num_groups0
+                grp[grp >= 0] += num_groups0
+                groupings0[l_mask] = grp
                 num_groups0 = num_groups0 + grp.max() + 1
             groupings = groupings0.copy()
             lbls = np.unique(groupings0[groupings0 >= 0])
@@ -1626,7 +1632,7 @@ class Mesh:
         if mask_sel.dtype == bool:
             sel_indx = np.nonzero(mask_sel)[0]
         else:
-            sel_indx = np.sort(sel_indx)
+            sel_indx = np.sort(mask_sel)
         return sel_indx[local_indx]
 
 

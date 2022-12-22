@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 import matplotlib.tri
 import numpy as np
 import shapely.geometry as shpgeo
-
+from feabas.constant import *
 
 def rgb2hex(r,g,b):
     r = min(max(r, 0), 255)
@@ -44,12 +44,11 @@ def dynamic_typing_decorator(func):
     return wrapped
 
 
-def plot_mesh(M, show_mat=False, show_conn=False, gear='m', show=False):
+def plot_mesh(M, show_mat=False, show_conn=False, gear=MESH_GEAR_MOVING, show=False):
     if isinstance(M, (list, tuple)):
         for m in M:
             plot_mesh(m, show_mat=show_mat, show_conn=show_conn, gear=gear, show=False)
     else:
-        M = M[gear]
         if show_mat:
             mat_ids = M._material_ids
             for mid in np.unique(mat_ids):
@@ -57,8 +56,8 @@ def plot_mesh(M, show_mat=False, show_conn=False, gear='m', show=False):
                 R, G = np.random.randint(256, size=2)
                 B = 255 * 2 - R - G
                 color = rgb2hex(R, G, B)
-                T = matplotlib.tri.Triangulation(M.vertices_w_offset()[:,0],
-                    M.vertices_w_offset()[:,1], M.triangles[indx])
+                T = matplotlib.tri.Triangulation(M.vertices_w_offset(gear=gear)[:,0],
+                    M.vertices_w_offset(gear=gear)[:,1], M.triangles[indx])
                 plt.triplot(T, color=color, alpha=0.5, linewidth=0.5)
         elif show_conn:
             _, t_conn = M.connected_triangles()
@@ -67,14 +66,14 @@ def plot_mesh(M, show_mat=False, show_conn=False, gear='m', show=False):
                 R, G = np.random.randint(256, size=2)
                 B = 255 * 2 - R - G
                 color = rgb2hex(R, G, B)
-                T = matplotlib.tri.Triangulation(M.vertices_w_offset()[:,0],
-                    M.vertices_w_offset()[:,1], M.triangles[indx])
+                T = matplotlib.tri.Triangulation(M.vertices_w_offset(gear=gear)[:,0],
+                    M.vertices_w_offset(gear=gear)[:,1], M.triangles[indx])
                 plt.triplot(T, color=color, alpha=0.5, linewidth=0.5)
         else:
-            T = matplotlib.tri.Triangulation(M.vertices_w_offset()[:,0],
-                    M.vertices_w_offset()[:,1], M.triangles)
+            T = matplotlib.tri.Triangulation(M.vertices_w_offset(gear=gear)[:,0],
+                    M.vertices_w_offset(gear=gear)[:,1], M.triangles)
             plt.triplot(T, color='b', alpha=0.5, linewidth=0.5)
-        segs = M.vertices_w_offset()[M.segments()]
+        segs = M.vertices_w_offset(gear=gear)[M.segments()]
         xx = segs[:,:,0]
         yy = segs[:,:,1]
         plt.plot(xx.T, yy.T, 'k', alpha=1, linewidth=1)
