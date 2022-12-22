@@ -641,6 +641,18 @@ class Mesh:
         self.delete_vertices(~connected)
 
 
+    def change_resolution(self, resolution):
+        """modify the resolution of the mesh, scaling the vertices as well"""
+        if resolution == self._resolution:
+            return
+        scale = self._resolution / resolution
+        for gear in MESH_GEARS:
+            if self._vertices[gear] is not None:
+                self.set_vertices(spatial.scale_coordinates(self.vertices(gear=gear), scale), gear=gear)
+                self._offsets[gear] = scale * self._offsets[gear]
+        self._resolution = resolution
+
+
   ## ------------------------------ gear switch ---------------------------- ##
     def switch_gear(self, gear):
         if gear in self._vertices:
@@ -733,12 +745,6 @@ class Mesh:
         return self._vertices[MESH_GEAR_FIXED]
 
 
-    @fixed_vertices.setter
-    def fixed_vertices(self, v):
-        self._vertices[MESH_GEAR_FIXED] = v
-        self.vertices_changed(gear=MESH_GEAR_FIXED)
-
-
     @property
     def fixed_vertices_w_offset(self):
         return self.fixed_vertices + self.offset(gear=MESH_GEAR_FIXED)
@@ -752,12 +758,6 @@ class Mesh:
             return self._vertices[MESH_GEAR_MOVING]
 
 
-    @moving_vertices.setter
-    def moving_vertices(self, v):
-        self._vertices[MESH_GEAR_MOVING] = v
-        self.vertices_changed(gear=MESH_GEAR_MOVING)
-
-
     @property
     def moving_vertices_w_offset(self):
         return self.moving_vertices + self.offset(gear=MESH_GEAR_MOVING)
@@ -769,12 +769,6 @@ class Mesh:
             return self.fixed_vertices
         else:
             return self._vertices[MESH_GEAR_STAGING]
-
-
-    @staging_vertices.setter
-    def staging_vertices(self, v):
-        self._vertices[MESH_GEAR_STAGING] = v
-        self.vertices_changed(gear=MESH_GEAR_STAGING)
 
 
     @property
@@ -1336,6 +1330,32 @@ class Mesh:
         tid_out[pts_indices] = tri_indices
         return tid_out
 
+  ## -------------------------- transformations ---------------------------- ##
+    def set_vertices(self, v, gear, vtx_mask=None):
+        if vtx_mask is None:
+            self._vertices[gear] = v
+        else:
+            self._vertices[gear] = self.vertices(gear=gear).copy()
+            self._vertices[gear][vtx_mask] = v
+        self.vertices_changed(gear=gear)
+    
+    @fixed_vertices.setter
+    def fixed_vertices(self, v):
+        self._vertices[MESH_GEAR_FIXED] = v
+        self.vertices_changed(gear=MESH_GEAR_FIXED)
+
+
+    @moving_vertices.setter
+    def moving_vertices(self, v):
+        self._vertices[MESH_GEAR_MOVING] = v
+        self.vertices_changed(gear=MESH_GEAR_MOVING)
+
+
+    @staging_vertices.setter
+    def staging_vertices(self, v):
+        self._vertices[MESH_GEAR_STAGING] = v
+        self.vertices_changed(gear=MESH_GEAR_STAGING)
+
 
   ## ------------------------ collision management ------------------------- ##
     def is_valid(self, gear=None, tri_mask=None):
@@ -1625,7 +1645,12 @@ class Mesh:
         return groupings
 
 
-    def _smooth_tform_by_coarse_mesh(self):
+    def _smooth_mesh_by_regular_resample(self, gear=MESH_GEAR_MOVING, tri_mask=None, decimate=16):
+        covered_region = self.shapely_regions(gear=MESH_GEAR_INITIAL, tri_mask=tri_mask)
+        num_tri0 = self._num_masked_tri(tri_mask=tri_mask)
+        avg_tri_area0 = covered_region.area / num_tri0
+        mesh_size = (avg_tri_area0 * 2.31) ** 0.5 * decimate
+        coarse_mesh = Mesh.from_polygon_equilateral(covered_region, mesh_size=mesh_size, resolution=self._resolution)
         pass
 
 
