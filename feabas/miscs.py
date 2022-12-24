@@ -33,6 +33,8 @@ def hash_numpy_array(ar):
 
 
 def indices_to_bool_mask(indx, size=None):
+    if isinstance(indx, np.ndarray) and indx.dtype==bool:
+        return indx
     if size is None:
         size = np.max(indx)
     mask = np.zeros(size, dtype=bool)

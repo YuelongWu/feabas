@@ -259,7 +259,7 @@ class Mesh:
         self.triangles = triangles
         self._material_ids = material_ids
         self._resolution = kwargs.get('resolution', 4)
-        self._stiffness_multiplier = 1.0
+        self._stiffness_multiplier = kwargs.get('stiffness_multiplier', None)
         self._epsilon = kwargs.get('epsilon', EPSILON0)
         self._name = kwargs.get('name', '')
         self.uid = kwargs.get('uid', None)
@@ -505,6 +505,8 @@ class Mesh:
             init_dict['moving_offset'] = self._offsets[MESH_GEAR_MOVING]
         if np.any(self._offsets[MESH_GEAR_STAGING]):
             init_dict['staging_offset'] = self._offsets[MESH_GEAR_STAGING]
+        if self._stiffness_multiplier is not None:
+            init_dict['stiffness_multiplier'] = self._stiffness_multiplier
         if save_material:
             init_dict['material_ids'] = self._material_ids
             init_dict['material_table'] = self._material_table.save_to_json()
@@ -521,7 +523,7 @@ class Mesh:
         give a triangle mask, return a mask to filter the vertices and the
         updated triangle indices
         """
-        if tri_mask is None:
+        if Mesh._masked_all(tri_mask):
             vindx = np.arange(self.num_vertices, dtype=self.triangles.dtype)
             T = self.triangles
         else:
@@ -947,7 +949,7 @@ class Mesh:
     @config_cache(MESH_GEAR_INITIAL)
     def edges(self, tri_mask=None):
         """edge indices of the triangulation mesh."""
-        if tri_mask is None:
+        if Mesh._masked_all(tri_mask):
             T = self.triangles
         else:
             T = self.triangles[tri_mask]
@@ -978,17 +980,13 @@ class Mesh:
 
     def segments(self, tri_mask=None, **kwargs):
         """edge indices for edges on the borders."""
-        swid = self.segments_w_triangle_ids(tri_mask=tri_mask, **kwargs)
-        if swid is not None:
-            return swid[0]
-        else:
-            return None
+        return self.segments_w_triangle_ids(tri_mask=tri_mask, **kwargs)[0]
 
 
     @config_cache(MESH_GEAR_INITIAL)
     def segments_w_triangle_ids(self, tri_mask=None):
         """edge indices for edges on the borders, also return the triangle ids"""
-        if tri_mask is None:
+        if Mesh._masked_all(tri_mask):
             T = self.triangles
         else:
             T = self.triangles[tri_mask]
@@ -1002,7 +1000,7 @@ class Mesh:
     @config_cache(MESH_GEAR_INITIAL)
     def vertex_adjacencies(self, vtx_mask=None, tri_mask=None):
         """sparse adjacency matrix of vertices."""
-        if vtx_mask is None:
+        if Mesh._masked_all(vtx_mask):
             edges = self.edges(tri_mask=tri_mask)
             idx0 = edges[:,0]
             idx1 = edges[:,1]
@@ -1018,7 +1016,7 @@ class Mesh:
     @config_cache('TBD')
     def vertex_distances(self, gear=MESH_GEAR_INITIAL, vtx_mask=None, tri_mask=None):
         """sparse matrix storing lengths of the edges."""
-        if vtx_mask is None:
+        if Mesh._masked_all(vtx_mask):
             vertices = self.vertices(gear=gear)
             A = self.vertex_adjacencies(tri_mask=tri_mask)
             idx0, idx1 = A.nonzero()
@@ -1037,7 +1035,7 @@ class Mesh:
         sparse adjacency matrix of triangles.
         triangles that share an edge are considered adjacent
         """
-        if tri_mask is None:
+        if Mesh._masked_all(tri_mask):
             T = self.triangles
         else:
             A0 = self.triangle_adjacencies(tri_mask=None, no_compute=True)
@@ -1064,7 +1062,7 @@ class Mesh:
     @config_cache('TBD')
     def triangle_centers(self, gear=MESH_GEAR_INITIAL, tri_mask=None):
         """corodinates of the centers of the triangles (Ntri x 2)"""
-        if tri_mask is None:
+        if Mesh._masked_all(tri_mask):
             T = self.triangles
         else:
             m0 = self.triangle_centers(gear=gear, tri_mask=None, no_compute=True)
@@ -1155,7 +1153,7 @@ class Mesh:
         chains = miscs.chain_segment_rings(sgmnts, directed=True, conn_lable=T_conn[tids])
         vertices = self.initial_vertices
         grouped_chains = [[] for _ in range(N_conn)]
-        if tri_mask is None:
+        if Mesh._masked_all(tri_mask):
             T = self.triangles
         else:
             T = self.triangles[tri_mask]
@@ -1201,7 +1199,7 @@ class Mesh:
                 return m0[tri_mask], A[tri_mask], m1[tri_mask]
         v0 = self.vertices(gear=gear[0])
         v1 = self.vertices(gear=gear[1])
-        if tri_mask is None:
+        if Mesh._masked_all(tri_mask):
             T = self.triangles
         else:
             T = self.triangles[tri_mask]
@@ -1236,13 +1234,15 @@ class Mesh:
 
     @config_cache('TBD')
     def matplotlib_tri(self, gear=None, tri_mask=None, include_flipped=False, contigeous=True):
-        # return geometry Rtree, matplotlib tri list, global index list
+        # return geometry STRtree, matplotlib tri list, global index list and border segment STRtree
         if gear is None:
             gear = self._current_gear
         groupings = self.nonoverlap_triangle_groups(gear=gear, contigeous=contigeous, include_flipped=include_flipped, tri_mask=tri_mask)
         geometry_list = []
         mattri_list = []
         index_list = []
+        segs = []
+        seg_tids = []
         group_ids = np.unique(groupings[groupings >= 0])
         for g in group_ids:
             g_mask = groupings == g
@@ -1253,11 +1253,21 @@ class Mesh:
             vertices = self.vertices(gear=gear)[v_indx]
             mattri_list.append(matplotlib.tri.Triangulation(vertices[:,0], vertices[:,1], triangles=T))
             index_list.append(np.nonzero(g_mask)[0])
-        tree = shapely.STRtree(geometry_list)
-        return (tree, mattri_list, index_list)
+            seg0, seg_tid0 = self.segments_w_triangle_ids(tri_mask=g_mask)
+            segs.append(seg0)
+            seg_tids.append(Mesh.masked_index_to_global_index(g_mask, seg_tid0))
+        region_tree = shapely.STRtree(geometry_list)
+        segs = np.concatenate(segs, axis=0)
+        seg_tids = np.concatenate(seg_tids, axis=None)
+        vertices = self.vertices(gear=gear)
+        lines = [shpgeo.LineString(vertices[s]) for s in segs]
+        seg_tree = shapely.STRtree(lines)
+        return (region_tree, mattri_list, index_list, seg_tree, seg_tids)
 
 
-    def tri_finder(self, pts, gear=None, tri_mask=None, include_flipped=False, mode=MESH_TRIFINDER_WHATEVER, contigeous=True):
+
+  ## --------------------------------- query -------------------------------- ##
+    def tri_finder(self, pts, gear=None, tri_mask=None, include_flipped=False, mode=MESH_TRIFINDER_LEAST_DEFORM, contigeous=True, extrapolate=True):
         """
         given a set of points, find which triangles they are in.
         Args:
@@ -1265,7 +1275,7 @@ class Mesh:
         """
         if gear is None:
             gear = self._current_gear
-        tree, mattri_list, index_list = self.matplotlib_tri(gear=gear, tri_mask=tri_mask, include_flipped=include_flipped, contigeous=contigeous)
+        tree, mattri_list, index_list, seg_tree, seg_tids = self.matplotlib_tri(gear=gear, tri_mask=tri_mask, include_flipped=include_flipped, contigeous=contigeous)
         pts = (pts - self.offset(gear=gear)).reshape(-1,2)
         if len(mattri_list) > 1:
             mpts = shpgeo.MultiPoint(pts)
@@ -1328,17 +1338,53 @@ class Mesh:
             else:
                 raise ValueError("Mesh tri_finder conflict resolution mode not implemented")
         tid_out[pts_indices] = tri_indices
+        if extrapolate and np.any(tid_out == -1):
+            mepts = shpgeo.MultiPoint(pts[tid_out == -1])
+            epts_list = list(mepts.geoms)
+            nearest_segs = seg_tree.nearest(epts_list)
+            etids = seg_tids[nearest_segs]
+            tid_out[tid_out == -1] = etids
         return tid_out
+
+
+    def cart2bary(self, xy, gear, tid=None):
+        """Cartesian to Barycentric coordinates"""
+        if tid is None:
+            tid = self.tri_finder(xy, gear=gear)
+        vertices = self.vertices(gear=gear)
+        tri_pt = vertices[np.atleast_2d(self.triangles[tid,:])]
+        tri_pt_m = tri_pt.mean(axis=1, keepdims=True)
+        tri_pt = tri_pt - tri_pt_m
+        xy = xy - self.offset(gear=gear) - tri_pt_m
+        ss = max(tri_pt.std(), 0.01)
+        tri_pt_pad = np.insert(tri_pt / ss, 2, 1, axis=-1)
+        xy_pad = np.insert(xy / ss, 2, 1, axis=-1)
+        B = np.linalg.solve(np.swapaxes(tri_pt_pad, -2, -1), xy_pad)
+        B[tid==-1] = np.nan
+        return tid, B
+
+
+    def bary2cart(self, tid, B, gear):
+        """Barycentric to Cartesian coordinates"""
+        tri_pt = self.vertices_w_offset(gear=gear)[np.atleast_2d(self.triangles[tid,:])]
+        xy = np.sum(tri_pt * B.reshape(-1,3,1), axis=-2, keepdims=False)
+        return xy
+
 
   ## -------------------------- transformations ---------------------------- ##
     def set_vertices(self, v, gear, vtx_mask=None):
-        if vtx_mask is None:
+        if Mesh._masked_all(vtx_mask):
             self._vertices[gear] = v
         else:
             self._vertices[gear] = self.vertices(gear=gear).copy()
             self._vertices[gear][vtx_mask] = v
         self.vertices_changed(gear=gear)
-    
+
+
+    def set_offset(self, offset, gear):
+        self._offsets[gear] = offset
+
+
     @fixed_vertices.setter
     def fixed_vertices(self, v):
         self._vertices[MESH_GEAR_FIXED] = v
@@ -1357,19 +1403,114 @@ class Mesh:
         self.vertices_changed(gear=MESH_GEAR_STAGING)
 
 
+    def apply_translation(self, dxy, gear, vtx_mask=None):
+        if not np.any(dxy, axis=None):
+            return
+        v = self.vertices(gear=gear)
+        self._vertices[gear] = v
+        offset = self.offset(gear=gear)
+        if Mesh._masked_all(vtx_mask):
+            self.set_offset(offset + dxy, gear=gear)
+        else:
+            self.set_vertices(v[vtx_mask] + dxy, gear=gear, vtx_mask=vtx_mask)
+            self.set_offset(offset, gear=gear)
+
+
+    def set_translation(self, dxy, gear=(MESH_GEAR_FIXED, MESH_GEAR_MOVING), vtx_mask=None):
+        v0 = self.vertices(gear=gear[0])
+        offset0 = self.offset(gear=gear[0])
+        if Mesh._masked_all(vtx_mask):
+            self.set_vertices(v0, gear=gear[-1], vtx_mask=None)
+            self.set_offset(offset0 + dxy, gear=gear[-1])
+        else:
+            offset1 = self.offset(gear=gear[-1])
+            dxy = dxy + offset0 - offset1
+            v1 = v0[vtx_mask] + dxy
+            self.set_vertices(v1, gear=gear[-1], vtx_mask=vtx_mask)
+            self.set_offset(offset1, gear=gear[-1])
+
+
+    def apply_affine(self, A, gear, vtx_mask=None):
+        if np.all(A == np.eye(3)):
+            return
+        v0 = self.vertices(gear=gear)
+        offset0 = self.offset(gear=gear)
+        if Mesh._masked_all(vtx_mask):
+            v1 = v0 @ A[:-1,:-1]
+            offset1 = offset0 @ A[:-1,:-1] + A[-1,:-1]
+            self.set_vertices(v1, gear=gear, vtx_mask=None)
+            self.set_offset(offset1, gear=gear)
+        else:
+            v1 = v0[vtx_mask] @ A[:-1,:-1] + offset0 @ A[:-1,:-1] + A[-1,:-1] - offset0
+            self.set_vertices(v1, gear=gear, vtx_mask=vtx_mask)
+            self.set_offset(offset0, gear=gear)
+
+
+    def set_affine(self, A, gear=(MESH_GEAR_FIXED, MESH_GEAR_MOVING), vtx_mask=None):
+        if np.all(A == np.eye(3)):
+            return
+        v0 = self.vertices(gear=gear[0])
+        offset0 = self.offset(gear=gear[0])
+        if Mesh._masked_all(vtx_mask):
+            v1 = v0 @ A[:-1,:-1]
+            offset1 = offset0 @ A[:-1,:-1] + A[-1,:-1]
+            self.set_vertices(v1, gear=gear[-1], vtx_mask=None)
+            self.set_offset(offset1, gear=gear[-1])
+        else:
+            offset1 = self.offset(gear=gear[-1])
+            v1 = v0[vtx_mask] @ A[:-1,:-1] + offset0 @ A[:-1,:-1] + A[-1,:-1] - offset1
+            self.set_vertices(v1, gear=gear[-1], vtx_mask=vtx_mask)
+            self.set_offset(offset1, gear=gear[-1])
+
+
+    def apply_field(self, dxy, gear, vtx_mask=None):
+        if not np.any(dxy, axis=None):
+            return
+        v0 = self.vertices(gear=gear)
+        offset0 = self.offset(gear=gear)
+        if Mesh._masked_all(vtx_mask):
+            m = np.mean(dxy.reshape(-1,2), axis=0, keepdims=True)
+            v1 = v0 + (dxy - m)
+            offset1 = offset0 + m
+            self.set_vertices(v1, gear=gear, vtx_mask=None)
+            self.set_offset(offset1, gear=gear)
+        else:
+            v1 = v0[vtx_mask] + dxy
+            self.set_vertices(v1, gear=gear, vtx_mask=vtx_mask)
+            self.set_offset(offset0, gear=gear)
+
+
+    def set_field(self, dxy, gear=(MESH_GEAR_FIXED, MESH_GEAR_MOVING), vtx_mask=None):
+        if not np.any(dxy, axis=None):
+            return
+        v0 = self.vertices(gear=gear[0])
+        offset0 = self.offset(gear=gear[0])
+        if Mesh._masked_all(vtx_mask):
+            m = np.mean(dxy.reshape(-1,2), axis=0, keepdims=True)
+            v1 = v0 + (dxy - m)
+            offset1 = offset0 + m
+            self.set_vertices(v1, gear=gear[-1], vtx_mask=None)
+            self.set_offset(offset1, gear=gear[-1])
+        else:
+            offset1 = self.offset(gear=gear[-1])
+            v1 = v0[vtx_mask] + dxy + offset0 - offset1
+            self.set_vertices(v1, gear=gear[-1], vtx_mask=vtx_mask)
+            self.set_offset(offset1, gear=gear[-1])
+
+
   ## ------------------------ collision management ------------------------- ##
     def is_valid(self, gear=None, tri_mask=None):
         if gear is None:
             gear = self._current_gear
         vertices = self.vertices(gear=gear)
-        if tri_mask is None:
+        if Mesh._masked_all(tri_mask):
             T = self.triangles
         else:
             vindx, T = self._filter_triangles(tri_mask)
             vertices = vertices[vindx]
-        matplotlib_tri = matplotlib.tri.Triangulation(vertices[:,0], vertices[:,1], triangles = T)
+        matplt_tri = matplotlib.tri.Triangulation(vertices[:,0], vertices[:,1], triangles = T)
         try:
-            matplotlib_tri.get_trifinder()
+            matplt_tri.get_trifinder()
             return True
         except RuntimeError:
             return False
@@ -1378,7 +1519,7 @@ class Mesh:
     def _triangles_rtree_generator(self, gear=None, tri_mask=None):
         if gear is None:
             gear = self._current_gear
-        if tri_mask is None:
+        if Mesh._masked_all(tri_mask):
             tids = np.arange(self.num_triangles)
         elif tri_mask.dtype == bool:
             tids = np.nonzero(tri_mask)[0]
@@ -1471,7 +1612,7 @@ class Mesh:
         if check_flipped:
             # check if exist flipped triangles where all three points on segments
             Tseg_flag = np.sum(np.isin(self.triangles, segments), axis=-1) == 3
-            if tri_mask is None:
+            if Mesh._masked_all(tri_mask):
                 _, T = self.locate_flipped_triangles(gear=gear, tri_mask=Tseg_flag, return_triangles=True)
             else:
                 _, T = self.locate_flipped_triangles(gear=gear, tri_mask=(Tseg_flag & tri_mask), return_triangles=True)
@@ -1489,7 +1630,7 @@ class Mesh:
         if gear is None:
             gear = self._current_gear
         vertices0 = self.initial_vertices
-        if tri_mask is None:
+        if Mesh._masked_all(tri_mask):
             T = self.triangles
         else:
             T = self.triangles[tri_mask]
@@ -1549,7 +1690,7 @@ class Mesh:
             gear = self._current_gear
         if collisions is None:
             collisions = self.find_triangle_overlaps(gear=gear, tri_mask=tri_mask)
-        if tri_mask is None:
+        if Mesh._masked_all(tri_mask):
             groupings = np.zeros(self.num_triangles, dtype=self.triangles.dtype)
         elif isinstance(tri_mask, np.ndarray) and (tri_mask.dtype == bool):
             groupings = np.zeros(np.sum(tri_mask), dtype=self.triangles.dtype)
@@ -1667,6 +1808,14 @@ class Mesh:
         else:
             indx = np.unique(tri_mask)
             return indx.size
+
+
+    @staticmethod
+    def _masked_all(mask):
+        if (mask is None) or (isinstance(mask, np.ndarray) and (mask.dtype == bool) and (np.all(mask))):
+            return True
+        else:
+            return False
 
 
     @staticmethod
