@@ -1,5 +1,6 @@
 from collections import defaultdict
 import copy
+import cv2
 import gc
 import h5py
 import inspect
@@ -230,23 +231,7 @@ class Mesh:
         self._current_gear = MESH_GEAR_FIXED
         tri_num = triangles.shape[0]
         mtb = kwargs.get('material_table', None)
-        if isinstance(mtb, str):
-            if mtb[-5:] == '.json':
-                material_table = material.MaterialTable.from_json(mtb, stream=False)
-            else:
-                material_table = material.MaterialTable.from_json(mtb, stream=True)
-        elif isinstance(mtb, material.MaterialTable):
-            material_table = mtb
-        elif isinstance(mtb, np.ndarray):
-            ss = miscs.numpy_to_str_ascii(mtb)
-            if ss[-5:] == '.json':
-                material_table = material.MaterialTable.from_json(ss, stream=False)
-            else:
-                material_table = material.MaterialTable.from_json(ss, stream=True)
-        else:
-            material_table = material.MaterialTable()
-        self._material_table = material_table
-
+        self.set_material_table(mtb)
         material_ids = kwargs.get('material_ids', None)
         if material_ids is None:
             # use default model
@@ -559,7 +544,7 @@ class Mesh:
 
 
     @classmethod
-    def from_h5(cls, fname, prefix=''):
+    def from_h5(cls, fname, prefix='', **kwargs):
         init_dict = {}
         if (len(prefix) > 0) and prefix[-1] != '/':
             prefix = prefix + '/'
@@ -578,6 +563,7 @@ class Mesh:
                 else:
                     for key in f[prefix[:-1]].keys():
                         init_dict[key] = f[prefix+key][()]
+        init_dict.update(kwargs)
         return cls(**init_dict)
 
 
@@ -620,7 +606,7 @@ class Mesh:
         return self.__class__(**init_dict)
 
 
-  ## --------------------------- manipulate meshes -------------------------- ##
+  ## -------------------------- manipulate meshes -------------------------- ##
     def delete_vertices(self, vidx):
         """delete vertices indexed by vidx"""
         if isinstance(vidx, np.ndarray) and (vidx.dtype == bool):
@@ -653,6 +639,50 @@ class Mesh:
                 self.set_vertices(spatial.scale_coordinates(self.vertices(gear=gear), scale), gear=gear)
                 self._offsets[gear] = scale * self._offsets[gear]
         self._resolution = resolution
+
+
+    def set_material_table(self, mtb):
+        if isinstance(mtb, str):
+            if mtb[-5:] == '.json':
+                material_table = material.MaterialTable.from_json(mtb, stream=False)
+            else:
+                material_table = material.MaterialTable.from_json(mtb, stream=True)
+        elif isinstance(mtb, material.MaterialTable):
+            material_table = mtb
+        elif isinstance(mtb, np.ndarray):
+            ss = miscs.numpy_to_str_ascii(mtb)
+            if ss[-5:] == '.json':
+                material_table = material.MaterialTable.from_json(ss, stream=False)
+            else:
+                material_table = material.MaterialTable.from_json(ss, stream=True)
+        else:
+            material_table = material.MaterialTable()
+        self._material_table = material_table
+
+
+    def set_stiffness(self, stiffness, tri_mask=None):
+        if tri_mask is None:
+            self._stiffness_multiplier = stiffness
+        else:
+            if self._stiffness_multiplier is None:
+                self._stiffness_multiplier = np.ones(self.num_triangles)
+            elif isinstance(self._stiffness_multiplier, float):
+                self._stiffness_multiplier = self._stiffness_multiplier * np.ones(self.num_triangles)
+            self._stiffness_multiplier[tri_mask] = stiffness
+        self._update_caching_keys(gear=MESH_GEAR_INITIAL)
+
+
+    def set_stiffness_from_image(self, img, gear=MESH_GEAR_INITIAL, scale=1.0, tri_mask=None):
+        if isinstance(img, str):
+            img = cv2.imread(img, cv2.IMREAD_GRAYSCALE)
+        pts = self.triangle_centers(gear=gear, tri_mask=tri_mask) + self.offset(gear=gear)
+        pts = np.round(spatial.scale_coordinates(pts, scale=scale))
+        indx0 = (pts[:,1].clip(0, img.shape[0]-1)).astype(np.uint16)
+        indx1 = (pts[:,0].clip(0, img.shape[1]-1)).astype(np.uint16)
+        stiffness = img[indx0, indx1]
+        if np.issubdtype(stiffness.dtype, np.integer):
+            stiffness = stiffness.astype(float) / np.iinfo(stiffness.dtype).max
+        self.set_stiffness(stiffness, tri_mask=tri_mask)
 
 
   ## ------------------------------ gear switch ---------------------------- ##
@@ -1168,6 +1198,19 @@ class Mesh:
         return grouped_chains
 
 
+    @config_cache(MESH_GEAR_INITIAL)
+    def triangle_mask_for_render(self):
+        mid_norender = []
+        for _, m in self._material_table:
+            if not m.render:
+                mid_norender.append(m.uid)
+        if len(mid_norender) > 0:
+            mask = ~np.isin(self._material_ids, mid_norender)
+        else:
+            mask = np.ones(self.num_triangles, dtype=bool)
+        return mask
+
+
     def shapely_regions(self, gear=None, tri_mask=None):
         """
         return the shapely (Multi)Polygon that cover the region of the triangles.
@@ -1233,14 +1276,15 @@ class Mesh:
 
 
     @config_cache('TBD')
-    def matplotlib_tri(self, gear=None, tri_mask=None, include_flipped=False, contigeous=True):
+    def tri_info(self, gear=None, tri_mask=None, include_flipped=False, contigeous=True):
         # return geometry STRtree, matplotlib tri list, global index list and border segment STRtree
         if gear is None:
             gear = self._current_gear
         groupings = self.nonoverlap_triangle_groups(gear=gear, contigeous=contigeous, include_flipped=include_flipped, tri_mask=tri_mask)
         geometry_list = []
         mattri_list = []
-        index_list = []
+        tindex_list = []
+        vindex_list = []
         segs = []
         seg_tids = []
         group_ids = np.unique(groupings[groupings >= 0])
@@ -1252,21 +1296,29 @@ class Mesh:
             v_indx, T = self._filter_triangles(g_mask)
             vertices = self.vertices(gear=gear)[v_indx]
             mattri_list.append(matplotlib.tri.Triangulation(vertices[:,0], vertices[:,1], triangles=T))
-            index_list.append(np.nonzero(g_mask)[0])
+            tindex_list.append(np.nonzero(g_mask)[0])
+            vindex_list.append(v_indx)
             seg0, seg_tid0 = self.segments_w_triangle_ids(tri_mask=g_mask)
             segs.append(seg0)
             seg_tids.append(Mesh.masked_index_to_global_index(g_mask, seg_tid0))
-        region_tree = shapely.STRtree(geometry_list)
+        region_tree = shapely.STRtree(geometry_list) 
         segs = np.concatenate(segs, axis=0)
         seg_tids = np.concatenate(seg_tids, axis=None)
         vertices = self.vertices(gear=gear)
         lines = [shpgeo.LineString(vertices[s]) for s in segs]
         seg_tree = shapely.STRtree(lines)
-        return (region_tree, mattri_list, index_list, seg_tree, seg_tids)
+        tri_info = {'region_tree': region_tree, 'matplotlib_tri': mattri_list,
+            'triangle_index': tindex_list, 'vertex_index': vindex_list,
+            'segment_tree': seg_tree, 'segment_tid': seg_tids}
+        return tri_info
 
 
+    @config_cache('TBD')
+    def triangle_collisions(self, gear=None, tri_mask=None):
+        return self.find_triangle_overlaps(gear=gear, tri_mask=tri_mask)
 
-  ## --------------------------------- query -------------------------------- ##
+
+  ## -------------------------------- query -------------------------------- ##
     def tri_finder(self, pts, gear=None, tri_mask=None, include_flipped=False, mode=MESH_TRIFINDER_LEAST_DEFORM, contigeous=True, extrapolate=True):
         """
         given a set of points, find which triangles they are in.
@@ -1275,7 +1327,12 @@ class Mesh:
         """
         if gear is None:
             gear = self._current_gear
-        tree, mattri_list, index_list, seg_tree, seg_tids = self.matplotlib_tri(gear=gear, tri_mask=tri_mask, include_flipped=include_flipped, contigeous=contigeous)
+        tri_info = self.tri_info(gear=gear, tri_mask=tri_mask, include_flipped=include_flipped, contigeous=contigeous)
+        tree = tri_info['region_tree']
+        mattri_list = tri_info['matplotlib_tri']
+        index_list = tri_info['triangle_index']
+        seg_tree = tri_info['segment_tree']
+        seg_tids = tri_info['segment_tid']
         pts = (pts - self.offset(gear=gear)).reshape(-1,2)
         if len(mattri_list) > 1:
             mpts = shpgeo.MultiPoint(pts)
@@ -1668,7 +1725,7 @@ class Mesh:
         for bbox in init_bboxes:
             bbox_t = (bbox[0]-self._epsilon, bbox[1]-self._epsilon, bbox[2]+self._epsilon, bbox[3]+self._epsilon)
             candidate_tids.extend(list(rtree0.intersection(bbox_t, objects=False)))
-        candidate_tids = np.sort(np.unique(candidate_tids))
+        candidate_tids = np.unique(candidate_tids)
         tri_mask_c = Mesh.masked_index_to_global_index(tri_mask, candidate_tids)
         rtree_c = self.triangles_rtree(gear=gear, tri_mask=tri_mask_c)
         vertices = self.vertices(gear=gear)[self.triangles[tri_mask_c]]
@@ -1689,7 +1746,7 @@ class Mesh:
         if gear is None:
             gear = self._current_gear
         if collisions is None:
-            collisions = self.find_triangle_overlaps(gear=gear, tri_mask=tri_mask)
+            collisions = self.triangle_collisions(gear=gear, tri_mask=tri_mask)
         if Mesh._masked_all(tri_mask):
             groupings = np.zeros(self.num_triangles, dtype=self.triangles.dtype)
         elif isinstance(tri_mask, np.ndarray) and (tri_mask.dtype == bool):
@@ -1843,7 +1900,7 @@ class Mesh:
         if mask_sel.dtype == bool:
             sel_indx = np.nonzero(mask_sel)[0]
         else:
-            sel_indx = np.sort(mask_sel)
+            sel_indx = np.unique(mask_sel)
         return sel_indx[local_indx]
 
 
@@ -1865,7 +1922,8 @@ class Mesh:
         if mask_sel.dtype == bool:
             g_indx[mask_sel] = np.arange(np.sum(mask_sel))
         else:
-            g_indx[np.sort(mask_sel,axis=None)] = np.arange(mask_sel.size)
+            mask_sel = np.unique(mask_sel, axis=None)
+            g_indx[mask_sel] = np.arange(mask_sel.size)
         return g_indx[global_indx]
 
 
