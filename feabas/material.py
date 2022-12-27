@@ -305,6 +305,11 @@ class MaterialTable:
         return cls(table=table, default_material=default_material)
 
 
+    def copy(self):
+        table = self._table.copy()
+        return self.__class__(table=table)
+
+
     def save_to_json(self, jsonname=None):
         outdict = {}
         for lbl, material in self._table.items():
@@ -326,9 +331,17 @@ class MaterialTable:
 
 
     def add_material(self, label, material, force_update=True):
-        if force_update or (label not in self.table):
+        if force_update or (label not in self._table):
             self._table[label] = material
-            self._id_table = None
+
+
+    def combine_material_table(self, mtb, force_update=False):
+        if force_update:
+            self._table.update(mtb.named_table)
+        else:
+            for lbl, m in mtb:
+                if lbl not in self._table:
+                    self._table[lbl] = m
 
 
     @property

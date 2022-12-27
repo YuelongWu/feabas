@@ -238,13 +238,15 @@ class Mesh:
             default_mat = self._material_table['default']
             material_ids = np.full(tri_num, default_mat.uid, dtype=np.int8)
         indx = np.argsort(material_ids, axis=None)
+        self._stiffness_multiplier = kwargs.get('stiffness_multiplier', None)
         if np.any(indx!=np.arange(indx.size)):
             triangles = triangles[indx]
             material_ids = material_ids[indx]
+            if isinstance(self._stiffness_multiplier, np.ndarray):
+                self._stiffness_multiplier = self._stiffness_multiplier[indx]
         self.triangles = triangles
         self._material_ids = material_ids
         self._resolution = kwargs.get('resolution', 4)
-        self._stiffness_multiplier = kwargs.get('stiffness_multiplier', None)
         self._epsilon = kwargs.get('epsilon', EPSILON0)
         self._name = kwargs.get('name', '')
         self.uid = kwargs.get('uid', None)
@@ -496,6 +498,7 @@ class Mesh:
             init_dict['material_ids'] = self._material_ids
             init_dict['material_table'] = self._material_table.save_to_json()
         init_dict['resolution'] = self._resolution
+        init_dict['epsilon'] = self._epsilon
         if bool(self._name):
             init_dict['name'] = self._name
         init_dict['uid'] = self.uid
@@ -520,14 +523,14 @@ class Mesh:
         return vindx, T
 
 
-    def submesh(self, tri_mask, **kwargs):
+    def submesh(self, tri_mask, save_material=True, **kwargs):
         """
         return a subset of the mesh with tri_mask as the triangle mask.
         """
-        if isinstance(tri_mask, np.ndarray) and tri_mask.dtype==bool and np.all(tri_mask):
+        if Mesh._masked_all(tri_mask):
             return self
         vindx, new_triangles = self._filter_triangles(tri_mask)
-        init_dict = self.get_init_dict(**kwargs)
+        init_dict = self.get_init_dict(save_material=save_material, **kwargs)
         init_dict['triangles'] = new_triangles
         vtx_keys = ['vertices','fixed_vertices','moving_vertices','staging_vertices']
         for vkey in vtx_keys:
@@ -535,12 +538,92 @@ class Mesh:
                 init_dict[vkey] = init_dict[vkey][vindx]
         tri_keys = ['material_ids']
         for tkey in tri_keys:
-            if init_dict.get(tkey, None) is not None:
+            if isinstance(init_dict.get(tkey, None), np.ndarray):
                 init_dict[tkey] = init_dict[tkey][tri_mask]
         if ('uid' not in kwargs) and ('uid' in init_dict):
             # do not copy the uid from the parent
             init_dict.pop('uid')
+        if ('name' not in kwargs) and ('name' in init_dict):
+            parent_name = init_dict['name']
+            new_name = (parent_name, miscs.hash_numpy_array(tri_mask))
+            init_dict['name'] = new_name
         return self.__class__(**init_dict)
+
+
+    def divide_connected_mesh(self, save_material=True, **kwargs):
+        N_conn, T_conn = self.connected_triangles()
+        if N_conn == 1:
+            return [self]
+        else:
+            lbls = np.unique(T_conn)
+            meshes = []
+            for lbl in lbls:
+                mask = T_conn == lbl
+                meshes.append(self.submesh(mask, save_material=save_material, **kwargs))
+            return meshes
+
+
+    @classmethod
+    def combine_mesh(cls, meshes, save_material=True, **kwargs):
+        if len(meshes) == 1:
+            return meshes[0]
+        init_dict = {}
+        resolution0 = meshes[0].resolution
+        offsets0 = {g: meshes[0].offset(gear=g) for g in MESH_GEARS}
+        epsilon0 = meshes[0]._epsilon
+        if save_material:
+            material_table0 = meshes[0]._material_table.copy()
+            material_ids = []
+        vertices = {g: [] for g in MESH_GEARS}
+        vertices_initialized = {g: False for g in MESH_GEARS}
+        triangles = []
+        stiffness = []
+        num_vertices = 0
+        for m in meshes:
+            m.change_resolution(resolution0)
+            for g in MESH_GEARS:
+                v = m.vertices(gear=g) + (m.offset(gear=g) - offsets0)
+                vertices[g].append(v)
+                vertices_initialized[g] |= m.vertices_initialized(gear=g)
+            triangles.append(m.triangles + num_vertices)
+            num_vertices += m.num_vertices
+            stiffness.append(m.stiffness_multiplier)
+            epsilon0 = min(epsilon0, m._epsilon)
+            if save_material:
+                material_table0.combine_material_table(m._material_table)
+                material_ids.append(m._material_ids)
+        init_dict['vertices'] = np.concatenate(vertices[MESH_GEAR_INITIAL], axis=0)
+        init_dict['triangles'] = np.concatenate(triangles, axis=0)
+        if vertices_initialized[MESH_GEAR_FIXED]:
+            init_dict['fixed_vertices'] = np.concatenate(vertices[MESH_GEAR_FIXED], axis=0)
+        if vertices_initialized[MESH_GEAR_MOVING]:
+            init_dict['moving_vertices'] = np.concatenate(vertices[MESH_GEAR_MOVING], axis=0)
+        if vertices_initialized[MESH_GEAR_STAGING]:
+            init_dict['staging_vertices'] = np.concatenate(vertices[MESH_GEAR_STAGING], axis=0)
+        if np.any(offsets0[MESH_GEAR_INITIAL]):
+            init_dict['initial_offset'] = offsets0[MESH_GEAR_INITIAL]
+        if np.any(offsets0[MESH_GEAR_FIXED]):
+            init_dict['fixed_offset'] = offsets0[MESH_GEAR_FIXED]
+        if np.any(offsets0[MESH_GEAR_MOVING]):
+            init_dict['moving_offset'] = offsets0[MESH_GEAR_MOVING]
+        if np.any(offsets0[MESH_GEAR_STAGING]):
+            init_dict['staging_offset'] = offsets0[MESH_GEAR_STAGING]
+        stiffness_multiplier = np.concatenate(stiffness, axis=None)
+        if np.ptp(stiffness_multiplier) > 0:
+            init_dict['stiffness_multiplier'] = stiffness_multiplier
+        else:
+            init_dict['stiffness_multiplier'] = stiffness_multiplier[0]
+        if save_material:
+            init_dict['material_table'] = material_table0.save_to_json()
+            init_dict['material_ids'] = np.concatenate(material_ids, axis=None)
+        init_dict['resolution'] = resolution0
+        init_dict['epsilon'] = epsilon0
+        if isinstance(meshes[0]._name, tuple):
+            init_dict['name'] = meshes[0]._name[0]
+        else:
+            init_dict['name'] = meshes[0]._name
+        init_dict.update(kwargs)
+        return cls(**init_dict)
 
 
     @classmethod
@@ -639,6 +722,7 @@ class Mesh:
                 self.set_vertices(spatial.scale_coordinates(self.vertices(gear=gear), scale), gear=gear)
                 self._offsets[gear] = scale * self._offsets[gear]
         self._resolution = resolution
+        self._epsilon = self._epsilon * scale
 
 
     def set_material_table(self, mtb):
@@ -660,19 +744,21 @@ class Mesh:
         self._material_table = material_table
 
 
-    def set_stiffness(self, stiffness, tri_mask=None):
+    def set_stiffness_multiplier(self, stiffness, tri_mask=None):
         if tri_mask is None:
             self._stiffness_multiplier = stiffness
         else:
             if self._stiffness_multiplier is None:
                 self._stiffness_multiplier = np.ones(self.num_triangles)
             elif isinstance(self._stiffness_multiplier, float):
-                self._stiffness_multiplier = self._stiffness_multiplier * np.ones(self.num_triangles)
+                self._stiffness_multiplier = np.full(self.num_triangles, self._stiffness_multiplier)
+            else:
+                self._stiffness_multiplier = self._stiffness_multiplier.copy()
             self._stiffness_multiplier[tri_mask] = stiffness
         self._update_caching_keys(gear=MESH_GEAR_INITIAL)
 
 
-    def set_stiffness_from_image(self, img, gear=MESH_GEAR_INITIAL, scale=1.0, tri_mask=None):
+    def set_stiffness_multiplier_from_image(self, img, gear=MESH_GEAR_INITIAL, scale=1.0, tri_mask=None):
         if isinstance(img, str):
             img = cv2.imread(img, cv2.IMREAD_GRAYSCALE)
         pts = self.triangle_centers(gear=gear, tri_mask=tri_mask) + self.offset(gear=gear)
@@ -682,7 +768,7 @@ class Mesh:
         stiffness = img[indx0, indx1]
         if np.issubdtype(stiffness.dtype, np.integer):
             stiffness = stiffness.astype(float) / np.iinfo(stiffness.dtype).max
-        self.set_stiffness(stiffness, tri_mask=tri_mask)
+        self.set_stiffness_multiplier(stiffness, tri_mask=tri_mask)
 
 
   ## ------------------------------ gear switch ---------------------------- ##
@@ -738,6 +824,12 @@ class Mesh:
             return self.staging_vertices
         else:
             raise ValueError
+
+
+    def vertices_initialized(self, gear=None):
+        if gear is None:
+            gear = self._current_gear
+        return (self._vertices[gear]) is not None
 
 
     def offset(self, gear=None):
@@ -1011,6 +1103,21 @@ class Mesh:
     def segments(self, tri_mask=None, **kwargs):
         """edge indices for edges on the borders."""
         return self.segments_w_triangle_ids(tri_mask=tri_mask, **kwargs)[0]
+
+
+    @property
+    def stiffness_multiplier(self):
+        if self._stiffness_multiplier is None:
+            return np.ones(self.num_triangles)
+        elif isinstance(self._stiffness_multiplier, float):
+            return np.full(self.num_triangles, self._stiffness_multiplier)
+        else:
+            return self._stiffness_multiplier
+
+
+    @property
+    def resolution(self):
+        return self._resolution
 
 
     @config_cache(MESH_GEAR_INITIAL)
@@ -1301,7 +1408,7 @@ class Mesh:
             seg0, seg_tid0 = self.segments_w_triangle_ids(tri_mask=g_mask)
             segs.append(seg0)
             seg_tids.append(Mesh.masked_index_to_global_index(g_mask, seg_tid0))
-        region_tree = shapely.STRtree(geometry_list) 
+        region_tree = shapely.STRtree(geometry_list)
         segs = np.concatenate(segs, axis=0)
         seg_tids = np.concatenate(seg_tids, axis=None)
         vertices = self.vertices(gear=gear)
