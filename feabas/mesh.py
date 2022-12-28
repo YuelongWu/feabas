@@ -1383,6 +1383,15 @@ class Mesh:
 
 
     @config_cache('TBD')
+    def triangle_tform_deform(self, gear=(MESH_GEAR_INITIAL, MESH_GEAR_MOVING), tri_mask=None):
+        """
+        deformation of the affine transforms for each triangle.
+        """
+        svds0 = self.triangle_tform_svd(gear=gear, tri_mask=tri_mask)
+        return Mesh.svds_to_deform(svds0)
+
+
+    @config_cache('TBD')
     def tri_info(self, gear=None, tri_mask=None, include_flipped=False, contigeous=True):
         # return geometry STRtree, matplotlib tri list, global index list and border segment STRtree
         if gear is None:
@@ -1400,9 +1409,8 @@ class Mesh:
             if not np.any(g_mask):
                 continue
             geometry_list.append(self.shapely_regions(gear=gear, tri_mask=g_mask))
-            v_indx, T = self._filter_triangles(g_mask)
-            vertices = self.vertices(gear=gear)[v_indx]
-            mattri_list.append(matplotlib.tri.Triangulation(vertices[:,0], vertices[:,1], triangles=T))
+            mpl_tri, v_indx, _ = self.mpl_tri(gear=gear, tri_mask=g_mask)
+            mattri_list.append(mpl_tri)
             tindex_list.append(np.nonzero(g_mask)[0])
             vindex_list.append(v_indx)
             seg0, seg_tid0 = self.segments_w_triangle_ids(tri_mask=g_mask)
@@ -1418,6 +1426,13 @@ class Mesh:
             'triangle_index': tindex_list, 'vertex_index': vindex_list,
             'segment_tree': seg_tree, 'segment_tid': seg_tids}
         return tri_info
+
+
+    def mpl_tri(self, gear=None, tri_mask=None):
+        v_indx, new_T = self._filter_triangles(tri_mask)
+        vertices = self.vertices(gear=gear)[v_indx]
+        mpl_tri = matplotlib.tri.Triangulation(vertices[:,0], vertices[:,1], triangles=T)
+        return mpl_tri, v_indx, new_T
 
 
     @config_cache('TBD')
@@ -1491,8 +1506,7 @@ class Mesh:
         tri_indices = np.concatenate(tri_indices, axis=0)
         if conflict:
             if mode == MESH_TRIFINDER_LEAST_DEFORM:
-                svds0 = self.triangle_tform_svd(gear=(MESH_GEAR_INITIAL, gear), tri_mask=None)
-                deforms0 = Mesh.svds_to_deform(svds0)
+                deforms0 = self.triangle_tform_deform(gear=(MESH_GEAR_INITIAL, gear), tri_mask=None)
                 deforms = deforms0[tri_indices]
                 idxt = np.argsort(deforms)
                 pts_indices = pts_indices[idxt]
