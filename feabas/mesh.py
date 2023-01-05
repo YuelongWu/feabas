@@ -1431,7 +1431,7 @@ class Mesh:
     def mpl_tri(self, gear=None, tri_mask=None):
         v_indx, new_T = self._filter_triangles(tri_mask)
         vertices = self.vertices(gear=gear)[v_indx]
-        mpl_tri = matplotlib.tri.Triangulation(vertices[:,0], vertices[:,1], triangles=T)
+        mpl_tri = matplotlib.tri.Triangulation(vertices[:,0], vertices[:,1], triangles=new_T)
         return mpl_tri, v_indx, new_T
 
 
