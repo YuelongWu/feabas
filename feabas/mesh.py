@@ -1475,7 +1475,7 @@ class Mesh:
                 if mode == MESH_TRIFINDER_WHATEVER:
                     hits = hits[:, uidx]
                     conflict = False
-                elif mode == MESH_TRIFINDER_LEAST_INNERMOST:
+                elif mode == MESH_TRIFINDER_INNERMOST:
                     conflict_pts_indices = uhits[cnts > 1]
                     for pt_idx in conflict_pts_indices:
                         pmask = hits[0] == pt_idx

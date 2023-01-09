@@ -11,7 +11,16 @@ MESH_GEARS = (MESH_GEAR_INITIAL, MESH_GEAR_FIXED, MESH_GEAR_MOVING, MESH_GEAR_ST
 # tri_finder policy upon triangle overlaps
 MESH_TRIFINDER_WHATEVER = 0         # whichever triangle
 MESH_TRIFINDER_LEAST_DEFORM = 1     # the least deformed triangle
-MESH_TRIFINDER_LEAST_INNERMOST = 2  # the triangle furthest away from boudaries
+MESH_TRIFINDER_INNERMOST = 2  # the triangle furthest away from boudaries
+
+RENDER_LOCAL_RIGID = 0
+RENDER_LOCAL_AFFINE = 1
+RENDER_CONTIGEOUS = 2
+RENDER_FULL = 3
+
+BLEND_NONE = 0
+BLEND_MAX = 1
+BLEND_LINEAR = 2
 
 # material model type
 MATERIAL_MODEL_ENG = 0    # Engineering strain & stress

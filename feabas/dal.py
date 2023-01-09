@@ -376,6 +376,11 @@ class AbstractImageLoader(ABC):
         return self._dtype
 
 
+    @property
+    def default_fillval(self):
+        return self._default_fillval
+
+
 
 class DynamicImageLoader(AbstractImageLoader):
     """
