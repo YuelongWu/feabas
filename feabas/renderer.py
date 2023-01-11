@@ -1,11 +1,65 @@
+import cv2
 import matplotlib.tri
 import numpy as np
-import shapely
 import shapely.geometry as shpgeo
 from shapely.ops import unary_union
 
 from feabas.constant import *
 from feabas import spatial
+
+
+def render_by_subregions(map_x, map_y, mask, img_loader, **kwargs):
+    """
+    break the render job to small regions in case the target source image is
+    too large to fit in RAM.
+    """
+    rintp = kwargs.get('remap_interp', cv2.INTER_LANCZOS4)
+    mx_dis = kwargs.get('mx_dis', 16300)
+    fillval = kwargs.get('fillval', img_loader.default_fillval)
+    dtype_out = kwargs.get('dtype_out', img_loader.dtype)
+    return_empty = kwargs.get('return_empty', False)
+    if map_x.size == 0:
+        return None
+    if np.all(mask, axis=None):
+        if return_empty:
+            return np.full_like(map_x, fillval, dtype=dtype_out)
+        else:
+            return None
+    imgt = np.full_like(map_x, fillval, dtype=dtype_out)
+    to_render = ~mask
+    multichannel = False
+    while np.any(to_render, axis=None):
+        indx0, indx1 = np.nonzero(to_render)
+        indx0_sel = indx0[indx0.size//2]
+        indx1_sel = indx1[indx1.size//2]
+        xx0 = map_x[indx0_sel, indx1_sel]
+        yy0 = map_y[indx0_sel, indx1_sel]
+        mskt = (np.abs(map_x - xx0) < mx_dis) & (np.abs(map_y - yy0) < mx_dis) & to_render
+        xmin = np.floor(map_x[mskt].min())
+        xmax = np.ceil(map_x[mskt].max()) + 2
+        ymin = np.floor(map_y[mskt].min())
+        ymax = np.ceil(map_y[mskt].max()) + 2
+        bbox = (int(xmin), int(ymin), int(xmax), int(ymax))
+        img0 = img_loader.crop(bbox, **kwargs)
+        if img0 is None:
+            to_render = to_render & (~mskt)
+            continue
+        if len(img0.shape) > 2:
+            # multichannel
+            imgt = np.stack((imgt, )*img0.shape[-1], axis=-1)
+            multichannel = True
+        map_xt = map_x[mskt] - xmin
+        map_yt = map_y[mskt] - ymin
+        imgtt = cv2.remap(img0, map_xt.astype(np.float32), map_yt.astype(np.float32),
+            interpolation=rintp, borderMode=cv2.BORDER_CONSTANT, borderValue=fillval)
+        if multichannel:
+            mskt3 = np.stack((mskt, )*imgtt.shape[-1], axis=-1)
+            imgt[mskt3] = imgtt.ravel()
+        else:
+            imgt[mskt] = imgtt.ravel()
+        to_render = to_render & (~mskt)
+    return imgt
+
 
 
 class MeshRenderer:
@@ -21,13 +75,16 @@ class MeshRenderer:
         self.weight_generator = kwargs.get('weight_generator', [None for _ in range(n_region)])
         self._collision_region = kwargs.get('collision_region', None)
         self._image_loader = kwargs.get('image_loader', None)
-        self._resolution = kwargs.get('resolution', 4)
+        self.resolution = kwargs.get('resolution', 4)
+        self._default_fillval = kwargs.get('fillval', None)
+        self._dtype = kwargs.get('dtype', None)
 
 
     @classmethod
     def from_mesh(cls, srcmesh, gear=(MESH_GEAR_MOVING, MESH_GEAR_INITIAL), **kwargs):
         include_flipped = kwargs.get('include_flipped', False)
         weight_params = kwargs.get('weight_params', MESH_TRIFINDER_INNERMOST)
+        fillval = kwargs.get('fillval', None)
         render_mask = srcmesh.triangle_mask_for_render()
         tri_info = srcmesh.tri_info(gear=gear[0], tri_mask=render_mask, include_flipped=include_flipped)
         offset0 = srcmesh.offset(gear=gear[0])
@@ -79,15 +136,12 @@ class MeshRenderer:
             collision_region = None
         resolution = srcmesh.resolution
         return cls(interpolators, offset=offset0, region_tree=region_tree, weight_params=weight_params,
-            weight_generator=weight_generator, collision_region=collision_region, resolution=resolution)
+            weight_generator=weight_generator, collision_region=collision_region, resolution=resolution,
+            fillval=fillval)
 
 
     def link_image_loader(self, imgloader):
         self._image_loader = imgloader
-
-
-    def remap_subregions(self, field, **kwargs):
-        pass
 
 
     def region_finder_for_points(self, xy, offsetting=True):
@@ -215,7 +269,7 @@ class MeshRenderer:
         xs = np.linspace(bbox0[0], bbox0[2], num=bbox0[2]-bbox0[0], endpoint=False, dtype=float)
         ys = np.linspace(bbox0[1], bbox0[3], num=bbox0[3]-bbox0[1], endpoint=False, dtype=float)
         if out_resolution is not None:
-            scale = out_resolution / self._resolution
+            scale = out_resolution / self.resolution
             xs = spatial.scale_coordinates(xs, scale)
             ys = spatial.scale_coordinates(ys, scale)
         xx, yy = np.meshgrid(xs, ys)
@@ -274,7 +328,7 @@ class MeshRenderer:
         """
         compute the deformation field within a bounding box.
         Args:
-            bbox: bounding box (xmin, xmax, ymin, ymax) in the output space,
+            bbox: bounding box (xmin, ymin, xmax, ymax) in the output space,
                 left/top included & right/bottom excluded
         Kwargs:
             out_resolution: output resolution. If set to None, assume the output
@@ -304,7 +358,7 @@ class MeshRenderer:
             xs = np.linspace(bbox0[0], bbox0[2], num=bbox0[2]-bbox0[0], endpoint=False, dtype=float)
             ys = np.linspace(bbox0[1], bbox0[3], num=bbox0[3]-bbox0[1], endpoint=False, dtype=float)
             if out_resolution is not None:
-                scale = out_resolution / self._resolution
+                scale = out_resolution / self.resolution
                 xs = spatial.scale_coordinates(xs, scale)
                 ys = spatial.scale_coordinates(ys, scale)
             xx, yy = np.meshgrid(xs, ys)
@@ -357,15 +411,19 @@ class MeshRenderer:
         else:
             raise ValueError
         return x_field, y_field, mask
-        
 
 
-    def crop(self, bbox, return_empty=False, **kwargs):
-        mode = kwargs.get('mode', RENDER_FULL)
+    def crop(self, bbox, **kwargs):
         image_loader = kwargs.get('image_loader', self._image_loader)
         if image_loader is None:
             raise RuntimeError('Image loader not defined.')
-        pass
+        x_field, y_field, mask = self.crop_field(bbox, **kwargs)
+        if image_loader.resolution != self.resolution:
+            scale = self.resolution / image_loader.resolution
+            x_field = spatial.scale_coordinates(x_field, scale)
+            y_field = spatial.scale_coordinates(y_field, scale)
+        imgt = render_by_subregions(x_field, y_field, mask, image_loader, **kwargs)
+        return imgt
 
 
     @property
@@ -379,3 +437,59 @@ class MeshRenderer:
                 ymax = max(ymax, np.max(m.y) + self._offset.ravel()[1])
             self._bounds = (xmin, ymin, xmax, ymax)
         return self._bounds
+
+
+    @property
+    def dtype(self):
+        if self._dtype is None:
+            if hasattr(self._image_loader, 'dtype') and self._image_loader.dtype is not None:
+                self._dtype = self._image_loader.dtype
+            else:
+                self._dtype = np.uint8
+        return self._dtype
+
+
+    @property
+    def default_fillval(self):
+        if self._default_fillval is None:
+            if hasattr(self._image_loader, 'default_fillval') and self._image_loader.default_fillval is not None:
+                self._default_fillval = self._image_loader.default_fillval
+            else:
+                self._default_fillval = 0
+        return self._default_fillval
+
+
+
+class MontageRenderer:
+    """
+    A class to render Montage with overlapping tiles
+    """
+    def __init__(self):
+        pass
+
+
+    def crop(self, bbox, return_empty=False, **kwargs):
+        fillval = kwargs.get('fillval', self._default_fillval)
+        dtype = kwargs.get('dtype', self.dtype)
+        blend_mode = kwargs.get('blend', BLEND_LINEAR)
+        pass
+
+
+    @property
+    def bounds(self):
+        pass
+
+
+    @property
+    def dtype(self):
+        if self._dtype is None:
+            if hasattr(self._image_loader, 'dtype') and self._image_loader.dtype is not None:
+                self._dtype = self._image_loader.dtype
+            else:
+                self._dtype = np.uint8
+        return self._dtype
+
+
+    @property
+    def default_fillval(self):
+        return self._default_fillval

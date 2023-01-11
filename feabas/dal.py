@@ -826,3 +826,25 @@ class MosaicLoader(StaticImageLoader):
     @property
     def bounds(self):
         return self._file_rtree.bounds
+
+
+
+class MultiResolutionImageLoader:
+    """
+    A collection of image loaders with different resolution. Override __getitem__
+    method to automatically select the right loader for the right resolution.
+    """
+    def __init__(self, loaders, overkill=True):
+        self._loaders = loaders
+        self._resolution = np.array([ldr.resolution for ldr in loaders])
+        self._overkill = overkill # whether to prioritize higher resolution
+
+
+    def __getitem__(self, resolution):
+        dis = resolution - self._resolution
+        if self._overkill:
+            dis[dis<0] = np.abs(dis[dis<0]) + dis.max()
+        else:
+            dis = np.abs(dis)
+        indx = np.argmin(dis)
+        return self._loaders[indx]
