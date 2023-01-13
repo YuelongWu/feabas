@@ -9,6 +9,7 @@ import numpy as np
 from rtree import index
 from scipy import sparse
 import scipy.sparse.csgraph as csgraph
+from scipy.spatial import KDTree
 import shapely
 import shapely.geometry as shpgeo
 from shapely.ops import polygonize, unary_union
@@ -664,7 +665,7 @@ class Mesh:
                 if val is None:
                     continue
                 if isinstance(val, str):
-                    val = miscs.str_to_numpy_ascii()
+                    val = miscs.str_to_numpy_ascii(val)
                 if np.isscalar(val) or not compression:
                     _ = fname.create_dataset(prefix+key, data=val)
                 else:
@@ -675,7 +676,7 @@ class Mesh:
                     if val is None:
                         continue
                     if isinstance(val, str):
-                        val = miscs.str_to_numpy_ascii()
+                        val = miscs.str_to_numpy_ascii(val)
                     if np.isscalar(val) or not compression:
                         _ = f.create_dataset(prefix+key, data=val)
                     else:
@@ -1825,6 +1826,8 @@ class Mesh:
     def find_triangle_overlaps(self, gear=None, tri_mask=None):
         if gear is None:
             gear = self._current_gear
+        if self.is_valid(gear=gear, tri_mask=tri_mask):
+            return np.empty((0,2), dtype=self.triangles.dtype)
         collided_segs, _ = self.locate_segment_collision(gear=gear, tri_mask=tri_mask, check_flipped=False)
         if collided_segs.size > 0:
             seg_lines = self.vertices(gear=gear)[collided_segs]
@@ -1970,14 +1973,25 @@ class Mesh:
         avg_tri_area0 = covered_region.area / num_tri0
         mesh_size = (avg_tri_area0 * 2.31) ** 0.5 * decimate
         coarse_mesh = Mesh.from_polygon_equilateral(covered_region, mesh_size=mesh_size, resolution=self._resolution)
-        pass
+        NotImplemented
 
 
     def fix_segment_collision(self):
-        pass
+        NotImplemented
 
 
   ## ------------------------- utility functions --------------------------- ##
+    def nearest_vertices(self, xy, gear=MESH_GEAR_MOVING, offset=True):
+        """find nearest vertices for debug."""
+        if offset:
+            v = self.vertices_w_offset(gear=gear)
+        else:
+            v = self.vertices(gear=gear)
+        T = KDTree(v)
+        dd, ii = T.query(np.reshape(xy, (-1,2)))
+        return ii, dd
+
+
     def _num_masked_tri(self, tri_mask):
         if tri_mask is None:
             return self.num_triangles

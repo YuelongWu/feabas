@@ -44,19 +44,39 @@ def render_by_subregions(map_x, map_y, mask, img_loader, **kwargs):
         if img0 is None:
             to_render = to_render & (~mskt)
             continue
-        if len(img0.shape) > 2:
+        if (len(img0.shape) > 2) and (not multichannel):
             # multichannel
-            imgt = np.stack((imgt, )*img0.shape[-1], axis=-1)
+            num_channel = img0.shape[-1]
+            imgt = np.stack((imgt, )*num_channel, axis=-1)
             multichannel = True
-        map_xt = map_x[mskt] - xmin
-        map_yt = map_y[mskt] - ymin
-        imgtt = cv2.remap(img0, map_xt.astype(np.float32), map_yt.astype(np.float32),
-            interpolation=rintp, borderMode=cv2.BORDER_CONSTANT, borderValue=fillval)
-        if multichannel:
-            mskt3 = np.stack((mskt, )*imgtt.shape[-1], axis=-1)
-            imgt[mskt3] = imgtt.ravel()
+        cover_ratio = np.sum(mskt) / mskt.size
+        if cover_ratio > 0.25:
+            map_xt = map_x - xmin
+            map_yt = map_y - ymin
+            imgtt = cv2.remap(img0, map_xt.astype(np.float32), map_yt.astype(np.float32),
+                interpolation=rintp, borderMode=cv2.BORDER_CONSTANT, borderValue=fillval)
+            if multichannel:
+                mskt3 = np.stack((mskt, )*imgtt.shape[-1], axis=-1)
+                imgt[mskt3] = imgtt[mskt3]
+            else:
+                imgt[mskt] = imgtt[mskt]
         else:
-            imgt[mskt] = imgtt.ravel()
+            map_xt = map_x[mskt] - xmin
+            map_yt = map_y[mskt] - ymin
+            N_pad = int(np.ceil((map_xt.size)**0.5))
+            map_xt_pad = np.pad(map_xt, (0, N_pad**2 - map_xt.size)).reshape(N_pad, N_pad)
+            map_yt_pad = np.pad(map_yt, (0, N_pad**2 - map_yt.size)).reshape(N_pad, N_pad)
+            imgt_pad = cv2.remap(img0, map_xt_pad.astype(np.float32), map_yt_pad.astype(np.float32),
+                interpolation=rintp, borderMode=cv2.BORDER_CONSTANT, borderValue=fillval)
+            if multichannel:
+                imgtt = imgt_pad.reshape(-1, num_channel)
+                imgtt = imgtt[:(map_xt.size), :]
+                mskt3 = np.stack((mskt, )*imgtt.shape[-1], axis=-1)
+                imgt[mskt3] = imgtt.ravel()
+            else:
+                imgtt = imgt_pad.ravel()
+                imgtt = imgtt[:(map_xt.size)]
+                imgt[mskt] = imgtt.ravel()
         to_render = to_render & (~mskt)
     return imgt
 
@@ -266,8 +286,8 @@ class MeshRenderer:
         if region_id == -1:
             return None, None, None
         interpX, interpY = self._interpolators[region_id]
-        xs = np.linspace(bbox0[0], bbox0[2], num=bbox0[2]-bbox0[0], endpoint=False, dtype=float)
-        ys = np.linspace(bbox0[1], bbox0[3], num=bbox0[3]-bbox0[1], endpoint=False, dtype=float)
+        xs = np.linspace(bbox0[0], bbox0[2], num=int(bbox0[2]-bbox0[0]), endpoint=False, dtype=float)
+        ys = np.linspace(bbox0[1], bbox0[3], num=int(bbox0[3]-bbox0[1]), endpoint=False, dtype=float)
         if out_resolution is not None:
             scale = out_resolution / self.resolution
             xs = spatial.scale_coordinates(xs, scale)
@@ -355,8 +375,8 @@ class MeshRenderer:
             A, t = self.local_affine_tform(bcntr, offsetting=False, svd_clip=svd_clip)
             if A is None:
                 return None, None, None
-            xs = np.linspace(bbox0[0], bbox0[2], num=bbox0[2]-bbox0[0], endpoint=False, dtype=float)
-            ys = np.linspace(bbox0[1], bbox0[3], num=bbox0[3]-bbox0[1], endpoint=False, dtype=float)
+            xs = np.linspace(bbox0[0], bbox0[2], num=int(bbox0[2]-bbox0[0]), endpoint=False, dtype=float)
+            ys = np.linspace(bbox0[1], bbox0[3], num=int(bbox0[3]-bbox0[1]), endpoint=False, dtype=float)
             if out_resolution is not None:
                 scale = out_resolution / self.resolution
                 xs = spatial.scale_coordinates(xs, scale)
@@ -373,10 +393,13 @@ class MeshRenderer:
             else:
                 mask = weight <= 0
         elif mode == RENDER_FULL:
-            blend = kwargs.get('blend', BLEND_LINEAR)
             regions = self.region_finder_for_bbox(bbox0, offsetting=False)
             if regions.size == 0:
                 return None, None, None
+            elif regions.size == 1:
+                blend = BLEND_NONE
+            else:
+                blend = kwargs.get('blend', BLEND_MAX)
             initialized = False
             for rid in regions:
                 xf, yf, wt = self.field_w_weight(bbox0, region_id=rid,
@@ -405,8 +428,9 @@ class MeshRenderer:
             if not initialized:
                 return None, None, None
             if blend == BLEND_LINEAR:
-                x_field = np.nan_to_num(x_field / weight, nan=0,posinf=0, neginf=0)
-                y_field = np.nan_to_num(y_field / weight, nan=0,posinf=0, neginf=0)
+                with np.errstate(invalid='ignore', divide='ignore'):
+                    x_field = np.nan_to_num(x_field / weight, nan=0,posinf=0, neginf=0)
+                    y_field = np.nan_to_num(y_field / weight, nan=0,posinf=0, neginf=0)
             mask = weight <= 0
         else:
             raise ValueError
