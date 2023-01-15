@@ -117,9 +117,9 @@ class Material:
         J = np.linalg.inv(tripts_pad)[:,:2,:]
         B = np.zeros((trinum, 4, 6), dtype=DTYPE)
         B[:,0,0::2] = J[:,0,:]
-        B[:,1,1::2] = J[:,1,:]
-        B[:,2,0::2] = J[:,1,:]
-        B[:,3,1::2] = J[:,0,:]
+        B[:,1,0::2] = J[:,1,:]
+        B[:,2,1::2] = J[:,0,:]
+        B[:,3,1::2] = J[:,1,:]
         # caculate areas
         v0 = (tripts[:,1,:] - tripts[:,0,:])/100
         v1 = (tripts[:,2,:] - tripts[:,1,:])/100
@@ -365,7 +365,7 @@ class MaterialTable:
             default_factory = lambda: self._table['default']
         else:
             default_factory = None
-        id_tabel = defaultdict(default_factory=default_factory)
+        id_tabel = defaultdict(default_factory)
         for val in self._table.values():
             id_tabel[val.uid] = val
         return id_tabel

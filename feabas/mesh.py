@@ -220,6 +220,8 @@ class Mesh:
     """
   ## ------------------------- initialization & IO ------------------------- ##
     def __init__(self, vertices, triangles, **kwargs):
+        vertices = vertices.reshape(-1, 2)
+        triangles = triangles.reshape(-1, 3)
         self._vertices = {MESH_GEAR_INITIAL: vertices}
         self._vertices[MESH_GEAR_FIXED] = kwargs.get('fixed_vertices', vertices)
         self._vertices[MESH_GEAR_MOVING] = kwargs.get('moving_vertices', None)
@@ -2005,18 +2007,32 @@ class Mesh:
 
     @config_cache('TBD')
     def element_stiffness_matrices(self, gear=(MESH_GEAR_FIXED, MESH_GEAR_MOVING), inner_cache=None, **kwargs):
+        """
+        compute the stiffness matrices for each element. Each element follow the order
+            [u1, v1, u2, v2, u3, v3]
+        Kwargs:
+            gear(tuple): first item used for shape matrices, second gear for stress
+                computation (and stiffness if nonlinear).
+            inner_cache: the cache to store intermediate attributes like shape
+                matrices. Use default if set to None.
+        Return:
+            F1 (list): element_stiffness(Nx6x6), computed at the current displacement.
+            indices (list): the triangle indices (N,) for each element.
+            F0 (list): stress(Nx6x1) used in Newton-Raphson iterations.
+            flipped (bool): whether flipped triangles exist at current displacement.
+        """
         continue_on_flip = kwargs.get('continue_on_flip', False)
         v0 = self.vertices(gear=gear[0])
         v1 = self.vertices(gear=gear[-1])
         dxy = v1 - v0
-        shape_matrices = self.stiffness_shape_matrices(gear=gear[0], cache=inner_cache, **kwargs)
+        shape_matrices = self.stiffness_shape_matrices(gear=gear[0], cache=inner_cache)
         material_table = self._material_table.id_table
         flipped = False
         multiplier = self.stiffness_multiplier
         indices = []
         F0 = []
         F1 = []
-        for mid, vals in shape_matrices:
+        for mid, vals in shape_matrices.items():
             mat = material_table[mid]
             indx, Ms = vals
             uv = dxy[self.triangles[indx]].reshape(-1, 6)
@@ -2036,7 +2052,26 @@ class Mesh:
 
     @config_cache('TBD')
     def stiffness_matrix(self, gear=(MESH_GEAR_FIXED, MESH_GEAR_MOVING), inner_cache=None, **kwargs):
-        NotImplemented
+        continue_on_flip = kwargs.get('continue_on_flip', False)
+        F1, indices, F0, flipped = self.element_stiffness_matrices(gear=gear, inner_cache=inner_cache, cache=inner_cache, **kwargs)
+        if flipped and (not continue_on_flip):
+            return None, None
+        stf_sz = 2 * self.num_vertices
+        T = np.repeat(self.triangles * 2, 2, axis=-1)
+        T[:,1::2] += 1
+        STIFF_M = sparse.csr_matrix((stf_sz, stf_sz), dtype=np.float32)
+        STRESS_v = np.zeros(stf_sz, dtype=np.float32)
+        for f1, tidx, f0 in zip(F1, indices, F0):
+            idx_1d = T[tidx]
+            idx_1 = np.tile(idx_1d.reshape(-1,1,6), (1,6,1))
+            idx_2 = np.swapaxes(idx_1, 1, 2)
+            idx_1 = idx_1.ravel()
+            idx_2 = idx_2.ravel()
+            V = f1.ravel()
+            M = sparse.csr_matrix((V, (idx_1, idx_2)),shape=(stf_sz, stf_sz))
+            STIFF_M = STIFF_M + M
+            np.add.at(STRESS_v, idx_1d.ravel(), f0.ravel())
+        return STIFF_M, STRESS_v
 
 
   ## ------------------------- utility functions --------------------------- ##
