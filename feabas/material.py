@@ -121,8 +121,8 @@ class Material:
         B[:,2,0::2] = J[:,1,:]
         B[:,3,1::2] = J[:,0,:]
         # caculate areas
-        v0 = (tripts_m[:,1,:] - tripts_m[:,0,:])/100
-        v1 = (tripts_m[:,2,:] - tripts_m[:,1,:])/100
+        v0 = (tripts[:,1,:] - tripts[:,0,:])/100
+        v1 = (tripts[:,2,:] - tripts[:,1,:])/100
         areas = np.absolute(np.cross(v0, v1)).reshape(-1,1,1)
         return B, areas
 

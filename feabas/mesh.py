@@ -537,7 +537,7 @@ class Mesh:
         for vkey in vtx_keys:
             if init_dict.get(vkey, None) is not None:
                 init_dict[vkey] = init_dict[vkey][vindx]
-        tri_keys = ['material_ids']
+        tri_keys = ['material_ids', 'stiffness_multiplier']
         for tkey in tri_keys:
             if isinstance(init_dict.get(tkey, None), np.ndarray):
                 init_dict[tkey] = init_dict[tkey][tri_mask]
@@ -702,8 +702,15 @@ class Mesh:
             for gear, v in self._vertices.items():
                 if v is not None:
                     self._vertices[gear] = v[to_keep]
-            indx = np.cumsum(to_keep) - 1
-            self.triangles = indx[self.triangles]
+            indx = np.full(to_keep.size, -1, dtype=self.triangles.dtype)
+            indx[to_keep] = np.arange(np.sum(to_keep))
+            triangles = indx[self.triangles]
+            tidx = np.any(triangles < 0, axis=-1, keepdims=False)
+            self.triangles = triangles[tidx]
+            if isinstance(self._stiffness_multiplier, np.ndarray):
+                self._stiffness_multiplier = self._stiffness_multiplier[tidx]
+            if isinstance(self._material_ids, np.ndarray):
+                self._material_ids = self._material_ids[tidx]
             self.vertices_changed(gear=MESH_GEAR_INITIAL)
 
 
@@ -1977,6 +1984,58 @@ class Mesh:
 
 
     def fix_segment_collision(self):
+        NotImplemented
+
+
+  ## ------------------------- stiffness matrices -------------------------- ##
+    @config_cache('TBD')
+    def stiffness_shape_matrices(self, gear=MESH_GEAR_FIXED):
+        material_table = self._material_table.id_table
+        material_ids = self._material_ids
+        v = self.vertices(gear=gear)
+        shape_matrices = {}
+        for mid in np.unique(material_ids):
+            mat = material_table[mid]
+            indx = np.nonzero(material_ids == mid)[0]
+            tripts = v[self.triangles[indx]]
+            B, area = mat.shape_matrix_from_vertices(tripts)
+            shape_matrices[mid] = (indx, (B, area))
+        return shape_matrices
+
+
+    @config_cache('TBD')
+    def element_stiffness_matrices(self, gear=(MESH_GEAR_FIXED, MESH_GEAR_MOVING), inner_cache=None, **kwargs):
+        continue_on_flip = kwargs.get('continue_on_flip', False)
+        v0 = self.vertices(gear=gear[0])
+        v1 = self.vertices(gear=gear[-1])
+        dxy = v1 - v0
+        shape_matrices = self.stiffness_shape_matrices(gear=gear[0], cache=inner_cache, **kwargs)
+        material_table = self._material_table.id_table
+        flipped = False
+        multiplier = self.stiffness_multiplier
+        indices = []
+        F0 = []
+        F1 = []
+        for mid, vals in shape_matrices:
+            mat = material_table[mid]
+            indx, Ms = vals
+            uv = dxy[self.triangles[indx]].reshape(-1, 6)
+            K, P, flp = mat.element_stiffness_matrices_from_shape_matrices(Ms, uv=uv, **kwargs)
+            if flp:
+                flipped = True
+                if not continue_on_flip:
+                    return None, None, None, flipped
+            if K is None:
+                continue
+            mm = multiplier[indx].reshape(-1,1,1)
+            indices.append(indx)
+            F0.append(P * mm)
+            F1.append(K * mm)
+        return F1, indices, F0, flipped
+
+
+    @config_cache('TBD')
+    def stiffness_matrix(self, gear=(MESH_GEAR_FIXED, MESH_GEAR_MOVING), inner_cache=None, **kwargs):
         NotImplemented
 
 
