@@ -14,7 +14,7 @@ from feabas.constant import *
 JOIN_STYLE = shpgeo.JOIN_STYLE.mitre
 
 
-def fit_affine(pts0, pts1, return_rigid=False):
+def fit_affine(pts0, pts1, return_rigid=False, svd_clip=(1,1)):
     # pts0 = pts1 @ A
     pts0 = pts0.reshape(-1,2)
     pts1 = pts1.reshape(-1,2)
@@ -42,9 +42,10 @@ def fit_affine(pts0, pts1, return_rigid=False):
         res = np.linalg.lstsq(pts1_pad, pts0_pad, rcond=None)
         A = res[0]
     if return_rigid:
-        u, _, vh = np.linalg.svd(A[:2,:2], compute_uv=True)
+        u, s, vh = np.linalg.svd(A[:2,:2], compute_uv=True)
+        s = s.clip(svd_clip[0], svd_clip[-1])
         R = A.copy()
-        R[:2,:2] = u @ vh
+        R[:2,:2] = u @ np.diag(s) @ vh
         R[-1,:2] = R[-1,:2] + mm0 - mm1 @ R[:2,:2]
         R[:,-1] = np.array([0,0,1])
     A[-1,:2] = A[-1,:2] + mm0 - mm1 @ A[:2,:2]

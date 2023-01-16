@@ -261,6 +261,9 @@ class Mesh:
         # store the last caching keys for cleaning up
         self._latest_expired_caching_keys_dict = {g: None for g in MESH_GEARS}
         self._update_caching_keys(gear=MESH_GEAR_FIXED)
+        # used for optimizer
+        self.locked = kwargs.get('locked', False) # whether to allow modification
+        self.number = kwargs.get('number', 0)   # numbering of the mesh
 
 
     @classmethod
@@ -779,6 +782,14 @@ class Mesh:
         if np.issubdtype(stiffness.dtype, np.integer):
             stiffness = stiffness.astype(float) / np.iinfo(stiffness.dtype).max
         self.set_stiffness_multiplier(stiffness, tri_mask=tri_mask)
+
+
+    def lock(self):
+        self.locked = True
+
+
+    def unlock(self):
+        self.locked = False
 
 
   ## ------------------------------ gear switch ---------------------------- ##
@@ -1465,7 +1476,7 @@ class Mesh:
         index_list = tri_info['triangle_index']
         seg_tree = tri_info['segment_tree']
         seg_tids = tri_info['segment_tid']
-        pts = (pts - self.offset(gear=gear)).reshape(-1,2)
+        pts = (pts - self.offsetoat(gear=gear)).reshape(-1,2)
         if len(mattri_list) > 1:
             mpts = shpgeo.MultiPoint(pts)
             pts_list = list(mpts.geoms)
@@ -1561,6 +1572,8 @@ class Mesh:
 
   ## -------------------------- transformations ---------------------------- ##
     def set_vertices(self, v, gear, vtx_mask=None):
+        if self.locked:
+            return
         if Mesh._masked_all(vtx_mask):
             self._vertices[gear] = v
         else:
@@ -1570,6 +1583,8 @@ class Mesh:
 
 
     def set_offset(self, offset, gear):
+        if self.locked:
+            return
         self._offsets[gear] = offset
 
 
@@ -1581,17 +1596,23 @@ class Mesh:
 
     @moving_vertices.setter
     def moving_vertices(self, v):
+        if self.locked:
+            return
         self._vertices[MESH_GEAR_MOVING] = v
         self.vertices_changed(gear=MESH_GEAR_MOVING)
 
 
     @staging_vertices.setter
     def staging_vertices(self, v):
+        if self.locked:
+            return
         self._vertices[MESH_GEAR_STAGING] = v
         self.vertices_changed(gear=MESH_GEAR_STAGING)
 
 
     def apply_translation(self, dxy, gear, vtx_mask=None):
+        if self.locked:
+            return
         if not np.any(dxy, axis=None):
             return
         v = self.vertices(gear=gear)
@@ -1605,6 +1626,8 @@ class Mesh:
 
 
     def set_translation(self, dxy, gear=(MESH_GEAR_FIXED, MESH_GEAR_MOVING), vtx_mask=None):
+        if self.locked:
+            return
         v0 = self.vertices(gear=gear[0])
         offset0 = self.offset(gear=gear[0])
         if Mesh._masked_all(vtx_mask):
@@ -1619,6 +1642,8 @@ class Mesh:
 
 
     def apply_affine(self, A, gear, vtx_mask=None):
+        if self.locked:
+            return
         if np.all(A == np.eye(3)):
             return
         v0 = self.vertices(gear=gear)
@@ -1635,6 +1660,8 @@ class Mesh:
 
 
     def set_affine(self, A, gear=(MESH_GEAR_FIXED, MESH_GEAR_MOVING), vtx_mask=None):
+        if self.locked:
+            return
         if np.all(A == np.eye(3)):
             return
         v0 = self.vertices(gear=gear[0])
@@ -1652,6 +1679,8 @@ class Mesh:
 
 
     def apply_field(self, dxy, gear, vtx_mask=None):
+        if self.locked:
+            return
         if not np.any(dxy, axis=None):
             return
         v0 = self.vertices(gear=gear)
@@ -1669,6 +1698,8 @@ class Mesh:
 
 
     def set_field(self, dxy, gear=(MESH_GEAR_FIXED, MESH_GEAR_MOVING), vtx_mask=None):
+        if self.locked:
+            return
         if not np.any(dxy, axis=None):
             return
         v0 = self.vertices(gear=gear[0])
@@ -1684,6 +1715,46 @@ class Mesh:
             v1 = v0[vtx_mask] + dxy + offset0 - offset1
             self.set_vertices(v1, gear=gear[-1], vtx_mask=vtx_mask)
             self.set_offset(offset1, gear=gear[-1])
+
+
+    def anneal(self, gear=(MESH_GEAR_MOVING, MESH_GEAR_FIXED), mode=ANNEAL_CONNECTED_RIGID):
+        """
+        adjust the fixed vertices closer to the moving vertices as the new resting
+        state for relaxation.
+        """
+        if self.locked or (not self.vertices_initialized(gear=gear[0])):
+            return
+        if mode in (ANNEAL_GLOBAL_RIGID, ANNEAL_GLOBAL_AFFINE):
+            v0 = self.vertices_w_offset(gear=gear[0])
+            v1 = self.vertices_w_offset(gear=gear[1])
+            if mode == ANNEAL_CONNECTED_RIGID:
+                _, R = spatial.fit_affine(v0, v1, return_rigid=True)
+                self.apply_affine(R, gear[1])
+            else:
+                A = spatial.fit_affine(v0, v1, return_rigid=False)
+                self.apply_affine(A, gear[1])
+        elif mode in (ANNEAL_CONNECTED_RIGID, ANNEAL_CONNECTED_AFFINE):
+            N_conn, V_conn = self.connected_vertices()
+            self.anneal(gear=gear, mode=ANNEAL_GLOBAL_RIGID) # center the mesh
+            if (N_conn == 1) and (mode == ANNEAL_GLOBAL_RIGID):
+                return
+            v0 = self.vertices_w_offset(gear=gear[0])
+            v1 = self.vertices_w_offset(gear=gear[1])
+            for cid in range(N_conn):
+                idx = V_conn == cid
+                if mode == ANNEAL_CONNECTED_RIGID:
+                    _, R = spatial.fit_affine(v0[idx], v1[idx], return_rigid=True)
+                    self.apply_affine(R, gear[1], vtx_mask=idx)
+                else:
+                    A = spatial.fit_affine(v0[idx], v1[idx], return_rigid=False)
+                    self.apply_affine(A, gear[1], vtx_mask=idx)
+        elif mode == ANNEAL_COPY_EXACT:
+            offset0 = self.offset(gear=gear[0])
+            v0 = self.vertices(gear=gear[0])
+            self.set_vertices(v0, gear[1])
+            self.set_offset(offset0, gear[1])
+        else:
+            raise ValueError
 
 
   ## ------------------------ collision management ------------------------- ##
