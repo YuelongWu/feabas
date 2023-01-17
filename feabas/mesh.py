@@ -6,6 +6,7 @@ import h5py
 import inspect
 import matplotlib.tri
 import numpy as np
+import os
 from rtree import index
 from scipy import sparse
 import scipy.sparse.csgraph as csgraph
@@ -215,7 +216,7 @@ class Mesh:
         resolution (float): resolution of the mesh, for automatical scaling when
             working with images with specified resolution. default to 4nm.
         name(str): name of the mesh, used for printing/saving.
-        uid(int): unique id number, used as the key for caching. If not set, use
+        token(int): unique id number, used as the key for caching. If not set, use
             the hash of object attributes.
     """
   ## ------------------------- initialization & IO ------------------------- ##
@@ -252,18 +253,18 @@ class Mesh:
         self._resolution = kwargs.get('resolution', 4)
         self._epsilon = kwargs.get('epsilon', EPSILON0)
         self._name = kwargs.get('name', '')
-        self.uid = kwargs.get('uid', None)
+        self.token = kwargs.get('token', None)
         self._default_cache = kwargs.get('cache', defaultdict(lambda: True))
-        if self.uid is None:
-            self._hash_uid()
+        if self.token is None:
+            self._hash_token()
         self._caching_keys_dict = {g: None for g in MESH_GEARS}
-        self._caching_keys_dict[MESH_GEAR_INITIAL] = self.uid
+        self._caching_keys_dict[MESH_GEAR_INITIAL] = self.token
         # store the last caching keys for cleaning up
         self._latest_expired_caching_keys_dict = {g: None for g in MESH_GEARS}
         self._update_caching_keys(gear=MESH_GEAR_FIXED)
         # used for optimizer
         self.locked = kwargs.get('locked', False) # whether to allow modification
-        self.number = kwargs.get('number', 0)   # numbering of the mesh
+        self.uid = kwargs.get('uid', 0)   # numbering of the mesh
 
 
     @classmethod
@@ -507,6 +508,7 @@ class Mesh:
         init_dict['epsilon'] = self._epsilon
         if bool(self._name):
             init_dict['name'] = self._name
+        init_dict['token'] = self.token
         init_dict['uid'] = self.uid
         init_dict.update(kwargs)
         return init_dict
@@ -546,9 +548,9 @@ class Mesh:
         for tkey in tri_keys:
             if isinstance(init_dict.get(tkey, None), np.ndarray):
                 init_dict[tkey] = init_dict[tkey][tri_mask]
-        if ('uid' not in kwargs) and ('uid' in init_dict):
-            # do not copy the uid from the parent
-            init_dict.pop('uid')
+        if ('token' not in kwargs) and ('token' in init_dict):
+            # do not copy the token from the parent
+            init_dict.pop('token')
         if ('name' not in kwargs) and ('name' in init_dict):
             parent_name = init_dict['name']
             new_name = (parent_name, miscs.hash_numpy_array(tri_mask))
@@ -563,9 +565,11 @@ class Mesh:
         else:
             lbls = np.unique(T_conn)
             meshes = []
-            for lbl in lbls:
+            uid0 = self.uid
+            uids = uid0 + (np.arange(lbls.size) + 1)/(10**(np.ceil(np.log10(lbls.size + 1))))
+            for lbl, uid in zip(lbls, uids):
                 mask = T_conn == lbl
-                meshes.append(self.submesh(mask, save_material=save_material, **kwargs))
+                meshes.append(self.submesh(mask, save_material=save_material, uid=uid, **kwargs))
             return meshes
 
 
@@ -588,7 +592,7 @@ class Mesh:
         for m in meshes:
             m.change_resolution(resolution0)
             for g in MESH_GEARS:
-                v = m.vertices(gear=g) + (m.offset(gear=g) - offsets0)
+                v = m.vertices(gear=g) + (m.offset(gear=g) - offsets0[g])
                 vertices[g].append(v)
                 vertices_initialized[g] |= m.vertices_initialized(gear=g)
             triangles.append(m.triangles + num_vertices)
@@ -628,6 +632,7 @@ class Mesh:
             init_dict['name'] = meshes[0]._name[0]
         else:
             init_dict['name'] = meshes[0]._name
+        init_dict['uid'] = np.floor(meshes[0].uid)
         init_dict.update(kwargs)
         return cls(**init_dict)
 
@@ -661,8 +666,8 @@ class Mesh:
         save_material = kwargs.get('save_material', True)
         compression = kwargs.get('compression', True)
         out = self.get_init_dict(save_material=save_material, vertex_flag=vertex_flag, **override_dict)
-        if ('uid' in out) and (not 'uid' in override_dict):
-            out.pop('uid') # hash not conistent between runs, no point to save
+        if ('token' in out) and (not 'token' in override_dict):
+            out.pop('token') # hash not conistent between runs, no point to save
         if (len(prefix) > 0) and prefix[-1] != '/':
             prefix = prefix + '/'
         if isinstance(fname, h5py.File):
@@ -676,6 +681,8 @@ class Mesh:
                 else:
                     _ = fname.create_dataset(prefix+key, data=val, compression="gzip")
         else:
+            if '.h5' not in fname:
+                fname = os.path.join(fname, self.name + '.h5')
             with h5py.File(fname, 'w') as f:
                 for key, val in out.items():
                     if val is None:
@@ -922,12 +929,12 @@ class Mesh:
 
 
   ## -------------------------------- caching ------------------------------ ##
-    def _hash_uid(self):
+    def _hash_token(self):
         var0 = miscs.hash_numpy_array(self._vertices[MESH_GEAR_INITIAL])
         var1 = miscs.hash_numpy_array(self.triangles)
         var2 = miscs.hash_numpy_array(self._material_ids)
         var3 = miscs.hash_numpy_array(self._stiffness_multiplier)
-        self.uid = hash((var0, var1, var2, var3, self._resolution))
+        self.token = hash((var0, var1, var2, var3, self._resolution))
 
 
     def _update_caching_keys(self, gear=MESH_GEAR_INITIAL):
@@ -940,8 +947,8 @@ class Mesh:
         the absolute position of the Mesh is relevant.
         """
         if gear == MESH_GEAR_INITIAL:
-            self._hash_uid()
-            key = self.uid
+            self._hash_token()
+            key = self.token
         else:
             v = self._vertices[gear]
             if v is None:
@@ -957,7 +964,7 @@ class Mesh:
         """
         hashing of the Mesh object served as the keys for caching. the key has
         the following format:
-            (self_uid, (gear, hash(self._vertices[gears])))
+            (self_token, (gear, hash(self._vertices[gears])))
         gear: specify which vertices the key(s) is associated
         current_mesh: whether to get the latest expired mesh keys or the current
             ones.
@@ -978,7 +985,7 @@ class Mesh:
                     hashval = self._latest_expired_caching_keys_dict[g]
                 mesh_version.append((g, hashval))
                 gear_name.append(gear_constant_to_str(g))
-        return (self.uid, *gear_name, *mesh_version)
+        return (self.token, *gear_name, *mesh_version)
 
 
     def clear_cached_attr(self, gear=None, gc_now=False):
@@ -1001,18 +1008,18 @@ class Mesh:
     def clear_specified_caches(self, gear=None, cache=None, include_hash=True, keys_to_probe=None, gc_now=False):
         """
         clear cached properties in the specified cache.
-        Note that if gear is not None, the current uid is used regardless of
+        Note that if gear is not None, the current token is used regardless of
         current_mesh settings.
         Kwargs:
             gear: to clear all the cached properties associated with a specific
-                gear. If set to None, only look at the uid and clear every gear.
+                gear. If set to None, only look at the token and clear every gear.
             cache: the cache from with to clear. If set to True, clear local
                 attrubutes. If set to None, clear default caches.
             include_hash: if set to True, will also match the hash values
                 associated with the gear. Otherwise clear all entries that match
-                uid and gear.
-            keys_to_probe (tuple): specify a uid followed by a set of tokens to
-                probe. given same uid, if one of the token provided is contained
+                token and gear.
+            keys_to_probe (tuple): specify a token followed by a set of tokens to
+                probe. given same token, if one of the token provided is contained
                 in one of the key in the cache, free the element associated to
                 that key. If None, use the current caching keys as token.
             gc_now: if do garbage collection right away.
@@ -1461,6 +1468,14 @@ class Mesh:
         return self.find_triangle_overlaps(gear=gear, tri_mask=tri_mask)
 
 
+    @property
+    def name(self):
+        if isinstance(self._name, str):
+            return self._name
+        else:
+            return '_'.join(str(s) for s in self._name)
+
+
   ## -------------------------------- query -------------------------------- ##
     def tri_finder(self, pts, gear=None, tri_mask=None, include_flipped=False, mode=MESH_TRIFINDER_LEAST_DEFORM, contigeous=True, extrapolate=True):
         """
@@ -1476,7 +1491,7 @@ class Mesh:
         index_list = tri_info['triangle_index']
         seg_tree = tri_info['segment_tree']
         seg_tids = tri_info['segment_tid']
-        pts = (pts - self.offsetoat(gear=gear)).reshape(-1,2)
+        pts = (pts - self.offset(gear=gear)).reshape(-1,2)
         if len(mattri_list) > 1:
             mpts = shpgeo.MultiPoint(pts)
             pts_list = list(mpts.geoms)
