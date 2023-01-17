@@ -1578,9 +1578,13 @@ class Mesh:
         return tid, B
 
 
-    def bary2cart(self, tid, B, gear):
+    def bary2cart(self, tid, B, gear, offsetting=True):
         """Barycentric to Cartesian coordinates"""
-        tri_pt = self.vertices_w_offset(gear=gear)[np.atleast_2d(self.triangles[tid,:])]
+        indx = np.atleast_2d(self.triangles[tid,:])
+        if offsetting:
+            tri_pt = self.vertices_w_offset(gear=gear)[indx]
+        else:
+            tri_pt = self.vertices(gear=gear)[indx]
         xy = np.sum(tri_pt * B.reshape(-1,3,1), axis=-2, keepdims=False)
         return xy
 
