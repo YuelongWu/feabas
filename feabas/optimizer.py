@@ -1,3 +1,4 @@
+import gc
 import numpy as np
 
 from feabas import spatial
@@ -8,7 +9,9 @@ class Link:
     """
     class to represent the corresponding points between two meshes.
     """
-    def __init__(self, mesh0, mesh1, tid0, tid1, B0, B1, weight=None):
+    def __init__(self, mesh0, mesh1, tid0, tid1, B0, B1, **kwargs):
+        weight = kwargs.get('weight', None)
+        self.name = kwargs.get('name', '')
         self.uids = [mesh0.uid, mesh1.uid]
         self.meshes = [mesh0, mesh1]
         self._tid0 = tid0
@@ -26,22 +29,58 @@ class Link:
 
 
     @classmethod
-    def from_coordinates(cls, mesh0, mesh1, xy0, xy1, gear=(MESH_GEAR_INITIAL, MESH_GEAR_INITIAL), weight=None):
+    def from_coordinates(cls, mesh0, mesh1, xy0, xy1, gear=(MESH_GEAR_INITIAL, MESH_GEAR_INITIAL), **kwargs):
         tid0, B0 = mesh0.cart2bary(xy0, gear[0], tid=None)
+        indx0 = tid0 >= 0
+        if not np.any(indx0):
+            return None
+        elif not np.all(indx0):
+            tid0 = tid0[indx0]
+            B0 = B0[indx0]
+            xy1 = xy1[indx0]
+            if 'weight' in kwargs and isinstance(kwargs['weight'], np.ndarray):
+                kwargs['weight'] = kwargs['weight'][indx0]
         tid1, B1 = mesh1.cart2bary(xy1, gear[1], tid=None)
-        indx = (tid0 >= 0) & (tid1 >= 0)
-        if not np.all(indx):
-            tid0 = tid0[indx]
-            tid1 = tid1[indx]
-            B0 = B0[indx]
-            B1 = B1[indx]
-        return cls(mesh0, mesh1, tid0, tid1, B0, B1, weight=weight)
+        indx1 = tid1 >= 0
+        if not np.any(indx1):
+            return None
+        if not np.all(indx1):
+            tid0 = tid0[indx1]
+            tid1 = tid1[indx1]
+            B0 = B0[indx1]
+            B1 = B1[indx1]
+            if 'weight' in kwargs and isinstance(kwargs['weight'], np.ndarray):
+                kwargs['weight'] = kwargs['weight'][indx1]
+        return cls(mesh0, mesh1, tid0, tid1, B0, B1, **kwargs)
+
+
+    def combine_link(self, other):
+        if other is None:
+            return
+        assert np.all(np.sort(self.uids) == np.sort(other.uids))
+        flipped = self.uids[0] != other.uids[0]
+        if flipped:
+            aB0 = other._B1
+            aB1 = other._B0
+            atid0 = other._tid1
+            atid1 = other._tid0
+        else:
+            aB0 = other._B0
+            aB1 = other._B1
+            atid0 = other._tid0
+            atid1 = other._tid1
+        self._B0 = np.concatenate((self._B0, aB0), axis=0)
+        self._B1 = np.concatenate((self._B1, aB1), axis=0)
+        self._tid0 = np.concatenate((self._tid0, atid0), axis=0)
+        self._tid1 = np.concatenate((self._tid1, atid1), axis=0)
+        self._weight = np.concatenate((self._weight, other._weight), axis=0)
+        self._residue_weight = np.concatenate((self._residue_weight, other._residue_weight), axis=0)
+        self._mask = None
 
 
     def equation_contrib(self, index_offsets, **kwargs):
         """computing the contribution needed to add to the FEM assembled matrix."""
-        min_match_num = kwargs.get('min_match_num', 0)
-        if not self.relevant(min_match_num):
+        if not self.relevant:
             return None, None, None, None
         start_gear = kwargs.get('start_gear', MESH_GEAR_MOVING)
         targt_gear = kwargs.get('target_gear', MESH_GEAR_MOVING)
@@ -217,11 +256,12 @@ class Link:
         return [self.meshes[0].locked, self.meshes[1].locked]
 
 
-    def relevant(self, min_match_num=0):
+    @property
+    def relevant(self):
         if self._disabled or np.all(self.locked):
             return False
         else:
-            return np.sum(self.mask) > min_match_num
+            return np.sum(self.mask) > 0
 
 
     @property
@@ -241,4 +281,134 @@ class Link:
 
 
 class SpringLinkedMeshes:
-    pass
+    """
+    A spring connected mesh system used for optimization.
+    """
+    def __init__(self, meshes, links=[], **kwargs):
+        self.meshes = meshes
+        self.links = links
+        self._stiffness_lambda = kwargs.get('stiffness_lambda', 1.0)
+        self._crosslink_lambda = kwargs.get('crosslink_lambda', 1.0)
+
+
+    def link_changed(self, gc_now=False):
+        NotImplemented
+        if gc_now:
+            gc.collect()
+
+
+    def mesh_changed(self, gc_now=False):
+        NotImplemented
+        if gc_now:
+            gc.collect()
+
+
+    def add_link(self, link, check_relevance=True, check_duplicates=True, **kwargs):
+        """
+        add a link to the system
+            Args:
+                link (Link): link to add.
+            Kwargs:
+                check_revelvance (bool): whether to check whether the link is
+                    useful in solving the optimization problem, i.e. if the
+                    meshes it connects are locked or not included (based on
+                    uids), or the link itself has no activated matches.
+                check_duplicates (bool): if to check the link is already loaded
+                    in the system (based on link names)
+                working gear: the gear that used to reinitiate the link if there
+                    are separated or combined mesh in the system.
+
+        """
+        if link is None:
+            return False
+        if check_duplicates and (link.name in self.link_names):
+            return False
+        if check_relevance:
+            if (not self.link_relevant(link)):
+                return False
+        else:
+            self.links.append(link)
+            self.link_names.append(link.name)
+            self.link_changed(gc_now=False)
+            return True
+        working_gear = kwargs.get('working_gear', MESH_GEAR_INITIAL)
+        mesh_uids = self.mesh_uids
+        need_reinit = False
+        dis0 = np.abs(mesh_uids - link.uids[0])
+        if np.min(dis0) == 0:
+            meshlist0 = [link.meshes[0]]
+        else:
+            issubmesh = dis0 < 0.5
+            meshlist0 = [m for k, m in enumerate(self.meshes) if issubmesh[k]]
+            need_reinit = True
+        dis1 = np.abs(mesh_uids - link.uids[1])
+        if np.min(dis1) == 0:
+            meshlist1 = [link.meshes[1]]
+        else:
+            issubmesh = dis1 < 0.5
+            meshlist1 = [m for k, m in enumerate(self.meshes) if issubmesh[k]]
+            need_reinit = True
+        if need_reinit:
+            re_links = SpringLinkedMeshes.reinitialize_link(meshlist0, meshlist1, link, working_gear=working_gear)
+            if len(re_links) > 0:
+                self.links.extend(re_links)
+                self.link_names.extend([l.name for l in re_links])
+                self.link_changed(gc_now=False)
+                return True
+            else:
+                return False
+        else:
+            self.links.append(link)
+            self.link_names.append(link.name)
+            self.link_changed(gc_now=False)
+            return True
+
+
+    def link_relevant(self, link):
+        """
+        check if a link is useful for optimization.
+        Return:
+            0 - not useful; 1 - useful; 2 - useful but need to reinitialized.
+        """
+        if link is None:
+            return 0
+        if not link.relevant:
+            return 0
+        mesh_uids = self.mesh_uids
+        link_uids = link.uids
+        for lid in link_uids:
+            dis = np.min(np.abs(mesh_uids - lid))
+            if  dis > 0.5:
+                return 0
+            elif dis > 0:
+                return 2
+        return 1
+
+
+    @property
+    def link_names(self):
+        if (not hasattr(self, '_link_names')) or (not bool(self._link_names)):
+            self._link_names = [l.name for l in self._links]
+        return self._link_names
+
+
+    @property
+    def mesh_uids(self):
+        if (not hasattr(self, '_mesh_uids') or self._mesh_uids is None):
+            self._mesh_uids = np.array([m.uid for m in self.meshes])
+        return self._mesh_uids
+
+
+    @staticmethod
+    def reinitialize_link(mesh0_list, mesh1_list, link, working_gear=MESH_GEAR_INITIAL):
+        xy0 = link.xy0(gear=working_gear, use_mask=False, combine=True)
+        xy1 = link.xy1(gear=working_gear, use_mask=False, combine=True)
+        weight = link._weight
+        name = link._name
+        out_links = []
+        for m0 in mesh0_list:
+            for m1 in mesh1_list:
+                lnk = Link.from_coordinates(m0, m1, xy0, xy1, gear=(working_gear, working_gear), weight=weight, name=name)
+                if lnk is not None:
+                    out_links.append(lnk)
+        return out_links

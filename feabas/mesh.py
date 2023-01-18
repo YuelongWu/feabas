@@ -219,6 +219,7 @@ class Mesh:
         token(int): unique id number, used as the key for caching. If not set, use
             the hash of object attributes.
     """
+    uid_counter = 0.0
   ## ------------------------- initialization & IO ------------------------- ##
     def __init__(self, vertices, triangles, **kwargs):
         vertices = vertices.reshape(-1, 2)
@@ -264,7 +265,13 @@ class Mesh:
         self._update_caching_keys(gear=MESH_GEAR_FIXED)
         # used for optimizer
         self.locked = kwargs.get('locked', False) # whether to allow modification
-        self.uid = kwargs.get('uid', 0)   # numbering of the mesh
+        uid = kwargs.get('uid', None)   # numbering of the mesh
+        if uid is None:
+            self.uid = float(Mesh.uid_counter)
+            Mesh.uid_counter += 1
+        else:
+            self.uid = float(uid)
+            Mesh.uid_counter = float(max(Mesh.uid_counter, uid) + 1)
 
 
     @classmethod
@@ -531,7 +538,7 @@ class Mesh:
         return vindx, T
 
 
-    def submesh(self, tri_mask, save_material=True, **kwargs):
+    def submesh(self, tri_mask, save_material=True, append_name=False, **kwargs):
         """
         return a subset of the mesh with tri_mask as the triangle mask.
         """
@@ -551,26 +558,34 @@ class Mesh:
         if ('token' not in kwargs) and ('token' in init_dict):
             # do not copy the token from the parent
             init_dict.pop('token')
-        if ('name' not in kwargs) and ('name' in init_dict):
-            parent_name = init_dict['name']
-            new_name = (parent_name, miscs.hash_numpy_array(tri_mask))
-            init_dict['name'] = new_name
+        if append_name: # append the name with a hash to differentiate from parent
+            if ('name' not in kwargs) and ('name' in init_dict):
+                parent_name = init_dict['name']
+                new_name = (parent_name, miscs.hash_numpy_array(tri_mask))
+                init_dict['name'] = new_name
         return self.__class__(**init_dict)
 
 
-    def divide_connected_mesh(self, save_material=True, **kwargs):
+    def divide_disconnected_mesh(self, save_material=True, **kwargs):
+        """
+        break the mesh into several submeshes based on triangle connectivity.
+        """
         N_conn, T_conn = self.connected_triangles()
         if N_conn == 1:
-            return [self]
+            return [self], [np.arange(self.num_triangles)]
         else:
             lbls = np.unique(T_conn)
             meshes = []
+            tids = []
             uid0 = self.uid
-            uids = uid0 + (np.arange(lbls.size) + 1)/(10**(np.ceil(np.log10(lbls.size + 1))))
+            uids = uid0 + 0.5 * (np.arange(lbls.size) + 1)/(10**(np.ceil(np.log10(lbls.size + 1))))
             for lbl, uid in zip(lbls, uids):
                 mask = T_conn == lbl
                 meshes.append(self.submesh(mask, save_material=save_material, uid=uid, **kwargs))
-            return meshes
+                tid = np.full(self.num_triangles, -1, dtype=self.triangles.dtype)
+                tid[mask] = np.arange(np.sum(mask))
+                tids.append(tid)
+            return meshes, tids
 
 
     @classmethod
@@ -1473,7 +1488,7 @@ class Mesh:
         if isinstance(self._name, str):
             return self._name
         else:
-            return '_'.join(str(s) for s in self._name)
+            return '_sub_'.join(str(s) for s in self._name)
 
 
   ## -------------------------------- query -------------------------------- ##
