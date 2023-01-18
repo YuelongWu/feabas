@@ -110,10 +110,12 @@ class Link:
 
     def reset_mask(self):
         self._residue_weight = np.ones_like(self._weight)
+        self._mask = None
 
 
     def reset_weight(self, weight=1):
         self._weight = np.full_like(self._weight, weight)
+        self._mask = None
 
 
     def xy0(self, gear=MESH_GEAR_MOVING, use_mask=True, combine=True):
