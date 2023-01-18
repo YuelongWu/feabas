@@ -87,6 +87,7 @@ class Link:
         dxy = self.dxy(gear=gear, use_mask=False)
         dis = np.sum(dxy ** 2, axis=-1) ** 0.5
         self._residue_weight = self._weight_func(dis).astype(np.float32)
+        self._mask = None
 
 
     def set_hard_residue_filter(self, residue_len):
