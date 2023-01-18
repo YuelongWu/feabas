@@ -33,7 +33,7 @@ class Link:
         tid0, B0 = mesh0.cart2bary(xy0, gear[0], tid=None)
         indx0 = tid0 >= 0
         if not np.any(indx0):
-            return None
+            return None, None
         elif not np.all(indx0):
             tid0 = tid0[indx0]
             B0 = B0[indx0]
@@ -43,7 +43,7 @@ class Link:
         tid1, B1 = mesh1.cart2bary(xy1, gear[1], tid=None)
         indx1 = tid1 >= 0
         if not np.any(indx1):
-            return None
+            return None, None
         if not np.all(indx1):
             tid0 = tid0[indx1]
             tid1 = tid1[indx1]
@@ -51,7 +51,8 @@ class Link:
             B1 = B1[indx1]
             if 'weight' in kwargs and isinstance(kwargs['weight'], np.ndarray):
                 kwargs['weight'] = kwargs['weight'][indx1]
-        return cls(mesh0, mesh1, tid0, tid1, B0, B1, **kwargs)
+            indx0[indx0] = indx1
+        return cls(mesh0, mesh1, tid0, tid1, B0, B1, **kwargs), indx0
 
 
     def combine_link(self, other):
@@ -319,40 +320,28 @@ class SpringLinkedMeshes:
                     are separated or combined mesh in the system.
 
         """
+        working_gear = kwargs.get('working_gear', MESH_GEAR_INITIAL)
         if link is None:
             return False
         if check_duplicates and (link.name in self.link_names):
             return False
         if check_relevance:
-            if (not self.link_relevant(link)):
+            relevance = self.link_relevant(link)
+            if (not relevance):
                 return False
+            need_reinit = relevance == 2
         else:
             self.links.append(link)
             self.link_names.append(link.name)
             self.link_changed(gc_now=False)
             return True
-        working_gear = kwargs.get('working_gear', MESH_GEAR_INITIAL)
-        mesh_uids = self.mesh_uids
-        need_reinit = False
-        dis0 = np.abs(mesh_uids - link.uids[0])
-        if np.min(dis0) == 0:
-            meshlist0 = [link.meshes[0]]
-        else:
-            issubmesh = dis0 < 0.5
-            meshlist0 = [m for k, m in enumerate(self.meshes) if issubmesh[k]]
-            need_reinit = True
-        dis1 = np.abs(mesh_uids - link.uids[1])
-        if np.min(dis1) == 0:
-            meshlist1 = [link.meshes[1]]
-        else:
-            issubmesh = dis1 < 0.5
-            meshlist1 = [m for k, m in enumerate(self.meshes) if issubmesh[k]]
-            need_reinit = True
         if need_reinit:
+            meshlist0, _ = self.select_mesh_from_uid(link.uids[0])
+            meshlist1, _ = self.select_mesh_from_uid(link.uids[1])
             re_links = SpringLinkedMeshes.reinitialize_link(meshlist0, meshlist1, link, working_gear=working_gear)
             if len(re_links) > 0:
                 self.links.extend(re_links)
-                self.link_names.extend([l.name for l in re_links])
+                self.link_names.extend([lnk.name for lnk in re_links])
                 self.link_changed(gc_now=False)
                 return True
             else:
@@ -377,12 +366,44 @@ class SpringLinkedMeshes:
         mesh_uids = self.mesh_uids
         link_uids = link.uids
         for lid in link_uids:
-            dis = np.min(np.abs(mesh_uids - lid))
-            if  dis > 0.5:
+            sel_mesh, exact = self.select_mesh_from_uid(lid)
+            if len(sel_mesh) == 0:
                 return 0
-            elif dis > 0:
+            elif not exact:
                 return 2
         return 1
+
+
+    def select_mesh_from_uid(self, uid):
+        """
+        given an uid of a mesh, return all the meshes in the system that have
+        that uid. Also return a flag indicating whether the uid is exactly the
+        same, or just within 0.5 distance (meaning it's a submesh)
+        """
+        if self.num_meshes == 0:
+            return [], False
+        uid = float(uid)
+        mesh_uids = self.mesh_uids
+        dis = np.abs(mesh_uids - uid)
+        if np.min(dis) == 0:
+            # the exact mesh found
+            indx = np.nonzero(dis == 0)[0][0]
+            return [self.meshes[indx]], True
+        elif uid.is_integer():
+            # probing uid is a complete mesh, but the corresponding mesh inside
+            #   the system is subdivided already 
+            indx = np.nonzero(dis < 0.5)[0]
+            return [self.meshes[s] for s in indx], False
+        else:
+            # probing uid is a submesh. only return if the mesh in the system is
+            #   a complete mesh or exact the same (as in the first condition)
+            uid_r = np.floor(uid)
+            dis_r = np.abs(mesh_uids - uid_r)
+            if np.min(dis_r) == 0:
+                indx = np.nonzero(dis_r == 0)[0][0]
+                return [self.meshes[indx]], False
+            else:
+                return [], False
 
 
     @property
@@ -390,6 +411,16 @@ class SpringLinkedMeshes:
         if (not hasattr(self, '_link_names')) or (not bool(self._link_names)):
             self._link_names = [l.name for l in self._links]
         return self._link_names
+
+
+    @property
+    def num_meshes(self):
+        return len(self.meshes)
+
+
+    @property
+    def num_links(self):
+        return len(self.links)
 
 
     @property
@@ -408,7 +439,10 @@ class SpringLinkedMeshes:
         out_links = []
         for m0 in mesh0_list:
             for m1 in mesh1_list:
-                lnk = Link.from_coordinates(m0, m1, xy0, xy1, gear=(working_gear, working_gear), weight=weight, name=name)
+                lnk, mask = Link.from_coordinates(m0, m1, xy0, xy1, gear=(working_gear, working_gear), weight=weight, name=name)
                 if lnk is not None:
                     out_links.append(lnk)
+                xy0 = xy0[~mask]
+                xy1 = xy1[~mask]
+                weight = weight[~mask]
         return out_links
