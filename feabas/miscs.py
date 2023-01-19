@@ -6,6 +6,20 @@ import numpy as np
 from scipy import sparse
 import scipy.sparse.csgraph as csgraph
 
+
+def find_elements_in_array(array, elements, tol=0):
+    # if find elements in array, return indices, otherwise return -1
+    shp = elements.shape
+    array = array.ravel()
+    elements = elements.ravel()
+    sorter = array.argsort()
+    idx = np.searchsorted(array, elements, sorter=sorter)
+    idx = sorter[idx.clip(0, array.size-1)]
+    neq = np.absolute(array[idx] - elements) > tol
+    idx[neq] = -1
+    return idx.reshape(shp)
+
+
 def numpy_to_str_ascii(ar):
     t = ar.clip(0,255).astype(np.uint8).ravel()
     return t.tostring().decode('ascii')

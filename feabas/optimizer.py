@@ -1,7 +1,8 @@
 import gc
 import numpy as np
+from scipy import sparse
 
-from feabas import spatial
+from feabas import spatial, miscs
 from feabas.constant import *
 
 
@@ -307,15 +308,26 @@ class SpringLinkedMeshes:
 
 
     def link_changed(self, gc_now=False):
-        NotImplemented
+        self._linkage_adjacency = None
         if gc_now:
             gc.collect()
 
 
     def mesh_changed(self, gc_now=False):
-        NotImplemented
         if gc_now:
             gc.collect()
+
+
+    def add_meshes(self, meshes):
+        if not bool(meshes):
+            return
+        if isinstance(meshes, (tuple, list)):
+            self.meshes.extend(meshes)
+            self._mesh_uids = np.append(self.mesh_uids, [m.uid for m in meshes])
+        else:
+            self.meshes.append(meshes)
+            self._mesh_uids = np.append(self.mesh_uids, meshes.uid)
+        self.mesh_changed()
 
 
     def add_link(self, link, check_relevance=True, check_duplicates=True, **kwargs):
@@ -348,6 +360,7 @@ class SpringLinkedMeshes:
         else:
             self.links.append(link)
             self.link_names.append(link.name)
+            self._link_uids = np.append(self.link_uids, [link.uids], axis=0)
             self.link_changed(gc_now=False)
             return True
         if need_reinit:
@@ -358,6 +371,7 @@ class SpringLinkedMeshes:
             if len(re_links) > 0:
                 self.links.extend(re_links)
                 self.link_names.extend([lnk.name for lnk in re_links])
+                self._link_uids = np.append(self.link_uids, [lnk.uids for lnk in re_links], axis=0)
                 self.link_changed(gc_now=False)
                 return True
             else:
@@ -365,6 +379,7 @@ class SpringLinkedMeshes:
         else:
             self.links.append(link)
             self.link_names.append(link.name)
+            self._link_uids = np.append(self.link_uids, [link.uids], axis=0)
             self.link_changed(gc_now=False)
             return True
 
@@ -444,8 +459,23 @@ class SpringLinkedMeshes:
                 new_links.extend(dlinks)
         self.links = new_links
         self._link_names = []
+        self._link_uids = None
         self.link_changed(gc_now=False)
         return modified
+
+
+    def remove_disconnected_meshes(self):
+        """
+        remove meshes that are not connected to an unlocked mesh by links.
+        """
+        A = self.linkage_adjacency()
+        moving = ~self.lock_flags
+        to_keep = (A.dot(moving) > 0) | moving
+        if not np.all(to_keep):
+            self.meshes = [m for flag, m in zip(to_keep, self.meshes) if flag]
+            self._mesh_uids = self.mesh_uids[to_keep]
+            self._linkage_adjacency = None
+            self.mesh_changed()
 
 
     def select_mesh_from_uid(self, uid):
@@ -496,12 +526,65 @@ class SpringLinkedMeshes:
                 self.prune_links(**kwargs)
         return modified
 
-
+  ## -------------------------- cached properties -------------------------- ##
     @property
     def link_names(self):
         if (not hasattr(self, '_link_names')) or (not bool(self._link_names)):
             self._link_names = [l.name for l in self._links]
         return self._link_names
+
+
+    @property
+    def link_uids(self):
+        if (not hasattr(self, '_link_uids')) or (self._link_uids is None):
+            if self.num_links == 0:
+                self._link_uids = np.empty((0,2))
+            else:
+                self._link_uids = np.array([lnk.uids for lnk in self.links])
+        return self._link_uids
+
+
+    @property
+    def mesh_uids(self):
+        if (not hasattr(self, '_mesh_uids') or self._mesh_uids is None):
+            self._mesh_uids = np.array([m.uid for m in self.meshes])
+        return self._mesh_uids
+
+
+    def linkage_adjacency(self, directional=False):
+        """
+        Adjacency matrix for the meshes in the system, where meshes with links
+        is considered connected.
+        """
+        if (not hasattr(self, '_linkage_adjacency')) or (self._linkage_adjacency is None):
+            edges = miscs.find_elements_in_array(self.mesh_uids, self.link_uids)
+            num_matches = np.array([lnk.num_matches for lnk in self.links])
+            indx = np.all(edges>=0, axis=-1, keepdims=False)
+            if not np.all(indx):
+                edges = edges[indx]
+                num_matches = num_matches[indx]
+            A = sparse.csr_matrix((num_matches, (edges[:,0], edges[:,1])), shape=(self.num_meshes, self.num_meshes))
+            if not directional:
+                A = A + A.transpose()
+            A.eliminate_zeros()
+            self._linkage_adjacency = A
+        return self._linkage_adjacency
+
+
+    @property
+    def lock_flags(self):
+        return np.array([m.locked for m in self.meshes])
+
+
+    @lock_flags.setter
+    def lock_flags(self, flags):
+        old_flags = self.lock_flags
+        assert old_flags.size == flags.size
+        changed = np.nonzero(old_flags != flags)[0]
+        if changed.size> 0:
+            for indx in changed:
+                self.meshes[indx].locked = not self.meshes[indx].locked
+            self.mesh_changed()
 
 
     @property
@@ -512,13 +595,6 @@ class SpringLinkedMeshes:
     @property
     def num_links(self):
         return len(self.links)
-
-
-    @property
-    def mesh_uids(self):
-        if (not hasattr(self, '_mesh_uids') or self._mesh_uids is None):
-            self._mesh_uids = np.array([m.uid for m in self.meshes])
-        return self._mesh_uids
 
 
     @staticmethod

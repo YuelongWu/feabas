@@ -1487,6 +1487,9 @@ class Mesh:
             return '_sub_'.join(str(s) for s in self._name)
 
 
+    def __bool__(self):
+        return self.num_triangles > 0
+
   ## -------------------------------- query -------------------------------- ##
     def tri_finder(self, pts, gear=None, tri_mask=None, include_flipped=False, mode=MESH_TRIFINDER_LEAST_DEFORM, contigeous=True, extrapolate=True):
         """
