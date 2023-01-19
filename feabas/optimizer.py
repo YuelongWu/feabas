@@ -9,10 +9,13 @@ class Link:
     """
     class to represent the corresponding points between two meshes.
     """
-    def __init__(self, mesh0, mesh1, tid0, tid1, B0, B1, **kwargs):
-        weight = kwargs.get('weight', None)
-        self.name = kwargs.get('name', '')
+    def __init__(self, mesh0, mesh1, tid0, tid1, B0, B1, weight=None, **kwargs):
+        name = kwargs.get('name',  None)
         self.uids = [mesh0.uid, mesh1.uid]
+        if name is None:
+            self.name = self.default_name
+        else:
+            self.name = name
         self.meshes = [mesh0, mesh1]
         self._tid0 = tid0
         self._B0 = B0
@@ -29,7 +32,10 @@ class Link:
 
 
     @classmethod
-    def from_coordinates(cls, mesh0, mesh1, xy0, xy1, gear=(MESH_GEAR_INITIAL, MESH_GEAR_INITIAL), **kwargs):
+    def from_coordinates(cls, mesh0, mesh1, xy0, xy1,
+                         gear=(MESH_GEAR_INITIAL, MESH_GEAR_INITIAL),
+                         weight=None,
+                         **kwargs):
         tid0, B0 = mesh0.cart2bary(xy0, gear[0], tid=None)
         indx0 = tid0 >= 0
         if not np.any(indx0):
@@ -38,8 +44,8 @@ class Link:
             tid0 = tid0[indx0]
             B0 = B0[indx0]
             xy1 = xy1[indx0]
-            if 'weight' in kwargs and isinstance(kwargs['weight'], np.ndarray):
-                kwargs['weight'] = kwargs['weight'][indx0]
+            if isinstance(weight, np.ndarray):
+                weight = weight[indx0]
         tid1, B1 = mesh1.cart2bary(xy1, gear[1], tid=None)
         indx1 = tid1 >= 0
         if not np.any(indx1):
@@ -49,8 +55,8 @@ class Link:
             tid1 = tid1[indx1]
             B0 = B0[indx1]
             B1 = B1[indx1]
-            if 'weight' in kwargs and isinstance(kwargs['weight'], np.ndarray):
-                kwargs['weight'] = kwargs['weight'][indx1]
+            if isinstance(weight, np.ndarray):
+                weight = weight[indx1]
             indx0[indx0] = indx1
         return cls(mesh0, mesh1, tid0, tid1, B0, B1, **kwargs), indx0
 
@@ -81,11 +87,11 @@ class Link:
 
     def equation_contrib(self, index_offsets, **kwargs):
         """computing the contribution needed to add to the FEM assembled matrix."""
-        if not self.relevant:
+        if (not self.relevant) or (self.num_matches == 0):
             return None, None, None, None
         start_gear = kwargs.get('start_gear', MESH_GEAR_MOVING)
         targt_gear = kwargs.get('target_gear', MESH_GEAR_MOVING)
-        num_matches = self.num_matches[-1]
+        num_matches = self.num_matches
         gears = [targt_gear if m.locked else start_gear for m in self.meshes]
         m_rht = self.dxy(gear=gears, use_mask=True)
         L_b = []  # barycentric coordinate matrices
@@ -128,6 +134,10 @@ class Link:
         dis = np.sum(dxy ** 2, axis=-1) ** 0.5
         self._residue_weight = self._weight_func(dis).astype(np.float32)
         self._mask = None
+
+
+    def duplicate_weight_func(self, other):
+        self._weight_func = other._weight_func
 
 
     def set_hard_residue_filter(self, residue_len):
@@ -252,6 +262,13 @@ class Link:
             return self._weight * self._residue_weight
 
 
+
+    @property
+    def default_name(self):
+        return '_'.join(str(s) for s in self.uids)
+
+
+
     @property
     def locked(self):
         return [self.meshes[0].locked, self.meshes[1].locked]
@@ -259,18 +276,15 @@ class Link:
 
     @property
     def relevant(self):
-        if self._disabled or np.all(self.locked):
-            return False
-        else:
-            return np.sum(self.mask) > 0
+        return not (self._disabled or np.all(self.locked))
 
 
     @property
     def num_matches(self):
         if self._disabled:
-            return (self._weight.size, 0)
+            return 0
         else:
-            return (self._weight.size, np.sum(self.mask))
+            return np.sum(self.mask)
 
 
     @property
@@ -321,6 +335,7 @@ class SpringLinkedMeshes:
 
         """
         working_gear = kwargs.get('working_gear', MESH_GEAR_INITIAL)
+        submesh_exclusive = kwargs.get('submesh_exclusive', True)
         if link is None:
             return False
         if check_duplicates and (link.name in self.link_names):
@@ -338,7 +353,8 @@ class SpringLinkedMeshes:
         if need_reinit:
             meshlist0, _ = self.select_mesh_from_uid(link.uids[0])
             meshlist1, _ = self.select_mesh_from_uid(link.uids[1])
-            re_links = SpringLinkedMeshes.reinitialize_link(meshlist0, meshlist1, link, working_gear=working_gear)
+            re_links = SpringLinkedMeshes.distribute_link(meshlist0, meshlist1,
+                link, working_gear=working_gear, exclusive=submesh_exclusive)
             if len(re_links) > 0:
                 self.links.extend(re_links)
                 self.link_names.extend([lnk.name for lnk in re_links])
@@ -353,6 +369,36 @@ class SpringLinkedMeshes:
             return True
 
 
+    def add_link_from_coordinates(self, uid0, uid1, xy0, xy1,
+                                  gear=(MESH_GEAR_INITIAL, MESH_GEAR_INITIAL),
+                                  weight=None, submesh_exclusive=True,
+                                  check_duplicates=True,
+                                  **kwargs):
+        link_added = False
+        if check_duplicates:
+            if ('name' in kwargs) and (kwargs['name'] in self.link_names):
+                return link_added
+        mesh0_list, _ = self.select_mesh_from_uid(uid0)
+        if len(mesh0_list) == 0:
+            return link_added
+        mesh1_list, _ = self.select_mesh_from_uid(uid1)
+        if len(mesh1_list) == 0:
+            return link_added
+        for m0 in mesh0_list:
+            for m1 in mesh1_list:
+                link, mask = Link.from_coordinates(m0, m1, xy0, xy1, gear=gear, weight=weight, **kwargs)
+                if link is None:
+                    continue
+                self.add_link(link, check_relevance=False, check_duplicates=False)
+                link_added = True
+                if submesh_exclusive:
+                    xy0 = xy0[~mask]
+                    xy1 = xy1[~mask]
+                    if isinstance(weight, np.ndarray):
+                        weight = weight[~mask]
+        return link_added
+
+
     def link_relevant(self, link):
         """
         check if a link is useful for optimization.
@@ -363,7 +409,6 @@ class SpringLinkedMeshes:
             return 0
         if not link.relevant:
             return 0
-        mesh_uids = self.mesh_uids
         link_uids = link.uids
         for lid in link_uids:
             sel_mesh, exact = self.select_mesh_from_uid(lid)
@@ -372,6 +417,35 @@ class SpringLinkedMeshes:
             elif not exact:
                 return 2
         return 1
+
+
+    def prune_links(self, *kwargs):
+        """
+        prune links so that irrelevant links are removed and links associated
+        with separated/combined meshes are updated.
+        """
+        modified = False
+        relevance = np.array([self.link_relevant(lnk) for lnk in self.links])
+        if np.all(relevance == 1):
+            return modified
+        else:
+            modified = True
+        new_links = []
+        working_gear = kwargs.get('working_gear', MESH_GEAR_INITIAL)
+        submesh_exclusive = kwargs.get('submesh_exclusive', True)
+        for lnk, flag in zip(self.links, relevance):
+            if flag == 1:
+                new_links.append(lnk)
+            elif flag == 2:
+                m0_list = self.select_mesh_from_uid(lnk.uids[0])
+                m1_list = self.select_mesh_from_uid(lnk.uids[1])
+                dlinks = SpringLinkedMeshes.distribute_link(m0_list, m1_list, lnk,
+                    working_gear=working_gear, exclusive=submesh_exclusive)
+                new_links.extend(dlinks)
+        self.links = new_links
+        self._link_names = []
+        self.link_changed(gc_now=True)
+        return modified
 
 
     def select_mesh_from_uid(self, uid):
@@ -391,7 +465,7 @@ class SpringLinkedMeshes:
             return [self.meshes[indx]], True
         elif uid.is_integer():
             # probing uid is a complete mesh, but the corresponding mesh inside
-            #   the system is subdivided already 
+            #   the system is subdivided already
             indx = np.nonzero(dis < 0.5)[0]
             return [self.meshes[s] for s in indx], False
         else:
@@ -431,18 +505,24 @@ class SpringLinkedMeshes:
 
 
     @staticmethod
-    def reinitialize_link(mesh0_list, mesh1_list, link, working_gear=MESH_GEAR_INITIAL):
+    def distribute_link(mesh0_list, mesh1_list, link, working_gear=MESH_GEAR_INITIAL, exclusive=True):
+        """ distribute a single links to accommodate separated meshes. """
         xy0 = link.xy0(gear=working_gear, use_mask=False, combine=True)
         xy1 = link.xy1(gear=working_gear, use_mask=False, combine=True)
         weight = link._weight
-        name = link._name
+        if link._name == link.default_name:
+            name = None
+        else:
+            name = link._name
         out_links = []
         for m0 in mesh0_list:
             for m1 in mesh1_list:
                 lnk, mask = Link.from_coordinates(m0, m1, xy0, xy1, gear=(working_gear, working_gear), weight=weight, name=name)
+                lnk.duplicate_weight_func(link)
                 if lnk is not None:
                     out_links.append(lnk)
-                xy0 = xy0[~mask]
-                xy1 = xy1[~mask]
-                weight = weight[~mask]
+                if exclusive:
+                    xy0 = xy0[~mask]
+                    xy1 = xy1[~mask]
+                    weight = weight[~mask]
         return out_links
