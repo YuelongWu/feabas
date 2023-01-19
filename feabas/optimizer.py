@@ -444,7 +444,7 @@ class SpringLinkedMeshes:
                 new_links.extend(dlinks)
         self.links = new_links
         self._link_names = []
-        self.link_changed(gc_now=True)
+        self.link_changed(gc_now=False)
         return modified
 
 
@@ -478,6 +478,23 @@ class SpringLinkedMeshes:
                 return [self.meshes[indx]], False
             else:
                 return [], False
+
+
+    def divide_disconnected_submeshes(self, prune_links=True, **kwargs):
+        modified = False
+        new_meshes = []
+        for m in self.meshes:
+            dm = m.divide_disconnected_mesh()
+            new_meshes.extend(dm)
+            if len(dm) > 1:
+                modified = True
+        if modified:
+            self.meshes = new_meshes
+            self._mesh_uids = None
+            self.mesh_changed()
+            if prune_links:
+                self.prune_links(**kwargs)
+        return modified
 
 
     @property

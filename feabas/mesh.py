@@ -572,20 +572,16 @@ class Mesh:
         """
         N_conn, T_conn = self.connected_triangles()
         if N_conn == 1:
-            return [self], [np.arange(self.num_triangles)]
+            return [self]
         else:
             lbls = np.unique(T_conn)
             meshes = []
-            tids = []
             uid0 = self.uid
             uids = uid0 + 0.5 * (np.arange(lbls.size) + 1)/(10**(np.ceil(np.log10(lbls.size + 1))))
             for lbl, uid in zip(lbls, uids):
                 mask = T_conn == lbl
                 meshes.append(self.submesh(mask, save_material=save_material, uid=uid, **kwargs))
-                tid = np.full(self.num_triangles, -1, dtype=self.triangles.dtype)
-                tid[mask] = np.arange(np.sum(mask))
-                tids.append(tid)
-            return meshes, tids
+            return meshes
 
 
     @classmethod
