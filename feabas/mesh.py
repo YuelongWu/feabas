@@ -1491,15 +1491,20 @@ class Mesh:
         return self.num_triangles > 0
 
   ## -------------------------------- query -------------------------------- ##
-    def tri_finder(self, pts, gear=None, tri_mask=None, include_flipped=False, mode=MESH_TRIFINDER_LEAST_DEFORM, contigeous=True, extrapolate=True):
+    def tri_finder(self, pts, gear=None, tri_mask=None, **kwargs):
         """
         given a set of points, find which triangles they are in.
         Args:
             pts (N x 2 ndarray): x-y coordinates of querry points
         """
+        include_flipped = kwargs.get('inner_cache', False)
+        mode = kwargs.get('mode', MESH_TRIFINDER_LEAST_DEFORM)
+        contigeous = kwargs.get('contigeous', True)
+        extrapolate = kwargs.get('extrapolate', False)
+        inner_cache = kwargs.get('inner_cache', None)
         if gear is None:
             gear = self._current_gear
-        tri_info = self.tri_info(gear=gear, tri_mask=tri_mask, include_flipped=include_flipped, contigeous=contigeous)
+        tri_info = self.tri_info(gear=gear, tri_mask=tri_mask, include_flipped=include_flipped, contigeous=contigeous, cache=inner_cache)
         tree = tri_info['region_tree']
         mattri_list = tri_info['matplotlib_tri']
         index_list = tri_info['triangle_index']
@@ -1575,10 +1580,10 @@ class Mesh:
         return tid_out
 
 
-    def cart2bary(self, xy, gear, tid=None):
+    def cart2bary(self, xy, gear, tid=None, **kwargs):
         """Cartesian to Barycentric coordinates"""
         if tid is None:
-            tid = self.tri_finder(xy, gear=gear)
+            tid = self.tri_finder(xy, gear=gear, **kwargs)
         vertices = self.vertices(gear=gear)
         tri_pt = vertices[np.atleast_2d(self.triangles[tid,:])]
         tri_pt_m = tri_pt.mean(axis=1, keepdims=True)

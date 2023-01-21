@@ -1,3 +1,4 @@
+from collections import defaultdict
 import gc
 import numpy as np
 from scipy import sparse
@@ -37,7 +38,7 @@ class Link:
                          gear=(MESH_GEAR_INITIAL, MESH_GEAR_INITIAL),
                          weight=None,
                          **kwargs):
-        tid0, B0 = mesh0.cart2bary(xy0, gear[0], tid=None)
+        tid0, B0 = mesh0.cart2bary(xy0, gear[0], tid=None, **kwargs)
         indx0 = tid0 >= 0
         if not np.any(indx0):
             return None, None
@@ -47,7 +48,7 @@ class Link:
             xy1 = xy1[indx0]
             if isinstance(weight, np.ndarray):
                 weight = weight[indx0]
-        tid1, B1 = mesh1.cart2bary(xy1, gear[1], tid=None)
+        tid1, B1 = mesh1.cart2bary(xy1, gear[1], tid=None, **kwargs)
         indx1 = tid1 >= 0
         if not np.any(indx1):
             return None, None
@@ -88,7 +89,7 @@ class Link:
 
     def equation_contrib(self, index_offsets, **kwargs):
         """computing the contribution needed to add to the FEM assembled matrix."""
-        if (not self.relevant) or (self.num_matches == 0):
+        if (not self.relevant) or (self.num_matches == 0) or (index_offsets[0] < 0) or (index_offsets[1] < 0):
             return None, None, None, None
         start_gear = kwargs.get('start_gear', MESH_GEAR_MOVING)
         targt_gear = kwargs.get('target_gear', MESH_GEAR_MOVING)
@@ -124,7 +125,7 @@ class Link:
         # right-hand side
         indx_rht = np.concatenate((indx.ravel(), indx.ravel()+1))
         V_rht = np.concatenate((rht_x.ravel(), rht_y.ravel()))
-        return  V_lft, (indx0_lft, indx1_lft), V_rht, indx_rht
+        return V_lft, (indx0_lft, indx1_lft), V_rht, indx_rht
 
 
     def adjust_weight_from_residue(self, gear=(MESH_GEAR_MOVING, MESH_GEAR_MOVING)):
@@ -305,15 +306,28 @@ class SpringLinkedMeshes:
         self.links = links
         self._stiffness_lambda = kwargs.get('stiffness_lambda', 1.0)
         self._crosslink_lambda = kwargs.get('crosslink_lambda', 1.0)
+        self._shared_cache = kwargs.get('shared_cache', None)
 
 
     def link_changed(self, gc_now=False):
+        """
+        flag the link list has changed.
+        """
+        self._link_uids = None
         self._linkage_adjacency = None
         if gc_now:
             gc.collect()
 
 
     def mesh_changed(self, gc_now=False):
+        """
+        flag the mesh list has changed. Note that only changing vertices is not
+        considered mesh change, and the governing equation changes due to vertex
+        movement need to be updated manually.
+        """
+        self._mesh_uids = None
+        self._linkage_adjacency = None
+        self._stiffness_matrix = None
         if gc_now:
             gc.collect()
 
@@ -323,10 +337,8 @@ class SpringLinkedMeshes:
             return
         if isinstance(meshes, (tuple, list)):
             self.meshes.extend(meshes)
-            self._mesh_uids = np.append(self.mesh_uids, [m.uid for m in meshes])
         else:
             self.meshes.append(meshes)
-            self._mesh_uids = np.append(self.mesh_uids, meshes.uid)
         self.mesh_changed()
 
 
@@ -360,27 +372,25 @@ class SpringLinkedMeshes:
         else:
             self.links.append(link)
             self.link_names.append(link.name)
-            self._link_uids = np.append(self.link_uids, [link.uids], axis=0)
-            self.link_changed(gc_now=False)
+            self.link_changed()
             return True
         if need_reinit:
             meshlist0, _ = self.select_mesh_from_uid(link.uids[0])
             meshlist1, _ = self.select_mesh_from_uid(link.uids[1])
             re_links = SpringLinkedMeshes.distribute_link(meshlist0, meshlist1,
-                link, working_gear=working_gear, exclusive=submesh_exclusive)
+                link, working_gear=working_gear, exclusive=submesh_exclusive,
+                inner_cache=self._shared_cache)
             if len(re_links) > 0:
                 self.links.extend(re_links)
                 self.link_names.extend([lnk.name for lnk in re_links])
-                self._link_uids = np.append(self.link_uids, [lnk.uids for lnk in re_links], axis=0)
-                self.link_changed(gc_now=False)
+                self.link_changed()
                 return True
             else:
                 return False
         else:
             self.links.append(link)
             self.link_names.append(link.name)
-            self._link_uids = np.append(self.link_uids, [link.uids], axis=0)
-            self.link_changed(gc_now=False)
+            self.link_changed()
             return True
 
 
@@ -455,12 +465,12 @@ class SpringLinkedMeshes:
                 m0_list = self.select_mesh_from_uid(lnk.uids[0])
                 m1_list = self.select_mesh_from_uid(lnk.uids[1])
                 dlinks = SpringLinkedMeshes.distribute_link(m0_list, m1_list, lnk,
-                    working_gear=working_gear, exclusive=submesh_exclusive)
+                    working_gear=working_gear, exclusive=submesh_exclusive,
+                    inner_cache=self._shared_cache)
                 new_links.extend(dlinks)
         self.links = new_links
         self._link_names = []
-        self._link_uids = None
-        self.link_changed(gc_now=False)
+        self.link_changed()
         return modified
 
 
@@ -473,8 +483,6 @@ class SpringLinkedMeshes:
         to_keep = (A.dot(moving) > 0) | moving
         if not np.all(to_keep):
             self.meshes = [m for flag, m in zip(to_keep, self.meshes) if flag]
-            self._mesh_uids = self.mesh_uids[to_keep]
-            self._linkage_adjacency = None
             self.mesh_changed()
 
 
@@ -520,13 +528,102 @@ class SpringLinkedMeshes:
                 modified = True
         if modified:
             self.meshes = new_meshes
-            self._mesh_uids = None
+
             self.mesh_changed()
             if prune_links:
                 self.prune_links(**kwargs)
         return modified
 
-  ## -------------------------- cached properties -------------------------- ##
+
+    def stiffness_matrix(self,  gear=(MESH_GEAR_FIXED, MESH_GEAR_MOVING), **kwargs):
+        """
+        system stiffness matrix and current stress.
+        Kwargs:
+            gear(tuple): first item used for shape matrices, second gear for stress
+                computation (and stiffness if nonlinear).
+            continue_on_flip: whether to exit when a flipped triangle is detected.
+        """
+        if (not hasattr(self, '_stiffness_matrix')) or (self._stiffness_matrix is None):
+            STIFF_M = []
+            STRESS_v = []
+            for m in self.meshes:
+                if m.locked:
+                    continue
+                stiff, stress = m.stiffness_matrix(gear=gear, inner_cache=self._shared_cache, **kwargs)
+                if stiff is None:
+                    return None, None
+                STIFF_M.append(stiff)
+                STRESS_v.append(stress)
+            stiffness_matrix = sparse.block_diag(STIFF_M, format='csr')
+            stress_vector = np.concatenate(STRESS_v, axis=None)
+            self._stiffness_matrix = (stiffness_matrix, stress_vector)
+        return self._stiffness_matrix
+
+
+    def crosslink_terms(self, **kwargs):
+        """
+        compute the terms associated with the links in the assembled equation.
+        Kwargs:
+            start_gear: gear that associated with the vertices before applying
+                the displacement
+            target_gear: gear that associated with the vertices at the final
+                postions for locked meshes.
+            batch_num_matches: the accumulated number of matches to scan before
+                constructing the incremental sparse matrices. Larger number
+                needs more RAM but faster
+        """
+        if (not hasattr(self, '_crosslink_terms')) or (self._crosslink_terms is None):
+            start_gear = kwargs.get('start_gear', MESH_GEAR_MOVING)
+            targt_gear = kwargs.get('target_gear', MESH_GEAR_MOVING)
+            batch_num_matches = kwargs.get('batch_num_matches', self.num_matches / 10)
+            dof = self.degree_of_freedom
+            Cs_lft = sparse.csr_matrix((dof, dof), dtype=np.float32)
+            Cs_rht = np.zeros(dof, dtype=np.float32)
+            V_lft_a = []
+            I_lft0_a = []
+            I_lft1_a = []
+            index_offsets_mapper = self.index_offsets
+            num_match = 0
+            for lnk in self.links:
+                indx_offst = [index_offsets_mapper[uid] for uid in lnk.uids]
+                v_lft, indices_lft, v_rht, indx_rht = lnk.equation_contrib(indx_offst,
+                    start_gear=start_gear, target_gear=targt_gear)
+                if v_lft is None:
+                    continue
+                V_lft_a.append(v_lft)
+                I_lft0_a.append(indices_lft[0])
+                I_lft1_a.append(indices_lft[1])
+                num_match += lnk.num_matches
+                if num_match > batch_num_matches:
+                    Cs_lft0 = sparse.csr_matrix((np.concatenate(V_lft_a), (np.concatenate(I_lft0_a), np.concatenate(I_lft1_a))),
+                        shape=(dof, dof), dtype=np.float32)
+                    Cs_lft += Cs_lft0
+                    V_lft_a = []
+                    I_lft0_a = []
+                    I_lft1_a = []
+                    num_match = 0
+                np.add.at(Cs_rht, indx_rht, v_rht)
+            if num_match > 0:
+                Cs_lft0 = sparse.csr_matrix((np.concatenate(V_lft_a), (np.concatenate(I_lft0_a), np.concatenate(I_lft1_a))),
+                    shape=(dof, dof), dtype=np.float32)
+                Cs_lft += Cs_lft0
+            self._crosslink_terms = (Cs_lft, Cs_rht)
+        return self._crosslink_terms
+
+
+    @property
+    def index_offsets(self):
+        vnum = [m.num_vertices * 2 for m in self.meshes]
+        activated_indx = ~self.lock_flags
+        vnum = vnum * (activated_indx)
+        vnum_accum = np.cumsum(vnum)
+        index_offsets = np.concatenate(([0], vnum_accum[:-1]))
+        index_offsets[~activated_indx] = -1
+        index_offsets_mapper = defaultdict(lambda:-1)
+        index_offsets_mapper.update({uid: offset for uid, offset in zip(self.mesh_uids, index_offsets)})
+        return index_offsets_mapper
+
+
     @property
     def link_names(self):
         if (not hasattr(self, '_link_names')) or (not bool(self._link_names)):
@@ -597,8 +694,20 @@ class SpringLinkedMeshes:
         return len(self.links)
 
 
+    @property
+    def degree_of_freedom(self):
+        vnum = [m.num_vertices * (1 - m.locked) for m in self.meshes]
+        return 2 * np.sum(vnum)
+
+
+    @property
+    def num_matches(self):
+        return np.sum([lnk.num_matches] for lnk in self.links)
+
+
     @staticmethod
-    def distribute_link(mesh0_list, mesh1_list, link, working_gear=MESH_GEAR_INITIAL, exclusive=True):
+    def distribute_link(mesh0_list, mesh1_list, link, exclusive=True,
+                        working_gear=MESH_GEAR_INITIAL, **kwargs):
         """ distribute a single links to accommodate separated meshes. """
         xy0 = link.xy0(gear=working_gear, use_mask=False, combine=True)
         xy1 = link.xy1(gear=working_gear, use_mask=False, combine=True)
@@ -610,7 +719,8 @@ class SpringLinkedMeshes:
         out_links = []
         for m0 in mesh0_list:
             for m1 in mesh1_list:
-                lnk, mask = Link.from_coordinates(m0, m1, xy0, xy1, gear=(working_gear, working_gear), weight=weight, name=name)
+                lnk, mask = Link.from_coordinates(m0, m1, xy0, xy1, gear=(working_gear, working_gear),
+                    weight=weight, name=name, **kwargs)
                 lnk.duplicate_weight_func(link)
                 if lnk is not None:
                     out_links.append(lnk)

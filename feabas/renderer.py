@@ -105,8 +105,9 @@ class MeshRenderer:
         include_flipped = kwargs.get('include_flipped', False)
         weight_params = kwargs.get('weight_params', MESH_TRIFINDER_INNERMOST)
         fillval = kwargs.get('fillval', None)
+        local_cache = kwargs.cache('cache', False)
         render_mask = srcmesh.triangle_mask_for_render()
-        tri_info = srcmesh.tri_info(gear=gear[0], tri_mask=render_mask, include_flipped=include_flipped)
+        tri_info = srcmesh.tri_info(gear=gear[0], tri_mask=render_mask, include_flipped=include_flipped, cache=local_cache)
         offset0 = srcmesh.offset(gear=gear[0])
         region_tree = tri_info['region_tree']
         mattri_list = tri_info['matplotlib_tri']
