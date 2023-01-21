@@ -130,12 +130,21 @@ class Link:
 
     def adjust_weight_from_residue(self, gear=(MESH_GEAR_MOVING, MESH_GEAR_MOVING)):
         """adjust residue_weight to define nonlinear behaviour of the link."""
+        weight_modified = False
+        connection_modified = False
         if self._weight_func is None:
-            return
+            return weight_modified, connection_modified
+        previous_weight = self._residue_weight
+        previous_connection = self.num_matches > 0
         dxy = self.dxy(gear=gear, use_mask=False)
         dis = np.sum(dxy ** 2, axis=-1) ** 0.5
-        self._residue_weight = self._weight_func(dis).astype(np.float32)
-        self._mask = None
+        residue_weight = self._weight_func(dis).astype(np.float32)
+        if np.any(residue_weight != previous_weight):
+            self._residue_weight = residue_weight
+            weight_modified = True
+            self._mask = None
+            connection_modified = (self.num_matches > 0) != previous_connection
+        return weight_modified, connection_modified
 
 
     def duplicate_weight_func(self, other):
@@ -301,37 +310,56 @@ class SpringLinkedMeshes:
     """
     A spring connected mesh system used for optimization.
     """
+  ## --------------------------- initialization  --------------------------- ##
     def __init__(self, meshes, links=[], **kwargs):
         self.meshes = meshes
         self.links = links
         self._stiffness_lambda = kwargs.get('stiffness_lambda', 1.0)
         self._crosslink_lambda = kwargs.get('crosslink_lambda', 1.0)
         self._shared_cache = kwargs.get('shared_cache', None)
+        self.clear_cached_attr()
+
+
+    def clear_cached_attr(self, gc_now=False):
+        self._mesh_uids = None
+        self._link_uids = None
+        self._link_names = []
+        self._linkage_adjacency = None
+        self._connected_subsystems = None
+        self._stiffness_matrix = None
+        self._crosslink_terms = None
+        if gc_now:
+            gc.collect()
 
 
     def link_changed(self, gc_now=False):
         """
-        flag the link list has changed.
+        flag the link list has changed that will affect the system connectivity
+        graph. Note that only changing weight is not considered link change.
         """
         self._link_uids = None
         self._linkage_adjacency = None
+        self._connected_subsystems = None
+        self._crosslink_terms = None
         if gc_now:
             gc.collect()
 
 
     def mesh_changed(self, gc_now=False):
         """
-        flag the mesh list has changed. Note that only changing vertices is not
-        considered mesh change, and the governing equation changes due to vertex
-        movement need to be updated manually.
+        flag the mesh list has changed that will affect the system connectivity
+        graph. Note that only changing vertices is not considered mesh change.
         """
         self._mesh_uids = None
         self._linkage_adjacency = None
+        self._connected_subsystems = None
         self._stiffness_matrix = None
+        self._crosslink_terms = None
         if gc_now:
             gc.collect()
 
 
+  ## -------------------------- system manipulation ------------------------ ##
     def add_meshes(self, meshes):
         if not bool(meshes):
             return
@@ -424,26 +452,6 @@ class SpringLinkedMeshes:
         return link_added
 
 
-    def link_relevant(self, link):
-        """
-        check if a link is useful for optimization.
-        Return:
-            0 - not useful; 1 - useful; 2 - useful but need to reinitialized.
-        """
-        if link is None:
-            return 0
-        if not link.relevant:
-            return 0
-        link_uids = link.uids
-        for lid in link_uids:
-            sel_mesh, exact = self.select_mesh_from_uid(lid)
-            if len(sel_mesh) == 0:
-                return 0
-            elif not exact:
-                return 2
-        return 1
-
-
     def prune_links(self, *kwargs):
         """
         prune links so that irrelevant links are removed and links associated
@@ -486,38 +494,6 @@ class SpringLinkedMeshes:
             self.mesh_changed()
 
 
-    def select_mesh_from_uid(self, uid):
-        """
-        given an uid of a mesh, return all the meshes in the system that have
-        that uid. Also return a flag indicating whether the uid is exactly the
-        same, or just within 0.5 distance (meaning it's a submesh)
-        """
-        if self.num_meshes == 0:
-            return [], False
-        uid = float(uid)
-        mesh_uids = self.mesh_uids
-        dis = np.abs(mesh_uids - uid)
-        if np.min(dis) == 0:
-            # the exact mesh found
-            indx = np.nonzero(dis == 0)[0][0]
-            return [self.meshes[indx]], True
-        elif uid.is_integer():
-            # probing uid is a complete mesh, but the corresponding mesh inside
-            #   the system is subdivided already
-            indx = np.nonzero(dis < 0.5)[0]
-            return [self.meshes[s] for s in indx], False
-        else:
-            # probing uid is a submesh. only return if the mesh in the system is
-            #   a complete mesh or exact the same (as in the first condition)
-            uid_r = np.floor(uid)
-            dis_r = np.abs(mesh_uids - uid_r)
-            if np.min(dis_r) == 0:
-                indx = np.nonzero(dis_r == 0)[0][0]
-                return [self.meshes[indx]], False
-            else:
-                return [], False
-
-
     def divide_disconnected_submeshes(self, prune_links=True, **kwargs):
         modified = False
         new_meshes = []
@@ -535,6 +511,7 @@ class SpringLinkedMeshes:
         return modified
 
 
+  ## ------------------------- equation components ------------------------- ##
     def stiffness_matrix(self,  gear=(MESH_GEAR_FIXED, MESH_GEAR_MOVING), **kwargs):
         """
         system stiffness matrix and current stress.
@@ -543,7 +520,7 @@ class SpringLinkedMeshes:
                 computation (and stiffness if nonlinear).
             continue_on_flip: whether to exit when a flipped triangle is detected.
         """
-        if (not hasattr(self, '_stiffness_matrix')) or (self._stiffness_matrix is None):
+        if self._stiffness_matrix is None:
             STIFF_M = []
             STRESS_v = []
             for m in self.meshes:
@@ -572,7 +549,7 @@ class SpringLinkedMeshes:
                 constructing the incremental sparse matrices. Larger number
                 needs more RAM but faster
         """
-        if (not hasattr(self, '_crosslink_terms')) or (self._crosslink_terms is None):
+        if self._crosslink_terms is None:
             start_gear = kwargs.get('start_gear', MESH_GEAR_MOVING)
             targt_gear = kwargs.get('target_gear', MESH_GEAR_MOVING)
             batch_num_matches = kwargs.get('batch_num_matches', self.num_matches / 10)
@@ -624,16 +601,34 @@ class SpringLinkedMeshes:
         return index_offsets_mapper
 
 
+  ## ------------------------------- optimize ------------------------------ ##
+    def optimize_translation_lsqr(self, **kwargs):
+        NotImplemented
+
+
+    def optimize_rigid_cascade(self, **kwargs):
+        NotImplemented
+
+
+    def optmize_linear(self, **kwargs):
+        NotImplemented
+
+    
+    def optmize_Newton_Raphson(self, **kwargs):
+        NotImplemented
+
+
+  ## ----------------------------- cached attr ----------------------------- ##
     @property
     def link_names(self):
-        if (not hasattr(self, '_link_names')) or (not bool(self._link_names)):
+        if not bool(self._link_names):
             self._link_names = [l.name for l in self._links]
         return self._link_names
 
 
     @property
     def link_uids(self):
-        if (not hasattr(self, '_link_uids')) or (self._link_uids is None):
+        if self._link_uids is None:
             if self.num_links == 0:
                 self._link_uids = np.empty((0,2))
             else:
@@ -643,7 +638,7 @@ class SpringLinkedMeshes:
 
     @property
     def mesh_uids(self):
-        if (not hasattr(self, '_mesh_uids') or self._mesh_uids is None):
+        if self._mesh_uids is None:
             self._mesh_uids = np.array([m.uid for m in self.meshes])
         return self._mesh_uids
 
@@ -653,7 +648,7 @@ class SpringLinkedMeshes:
         Adjacency matrix for the meshes in the system, where meshes with links
         is considered connected.
         """
-        if (not hasattr(self, '_linkage_adjacency')) or (self._linkage_adjacency is None):
+        if self._linkage_adjacency is None:
             edges = miscs.find_elements_in_array(self.mesh_uids, self.link_uids)
             num_matches = np.array([lnk.num_matches for lnk in self.links])
             indx = np.all(edges>=0, axis=-1, keepdims=False)
@@ -668,6 +663,15 @@ class SpringLinkedMeshes:
         return self._linkage_adjacency
 
 
+    @property
+    def connected_subsystems(self):
+        if self._connected_subsystems is None:
+            n, labels = sparse.csgraph.connected_components(self.linkage_adjacency(), directed=False, return_labels=True)
+            self._connected_subsystems = (labels, n)
+        return self._connected_subsystems
+
+
+  ## ------------------------------ properties ----------------------------- ##
     @property
     def lock_flags(self):
         return np.array([m.locked for m in self.meshes])
@@ -703,6 +707,59 @@ class SpringLinkedMeshes:
     @property
     def num_matches(self):
         return np.sum([lnk.num_matches] for lnk in self.links)
+
+
+  ## ------------------------------ utilities ------------------------------ ##
+    def link_relevant(self, link):
+        """
+        check if a link is useful for optimization.
+        Return:
+            0 - not useful; 1 - useful; 2 - useful but need to reinitialized.
+        """
+        if link is None:
+            return 0
+        if not link.relevant:
+            return 0
+        link_uids = link.uids
+        for lid in link_uids:
+            sel_mesh, exact = self.select_mesh_from_uid(lid)
+            if len(sel_mesh) == 0:
+                return 0
+            elif not exact:
+                return 2
+        return 1
+
+
+    def select_mesh_from_uid(self, uid):
+        """
+        given an uid of a mesh, return all the meshes in the system that have
+        that uid. Also return a flag indicating whether the uid is exactly the
+        same, or just within 0.5 distance (meaning it's a submesh)
+        """
+        if self.num_meshes == 0:
+            return [], False
+        uid = float(uid)
+        mesh_uids = self.mesh_uids
+        dis = np.abs(mesh_uids - uid)
+        if np.min(dis) == 0:
+            # the exact mesh found
+            indx = np.nonzero(dis == 0)[0][0]
+            return [self.meshes[indx]], True
+        elif uid.is_integer():
+            # probing uid is a complete mesh, but the corresponding mesh inside
+            #   the system is subdivided already
+            indx = np.nonzero(dis < 0.5)[0]
+            return [self.meshes[s] for s in indx], False
+        else:
+            # probing uid is a submesh. only return if the mesh in the system is
+            #   a complete mesh or exact the same (as in the first condition)
+            uid_r = np.floor(uid)
+            dis_r = np.abs(mesh_uids - uid_r)
+            if np.min(dis_r) == 0:
+                indx = np.nonzero(dis_r == 0)[0][0]
+                return [self.meshes[indx]], False
+            else:
+                return [], False
 
 
     @staticmethod
