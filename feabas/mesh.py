@@ -879,7 +879,10 @@ class Mesh:
         if gear is None:
             gear = self._current_gear
         if self._vertices[gear] is None:
-            return self._offsets[MESH_GEAR_FIXED]
+            if gear == MESH_GEAR_MOVING:
+                return self._offsets[MESH_GEAR_FIXED]
+            else:
+                return self.offset(gear=MESH_GEAR_MOVING)
         else:
             return self._offsets[gear]
 
@@ -933,7 +936,7 @@ class Mesh:
     @property
     def staging_vertices(self):
         if self._vertices[MESH_GEAR_STAGING] is None:
-            return self.fixed_vertices
+            return self.moving_vertices
         else:
             return self._vertices[MESH_GEAR_STAGING]
 
@@ -965,11 +968,8 @@ class Mesh:
             self._hash_token()
             key = self.token
         else:
-            v = self._vertices[gear]
-            if v is None:
-                key = self._caching_keys_dict[MESH_GEAR_FIXED]
-            else:
-                key = miscs.hash_numpy_array(v)
+            v = self.vertices(gear=gear)
+            key = miscs.hash_numpy_array(v)
         if key != self._caching_keys_dict[gear]:
             self._latest_expired_caching_keys_dict[gear] = self._caching_keys_dict[gear]
             self._caching_keys_dict[gear] = key
@@ -1086,10 +1086,9 @@ class Mesh:
     def vertices_changed(self, gear):
         self._update_caching_keys(gear=gear)
         self.clear_cached_attr(gear=gear)
-        if gear == MESH_GEAR_FIXED:
-            for g in MESH_GEARS:
-                if self._vertices[g] is None:
-                    self.vertices_changed(gear=g)
+        for g in MESH_GEARS:
+            if (g > gear) and (self._vertices[g] is None):
+                self.vertices_changed(gear=g)
 
 
     def set_default_cache(self, cache=True, gear=None):
@@ -2151,6 +2150,9 @@ class Mesh:
                 computation (and stiffness if nonlinear).
             inner_cache: the cache to store intermediate attributes like shape
                 matrices. Use default if set to None.
+            check_flip(bool): check if any triangles are flipped.
+            continue_on_flip(bool): whether to continue with flipped triangles
+                detected.
         Return:
             F1 (list): element_stiffness(Nx6x6), computed at the current displacement.
             indices (list): the triangle indices (N,) for each element.
@@ -2188,6 +2190,17 @@ class Mesh:
 
     @config_cache('TBD')
     def stiffness_matrix(self, gear=(MESH_GEAR_FIXED, MESH_GEAR_MOVING), inner_cache=None, **kwargs):
+        """
+        compute the stiffness matrix and the current stress.
+        Kwargs:
+            gear(tuple): first item used for shape matrices, second gear for stress
+                computation (and stiffness if nonlinear).
+            inner_cache: the cache to store intermediate attributes like shape
+                matrices. Use default if set to None.
+            check_flip(bool): check if any triangles are flipped.
+            continue_on_flip(bool): whether to continue with flipped triangles
+                detected.
+        """
         continue_on_flip = kwargs.get('continue_on_flip', False)
         F1, indices, F0, flipped = self.element_stiffness_matrices(gear=gear, inner_cache=inner_cache, cache=inner_cache, **kwargs)
         if flipped and (not continue_on_flip):

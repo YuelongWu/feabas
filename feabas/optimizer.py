@@ -559,6 +559,9 @@ class SpringLinkedMeshes:
         Kwargs:
             gear(tuple): first item used for shape matrices, second gear for stress
                 computation (and stiffness if nonlinear).
+            inner_cache: the cache to store intermediate attributes like shape
+                matrices. Use default if set to None.
+            check_flip(bool): check if any triangles are flipped.
             continue_on_flip: whether to exit when a flipped triangle is detected.
         """
         if (self._stiffness_matrix is None) or force_update:
@@ -596,7 +599,9 @@ class SpringLinkedMeshes:
         if (self._crosslink_terms is None) or force_update:
             start_gear = kwargs.get('start_gear', MESH_GEAR_MOVING)
             targt_gear = kwargs.get('target_gear', MESH_GEAR_MOVING)
-            batch_num_matches = kwargs.get('batch_num_matches', self.num_matches / 10)
+            batch_num_matches = kwargs.get('batch_num_matches', None)
+            if batch_num_matches is None:
+                batch_num_matches = self.num_matches / 10
             dof = self.degree_of_freedom
             Cs_lft = sparse.csr_matrix((dof, dof), dtype=np.float32)
             Cs_rht = np.zeros(dof, dtype=np.float32)
@@ -650,10 +655,21 @@ class SpringLinkedMeshes:
 
   ## ------------------------------- optimize ------------------------------ ##
     def optimize_translation_lsqr(self, **kwargs):
+        """
+        find the least-squares solutions that optimize the mesh translations.
+        Kwargs:
+            maxiter: maximum number of iterations in LSQR. None if no limit.
+            tol: the stopping tolerance of the least-square iterations.
+            start_gear: gear that associated with the vertices before applying
+                the translation.
+            target_gear: gear that associated with the vertices at the final
+                postions for locked meshes. Also the results are saved to this
+                gear as well.
+        """
         maxiter = kwargs.get('maxiter', None)
         tol = kwargs.get('tol', 1e-07)
-        start_gear = kwargs.get('start_gear', MESH_GEAR_MOVING)
-        targt_gear = kwargs.get('target_gear', MESH_GEAR_MOVING)
+        start_gear = kwargs.get('start_gear', MESH_GEAR_FIXED)
+        targt_gear = kwargs.get('target_gear', MESH_GEAR_FIXED)
         locked_flag = self.lock_flags
         active_index = np.nonzero(~locked_flag)[0]
         links = self.relevant_links
@@ -689,7 +705,7 @@ class SpringLinkedMeshes:
                 gears.append(start_gear)
             else:
                 gears.append(targt_gear)
-            dxy = lnk.dxy(gear=gears, use_mask=True).mean(axis=0)
+            dxy = np.nanmedian(lnk.dxy(gear=gears, use_mask=True), axis=0)
             bx[col_k] = dxy[0] * wt
             by[col_k] = dxy[1] * wt
             col_k += 1
@@ -708,18 +724,158 @@ class SpringLinkedMeshes:
         Ty = sparse.linalg.lsqr(A, by, atol=tol, btol=tol, iter_lim=maxiter)[0]
         for idx, tx, ty in zip(active_index, Tx, Ty):
             self.meshes[idx].set_translation((tx, ty), gear=(start_gear,targt_gear))
-        return True
+        return np.any(Tx!=0, axis=None) or np.any(Ty!=0, axis=None)
 
 
-    def optimize_rigid_cascade(self, **kwargs):
-        NotImplemented
+    def optimize_affine_cascade(self, **kwargs):
+        """
+        sequentially estimiate the affine transforms starting from meshes
+        immediately connected to locked ones, mostly for initialization.
+        Kwargs:
+            start_gear: gear that associated with the vertices before applying
+                the translation.
+            target_gear: gear that associated with the vertices at the final
+                postions for locked meshes. Also the results are saved to this
+                gear as well.
+            svd_clip (tuple): the limit on the svds of the affine transforms.
+                default to (1,1) as rigid.
+        """
+        start_gear = kwargs.get('start_gear', MESH_GEAR_MOVING)
+        targt_gear = kwargs.get('target_gear', MESH_GEAR_MOVING)
+        svd_clip = kwargs.get('svd_clip', (1, 1))
+        A = self.linkage_adjacency()
+        to_optimize = ~self.lock_flags
+        linked_pairs = miscs.find_elements_in_array(self.mesh_uids, self.link_uids)
+        idxt = np.any(linked_pairs<0, axis=-1, keepdims=False)
+        linked_pairs[idxt] = -1
+        modified = False
+        while np.any(to_optimize):
+            # first find the mesh that has the most robust links to optimized ones
+            link_wt_sum = A.dot(~to_optimize) * to_optimize
+            if not np.any(link_wt_sum > 0):
+                link_wt_sum = A.dot(np.ones_like(to_optimize)) * to_optimize
+            idx0 = np.argmax(link_wt_sum)
+            pair_locked_flag = ~to_optimize[linked_pairs]
+            link_filter = np.nonzero(np.any(linked_pairs==idx0, axis=-1)
+                & np.any(pair_locked_flag, axis=-1))[0]
+            if link_filter.size == 0:
+                to_optimize[idx0] = False
+                continue
+            xy0_list = []
+            xy1_list = []
+            weight_list = []
+            for lidx in link_filter:
+                lnk = self.links[lidx]
+                if lnk.uids[0] == idx0:
+                    xy0_list.append(lnk.xy0(gear=start_gear, use_mask=True, combine=True))
+                    xy1_list.append(lnk.xy1(gear=targt_gear, use_mask=True, combine=True))
+                else:
+                    xy0_list.append(lnk.xy1(gear=targt_gear, use_mask=True, combine=True))
+                    xy1_list.append(lnk.xy0(gear=start_gear, use_mask=True, combine=True))
+                weight_list.append(lnk.weight(use_mask=True))
+            xy0 = np.concatenate(xy0_list, axis=0)
+            if xy0.size == 0:
+                to_optimize[idx0] = False
+                continue
+            xy1 = np.concatenate(xy1_list, axis=0)
+            weight = np.concatenate(weight_list, axis=None)
+            _, A = spatial.fit_affine(xy1, xy0, return_rigid=True, weight=weight, svd_clip=svd_clip)
+            if (not modified) and np.any(xy0!=xy1, axis=None):
+                modified = True
+            self.meshes[idx0].set_affine(A, gear=(start_gear, targt_gear))
+            to_optimize[idx0] = False
+        return modified
 
 
     def optmize_linear(self, **kwargs):
-        NotImplemented
+        """
+        optimize the linear system or the tangent problem of non-linear system.
+        kwargs:
+            maxiter: maximum number of iterations in bicgstab. None if no limit.
+            tol: the relative stopping tolerance of the bicgstab.
+            atol: the absolute stopping tolerance of the bicgstab.
+            shape_gear: gear to caculate shape matrix.
+            start_gear: the gear that associated with the vertex positions before
+                applying the field from optimization. Also used for computing
+                current stress, cross link terms, and stiffness matrix for
+                non-linear system.
+            target_gear: gear to save the vertex positions after applying the
+                field from optimization. Also used for defining the final
+                positions of the locked meshes.
+            stiffness_lambda: stiffness term multiplier.
+            crosslink_lambda: crosslink term multiplier.
+            inner_cache: the cache to store intermediate attributes.
+            continue_on_flip(bool): whether to continue with flipped triangles
+                detected.
+            batch_num_matches: the accumulated number of matches to scan before
+                constructing the incremental sparse matrices. Larger number
+                needs more RAM but faster
+        """
+        maxiter = kwargs.get('maxiter', None)
+        tol = kwargs.get('tol', 1e-7)
+        atol = kwargs.get('atol', None)
+        shape_gear = kwargs.get('shape_gear', MESH_GEAR_FIXED)
+        start_gear = kwargs.get('start_gear', MESH_GEAR_MOVING)
+        targt_gear = kwargs.get('target_gear', MESH_GEAR_MOVING)
+        stiffness_lambda = kwargs.get('stiffness_lambda', self._stiffness_lambda)
+        crosslink_lambda = kwargs.get('crosslink_lambda', self._crosslink_lambda)
+        inner_cache = kwargs.get('inner_cache', self._shared_cache)
+        cont_on_flip = kwargs.get('continue_on_flip', False)
+        batch_num_matches = kwargs.get('batch_num_matches', None)
+        check_flip = not cont_on_flip
+        stiff_m, stress_v = self.stiffness_matrix(gear=(shape_gear,start_gear),
+            inner_cache=inner_cache, check_flip=check_flip,
+            continue_on_flip=cont_on_flip)
+        if stiff_m is None:
+            return None, None
+        Cs_lft, Cs_rht = self.crosslink_terms(start_gear=start_gear,
+            target_gear=targt_gear, batch_num_matches=batch_num_matches)
+        if (stiffness_lambda < 0) or (crosslink_lambda < 0):
+            ratio = abs(stiffness_lambda / crosslink_lambda)
+            nm_stiff = sparse.linalg.norm(stiff_m)
+            nm_cl = sparse.linalg.norm(Cs_lft)
+            stiffness_lambda = abs(ratio * nm_cl / nm_stiff)
+            crosslink_lambda = 1.0
+        A = stiffness_lambda * stiff_m + crosslink_lambda * Cs_lft
+        A = 0.5*(A + A.transpose())
+        b = crosslink_lambda * Cs_rht - stiffness_lambda * stress_v
+        dd, _ = sparse.linalg.bicgstab(A, b, tol=tol, maxiter=maxiter, atol=atol)
+        cost = (np.linalg.norm(b), np.linalg.norm(A.dot(dd) - b))
+        if cost[1] < cost[0]:
+            index_offsets = self.index_offsets
+            for m in self.meshes:
+                if m.locked or (m.uid not in index_offsets) or (index_offsets[m.uid] < 0):
+                    continue
+                stt_idx = index_offsets[m.uid]
+                end_idx = stt_idx + m.num_vertices * 2
+                dxy = dd[stt_idx:end_idx].reshape(-1,2)
+                m.set_field(dxy, gear=(start_gear, targt_gear))
+        return cost
 
 
     def optmize_Newton_Raphson(self, **kwargs):
+        """
+        optimize the non linear system using newton-raphson method.
+        kwargs:
+            maxiter: maximum number of iterations for each linear step. None if
+                no limit.
+            tol: the relative stopping tolerance for each linear step.
+            atol: the absolute stopping tolerance for each linear step.
+            stiffness_lambda: stiffness term multipliers for each linear step.
+            crosslink_lambda: crosslink term multiplier for each linear step.
+            inner_cache: the cache to store intermediate attributes.
+            continue_on_flip(bool): whether to continue with flipped triangles
+                detected.
+            batch_num_matches: the accumulated number of matches to scan before
+                constructing the incremental sparse matrices. Larger number
+                needs more RAM but faster
+        """
+        maxiter = kwargs.get('maxiter', None)
+        tol = kwargs.get('tol', 1e-7)
+        atol = kwargs.get('atol', None)
+        stiffness_lambda = kwargs.get('stiffness_lambda', self._stiffness_lambda)
+        crosslink_lambda = kwargs.get('crosslink_lambda', self._crosslink_lambda)
+        inner_cache = kwargs.get('inner_cache', self._shared_cache)
         NotImplemented
 
 

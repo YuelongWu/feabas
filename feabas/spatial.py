@@ -14,7 +14,7 @@ from feabas.constant import *
 JOIN_STYLE = shpgeo.JOIN_STYLE.mitre
 
 
-def fit_affine(pts0, pts1, return_rigid=False, svd_clip=(1,1)):
+def fit_affine(pts0, pts1, return_rigid=False, weight=None, svd_clip=(1,1)):
     # pts0 = pts1 @ A
     pts0 = pts0.reshape(-1,2)
     pts1 = pts1.reshape(-1,2)
@@ -25,6 +25,10 @@ def fit_affine(pts0, pts1, return_rigid=False, svd_clip=(1,1)):
     pts1 = pts1 - mm1
     pts0_pad = np.insert(pts0, 2, 1, axis=-1)
     pts1_pad = np.insert(pts1, 2, 1, axis=-1)
+    if weight is not None:
+        weight = weight ** 0.5
+        pts0_pad = pts0_pad * weight.reshape(-1, 1)
+        pts1_pad = pts1_pad * weight.reshape(-1, 1)
     res = np.linalg.lstsq(pts1_pad, pts0_pad, rcond=None)
     r1 = np.linalg.matrix_rank(pts0_pad)
     A = res[0]
@@ -43,7 +47,8 @@ def fit_affine(pts0, pts1, return_rigid=False, svd_clip=(1,1)):
         A = res[0]
     if return_rigid:
         u, s, vh = np.linalg.svd(A[:2,:2], compute_uv=True)
-        s = s.clip(svd_clip[0], svd_clip[-1])
+        if svd_clip is not None:
+            s = s.clip(svd_clip[0], svd_clip[-1])
         R = A.copy()
         R[:2,:2] = u @ np.diag(s) @ vh
         R[-1,:2] = R[-1,:2] + mm0 - mm1 @ R[:2,:2]
