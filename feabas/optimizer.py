@@ -299,6 +299,14 @@ class Link:
 
 
     @property
+    def weight_sum(self):
+        if self._disabled:
+            return 0
+        else:
+            return np.sum(self.weight(use_mask=True))
+
+
+    @property
     def mask(self):
         if self._mask is None:
             self._mask = (self._weight * self._residue_weight) > 0
@@ -393,10 +401,10 @@ class SpringLinkedMeshes:
         if check_duplicates and (link.name in self.link_names):
             return False
         if check_relevance:
-            relevance = self.link_relevant(link)
+            relevance = self.link_is_relevant(link)
             if (not relevance):
                 return False
-            need_reinit = relevance == 2
+            need_reinit = relevance == -1
         else:
             self.links.append(link)
             self.link_names.append(link.name)
@@ -458,7 +466,7 @@ class SpringLinkedMeshes:
         with separated/combined meshes are updated.
         """
         modified = False
-        relevance = np.array([self.link_relevant(lnk) for lnk in self.links])
+        relevance = np.array([self.link_is_relevant(lnk) for lnk in self.links])
         if np.all(relevance == 1):
             return modified
         else:
@@ -469,7 +477,7 @@ class SpringLinkedMeshes:
         for lnk, flag in zip(self.links, relevance):
             if flag == 1:
                 new_links.append(lnk)
-            elif flag == 2:
+            elif flag == -1:
                 m0_list = self.select_mesh_from_uid(lnk.uids[0])
                 m1_list = self.select_mesh_from_uid(lnk.uids[1])
                 dlinks = SpringLinkedMeshes.distribute_link(m0_list, m1_list, lnk,
@@ -498,21 +506,54 @@ class SpringLinkedMeshes:
         modified = False
         new_meshes = []
         for m in self.meshes:
-            dm = m.divide_disconnected_mesh()
-            new_meshes.extend(dm)
-            if len(dm) > 1:
-                modified = True
+            if m.locked:
+                new_meshes.append(m)
+            else:
+                dm = m.divide_disconnected_mesh()
+                new_meshes.extend(dm)
+                if len(dm) > 1:
+                    modified = True
         if modified:
             self.meshes = new_meshes
-
             self.mesh_changed()
             if prune_links:
                 self.prune_links(**kwargs)
         return modified
 
 
+    def anneal(self, gear=(MESH_GEAR_MOVING, MESH_GEAR_FIXED), mode=ANNEAL_CONNECTED_RIGID):
+        # need to manually reset the stiffness matrix if necessary
+        for m in self.meshes:
+            m.anneal(gear=gear, mode=mode)
+
+
+    def adjust_link_weight_by_residue(self, gear=(MESH_GEAR_MOVING, MESH_GEAR_MOVING)):
+        weight_modified = False
+        connection_modified = False
+        for lnk in self.links:
+            w,c = lnk.adjust_weight_from_residue(gear=gear)
+            weight_modified |= w
+            connection_modified |= c
+        if connection_modified:
+            self.link_changed()
+        elif weight_modified:
+            self._linkage_adjacency = None
+            self._crosslink_terms = None
+
+
+    def set_link_residue_threshold(self, residue_len):
+        for lnk in self.links:
+            lnk.set_hard_residue_filter(residue_len)
+
+
+    def set_link_residue_huber(self, residue_len):
+        for lnk in self.links:
+            lnk.set_huber_residue_filter(residue_len)
+
+
   ## ------------------------- equation components ------------------------- ##
-    def stiffness_matrix(self,  gear=(MESH_GEAR_FIXED, MESH_GEAR_MOVING), **kwargs):
+    def stiffness_matrix(self,  gear=(MESH_GEAR_FIXED, MESH_GEAR_MOVING),
+                         force_update=False, to_cache=True, **kwargs):
         """
         system stiffness matrix and current stress.
         Kwargs:
@@ -520,7 +561,7 @@ class SpringLinkedMeshes:
                 computation (and stiffness if nonlinear).
             continue_on_flip: whether to exit when a flipped triangle is detected.
         """
-        if self._stiffness_matrix is None:
+        if (self._stiffness_matrix is None) or force_update:
             STIFF_M = []
             STRESS_v = []
             for m in self.meshes:
@@ -533,11 +574,14 @@ class SpringLinkedMeshes:
                 STRESS_v.append(stress)
             stiffness_matrix = sparse.block_diag(STIFF_M, format='csr')
             stress_vector = np.concatenate(STRESS_v, axis=None)
-            self._stiffness_matrix = (stiffness_matrix, stress_vector)
-        return self._stiffness_matrix
+            if to_cache:
+                self._stiffness_matrix = (stiffness_matrix, stress_vector)
+            return (stiffness_matrix, stress_vector)
+        else:
+            return self._stiffness_matrix
 
 
-    def crosslink_terms(self, **kwargs):
+    def crosslink_terms(self,  force_update=False, to_cache=True, **kwargs):
         """
         compute the terms associated with the links in the assembled equation.
         Kwargs:
@@ -549,7 +593,7 @@ class SpringLinkedMeshes:
                 constructing the incremental sparse matrices. Larger number
                 needs more RAM but faster
         """
-        if self._crosslink_terms is None:
+        if (self._crosslink_terms is None) or force_update:
             start_gear = kwargs.get('start_gear', MESH_GEAR_MOVING)
             targt_gear = kwargs.get('target_gear', MESH_GEAR_MOVING)
             batch_num_matches = kwargs.get('batch_num_matches', self.num_matches / 10)
@@ -584,8 +628,11 @@ class SpringLinkedMeshes:
                 Cs_lft0 = sparse.csr_matrix((np.concatenate(V_lft_a), (np.concatenate(I_lft0_a), np.concatenate(I_lft1_a))),
                     shape=(dof, dof), dtype=np.float32)
                 Cs_lft += Cs_lft0
-            self._crosslink_terms = (Cs_lft, Cs_rht)
-        return self._crosslink_terms
+            if to_cache:
+                self._crosslink_terms = (Cs_lft, Cs_rht)
+            return (Cs_lft, Cs_rht)
+        else:
+            return self._crosslink_terms
 
 
     @property
@@ -603,7 +650,65 @@ class SpringLinkedMeshes:
 
   ## ------------------------------- optimize ------------------------------ ##
     def optimize_translation_lsqr(self, **kwargs):
-        NotImplemented
+        maxiter = kwargs.get('maxiter', None)
+        tol = kwargs.get('tol', 1e-07)
+        start_gear = kwargs.get('start_gear', MESH_GEAR_MOVING)
+        targt_gear = kwargs.get('target_gear', MESH_GEAR_MOVING)
+        locked_flag = self.lock_flags
+        active_index = np.nonzero(~locked_flag)[0]
+        links = self.relevant_links
+        num_links = len(links)
+        if num_links == 0:
+            return False
+        mesh_uids = self.mesh_uids[~locked_flag]
+        num_meshes = mesh_uids.size
+        mesh_uids_mapper = {uid: k for k, uid in enumerate(mesh_uids)}
+        if num_meshes == 0:
+            return False
+        conn_lbl, _ = self.connected_subsystems
+        conn_lbl_active = conn_lbl[~locked_flag]
+        conn_lbl_locked = conn_lbl[locked_flag]
+        uncontraint_labels = set(conn_lbl_active).difference(set(conn_lbl_locked))
+        num_constraints = len(uncontraint_labels)
+        A = sparse.lil_matrix((num_links + num_constraints, num_meshes))
+        bx = np.zeros(num_links + num_constraints)
+        by = np.zeros(num_links + num_constraints)
+        col_k = 0
+        for lnk in links:
+            wt = lnk.weight_sum ** 0.5
+            if wt == 0:
+                continue
+            gears = []
+            if lnk.uids[0] in mesh_uids_mapper:
+                A[col_k, mesh_uids_mapper[lnk.uids[0]]] = wt
+                gears.append(start_gear)
+            else:
+                gears.append(targt_gear)
+            if lnk.uids[1] in mesh_uids_mapper:
+                A[col_k, mesh_uids_mapper[lnk.uids[1]]] = -wt
+                gears.append(start_gear)
+            else:
+                gears.append(targt_gear)
+            dxy = lnk.dxy(gear=gears, use_mask=True).mean(axis=0)
+            bx[col_k] = dxy[0] * wt
+            by[col_k] = dxy[1] * wt
+            col_k += 1
+        if col_k == 0:
+            return False
+        wt = A.sum(axis=None) / A.getnnz(axis=None)
+        for lbl in uncontraint_labels:
+            pos = np.nonzero(conn_lbl_active == lbl)[0][0]
+            A[col_k, pos] = wt
+            txy = self.meshes[active_index[pos]].estimate_translation(gear=(start_gear,targt_gear))
+            bx[col_k] = txy[0] * wt
+            by[col_k] = txy[1] * wt
+            col_k += 1
+        A = A.tocsr()
+        Tx = sparse.linalg.lsqr(A, bx, atol=tol, btol=tol, iter_lim=maxiter)[0]
+        Ty = sparse.linalg.lsqr(A, by, atol=tol, btol=tol, iter_lim=maxiter)[0]
+        for idx, tx, ty in zip(active_index, Tx, Ty):
+            self.meshes[idx].set_translation((tx, ty), gear=(start_gear,targt_gear))
+        return True
 
 
     def optimize_rigid_cascade(self, **kwargs):
@@ -613,7 +718,7 @@ class SpringLinkedMeshes:
     def optmize_linear(self, **kwargs):
         NotImplemented
 
-    
+
     def optmize_Newton_Raphson(self, **kwargs):
         NotImplemented
 
@@ -650,7 +755,7 @@ class SpringLinkedMeshes:
         """
         if self._linkage_adjacency is None:
             edges = miscs.find_elements_in_array(self.mesh_uids, self.link_uids)
-            num_matches = np.array([lnk.num_matches for lnk in self.links])
+            num_matches = np.array([lnk.weight_sum for lnk in self.links])
             indx = np.all(edges>=0, axis=-1, keepdims=False)
             if not np.all(indx):
                 edges = edges[indx]
@@ -709,12 +814,21 @@ class SpringLinkedMeshes:
         return np.sum([lnk.num_matches] for lnk in self.links)
 
 
+    @property
+    def relevant_links(self):
+        """
+        links that are directly relevant to solving the system, i.e. connecting
+        to at least one unlocked mesh.
+        """
+        return [lnk for lnk in self.links if (self.link_is_relevant(lnk) == 1)]
+
+
   ## ------------------------------ utilities ------------------------------ ##
-    def link_relevant(self, link):
+    def link_is_relevant(self, link):
         """
         check if a link is useful for optimization.
         Return:
-            0 - not useful; 1 - useful; 2 - useful but need to reinitialized.
+            0 - not useful; 1 - useful; -1 - useful but need to reinitialized.
         """
         if link is None:
             return 0
@@ -726,7 +840,7 @@ class SpringLinkedMeshes:
             if len(sel_mesh) == 0:
                 return 0
             elif not exact:
-                return 2
+                return -1
         return 1
 
 

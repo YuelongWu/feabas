@@ -485,26 +485,26 @@ class Mesh:
         return cls.from_PSLG(vertices, segments, **kwargs)
 
 
-    def get_init_dict(self, save_material=True,  **kwargs):
+    def get_init_dict(self, save_material=True, vertex_flags=MESH_GEARS, **kwargs):
         """
         dictionary that can be used for initialization of a duplicate.
         """
         init_dict = {}
         init_dict['vertices'] = self._vertices[MESH_GEAR_INITIAL]
-        if self._vertices[MESH_GEAR_FIXED] is not self._vertices[MESH_GEAR_INITIAL]:
+        if (MESH_GEAR_FIXED in vertex_flags) and (self._vertices[MESH_GEAR_FIXED] is not self._vertices[MESH_GEAR_INITIAL]):
             init_dict['fixed_vertices'] = self._vertices[MESH_GEAR_FIXED]
         init_dict['triangles'] = self.triangles
-        if (self._vertices[MESH_GEAR_MOVING]) is not None:
+        if (MESH_GEAR_MOVING in vertex_flags) and (self._vertices[MESH_GEAR_MOVING] is not None):
             init_dict['moving_vertices'] = self._vertices[MESH_GEAR_MOVING]
-        if (self._vertices[MESH_GEAR_STAGING]) is not None:
+        if (MESH_GEAR_STAGING in vertex_flags) and (self._vertices[MESH_GEAR_STAGING] is not None):
             init_dict['staging_vertices'] = self._vertices[MESH_GEAR_STAGING]
         if np.any(self._offsets[MESH_GEAR_INITIAL]):
             init_dict['initial_offset'] = self._offsets[MESH_GEAR_INITIAL]
-        if np.any(self._offsets[MESH_GEAR_FIXED]):
+        if (MESH_GEAR_FIXED in vertex_flags) and np.any(self._offsets[MESH_GEAR_FIXED]):
             init_dict['fixed_offset'] = self._offsets[MESH_GEAR_FIXED]
-        if np.any(self._offsets[MESH_GEAR_MOVING]):
+        if (MESH_GEAR_MOVING in vertex_flags) and np.any(self._offsets[MESH_GEAR_MOVING]):
             init_dict['moving_offset'] = self._offsets[MESH_GEAR_MOVING]
-        if np.any(self._offsets[MESH_GEAR_STAGING]):
+        if (MESH_GEAR_STAGING in vertex_flags) and np.any(self._offsets[MESH_GEAR_STAGING]):
             init_dict['staging_offset'] = self._offsets[MESH_GEAR_STAGING]
         if self._stiffness_multiplier is not None:
             init_dict['stiffness_multiplier'] = self._stiffness_multiplier
@@ -563,6 +563,8 @@ class Mesh:
                 parent_name = init_dict['name']
                 new_name = (parent_name, miscs.hash_numpy_array(tri_mask))
                 init_dict['name'] = new_name
+        if ('locked' not in kwargs):
+            init_dict['locked'] = self.locked
         return self.__class__(**init_dict)
 
 
@@ -644,6 +646,7 @@ class Mesh:
         else:
             init_dict['name'] = meshes[0]._name
         init_dict['uid'] = np.floor(meshes[0].uid)
+        init_dict['locked'] = meshes[0].locked
         init_dict.update(kwargs)
         return cls(**init_dict)
 
@@ -672,11 +675,12 @@ class Mesh:
         return cls(**init_dict)
 
 
-    def save_to_h5(self, fname, vertex_flag=MESH_GEAR_INITIAL, override_dict={}, **kwargs):
+    def save_to_h5(self, fname, vertex_flags=(MESH_GEAR_INITIAL, MESH_GEAR_MOVING),
+                   override_dict={}, **kwargs):
         prefix = kwargs.get('prefix', '')
         save_material = kwargs.get('save_material', True)
         compression = kwargs.get('compression', True)
-        out = self.get_init_dict(save_material=save_material, vertex_flag=vertex_flag, **override_dict)
+        out = self.get_init_dict(save_material=save_material, vertex_flags=vertex_flags, **override_dict)
         if ('token' in out) and (not 'token' in override_dict):
             out.pop('token') # hash not conistent between runs, no point to save
         if (len(prefix) > 0) and prefix[-1] != '/':
@@ -1490,6 +1494,7 @@ class Mesh:
     def __bool__(self):
         return self.num_triangles > 0
 
+
   ## -------------------------------- query -------------------------------- ##
     def tri_finder(self, pts, gear=None, tri_mask=None, **kwargs):
         """
@@ -1649,6 +1654,7 @@ class Mesh:
 
 
     def apply_translation(self, dxy, gear, vtx_mask=None):
+        dxy = np.array(dxy, copy=False).reshape(1,2)
         if self.locked:
             return
         if not np.any(dxy, axis=None):
@@ -1666,6 +1672,10 @@ class Mesh:
     def set_translation(self, dxy, gear=(MESH_GEAR_FIXED, MESH_GEAR_MOVING), vtx_mask=None):
         if self.locked:
             return
+        if gear[0] == gear[-1]:
+            self.apply_translation(dxy, gear[0], vtx_mask=vtx_mask)
+            return
+        dxy = np.array(dxy, copy=False).reshape(1,2)
         v0 = self.vertices(gear=gear[0])
         offset0 = self.offset(gear=gear[0])
         if Mesh._masked_all(vtx_mask):
@@ -1677,6 +1687,21 @@ class Mesh:
             v1 = v0[vtx_mask] + dxy
             self.set_vertices(v1, gear=gear[-1], vtx_mask=vtx_mask)
             self.set_offset(offset1, gear=gear[-1])
+
+
+    def estimate_translation(self, gear=(MESH_GEAR_FIXED, MESH_GEAR_MOVING), vtx_mask=None):
+        if gear[0] == gear[-1]:
+            return np.zeros(2)
+        offset0 = self.offset(gear=gear[0])
+        offset1 = self.offset(gear=gear[-1])
+        v0 = self.vertices(gear=gear[0])
+        v1 = self.vertices(gear=gear[-1])
+        if vtx_mask is not None:
+            v0 = v0[vtx_mask]
+            v1 = v1[vtx_mask]
+        dxy = v1.mean(axis=0) - v0.mean(axis=0)
+        dof = offset1 - offset0
+        return dxy.ravel() - dof.ravel()
 
 
     def apply_affine(self, A, gear, vtx_mask=None):
@@ -1700,7 +1725,8 @@ class Mesh:
     def set_affine(self, A, gear=(MESH_GEAR_FIXED, MESH_GEAR_MOVING), vtx_mask=None):
         if self.locked:
             return
-        if np.all(A == np.eye(3)):
+        if gear[0] == gear[-1]:
+            self.apply_affine(A, gear[0], vtx_mask=vtx_mask)
             return
         v0 = self.vertices(gear=gear[0])
         offset0 = self.offset(gear=gear[0])
@@ -1738,7 +1764,8 @@ class Mesh:
     def set_field(self, dxy, gear=(MESH_GEAR_FIXED, MESH_GEAR_MOVING), vtx_mask=None):
         if self.locked:
             return
-        if not np.any(dxy, axis=None):
+        if gear[0] == gear[-1]:
+            self.apply_field(dxy, gear[0], vtx_mask=vtx_mask)
             return
         v0 = self.vertices(gear=gear[0])
         offset0 = self.offset(gear=gear[0])
