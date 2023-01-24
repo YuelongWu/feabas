@@ -44,7 +44,7 @@ def dynamic_typing_decorator(func):
     return wrapped
 
 
-def plot_mesh(M, show_mat=False, show_conn=False, gear=MESH_GEAR_MOVING, show=False):
+def plot_mesh(M, show_mat=False, show_conn=False, gear=MESH_GEAR_MOVING, show=False, colors=['b', 'k']):
     if isinstance(M, (list, tuple)):
         for m in M:
             plot_mesh(m, show_mat=show_mat, show_conn=show_conn, gear=gear, show=False)
@@ -72,11 +72,11 @@ def plot_mesh(M, show_mat=False, show_conn=False, gear=MESH_GEAR_MOVING, show=Fa
         else:
             T = matplotlib.tri.Triangulation(M.vertices_w_offset(gear=gear)[:,0],
                     M.vertices_w_offset(gear=gear)[:,1], M.triangles)
-            plt.triplot(T, color='b', alpha=0.5, linewidth=0.5)
+            plt.triplot(T, color=colors[0], alpha=0.5, linewidth=0.5)
         segs = M.vertices_w_offset(gear=gear)[M.segments()]
         xx = segs[:,:,0]
         yy = segs[:,:,1]
-        plt.plot(xx.T, yy.T, 'k', alpha=1, linewidth=1)
+        plt.plot(xx.T, yy.T, colors[-1], alpha=1, linewidth=1)
     if show:
         plt.show()
 

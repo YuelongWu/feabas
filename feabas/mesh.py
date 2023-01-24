@@ -1592,7 +1592,7 @@ class Mesh:
         tri_pt = vertices[np.atleast_2d(self.triangles[tid,:])]
         tri_pt_m = tri_pt.mean(axis=1, keepdims=True)
         tri_pt = tri_pt - tri_pt_m
-        xy = xy - self.offset(gear=gear) - tri_pt_m
+        xy = xy - self.offset(gear=gear) - tri_pt_m.reshape(-1,2)
         ss = max(tri_pt.std(), 0.01)
         tri_pt_pad = np.insert(tri_pt / ss, 2, 1, axis=-1)
         xy_pad = np.insert(xy / ss, 2, 1, axis=-1)

@@ -570,7 +570,7 @@ class SLM:
             for m in self.meshes:
                 if m.locked:
                     continue
-                stiff, stress = m.stiffness_matrix(gear=gear, inner_cache=self._shared_cache, **kwargs)
+                stiff, stress = m.stiffness_matrix(gear=gear, **kwargs)
                 if stiff is None:
                     return None, None
                 STIFF_M.append(stiff)
@@ -830,12 +830,7 @@ class SLM:
             return None, None
         Cs_lft, Cs_rht = self.crosslink_terms(start_gear=start_gear,
             target_gear=targt_gear, batch_num_matches=batch_num_matches)
-        if (stiffness_lambda < 0) or (crosslink_lambda < 0):
-            ratio = abs(stiffness_lambda / crosslink_lambda)
-            nm_stiff = sparse.linalg.norm(stiff_m)
-            nm_cl = sparse.linalg.norm(Cs_lft)
-            stiffness_lambda = abs(ratio * nm_cl / nm_stiff)
-            crosslink_lambda = 1.0
+        stiffness_lambda, crosslink_lambda = self.relative_lambda(stiffness_lambda, crosslink_lambda)
         A = stiffness_lambda * stiff_m + crosslink_lambda * Cs_lft
         A = 0.5*(A + A.transpose())
         b = crosslink_lambda * Cs_rht - stiffness_lambda * stress_v
@@ -914,13 +909,12 @@ class SLM:
         _, _ = self.crosslink_terms(force_update=True, to_cache=True,
             start_gear=start_gear, target_gear=target_gear,
             batch_num_matches=batch_num_matches)
-        cost0 = self.cost((shape_gear, start_gear,target_gear),
-            crosslink_lambda[-1], stiffness_lambda[-1], check_flip=check_flip)
+        cost0 = self.cost(stiffness_lambda[-1], crosslink_lambda[-1])
         cost = np.inf
         if tol is None:
             tol0 = atol
         elif atol is None:
-            tol0 = cost0 * tol0
+            tol0 = cost0 * tol
         else:
             tol0 = min(cost0 * tol, atol)
         ke = 0 # epoch counter
@@ -936,6 +930,8 @@ class SLM:
                 batch_num_matches=batch_num_matches)
             if (step_cost[0] is None) or (step_cost[0] < step_cost[1]):
                 break
+            if anneal_mode[ke] is not None:
+                self.anneal(gear=(target_gear, shape_gear), mode=anneal_mode[ke])
             stiff_m, _ = self.stiffness_matrix(gear=(shape_gear,target_gear),
                 force_update=True, to_cache=True,
                 inner_cache=inner_cache, check_flip=check_flip,
@@ -946,6 +942,7 @@ class SLM:
                 if kshrk > shrink_trial:
                     break
                 continue
+            kshrk = 0
             if residue_mode[ke] is not None:
                 if residue_len[ke] > 0:
                     if residue_mode[ke] == 'huber':
@@ -958,10 +955,7 @@ class SLM:
                 batch_num_matches=batch_num_matches)
             if start_gear != target_gear:
                 self.anneal(gear=(target_gear, start_gear), mode=ANNEAL_COPY_EXACT)
-            if anneal_mode[ke] is not None:
-                self.anneal(gear=(target_gear, shape_gear), mode=anneal_mode[ke])
-            cost = min(cost, self.cost((shape_gear, start_gear,target_gear),
-                crosslink_lambda[-1], stiffness_lambda[-1], check_flip=check_flip))
+            cost = min(cost, self.cost(stiffness_lambda[-1], crosslink_lambda[-1]))
             if (tol0 is not None) and (cost < tol0):
                 break
             ke += 1
@@ -970,11 +964,37 @@ class SLM:
         return cost0, cost
 
 
+    def relative_lambda(self, stiffness_lambda, crosslink_lambda):
+        if (stiffness_lambda < 0) or (crosslink_lambda < 0):
+            if (self._stiffness_matrix is None) or (self._crosslink_terms is None):
+                raise RuntimeError('System equation not initialized')
+            ratio = abs(stiffness_lambda / crosslink_lambda)
+            stiff_m, _ = self._stiffness_matrix
+            Cs_lft, _ = self._crosslink_terms
+            nm_stiff = sparse.linalg.norm(stiff_m)
+            nm_cl = sparse.linalg.norm(Cs_lft)
+            stiffness_lambda = abs(ratio * nm_cl / nm_stiff)
+            crosslink_lambda = 1.0
+        return stiffness_lambda, crosslink_lambda
+
+
+    def cost(self, stiffness_lambda, crosslink_lambda):
+        if (self._stiffness_matrix is None) or (self._crosslink_terms is None):
+            raise RuntimeError('System equation not initialized')
+        stiff_m, stress_v = self._stiffness_matrix
+        if stiff_m is None:
+            return None
+        stiffness_lambda, crosslink_lambda = self.relative_lambda(stiffness_lambda, crosslink_lambda)
+        Cs_rht, Cs_rht = self._crosslink_terms
+        return np.linalg.norm(crosslink_lambda * Cs_rht - stiffness_lambda * stress_v)
+
+
+
   ## ----------------------------- cached attr ----------------------------- ##
     @property
     def link_names(self):
         if not bool(self._link_names):
-            self._link_names = [l.name for l in self._links]
+            self._link_names = [l.name for l in self.links]
         return self._link_names
 
 
@@ -1058,7 +1078,7 @@ class SLM:
 
     @property
     def num_matches(self):
-        return np.sum([lnk.num_matches] for lnk in self.links)
+        return np.sum([lnk.num_matches for lnk in self.links])
 
 
     @property
@@ -1068,17 +1088,6 @@ class SLM:
         to at least one unlocked mesh.
         """
         return [lnk for lnk in self.links if (self.link_is_relevant(lnk) == 1)]
-
-
-    def cost(self, gears, crosslink_lambda, stiffness_lambda, check_flip=False):
-        stiff_m, stress_v = self.stiffness_matrix(gear=(gears[0],gears[1]),
-            inner_cache=self._shared_cache, check_flip=check_flip,
-            continue_on_flip=(not check_flip))
-        if stiff_m is None:
-            return None
-        _, Cs_rht = self.crosslink_terms(start_gear=gears[1],
-            target_gear=gears[2], batch_num_matches=None)
-        return crosslink_lambda * np.linalg.norm(Cs_rht) - stiffness_lambda * np.linalg.norm(stress_v)
 
 
   ## ------------------------------ utilities ------------------------------ ##

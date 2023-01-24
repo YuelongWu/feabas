@@ -2,6 +2,7 @@ from collections import defaultdict, OrderedDict
 
 import json
 import numpy as np
+from scipy.interpolate import interp1d
 
 from feabas import miscs
 from feabas.constant import *
@@ -44,28 +45,17 @@ class Material:
         self.render = kwargs.get('render', True)
         self._type = kwargs.get('type', MATERIAL_MODEL_ENG)
         self._stiffness_multiplier = kwargs.get('stiffness_multiplier', 1.0)
-        self._stiffness_func_factory = kwargs.get('stiffness_func_factory', None)
-        self._stiffness_func_params = kwargs.get('stiffness_func_params', {})
         self._poisson_ratio = kwargs.get('poisson_ratio', 0.0)
         self.mask_label = kwargs.get('mask_label', None)
+        stiffness_func_factory = kwargs.get('stiffness_func_factory', None)
+        stiffness_func_params = kwargs.get('stiffness_func_params', {})
+        self.update_stiffness_func(stiffness_func_factory, stiffness_func_params)
         uid = kwargs.get('uid', None)
         if uid is None:
             self.uid = Material.uid
             Material.uid += 1
         else:
             self.uid = uid
-        if self._stiffness_func_factory is None:
-            self._stiffness_func = None
-        elif isinstance(self._stiffness_func_factory, str):
-            if 'lambda' in self._stiffness_func_factory:
-                self._stiffness_func = eval(self._stiffness_func_factory)
-            else:
-                stiffness_func_factory = miscs.load_plugin(self._stiffness_func_factory)
-                self._stiffness_func = stiffness_func_factory(**self._stiffness_func_params)
-        elif callable(self._stiffness_func_factory):
-            self._stiffness_func = self._stiffness_func_factory(**self._stiffness_func_params)
-        else:
-            raise TypeError
 
 
     def to_dict(self):
@@ -75,7 +65,7 @@ class Material:
             'render': self.render,
             'type': self._type,
             'poisson_ratio': self._poisson_ratio,
-            'id': self.uid
+            'uid': self.uid
             }
         if self.mask_label is not None:
             out['mask_label'] = self.mask_label
@@ -97,6 +87,23 @@ class Material:
             stiffness_func_params[key] = val
         out['stiffness_func_params'] = stiffness_func_params
         return out
+
+
+    def update_stiffness_func(self, stiffness_func_factory=None, stiffness_func_params={}):
+        self._stiffness_func_factory = stiffness_func_factory
+        self._stiffness_func_params = stiffness_func_params
+        if self._stiffness_func_factory is None:
+            self._stiffness_func = None
+        elif isinstance(self._stiffness_func_factory, str):
+            if 'lambda' in self._stiffness_func_factory:
+                self._stiffness_func = eval(self._stiffness_func_factory)
+            else:
+                stiffness_func_factory = miscs.load_plugin(self._stiffness_func_factory)
+                self._stiffness_func = stiffness_func_factory(**self._stiffness_func_params)
+        elif callable(self._stiffness_func_factory):
+            self._stiffness_func = self._stiffness_func_factory(**self._stiffness_func_params)
+        else:
+            raise TypeError
 
 
     def shape_matrix_from_vertices(self, tripts):
@@ -369,3 +376,13 @@ class MaterialTable:
         for val in self._table.values():
             id_tabel[val.uid] = val
         return id_tabel
+
+
+
+# stiffness function factories.
+# stress = 1: no change; stress = 0: flip.
+def asymmetrical_elasticity(**params):
+    stress = params.get('stress', [0, 0.75, 1, 1.01])
+    stiffness = params.get('stiffness', [1.5, 1, 0.5, 0])
+    f = interp1d(stress, stiffness, kind='linear', bounds_error=False, fill_value=(stiffness[0], stiffness[-1]))
+    return f
