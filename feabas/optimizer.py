@@ -314,9 +314,9 @@ class Link:
 
 
 
-class SpringLinkedMeshes:
+class SLM:
     """
-    A spring connected mesh system used for optimization.
+    Spring Linked Meshes: spring connected mesh system used for optimization.
     """
   ## --------------------------- initialization  --------------------------- ##
     def __init__(self, meshes, links=[], **kwargs):
@@ -413,7 +413,7 @@ class SpringLinkedMeshes:
         if need_reinit:
             meshlist0, _ = self.select_mesh_from_uid(link.uids[0])
             meshlist1, _ = self.select_mesh_from_uid(link.uids[1])
-            re_links = SpringLinkedMeshes.distribute_link(meshlist0, meshlist1,
+            re_links = SLM.distribute_link(meshlist0, meshlist1,
                 link, working_gear=working_gear, exclusive=submesh_exclusive,
                 inner_cache=self._shared_cache)
             if len(re_links) > 0:
@@ -480,7 +480,7 @@ class SpringLinkedMeshes:
             elif flag == -1:
                 m0_list = self.select_mesh_from_uid(lnk.uids[0])
                 m1_list = self.select_mesh_from_uid(lnk.uids[1])
-                dlinks = SpringLinkedMeshes.distribute_link(m0_list, m1_list, lnk,
+                dlinks = SLM.distribute_link(m0_list, m1_list, lnk,
                     working_gear=working_gear, exclusive=submesh_exclusive,
                     inner_cache=self._shared_cache)
                 new_links.extend(dlinks)
@@ -857,26 +857,117 @@ class SpringLinkedMeshes:
         """
         optimize the non linear system using newton-raphson method.
         kwargs:
+            maxepoch: maximum number of linear steps to use.
             maxiter: maximum number of iterations for each linear step. None if
                 no limit.
             tol: the relative stopping tolerance for each linear step.
             atol: the absolute stopping tolerance for each linear step.
+            residue_mode: the method to adjust crosslink weight accordint to
+                the residues. Could be 'hard'(hard threshold), 'huber', or None.
+            residue_len: characteristic length of residue used to dynamically
+                adjust link weights.
+            anneal_mode: mode used to anneal the meshes.
             stiffness_lambda: stiffness term multipliers for each linear step.
             crosslink_lambda: crosslink term multiplier for each linear step.
             inner_cache: the cache to store intermediate attributes.
             continue_on_flip(bool): whether to continue with flipped triangles
                 detected.
+            crosslink_shrink: in the presence of flipped triangles,
+                the decay applied to the crosslink term so that it takes smaller
+                step.
+            shrink_trial: maximum number of trials to attempt when shrinking the
+                crosslink_lambda to battle triangle flips.
             batch_num_matches: the accumulated number of matches to scan before
                 constructing the incremental sparse matrices. Larger number
                 needs more RAM but faster
         """
-        maxiter = kwargs.get('maxiter', None)
-        tol = kwargs.get('tol', 1e-7)
-        atol = kwargs.get('atol', None)
-        stiffness_lambda = kwargs.get('stiffness_lambda', self._stiffness_lambda)
-        crosslink_lambda = kwargs.get('crosslink_lambda', self._crosslink_lambda)
+        maxepoch = kwargs.get('maxepoch', 5)
+        tol = kwargs.get('step_tol', 1e-7)
+        atol = kwargs.get('step_atol', None)
+        maxiter = SLM.expand_to_list(kwargs.get('maxiter', None), maxepoch)
+        step_tol = SLM.expand_to_list(kwargs.get('step_tol', 1e-6), maxepoch)
+        step_atol = SLM.expand_to_list(kwargs.get('step_atol', None), maxepoch)
+        stiffness_lambda = SLM.expand_to_list(kwargs.get('stiffness_lambda', self._stiffness_lambda), maxepoch)
+        crosslink_lambda = SLM.expand_to_list(kwargs.get('crosslink_lambda', self._crosslink_lambda), maxepoch)
+        residue_mode = SLM.expand_to_list(kwargs.get('residue_mode', None), maxepoch)
+        residue_len = SLM.expand_to_list(kwargs.get('residue_len', 0), maxepoch)
+        anneal_mode = SLM.expand_to_list(kwargs.get('anneal_mode', None), maxepoch)
         inner_cache = kwargs.get('inner_cache', self._shared_cache)
-        NotImplemented
+        cont_on_flip = kwargs.get('continue_on_flip', False)
+        crosslink_shrink = kwargs.get('crosslink_shrink', 0.25)
+        shrink_trial = kwargs.get('shrink_trial', 3)
+        batch_num_matches = kwargs.get('batch_num_matches', None)
+        shape_gear = MESH_GEAR_FIXED
+        start_gear = MESH_GEAR_MOVING
+        if cont_on_flip:
+            target_gear = MESH_GEAR_MOVING
+        else:
+            target_gear = MESH_GEAR_STAGING
+        # initialize cost and check flipped triangles
+        check_flip = not cont_on_flip
+        stiff_m, _ = self.stiffness_matrix(gear=(shape_gear,start_gear),
+            force_update=True, to_cache=True,
+            inner_cache=inner_cache, check_flip=check_flip,
+            continue_on_flip=cont_on_flip)
+        if stiff_m is None:
+            return None, None
+        _, _ = self.crosslink_terms(force_update=True, to_cache=True,
+            start_gear=start_gear, target_gear=target_gear,
+            batch_num_matches=batch_num_matches)
+        cost0 = self.cost((shape_gear, start_gear,target_gear),
+            crosslink_lambda[-1], stiffness_lambda[-1], check_flip=check_flip)
+        cost = np.inf
+        if tol is None:
+            tol0 = atol
+        elif atol is None:
+            tol0 = cost0 * tol0
+        else:
+            tol0 = min(cost0 * tol, atol)
+        ke = 0 # epoch counter
+        kshrk = 0 # crosslink_shrink counter
+        cshrink = 1
+        while ke < maxepoch:
+            step_cost = self.optmize_linear(maxiter=maxiter[ke],
+                tol=step_tol[ke], atol=step_atol[ke],
+                shape_gear=shape_gear, start_gear=start_gear, target_gear=target_gear,
+                stiffness_lambda=stiffness_lambda[ke],
+                crosslink_lambda=crosslink_lambda[ke]*cshrink,
+                inner_cache=inner_cache, continue_on_flip=cont_on_flip,
+                batch_num_matches=batch_num_matches)
+            if (step_cost[0] is None) or (step_cost[0] < step_cost[1]):
+                break
+            stiff_m, _ = self.stiffness_matrix(gear=(shape_gear,target_gear),
+                force_update=True, to_cache=True,
+                inner_cache=inner_cache, check_flip=check_flip,
+                continue_on_flip=cont_on_flip)
+            if stiff_m is None:
+                cshrink *= crosslink_shrink
+                kshrk += 1
+                if kshrk > shrink_trial:
+                    break
+                continue
+            if residue_mode[ke] is not None:
+                if residue_len[ke] > 0:
+                    if residue_mode[ke] == 'huber':
+                        self.set_link_residue_huber(residue_len[ke])
+                    else:
+                        self.set_link_residue_threshold(residue_len[ke])
+                self.adjust_link_weight_by_residue(gear=(target_gear, target_gear))
+            _, _ = self.crosslink_terms(force_update=True, to_cache=True,
+                start_gear=target_gear, target_gear=target_gear,
+                batch_num_matches=batch_num_matches)
+            if start_gear != target_gear:
+                self.anneal(gear=(target_gear, start_gear), mode=ANNEAL_COPY_EXACT)
+            if anneal_mode[ke] is not None:
+                self.anneal(gear=(target_gear, shape_gear), mode=anneal_mode[ke])
+            cost = min(cost, self.cost((shape_gear, start_gear,target_gear),
+                crosslink_lambda[-1], stiffness_lambda[-1], check_flip=check_flip))
+            if (tol0 is not None) and (cost < tol0):
+                break
+            ke += 1
+            if ke >= len(stiffness_lambda):
+                break
+        return cost0, cost
 
 
   ## ----------------------------- cached attr ----------------------------- ##
@@ -979,6 +1070,17 @@ class SpringLinkedMeshes:
         return [lnk for lnk in self.links if (self.link_is_relevant(lnk) == 1)]
 
 
+    def cost(self, gears, crosslink_lambda, stiffness_lambda, check_flip=False):
+        stiff_m, stress_v = self.stiffness_matrix(gear=(gears[0],gears[1]),
+            inner_cache=self._shared_cache, check_flip=check_flip,
+            continue_on_flip=(not check_flip))
+        if stiff_m is None:
+            return None
+        _, Cs_rht = self.crosslink_terms(start_gear=gears[1],
+            target_gear=gears[2], batch_num_matches=None)
+        return crosslink_lambda * np.linalg.norm(Cs_rht) - stiffness_lambda * np.linalg.norm(stress_v)
+
+
   ## ------------------------------ utilities ------------------------------ ##
     def link_is_relevant(self, link):
         """
@@ -1056,3 +1158,11 @@ class SpringLinkedMeshes:
                     xy1 = xy1[~mask]
                     weight = weight[~mask]
         return out_links
+
+
+    @staticmethod
+    def expand_to_list(elem, list_len):
+        if (not hasattr(elem, '__len__')) or isinstance(elem, str):
+            return [elem] * list_len
+        else:
+            return elem

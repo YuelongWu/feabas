@@ -1786,7 +1786,7 @@ class Mesh:
         adjust the fixed vertices closer to the moving vertices as the new resting
         state for relaxation.
         """
-        if self.locked or (not self.vertices_initialized(gear=gear[0])):
+        if self.locked:
             return
         if mode in (ANNEAL_GLOBAL_RIGID, ANNEAL_GLOBAL_AFFINE):
             v0 = self.vertices_w_offset(gear=gear[0])
