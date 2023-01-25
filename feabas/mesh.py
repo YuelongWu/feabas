@@ -1003,7 +1003,7 @@ class Mesh:
         return (self.token, *gear_name, *mesh_version)
 
 
-    def clear_cached_attr(self, gear=None, gc_now=False):
+    def clear_cached_attr(self, gear=None, instant_gc=False):
         prefix = '_cached_'
         if (gear is None) or (gear == MESH_GEAR_INITIAL):
             suffix = ''
@@ -1016,11 +1016,11 @@ class Mesh:
                 attnames_to_delete.append(attname)
         for attname in attnames_to_delete:
             delattr(self, attname)
-        if gc_now:
+        if instant_gc:
             gc.collect()
 
 
-    def clear_specified_caches(self, gear=None, cache=None, include_hash=True, keys_to_probe=None, gc_now=False):
+    def clear_specified_caches(self, gear=None, cache=None, include_hash=True, keys_to_probe=None, instant_gc=False):
         """
         clear cached properties in the specified cache.
         Note that if gear is not None, the current token is used regardless of
@@ -1037,7 +1037,7 @@ class Mesh:
                 probe. given same token, if one of the token provided is contained
                 in one of the key in the cache, free the element associated to
                 that key. If None, use the current caching keys as token.
-            gc_now: if do garbage collection right away.
+            instant_gc: if do garbage collection right away.
         """
         if isinstance(cache, bool):
             if cache:
@@ -1079,7 +1079,7 @@ class Mesh:
             elif isinstance(cache, dict):
                 for c0 in cache.values():
                     self.clear_specified_caches(gear=gear, cache=c0, include_hash=include_hash, keys_to_probe=keys_to_probe)
-        if gc_now:
+        if instant_gc:
             gc.collect()
 
 

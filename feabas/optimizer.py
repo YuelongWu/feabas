@@ -328,7 +328,7 @@ class SLM:
         self.clear_cached_attr()
 
 
-    def clear_cached_attr(self, gc_now=False):
+    def clear_cached_attr(self, instant_gc=False):
         self._mesh_uids = None
         self._link_uids = None
         self._link_names = []
@@ -336,11 +336,11 @@ class SLM:
         self._connected_subsystems = None
         self._stiffness_matrix = None
         self._crosslink_terms = None
-        if gc_now:
+        if instant_gc:
             gc.collect()
 
 
-    def link_changed(self, gc_now=False):
+    def link_changed(self, instant_gc=False):
         """
         flag the link list has changed that will affect the system connectivity
         graph. Note that only changing weight is not considered link change.
@@ -349,11 +349,11 @@ class SLM:
         self._linkage_adjacency = None
         self._connected_subsystems = None
         self._crosslink_terms = None
-        if gc_now:
+        if instant_gc:
             gc.collect()
 
 
-    def mesh_changed(self, gc_now=False):
+    def mesh_changed(self, instant_gc=False):
         """
         flag the mesh list has changed that will affect the system connectivity
         graph. Note that only changing vertices is not considered mesh change.
@@ -363,7 +363,7 @@ class SLM:
         self._connected_subsystems = None
         self._stiffness_matrix = None
         self._crosslink_terms = None
-        if gc_now:
+        if instant_gc:
             gc.collect()
 
 

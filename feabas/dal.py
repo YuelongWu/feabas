@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 from collections import OrderedDict
 from functools import partial
+import gc
 import glob
 import json
 import os
@@ -826,6 +827,80 @@ class MosaicLoader(StaticImageLoader):
     @property
     def bounds(self):
         return self._file_rtree.bounds
+
+
+
+class StreamImageLoader(AbstractImageLoader):
+    """
+    Loader class for images already in RAM. Should mimic the interface of that
+    of MosaicLoader.
+    """
+    def __init__(self, img, **kwargs):
+        self._img = img
+        self._dtype = kwargs.get('dtype', img.dtype)  
+        self._apply_CLAHE = kwargs.get('apply_CLAHE', False)
+        self._CLAHE = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+        if len(img.shape) < 3:
+            self._src_number_of_channels = 0
+        else:
+            self._src_number_of_channels = img.shape[-1]
+        self._number_of_channels = kwargs.get('number_of_channels', max(1, self._src_number_of_channels))
+        self._clahe_img = None
+        self._preprocess = kwargs.get('preprocess', None)
+        self._inverse = kwargs.get('inverse', False)
+        self._default_fillval = kwargs.get('fillval', 0)
+        self.resolution = kwargs.get('resolution', 4.0)
+
+
+    @property
+    def clahe_img(self):
+        if self._clahe_img is None:
+            self._clahe_img = self._CLAHE.apply(self.img)
+        return self._clahe_img
+
+
+    def _read_image(self, **kwargs):
+        number_of_channels = kwargs.get('number_of_channels', self._number_of_channels)
+        if number_of_channels is None:
+            number_of_channels = self._src_number_of_channels
+        dtype = kwargs.get('dtype', self._dtype)
+        apply_CLAHE = kwargs.get('apply_CLAHE', self._apply_CLAHE)
+        inverse = kwargs.get('inverse', self._inverse)
+        if apply_CLAHE:
+            img = self.clahe_img
+        else:
+            img = self._img
+        if (self._src_number_of_channels <= 1) and (number_of_channels > 1):
+            img = np.tile(img.reshape(img.shape[0], img.shape[1], 1), (1,1,number_of_channels))
+        elif (self._src_number_of_channels > 1) and (number_of_channels == 1):
+            img = img.mean(axis=-1)
+        if (dtype is not None) and (np.dtype(dtype) != img.dtype):
+            img = img.astype(dtype)
+        if self._preprocess is not None:
+            img = self._preprocess(img)
+        if inverse:
+            if np.dtype(dtype) == np.dtype('uint8'):
+                img = 255 - img
+            elif np.dtype(dtype) == np.dtype('uint16'):
+                img = 65535 - img
+            else:
+                img = img.max() - img
+        return img
+
+
+    def clear_cache(self, instant_gc=False):
+        self._clahe_img = None
+        if instant_gc:
+            gc.collect()
+
+
+    def save_to_json(self, jsonname, **kwargs):
+        raise NotImplementedError
+
+
+    def file_bboxes(self, margin=0):
+        bbox = [-margin, -margin, self._img.shape[1]+margin, self._img.shape[0]+margin]
+        return [bbox]
 
 
 
