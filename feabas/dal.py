@@ -672,7 +672,7 @@ class MosaicLoader(StaticImageLoader):
 
 
     @classmethod
-    def from_filepaths(cls, imgpaths, pattern='_tr(\d+)-tc(\d+)', rc_offset=[1, 1], rc_order=True, **kwargs):
+    def from_filepath(cls, imgpaths, pattern='_tr(\d+)-tc(\d+)', rc_offset=[1, 1], rc_order=True, **kwargs):
         """
         pattern:    regexp pattern to parse row-column pattern
         rc_offset:  if None, normalize
@@ -850,6 +850,22 @@ class StreamImageLoader(AbstractImageLoader):
         self._inverse = kwargs.get('inverse', False)
         self._default_fillval = kwargs.get('fillval', 0)
         self.resolution = kwargs.get('resolution', 4.0)
+        self.x0 = kwargs.get('x0', 0)
+        self.y0 = kwargs.get('y0', 0)
+
+
+    @classmethod
+    def from_filepath(cls, imgpath, **kwargs):
+        img = cv2.imread(imgpath, cv2.IMREAD_UNCHANGED)
+        return cls(img, **kwargs)
+
+
+    def crop(self, bbox, return_empty=False, **kwargs):
+        fillval = kwargs.get('fillval', self._default_fillval)
+        bbox_img = self.bounds
+        img = self._read_image(**kwargs)
+        return crop_image_from_bbox(img, bbox_img, bbox,
+            return_empty=return_empty, return_index=False, fillval=fillval)
 
 
     @property
@@ -899,8 +915,16 @@ class StreamImageLoader(AbstractImageLoader):
 
 
     def file_bboxes(self, margin=0):
-        bbox = [-margin, -margin, self._img.shape[1]+margin, self._img.shape[0]+margin]
+        bbox = [self.x0 - margin,
+                self.y0 - margin,
+                self.x0 + self._img.shape[1] + margin,
+                self.y0 + self._img.shape[0] + margin]
         return [bbox]
+
+
+    @property
+    def bounds(self):
+        return self.file_bboxes(margin=0)[0]
 
 
 
