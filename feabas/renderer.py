@@ -1,11 +1,12 @@
 import cv2
 import matplotlib.tri
 import numpy as np
+from scipy import ndimage
 import shapely.geometry as shpgeo
 from shapely.ops import unary_union
 
 from feabas.constant import *
-from feabas import spatial
+from feabas import spatial, miscs
 
 
 def render_by_subregions(map_x, map_y, mask, img_loader, **kwargs):
@@ -440,6 +441,7 @@ class MeshRenderer:
 
     def crop(self, bbox, **kwargs):
         image_loader = kwargs.get('image_loader', self._image_loader)
+        log_sigma = kwargs.get('log_sigma', 0) # apply laplacian of gaussian filter if > 0
         if image_loader is None:
             raise RuntimeError('Image loader not defined.')
         x_field, y_field, mask = self.crop_field(bbox, **kwargs)
@@ -448,6 +450,12 @@ class MeshRenderer:
             x_field = spatial.scale_coordinates(x_field, scale)
             y_field = spatial.scale_coordinates(y_field, scale)
         imgt = render_by_subregions(x_field, y_field, mask, image_loader, **kwargs)
+        if (log_sigma > 0) and (imgt is not None):
+            if len(imgt.size) > 2:
+                imgt = np.moveaxis(imgt, -1, 0)
+            imgt = miscs.masked_dog_filter(imgt, log_sigma, mask=mask)
+            if len(imgt.size) > 2:
+                imgt = np.moveaxis(imgt, 0, -1)
         return imgt
 
 

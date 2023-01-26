@@ -33,4 +33,8 @@ MATERIAL_MODEL_ENG = 0    # Engineering strain & stress
 MATERIAL_MODEL_SVK = 1    # St. Venant-Kirchhoff model
 MATERIAL_MODEL_NHK = 2    # Neo-Hookean model
 
+FFT_CONF_NONE = 0       # confidence values set to constant 1
+FFT_CONF_STD = 1        # confidence value derived from the standard deviation
+FFT_CONF_MIRROR = 2     # confidence value derived from the convolution
+
 EPSILON0 = 1e-5

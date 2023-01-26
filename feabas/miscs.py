@@ -4,7 +4,35 @@ import importlib
 
 import numpy as np
 from scipy import sparse
+from scipy.ndimage import gaussian_filter1d
 import scipy.sparse.csgraph as csgraph
+
+
+
+def masked_dog_filter(img, sigma, mask=None):
+    """
+    apply Difference of Gaussian filter to an image. if a mask is provided, make
+    sure any signal within the mask will not bleed out.
+    Args:
+        img (ndarray): C x H x W.
+        sigma (float): standard deviation of first Gaussian kernel.
+        mask: region that should be left out. H x W
+    """
+    sigma0, sigma1 = sigma, 2 * sigma
+    if not np.issubdtype(img.dtype, np.floating):
+        img = img.astype(np.float32)
+    img0f = gaussian_filter1d(gaussian_filter1d(img, sigma0, axis=-1, mode='nearest'), sigma0, axis=-2, mode='nearest')
+    img1f = gaussian_filter1d(gaussian_filter1d(img, sigma1, axis=-1, mode='nearest'), sigma1, axis=-2, mode='nearest')
+    imgf = img0f - img1f
+    if (mask is not None) and np.any(mask, axis=None):
+        mask_img = img.ptp() * mask
+        mask0f = gaussian_filter1d(gaussian_filter1d(mask_img, sigma0, axis=-1, mode='nearest'), sigma0, axis=-2, mode='nearest')
+        mask1f = gaussian_filter1d(gaussian_filter1d(mask_img, sigma1, axis=-1, mode='nearest'), sigma1, axis=-2, mode='nearest')
+        maskf = np.maximum(mask0f, mask1f)
+        imgf_a = np.abs(imgf)
+        imgf_a = (imgf_a - maskf).clip(0, None)
+        imgf = imgf_a * np.sign(imgf)
+    return imgf
 
 
 def find_elements_in_array(array, elements, tol=0):
