@@ -378,10 +378,40 @@ class Mesh:
 
 
     @classmethod
-    def from_bbox(cls, bbox, **kwargs):
+    def from_bbox(cls, bbox, cartesian=False, **kwargs):
         # generate mesh with rectangular boundary defined by bbox
         # [xmin, ymin, xmax, ymax]
-        return cls.from_boarder_bbox(bbox, bd_width=np.inf, roundup_bbox=False, mesh_growth=1.0, **kwargs)
+        if cartesian:
+            # return a mesh from cartetian grids
+            resolution = kwargs.get('resolution', 4)
+            mesh_size = kwargs.get('mesh_size', (100*4/resolution)) # tentative block size
+            max_aspect_ratio = kwargs.get('max_aspect_ratio', 2) # the maximum aspect ratio of each block
+            min_num_blocks = kwargs.get('min_num_blocks', 1) # minimum number of blocks on each side
+            xmin, ymin, xmax, ymax = bbox
+            ht = ymax - ymin
+            wd = xmax - xmin
+            Nx = max(np.round(wd / mesh_size), min_num_blocks)
+            Ny = max(np.round(ht / mesh_size), min_num_blocks)
+            dx = wd / Nx
+            dy = ht / Ny
+            if dx > (max_aspect_ratio * dy):
+                dx = max_aspect_ratio * dy
+            elif dy > (max_aspect_ratio * dx):
+                dy = max_aspect_ratio * dx
+            Nx = int(np.ceil(wd / dx)) + 1
+            Ny = int(np.ceil(ht / dy)) + 1
+            xx = np.linspace(xmin, xmax, num=Nx, endpoint=True) - 0.5
+            yy = np.linspace(ymin, ymax, num=Ny, endpoint=True) - 0.5
+            vx, vy = np.meshgrid(xx, yy)
+            indx = np.arange(vx.size).reshape(vx.shape)
+            seg_h = np.stack((indx[:,:-1].ravel(), indx[:,1:].ravel()), axis=-1)
+            seg_v = np.stack((indx[:-1].ravel(), indx[1:].ravel()), axis=-1)
+            segments = np.concatenate((seg_h, seg_v), axis=0)
+            vertices = np.stack((vx.ravel(), vy.ravel()), axis=-1)
+            kwargs['mesh_size'] = max(dx, dy) * 2
+            return cls.from_PSLG(vertices, segments, **kwargs)
+        else:
+            return cls.from_boarder_bbox(bbox, bd_width=np.inf, roundup_bbox=False, mesh_growth=1.0, **kwargs)
 
 
     @classmethod
@@ -473,7 +503,7 @@ class Mesh:
         vertices = np.stack((Vx, Vy), axis=-1)
         vertices = np.append(vertices, np.array([[0,0]]), axis=0)
         vtx_round = np.round(vertices * 1000 / mesh_size)
-        vertices = vertices + np.array((xmin+xmax, ymin+ymax))/2
+        vertices = vertices + np.array((xmin + xmax - 1, ymin + ymax - 1))/2
         _, indx, rindx = np.unique(vtx_round, axis=0,  return_index=True, return_inverse=True)
         vertices = vertices[indx]
         if bool(segs):

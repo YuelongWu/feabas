@@ -12,11 +12,11 @@ import scipy.sparse.csgraph as csgraph
 def masked_dog_filter(img, sigma, mask=None):
     """
     apply Difference of Gaussian filter to an image. if a mask is provided, make
-    sure any signal within the mask will not bleed out.
+    sure any signal outside the mask will not bleed out.
     Args:
         img (ndarray): C x H x W.
         sigma (float): standard deviation of first Gaussian kernel.
-        mask: region that should be left out. H x W
+        mask: region that should be kept. H x W
     """
     sigma0, sigma1 = sigma, 2 * sigma
     if not np.issubdtype(img.dtype, np.floating):
@@ -24,8 +24,8 @@ def masked_dog_filter(img, sigma, mask=None):
     img0f = gaussian_filter1d(gaussian_filter1d(img, sigma0, axis=-1, mode='nearest'), sigma0, axis=-2, mode='nearest')
     img1f = gaussian_filter1d(gaussian_filter1d(img, sigma1, axis=-1, mode='nearest'), sigma1, axis=-2, mode='nearest')
     imgf = img0f - img1f
-    if (mask is not None) and np.any(mask, axis=None):
-        mask_img = img.ptp() * mask
+    if (mask is not None) and (not np.all(mask, axis=None)):
+        mask_img = img.ptp() * (1 - mask)
         mask0f = gaussian_filter1d(gaussian_filter1d(mask_img, sigma0, axis=-1, mode='nearest'), sigma0, axis=-2, mode='nearest')
         mask1f = gaussian_filter1d(gaussian_filter1d(mask_img, sigma1, axis=-1, mode='nearest'), sigma1, axis=-2, mode='nearest')
         maskf = np.maximum(mask0f, mask1f)

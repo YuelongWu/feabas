@@ -21,13 +21,13 @@ def render_by_subregions(map_x, map_y, mask, img_loader, **kwargs):
     return_empty = kwargs.get('return_empty', False)
     if map_x.size == 0:
         return None
-    if np.all(mask, axis=None):
+    if not np.any(mask, axis=None):
         if return_empty:
             return np.full_like(map_x, fillval, dtype=dtype_out)
         else:
             return None
     imgt = np.full_like(map_x, fillval, dtype=dtype_out)
-    to_render = ~mask
+    to_render = mask
     multichannel = False
     while np.any(to_render, axis=None):
         indx0, indx1 = np.nonzero(to_render)
@@ -386,14 +386,14 @@ class MeshRenderer:
             xx, yy = np.meshgrid(xs, ys)
             x_field = xx * A[0,0] + yy * A[1,0] + t[0]
             y_field = xx * A[0,1] + yy * A[1,1] + t[1]
-            mask = np.zeros_like(x_field, dtype=bool)
+            mask = np.ones_like(x_field, dtype=bool)
         elif mode == RENDER_CONTIGEOUS:
             x_field, y_field, weight = self.field_w_weight(bbox0, region_id=None,
                 out_resolution=out_resolution, offsetting=False, compute_wt=True)
             if weight is None:
                 mask = None
             else:
-                mask = weight <= 0
+                mask = weight > 0
         elif mode == RENDER_FULL:
             regions = self.region_finder_for_bbox(bbox0, offsetting=False)
             if regions.size == 0:
@@ -433,7 +433,7 @@ class MeshRenderer:
                 with np.errstate(invalid='ignore', divide='ignore'):
                     x_field = np.nan_to_num(x_field / weight, nan=0,posinf=0, neginf=0)
                     y_field = np.nan_to_num(y_field / weight, nan=0,posinf=0, neginf=0)
-            mask = weight <= 0
+            mask = weight > 0
         else:
             raise ValueError
         return x_field, y_field, mask

@@ -21,7 +21,7 @@ def xcorr_fft(img0, img1, conf_mode=FFT_CONF_MIRROR, **kwargs):
         mask1: mask for DoG filter for the second image.
         normalize (bool): whether to normalize the cross-correlation.
     Return:
-        dy, dx: the displacement of the peak of the cross-correlation, so that
+        dx, dy: the displacement of the peak of the cross-correlation, so that
             the center of img1 + (dx, dy) corresponds to the center of img0.
         conf: the confidence value of the cross-correlation between 0 and 1.
     """
@@ -42,12 +42,8 @@ def xcorr_fft(img0, img1, conf_mode=FFT_CONF_MIRROR, **kwargs):
     if normalize:
         if mask0 is None:
             mask0 = np.ones_like(img0)
-        else:
-            mask0 = 1 - mask0
         if mask1 is None:
             mask1 = np.ones_like(img1)
-        else:
-            mask1 = 1 - mask1
         M0 = fft.rfft2(mask0, s=fftshp)
         M1 = fft.rfft2(mask1, s=fftshp)
         NC = fft.irfft2(np.conj(M0) * M1)
@@ -78,4 +74,13 @@ def xcorr_fft(img0, img1, conf_mode=FFT_CONF_MIRROR, **kwargs):
         # assuming exponential distribution
         conf = (1 - np.exp(-C_max / C_std)) ** np.prod(fftshp)
         conf = conf.clip(0, 1)
-    return dy, dx, conf
+    return dx, dy, conf
+
+
+def shotgun_matcher(img0, img1, **kwargs):
+    """
+    given two images, return the displacement vectors on a grid of sample points.
+    Suitable for stitching matching, thumbnail fine-matching etc where the entire
+    images can be loaded in RAM.
+    """
+    NotImplemented
