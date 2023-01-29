@@ -19,7 +19,11 @@ def xcorr_fft(img0, img1, conf_mode=FFT_CONF_MIRROR, **kwargs):
             filter to the images before cross-correlation
         mask0: mask for DoG filter for the first image.
         mask1: mask for DoG filter for the second image.
-        normalize (bool): whether to normalize the cross-correlation.
+        normalize (bool): whether to normalize the cross-correlation. The inputs
+            of the function are expected to be band-pass filtered, therefore
+            normalization is not that necessary.
+        pad (bool): whether to zero-pad the images so that the peak position is
+            not ambiguous.
     Return:
         dx, dy: the displacement of the peak of the cross-correlation, so that
             the center of img1 + (dx, dy) corresponds to the center of img0.
@@ -29,12 +33,16 @@ def xcorr_fft(img0, img1, conf_mode=FFT_CONF_MIRROR, **kwargs):
     mask0 = kwargs.get('mask0', None)
     mask1 = kwargs.get('mask1', None)
     normalize = kwargs.get('normalize', False)
+    pad = kwargs.get('pad', True)
     if sigma > 0:
         img0 = miscs.masked_dog_filter(img0, sigma, mask=mask0)
         img1 = miscs.masked_dog_filter(img1, sigma, mask=mask1)
     imgshp0 = img0.shape[-2:]
     imgshp1 = img1.shape[-2:]
-    fftshp = [next_fast_len(s0 + s1 - 1) for s0, s1 in zip(imgshp0, imgshp1)]
+    if pad:
+        fftshp = [next_fast_len(s0 + s1 - 1) for s0, s1 in zip(imgshp0, imgshp1)]
+    else:
+        fftshp = [next_fast_len(max(s0, s1)) for s0, s1 in zip(imgshp0, imgshp1)]
     F0 = fft.rfft2(img0, s=fftshp)
     F1 = fft.rfft2(img1, s=fftshp)
     C = fft.irfft2(np.conj(F0) * F1)
@@ -77,10 +85,67 @@ def xcorr_fft(img0, img1, conf_mode=FFT_CONF_MIRROR, **kwargs):
     return dx, dy, conf
 
 
-def shotgun_matcher(img0, img1, **kwargs):
+def global_translation_matcher(img0, img1, **kwargs):
+    sigma = kwargs.get('sigma', 0.0)
+    mask0 = kwargs.get('mask0', None)
+    mask1 = kwargs.get('mask1', None)
+    conf_mode = kwargs.get('conf_mode', FFT_CONF_MIRROR)
+    conf_thresh = kwargs.get('conf_thresh', 0.3)
+    if sigma > 0:
+        img0 = miscs.masked_dog_filter(img0, sigma, mask=mask0)
+        img1 = miscs.masked_dog_filter(img1, sigma, mask=mask1)
+    tx, ty, conf = xcorr_fft(img0, img1, conf_mode=conf_mode, pad=True)
+    if conf > conf_thresh:
+        return tx, ty, conf
+    # divide the image for another shot (avoid local artifacts)
+    imgshp0 = img0.shape[-2:]
+    imgshp1 = img1.shape[-2:]
+    imgshp = np.minimum(imgshp0, imgshp1)
+    # find the division that results in most moderate aspect ratio
+    ratio = imgshp[0]/imgshp[1]
+    divide_sel = np.argmin(np.abs([ratio*4, ratio, ratio/4]))
+    if divide_sel == 0:
+        divide_N = (1, 4)
+    elif divide_sel == 1:
+        divide_N = (2, 2)
+    else:
+        divide_N = (4, 1)
+    dx0 = int(np.ceil(imgshp0[1] / divide_N[1]))
+    dy0 = int(np.ceil(imgshp0[0] / divide_N[0]))
+    dx1 = int(np.ceil(imgshp1[1] / divide_N[1]))
+    dy1 = int(np.ceil(imgshp1[0] / divide_N[0]))
+    x0 = np.round(np.linspace(0, imgshp0[1] - dx0, num=divide_N[1], endpoint=True)).astype(np.int32)
+    y0 = np.round(np.linspace(0, imgshp0[0] - dy0, num=divide_N[0], endpoint=True)).astype(np.int32)
+    x1 = np.round(np.linspace(0, imgshp1[1] - dx1, num=divide_N[1], endpoint=True)).astype(np.int32)
+    y1 = np.round(np.linspace(0, imgshp1[0] - dy1, num=divide_N[0], endpoint=True)).astype(np.int32)
+    xx0, yy0 = np.meshgrid(x0, y0)
+    xx1, yy1 = np.meshgrid(x1, y1)
+    xx0, yy0, xx1, yy1 = xx0.ravel(), yy0.ravel(), xx1.ravel(), yy1.ravel()
+    stack0 = []
+    stack1 = []
+    for k in range(xx0.size):
+        stack0.append(img0[yy0[k]:(yy0[k]+dy0), xx0[k]:(xx0[k]+dx0)])
+        stack1.append(img1[yy1[k]:(yy1[k]+dy1), xx1[k]:(xx1[k]+dx1)])
+    btx, bty, bconf = xcorr_fft(np.stack(stack0, axis=0), np.stack(stack1, axis=0), conf_mode=conf_mode, pad=True)
+    k_best = np.argmax(bconf)
+    if bconf[k_best] <= conf:
+        tx = btx[k_best] + xx1[k_best] + dx1/2 - xx0[k_best] - dx0/2 - (imgshp1[1] - imgshp0[1]) / 2
+        ty = bty[k_best] + yy1[k_best] + dy1/2 - yy0[k_best] - dy0/2 - (imgshp1[0] - imgshp0[0]) / 2
+        conf = bconf[k_best]
+    return tx, ty, conf
+
+
+def stitching_matcher(img0, img1, **kwargs):
     """
-    given two images, return the displacement vectors on a grid of sample points.
-    Suitable for stitching matching, thumbnail fine-matching etc where the entire
-    images can be loaded in RAM.
+    given two images with rectangular mask, return the displacement vectors on a
+    grid of sample points. Mostly for stitching matching.
     """
-    NotImplemented
+    sigma = kwargs.get('sigma', 0.0)
+    mask0 = kwargs.get('mask0', None)
+    mask1 = kwargs.get('mask1', None)
+    conf_mode = kwargs.get('conf_mode', FFT_CONF_MIRROR)
+    conf_thresh = kwargs.get('conf_thresh', 0.3)
+    spacing = kwargs.get('spacing', [100])
+    if sigma > 0:
+        img0 = miscs.masked_dog_filter(img0, sigma, mask=mask0)
+        img1 = miscs.masked_dog_filter(img1, sigma, mask=mask1)
