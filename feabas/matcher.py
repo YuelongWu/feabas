@@ -152,7 +152,7 @@ def stitching_matcher(img0, img1, **kwargs):
     opt_tol = kwargs.get('opt_tol', 1e-6)
     coarse_downsample = kwargs.get('coarse_downsample', 1)
     fine_downsample = kwargs.get('fine_downsample', 1)
-    spacings = np.sort(kwargs.get('spacings', [100]))[::-1]
+    spacings = np.array(kwargs.get('spacings', [0.25, 100]), copy=False)
     min_num_blocks = kwargs.get('min_num_blocks', 2)
     if coarse_downsample != 1:
         img0_g = cv2.resize(img0, None, fx=coarse_downsample, fy=coarse_downsample, interpolation=cv2.INTER_AREA)
@@ -204,6 +204,14 @@ def stitching_matcher(img0, img1, **kwargs):
     ty0 = ty0 * fine_downsample / coarse_downsample
     err_thresh = err_thresh * fine_downsample
     err_tol = err_tol * fine_downsample
+    if np.any(spacings < 1):
+        bbox0 = np.array(img_loader0.bounds) + np.tile((tx0, ty0), 2)
+        bbox1 = img_loader1.bounds
+        bbox, _ = miscs.intersect_bbox(bbox0, bbox1)
+        wd0 = bbox[2] - bbox[0]
+        ht0 = bbox[3] - bbox[1]
+        lside = max(wd0, ht0)
+        spacings[spacings < 1] *= lside
     spacings = spacings * fine_downsample
     img_loader0 = dal.StreamLoader(img0_f)
     img_loader1 = dal.StreamLoader(img1_f)
