@@ -68,7 +68,7 @@ def scale_coordinates(coordinates, scale):
     pixel to (0, 0).
     """
     coordinates = np.array(coordinates, copy=False)
-    if scale == 1:
+    if np.all(scale == 1):
         return coordinates
     else:
         return (coordinates + 0.5) * scale - 0.5

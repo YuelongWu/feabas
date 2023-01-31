@@ -839,7 +839,6 @@ class StreamImageLoader(AbstractImageLoader):
         self._img = img
         self._dtype = kwargs.get('dtype', img.dtype)  
         self._apply_CLAHE = kwargs.get('apply_CLAHE', False)
-        self._CLAHE = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
         if len(img.shape) < 3:
             self._src_number_of_channels = 0
         else:
@@ -871,7 +870,8 @@ class StreamImageLoader(AbstractImageLoader):
     @property
     def clahe_img(self):
         if self._clahe_img is None:
-            self._clahe_img = self._CLAHE.apply(self.img)
+            clahe_filter = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+            self._clahe_img = clahe_filter.apply(self.img)
         return self._clahe_img
 
 

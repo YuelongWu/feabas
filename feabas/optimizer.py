@@ -323,7 +323,7 @@ class SLM:
         self.meshes = meshes
         self.links = links
         self._stiffness_lambda = kwargs.get('stiffness_lambda', 1.0)
-        self._crosslink_lambda = kwargs.get('crosslink_lambda', 1.0)
+        self._crosslink_lambda = kwargs.get('crosslink_lambda', -1.0)
         self._shared_cache = kwargs.get('shared_cache', None)
         self.clear_cached_attr()
 
@@ -490,6 +490,12 @@ class SLM:
         return modified
 
 
+    def clear_links(self):
+        self.links = []
+        self._link_names = []
+        self.link_changed()
+
+
     def remove_disconnected_meshes(self):
         """
         remove meshes that are not connected to an unlocked mesh by links.
@@ -539,6 +545,7 @@ class SLM:
         elif weight_modified:
             self._linkage_adjacency = None
             self._crosslink_terms = None
+        return weight_modified, connection_modified
 
 
     def set_link_residue_threshold(self, residue_len):
@@ -787,7 +794,7 @@ class SLM:
         return modified
 
 
-    def optmize_linear(self, **kwargs):
+    def optimize_linear(self, **kwargs):
         """
         optimize the linear system or the tangent problem of non-linear system.
         kwargs:
@@ -848,7 +855,7 @@ class SLM:
         return cost
 
 
-    def optmize_Newton_Raphson(self, **kwargs):
+    def optimize_Newton_Raphson(self, **kwargs):
         """
         optimize the non linear system using newton-raphson method.
         kwargs:
@@ -921,7 +928,7 @@ class SLM:
         kshrk = 0 # crosslink_shrink counter
         cshrink = 1
         while ke < maxepoch:
-            step_cost = self.optmize_linear(maxiter=maxiter[ke],
+            step_cost = self.optimize_linear(maxiter=maxiter[ke],
                 tol=step_tol[ke], atol=step_atol[ke],
                 shape_gear=shape_gear, start_gear=start_gear, target_gear=target_gear,
                 stiffness_lambda=stiffness_lambda[ke],

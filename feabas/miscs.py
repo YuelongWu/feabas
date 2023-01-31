@@ -35,6 +35,46 @@ def masked_dog_filter(img, sigma, mask=None):
     return imgf
 
 
+def divide_bbox(bbox, **kwargs):
+    xmin, ymin, xmax, ymax = bbox
+    ht = ymax - ymin
+    wd = xmax - xmin
+    block_size = kwargs.get('block_size', max(ht, wd))
+    min_num_blocks = kwargs.get('min_num_blocks', 1)
+    round_output = kwargs.get('round_output', True)
+    shrink_factor = kwargs.get('shrink_factor', 1)
+    if not hasattr(block_size, '__len__'):
+        block_size = (block_size, block_size)
+    if not hasattr(min_num_blocks, '__len__'):
+        min_num_blocks = (min_num_blocks, min_num_blocks)
+    Nx = max(np.ceil(wd / block_size[1]), min_num_blocks[1])
+    Ny = max(np.ceil(ht / block_size[0]), min_num_blocks[0])
+    dx = int(np.ceil(wd / Nx))
+    dy = int(np.ceil(ht / Ny))
+    xt = np.linspace(xmin, xmax-dx, num=int(Nx), endpoint=True)
+    yt = np.linspace(ymin, ymax-dy, num=int(Ny), endpoint=True)
+    if shrink_factor != 1:
+        dx_new = dx * shrink_factor
+        dy_new = dy * shrink_factor
+        xt = xt + (dx - dx_new)/2
+        yt = yt + (dy - dy_new)/2
+        dx = int(np.ceil(dx_new))
+        dy = int(np.ceil(dy_new))
+    if round_output:
+        xt = np.round(xt).astype(np.int32)
+        yt = np.round(yt).astype(np.int32)
+    xx, yy = np.meshgrid(xt, yt)
+    return xx.ravel(), yy.ravel(), xx.ravel() + dx, yy.ravel() + dy
+
+
+def intersect_bbox(bbox0, bbox1):
+    xmin = max(bbox0[0], bbox1[0])
+    ymin = max(bbox0[1], bbox1[1])
+    xmax = min(bbox0[2], bbox1[2])
+    ymax = min(bbox0[3], bbox1[3])
+    return (xmin, ymin, xmax, ymax), (xmin < xmax) and (ymin < ymax)    
+
+
 def find_elements_in_array(array, elements, tol=0):
     # if find elements in array, return indices, otherwise return -1
     shp = elements.shape

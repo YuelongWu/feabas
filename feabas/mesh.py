@@ -1851,6 +1851,13 @@ class Mesh:
             raise ValueError
 
 
+    def bbox(self, gear=MESH_GEAR_MOVING):
+        vertices = self.vertices_w_offset(gear=gear)
+        v_min = vertices.min(axis=0)
+        v_max = vertices.max(axis=0)
+        return np.concatenate((v_min, v_max), axis=None)
+
+
   ## ------------------------ collision management ------------------------- ##
     def is_valid(self, gear=None, tri_mask=None):
         if gear is None:

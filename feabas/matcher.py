@@ -1,8 +1,9 @@
+import cv2
 import numpy as np
 from scipy import fft, ndimage
 from scipy.fftpack import next_fast_len
 
-from feabas import optimizer, dal, miscs
+from feabas import optimizer, dal, miscs, mesh, renderer
 from feabas.constant import *
 
 
@@ -91,6 +92,7 @@ def global_translation_matcher(img0, img1, **kwargs):
     mask1 = kwargs.get('mask1', None)
     conf_mode = kwargs.get('conf_mode', FFT_CONF_MIRROR)
     conf_thresh = kwargs.get('conf_thresh', 0.3)
+    divide_factor = kwargs.get('divide_factor', 6)
     if sigma > 0:
         img0 = miscs.masked_dog_filter(img0, sigma, mask=mask0)
         img1 = miscs.masked_dog_filter(img1, sigma, mask=mask1)
@@ -102,35 +104,36 @@ def global_translation_matcher(img0, img1, **kwargs):
     imgshp1 = img1.shape[-2:]
     imgshp = np.minimum(imgshp0, imgshp1)
     # find the division that results in most moderate aspect ratio
-    ratio = imgshp[0]/imgshp[1]
-    divide_sel = np.argmin(np.abs([ratio*4, ratio, ratio/4]))
-    if divide_sel == 0:
-        divide_N = (1, 4)
-    elif divide_sel == 1:
-        divide_N = (2, 2)
+    if hasattr(divide_factor, '__len__'):
+        divide_N = divide_factor[:2]
     else:
-        divide_N = (4, 1)
-    dx0 = int(np.ceil(imgshp0[1] / divide_N[1]))
-    dy0 = int(np.ceil(imgshp0[0] / divide_N[0]))
-    dx1 = int(np.ceil(imgshp1[1] / divide_N[1]))
-    dy1 = int(np.ceil(imgshp1[0] / divide_N[0]))
-    x0 = np.round(np.linspace(0, imgshp0[1] - dx0, num=divide_N[1], endpoint=True)).astype(np.int32)
-    y0 = np.round(np.linspace(0, imgshp0[0] - dy0, num=divide_N[0], endpoint=True)).astype(np.int32)
-    x1 = np.round(np.linspace(0, imgshp1[1] - dx1, num=divide_N[1], endpoint=True)).astype(np.int32)
-    y1 = np.round(np.linspace(0, imgshp1[0] - dy1, num=divide_N[0], endpoint=True)).astype(np.int32)
-    xx0, yy0 = np.meshgrid(x0, y0)
-    xx1, yy1 = np.meshgrid(x1, y1)
-    xx0, yy0, xx1, yy1 = xx0.ravel(), yy0.ravel(), xx1.ravel(), yy1.ravel()
+        ratio0 = imgshp[0]/imgshp[1]
+        ratio = np.inf
+        for r0 in range(1, int(divide_factor**0.5) + 1):
+            if divide_factor % r0 != 0:
+                continue
+            rr = np.abs(np.log(ratio0 * (r0 ** 2 / divide_factor)))
+            if rr < ratio:
+                ratio = rr
+                divide_N = (int(divide_factor/r0), int(r0))
+            rr = np.abs(np.log(ratio0 / (r0 ** 2 / divide_factor)))
+            if rr < ratio:
+                ratio = rr
+                divide_N = (int(r0), int(divide_factor/r0))
+    xmin0, ymin0, xmax0, ymax0 = miscs.divide_bbox((0, 0, imgshp0[1], imgshp0[0]), min_num_blocks=divide_N)
+    xmin1, ymin1, xmax1, ymax1 = miscs.divide_bbox((0, 0, imgshp1[1], imgshp1[0]), min_num_blocks=divide_N)
     stack0 = []
     stack1 = []
-    for k in range(xx0.size):
-        stack0.append(img0[yy0[k]:(yy0[k]+dy0), xx0[k]:(xx0[k]+dx0)])
-        stack1.append(img1[yy1[k]:(yy1[k]+dy1), xx1[k]:(xx1[k]+dx1)])
+    for k in range(xmin0.size):
+        stack0.append(img0[ymin0[k]:ymax0[k], xmin0[k]:xmax0[k]])
+        stack1.append(img1[ymin1[k]:ymax1[k], xmin1[k]:xmax1[k]])
     btx, bty, bconf = xcorr_fft(np.stack(stack0, axis=0), np.stack(stack1, axis=0), conf_mode=conf_mode, pad=True)
+    btx = btx + (xmin1 + xmax1 - xmin0 - xmax0 + imgshp0[1] - imgshp1[1])/2
+    bty = bty + (ymin1 + ymax1 - ymin0 - ymax0 + imgshp0[0] - imgshp1[0])/2
     k_best = np.argmax(bconf)
     if bconf[k_best] <= conf:
-        tx = btx[k_best] + xx1[k_best] + dx1/2 - xx0[k_best] - dx0/2 - (imgshp1[1] - imgshp0[1]) / 2
-        ty = bty[k_best] + yy1[k_best] + dy1/2 - yy0[k_best] - dy0/2 - (imgshp1[0] - imgshp0[0]) / 2
+        tx = btx[k_best]
+        ty = bty[k_best]
         conf = bconf[k_best]
     return tx, ty, conf
 
@@ -145,7 +148,209 @@ def stitching_matcher(img0, img1, **kwargs):
     mask1 = kwargs.get('mask1', None)
     conf_mode = kwargs.get('conf_mode', FFT_CONF_MIRROR)
     conf_thresh = kwargs.get('conf_thresh', 0.3)
-    spacing = kwargs.get('spacing', [100])
+    err_thresh = kwargs.get('err_thresh', 5)
+    err_tol = kwargs.get('err_tol', 2)
+    coarse_downsample = kwargs.get('coarse_downsample', 1)
+    fine_downsample = kwargs.get('fine_downsample', 1)
+    spacing = np.sort(kwargs.get('spacing', [100]))
+    min_num_blocks = kwargs.get('min_num_blocks', 2)
+    if coarse_downsample != 1:
+        img0_g = cv2.resize(img0, None, fx=coarse_downsample, fy=coarse_downsample, interpolation=cv2.INTER_AREA)
+        img1_g = cv2.resize(img1, None, fx=coarse_downsample, fy=coarse_downsample, interpolation=cv2.INTER_AREA)
+        if mask0 is not None:
+            mask0_g = cv2.resize(mask0, None, fx=coarse_downsample, fy=coarse_downsample, interpolation=cv2.INTER_NEAREST)
+        else:
+            mask0_g = None
+        if mask1 is not None:
+            mask1_g = cv2.resize(mask1, None, fx=coarse_downsample, fy=coarse_downsample, interpolation=cv2.INTER_NEAREST)
+        else:
+            mask1_g = None
+    else:
+        img0_g = img0
+        img1_g = img1
+        mask0_g = mask0
+        mask1_g = mask1
     if sigma > 0:
-        img0 = miscs.masked_dog_filter(img0, sigma, mask=mask0)
-        img1 = miscs.masked_dog_filter(img1, sigma, mask=mask1)
+        img0_g = miscs.masked_dog_filter(img0_g, sigma*coarse_downsample, mask=mask0_g)
+        img1_g = miscs.masked_dog_filter(img1_g, sigma*coarse_downsample, mask=mask1_g)
+    tx0, ty0, conf0 = global_translation_matcher(img0_g, img1_g, conf_mode=conf_mode,
+        conf_thresh=conf_thresh)
+    if conf0 < conf_thresh:
+        return conf_thresh, None, None
+    if fine_downsample == coarse_downsample:
+        img0_f = img0_g
+        img1_f = img1_g
+    else:
+        if fine_downsample != 1:
+            img0_f = cv2.resize(img0, None, fx=fine_downsample, fy=fine_downsample, interpolation=cv2.INTER_AREA)
+            img1_f = cv2.resize(img1, None, fx=fine_downsample, fy=fine_downsample, interpolation=cv2.INTER_AREA)
+            if mask0 is not None:
+                mask0_f = cv2.resize(mask0, None, fx=fine_downsample, fy=fine_downsample, interpolation=cv2.INTER_NEAREST)
+            else:
+                mask0_f = None
+            if mask1 is not None:
+                mask1_f = cv2.resize(mask1, None, fx=fine_downsample, fy=fine_downsample, interpolation=cv2.INTER_NEAREST)
+            else:
+                mask1_f = None
+        else:
+            img0_f = img0
+            img1_f = img1
+            mask0_f = mask0
+            mask1_f = mask1
+        if sigma > 0:
+            img0_f = miscs.masked_dog_filter(img0_f, sigma*fine_downsample, mask=mask0_f)
+            img1_f = miscs.masked_dog_filter(img1_f, sigma*fine_downsample, mask=mask1_f)
+    tx0 = tx0 * fine_downsample / coarse_downsample
+    ty0 = ty0 * fine_downsample / coarse_downsample
+    err_thresh = err_thresh * fine_downsample
+    err_tol = err_tol * fine_downsample
+    img_loader0 = dal.StreamImageLoader(img0_f)
+    img_loader1 = dal.StreamImageLoader(img1_f)
+    min_spacing = np.min(spacing)
+    mesh0 = mesh.Mesh.from_bbox(img_loader0.bounds, cartesian=False,
+        mesh_size=min_spacing, min_num_blocks=min_num_blocks, uid=0)
+    mesh1 = mesh.Mesh.from_bbox(img_loader1.bounds, cartesian=False,
+        mesh_size=min_spacing, min_num_blocks=min_num_blocks, uid=1)
+    mesh0.apply_translation((tx0, ty0), MESH_GEAR_FIXED)
+    current_spacing = np.max(spacing)
+    initialized = False
+    opt = optimizer.SLM([mesh0, mesh1])
+    for sp in spacing[::-1]:
+        if sp > current_spacing:
+            continue
+        bbox0 = mesh0.bbox(gear=MESH_GEAR_MOVING)
+        bbox1 = mesh1.bbox(gear=MESH_GEAR_MOVING)
+        bbox, valid = miscs.intersect_bbox(bbox0, bbox1)
+        if not valid:
+            return 0, None, None
+        if sp == min_spacing:
+            mnb = min_num_blocks
+        else:
+            mnb = 1
+        xstt, ystt, xend, yend = miscs.divide_bbox(bbox, block_size=sp, min_num_blocks=mnb)
+        render0 = renderer.MeshRenderer.from_mesh(mesh0, image_loader=img_loader0)
+        render1 = renderer.MeshRenderer.from_mesh(mesh1, image_loader=img_loader1)
+        stack0 = []
+        stack1 = []
+        for x0, y0, x1, y1 in zip(xstt, ystt, xend, yend):
+            stack0.append(render0.crop((x0, y0, x1, y1)))
+            stack1.append(render1.crop((x0, y0, x1, y1)))
+        dx, dy, conf = xcorr_fft(np.stack(stack0, axis=0), np.stack(stack1, axis=0),
+            conf_mode=conf_mode, pad=(not initialized))
+        xy0 = np.stack(((xstt+xend-1-dx)/2, (ystt+yend-1-dy)/2), axis=-1)
+        xy1 = np.stack(((xstt+xend-1+dx)/2, (ystt+yend-1+dy)/2), axis=-1)
+        if np.all(conf <= conf_thresh):
+            if not initialized:
+                return 0, None, None
+            else:
+                break
+        opt.clear_links()
+        xy0 = xy0[conf > conf_thresh]
+        xy1 = xy1[conf > conf_thresh]
+        wt = conf[conf > conf_thresh]
+        opt.add_link_from_coordinates(0, 1, xy0, xy1,
+                        gear=(MESH_GEAR_MOVING, MESH_GEAR_MOVING), weight=wt,
+                        check_duplicates=False)
+        opt.optimize_linear(tol=1e-6)
+        if err_thresh > 0:
+            opt.set_link_residue_threshold(err_thresh)
+
+
+def iterative_mesh_matcher(mesh0, mesh1, image_loader0, image_loader1, **kwargs):
+    sigma = kwargs.get('sigma', 0.0)
+    conf_mode = kwargs.get('conf_mode', FFT_CONF_MIRROR)
+    conf_thresh = kwargs.get('conf_thresh', 0.3)
+    err_thresh = kwargs.get('err_thresh', 0)
+    err_tol = kwargs.get('err_tol', 1e-5)
+    spacing = np.array(kwargs.get('spacing', [100]), copy=False)
+    min_num_blocks = kwargs.get('min_num_blocks', 2)
+    shrink_factor = kwargs.get('shrink_factor', 1)
+    distributor = kwargs.get('distributor', BLOCKDIST_CART_BBOX)
+    render_mode = kwargs.get('render_mode', RENDER_FULL)
+    # if any spacing value smaller than 1, means they are relative to longer side
+    if np.any(spacing < 1):
+        bbox0 = mesh0.bbox(gear=MESH_GEAR_MOVING)
+        bbox1 = mesh1.bbox(gear=MESH_GEAR_MOVING)
+        bbox, valid = miscs.intersect_bbox(bbox0, bbox1)
+        if not valid:
+            return None
+        wd0 = bbox[2] - bbox[0]
+        ht0 = bbox[3] - bbox[1]
+        lside = max(wd0, ht0)
+        spacing[spacing < 1] *= lside
+    current_spacing = np.max(spacing)
+    initialized = False
+    opt = optimizer.SLM([mesh0, mesh1])
+    c_pointer = 0
+    sp = np.max(spacing)
+    min_spacing = np.min(spacing)
+    while c_pointer < spacing.size:
+        if sp == min_spacing:
+            mnb = min_num_blocks
+        else:
+            mnb = 1
+        if distributor == BLOCKDIST_CART_BBOX:
+            block_indices = distributor_cartesian_bbox(mesh0, mesh1, sp,
+                min_num_blocks=mnb, shrink_factor=shrink_factor)
+        else:
+            raise ValueError
+        if block_indices is None:
+            return None
+        render0 = renderer.MeshRenderer.from_mesh(mesh0, image_loader=image_loader0)
+        render1 = renderer.MeshRenderer.from_mesh(mesh1, image_loader=image_loader1)
+        stack0 = []
+        stack1 = []
+        xy_ctr = []
+        for x0, y0, x1, y1 in zip(*block_indices):
+            img0 = render0.crop((x0, y0, x1, y1), mode=render_mode, log_sigma=sigma)
+            if img0 is None:
+                continue
+            img1 = render1.crop((x0, y0, x1, y1), mode=render_mode, log_sigma=sigma)
+            if img1 is None:
+                continue
+            stack0.append(img0)
+            stack1.append(img1)
+            xy_ctr.append(((x0+x1-1)/2, (y0+y1-1)/2))
+        dx, dy, conf = xcorr_fft(np.stack(stack0, axis=0), np.stack(stack1, axis=0),
+            conf_mode=conf_mode, pad=(not initialized))
+        xy_ctr = np.array(xy_ctr)
+        dxy = np.stack((dx, dy), axis=-1)
+        xy0 = xy_ctr - dxy/2
+        xy1 = xy_ctr + dxy/2
+        if np.all(conf <= conf_thresh):
+            if not initialized:
+                return None
+            else:
+                break
+        opt.clear_links()
+        xy0 = xy0[conf > conf_thresh]
+        xy1 = xy1[conf > conf_thresh]
+        wt = conf[conf > conf_thresh]
+        max_dis = np.max(np.sum((xy0 - xy1) ** 2, axis=-1)) ** 0.5
+        min_block_size = 4 * max_dis
+        next_pos = np.searchsorted(spacing, min_block_size)
+        opt.add_link_from_coordinates(mesh0.uid, mesh1.uid, xy0, xy1,
+                        gear=(MESH_GEAR_MOVING, MESH_GEAR_MOVING), weight=wt,
+                        check_duplicates=False)
+        opt.optimize_linear(tol=err_tol, batch_num_matches=np.inf)
+        if err_thresh > 0:
+            opt.set_link_residue_threshold(err_thresh)
+            weight_modified, _ = opt.adjust_link_weight_by_residue()
+            opt.optimize_linear(tol=err_tol, batch_num_matches=np.inf)
+        
+
+
+## ----------------- matching block distributors --------------------------- ##
+def distributor_cartesian_bbox(mesh0, mesh1, spacing, **kwargs):
+    gear = kwargs.get('gear', MESH_GEAR_MOVING)
+    min_num_blocks = kwargs.get('min_num_blocks', 1)
+    shrink_factor = kwargs.get('shrink_factor', 1)
+    bbox0 = mesh0.bbox(gear=gear)
+    bbox1 = mesh1.bbox(gear=gear)
+    bbox, valid = miscs.intersect_bbox(bbox0, bbox1)
+    if not valid:
+        return None
+    xstt, ystt, xend, yend = miscs.divide_bbox(bbox, block_size=spacing,
+        min_num_blocks=min_num_blocks, shrink_factor=shrink_factor)
+    return xstt, ystt, xend, yend
+    
