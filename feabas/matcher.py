@@ -232,10 +232,11 @@ def stitching_matcher(img0, img1, **kwargs):
     mesh1 = mesh.Mesh.from_bbox(img_loader1.bounds, cartesian=True,
         mesh_size=min_spacing, min_num_blocks=min_num_blocks, uid=1)
     mesh0.apply_translation((tx0, ty0), MESH_GEAR_FIXED)
+    mesh0.lock()
     weight, xy0, xy1 = iterative_mesh_matcher(mesh0, mesh1, img_loader0, img_loader1,
-        conf_mode=conf_mode, conf_thresh=conf_thresh, err_thresh=err_thresh,
-        opt_tol=opt_tol, spacings=spacings, distributor=BLOCKDIST_CART_BBOX,
-        min_num_blocks=min_num_blocks)
+        conf_mode=conf_mode, conf_thresh=conf_thresh, err_method='huber', 
+        err_thresh=err_thresh, opt_tol=opt_tol, spacings=spacings,
+        distributor=BLOCKDIST_CART_BBOX, min_num_blocks=min_num_blocks)
     if (fine_downsample != 1) and (xy0 is not None):
         xy0 = spatial.scale_coordinates(xy0, 1/fine_downsample)
         xy1 = spatial.scale_coordinates(xy1, 1/fine_downsample)
@@ -290,6 +291,7 @@ def iterative_mesh_matcher(mesh0, mesh1, image_loader0, image_loader1, spacings,
     sigma = kwargs.get('sigma', 0.0)
     conf_mode = kwargs.get('conf_mode', FFT_CONF_MIRROR)
     conf_thresh = kwargs.get('conf_thresh', 0.3)
+    err_method = kwargs.get('err_method', 'huber')
     err_thresh = kwargs.get('err_thresh', 0)
     opt_tol = kwargs.get('opt_tol', 1e-5)
     distributor = kwargs.get('distributor', BLOCKDIST_CART_BBOX)
@@ -379,11 +381,18 @@ def iterative_mesh_matcher(mesh0, mesh1, image_loader0, image_loader1, spacings,
                         gear=(MESH_GEAR_MOVING, MESH_GEAR_MOVING), weight=wt,
                         check_duplicates=False)
         opt.optimize_linear(tol=opt_tol, batch_num_matches=np.inf)
+        opt.clear_equation_terms()
         if err_thresh > 0:
-            opt.set_link_residue_threshold(err_thresh)
+            if err_method == 'huber':
+                opt.set_link_residue_huber(err_thresh)
+            elif err_method == 'threshold':
+                opt.set_link_residue_threshold(err_thresh)
+            else:
+                raise ValueError
             weight_modified, _ = opt.adjust_link_weight_by_residue()
             if weight_modified and (sp_indx < spacings.size):
                 opt.optimize_linear(tol=opt_tol, batch_num_matches=np.inf)
+                opt.clear_equation_terms()
         initialized = True
         if sp_indx < spacings.size:
             sp = spacings[sp_indx]
@@ -398,8 +407,10 @@ def iterative_mesh_matcher(mesh0, mesh1, image_loader0, image_loader1, spacings,
     # img0t = render0.crop(bbox)
     # img1t = render1.crop(bbox)
     # imgt = np.stack((img0t, img1t, img0t), axis=-1)
-    # plt.plot(link.xy1(gear=MESH_GEAR_MOVING, use_mask=True)[:,0] - bbox[0], link.xy1(gear=MESH_GEAR_MOVING,  use_mask=True)[:,1] - bbox[1], 'r.')
-    # plt.imshow(imgt)
+    # plt.imshow(imgt/10)
+    # plt.plot(link.xy0(gear=MESH_GEAR_MOVING, use_mask=True)[:,0] - bbox[0], link.xy0(gear=MESH_GEAR_MOVING,  use_mask=True)[:,1] - bbox[1], 'r.')
+    # plt.plot(link.xy1(gear=MESH_GEAR_MOVING, use_mask=True)[:,0] - bbox[0], link.xy1(gear=MESH_GEAR_MOVING,  use_mask=True)[:,1] - bbox[1], 'g.')
+    # plt.show()
     xy0 = link.xy0(gear=MESH_GEAR_INITIAL, use_mask=True, combine=True)
     xy1 = link.xy1(gear=MESH_GEAR_INITIAL, use_mask=True, combine=True)
     weight = link.weight(use_mask=True)

@@ -89,7 +89,7 @@ class Link:
 
     def equation_contrib(self, index_offsets, **kwargs):
         """computing the contribution needed to add to the FEM assembled matrix."""
-        if (not self.relevant) or (self.num_matches == 0) or (index_offsets[0] < 0) or (index_offsets[1] < 0):
+        if (not self.relevant) or (self.num_matches == 0) or ((index_offsets[0] < 0) and (index_offsets[1] < 0)):
             return None, None, None, None
         start_gear = kwargs.get('start_gear', MESH_GEAR_MOVING)
         targt_gear = kwargs.get('target_gear', MESH_GEAR_MOVING)
@@ -361,6 +361,13 @@ class SLM:
         self._mesh_uids = None
         self._linkage_adjacency = None
         self._connected_subsystems = None
+        self._stiffness_matrix = None
+        self._crosslink_terms = None
+        if instant_gc:
+            gc.collect()
+
+
+    def clear_equation_terms(self, instant_gc=False):
         self._stiffness_matrix = None
         self._crosslink_terms = None
         if instant_gc:
