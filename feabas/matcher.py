@@ -216,9 +216,9 @@ def stitching_matcher(img0, img1, **kwargs):
     img_loader0 = dal.StreamLoader(img0_f)
     img_loader1 = dal.StreamLoader(img1_f)
     min_spacing = np.min(spacings)
-    mesh0 = mesh.Mesh.from_bbox(img_loader0.bounds, cartesian=False,
+    mesh0 = mesh.Mesh.from_bbox(img_loader0.bounds, cartesian=True,
         mesh_size=min_spacing, min_num_blocks=min_num_blocks, uid=0)
-    mesh1 = mesh.Mesh.from_bbox(img_loader1.bounds, cartesian=False,
+    mesh1 = mesh.Mesh.from_bbox(img_loader1.bounds, cartesian=True,
         mesh_size=min_spacing, min_num_blocks=min_num_blocks, uid=1)
     mesh0.apply_translation((tx0, ty0), MESH_GEAR_FIXED)
     weight, xy0, xy1 = iterative_mesh_matcher(mesh0, mesh1, img_loader0, img_loader1,
