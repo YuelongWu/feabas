@@ -104,9 +104,8 @@ class MeshRenderer:
     @classmethod
     def from_mesh(cls, srcmesh, gear=(MESH_GEAR_MOVING, MESH_GEAR_INITIAL), **kwargs):
         include_flipped = kwargs.get('include_flipped', False)
-        weight_params = kwargs.get('weight_params', MESH_TRIFINDER_INNERMOST)
-        fillval = kwargs.get('fillval', None)
-        local_cache = kwargs.cache('cache', False)
+        weight_params = kwargs.pop('weight_params', MESH_TRIFINDER_INNERMOST)
+        local_cache = kwargs.get('cache', False)
         render_mask = srcmesh.triangle_mask_for_render()
         tri_info = srcmesh.tri_info(gear=gear[0], tri_mask=render_mask, include_flipped=include_flipped, cache=local_cache)
         offset0 = srcmesh.offset(gear=gear[0])
@@ -159,7 +158,7 @@ class MeshRenderer:
         resolution = srcmesh.resolution
         return cls(interpolators, offset=offset0, region_tree=region_tree, weight_params=weight_params,
             weight_generator=weight_generator, collision_region=collision_region, resolution=resolution,
-            fillval=fillval)
+            **kwargs)
 
 
     def link_image_loader(self, imgloader):
@@ -288,8 +287,8 @@ class MeshRenderer:
         if region_id == -1:
             return None, None, None
         interpX, interpY = self._interpolators[region_id]
-        xs = np.linspace(bbox0[0], bbox0[2], num=int(bbox0[2]-bbox0[0]), endpoint=False, dtype=float)
-        ys = np.linspace(bbox0[1], bbox0[3], num=int(bbox0[3]-bbox0[1]), endpoint=False, dtype=float)
+        xs = np.linspace(bbox0[0], bbox0[2], num=round(bbox0[2]-bbox0[0]), endpoint=False, dtype=float)
+        ys = np.linspace(bbox0[1], bbox0[3], num=round(bbox0[3]-bbox0[1]), endpoint=False, dtype=float)
         if out_resolution is not None:
             scale = out_resolution / self.resolution
             xs = spatial.scale_coordinates(xs, scale)
@@ -360,12 +359,17 @@ class MeshRenderer:
                 bounding box not intersecting the interpolator.
             y-field (ndarray): deformation field in y direction. None if
                 bounding box not intersecting the interpolator.
-            mask (ndarray): region of invalid pixels.
+            mask (ndarray): region of valid pixels.
         """
         mode = kwargs.get('mode', RENDER_FULL)
         offsetting = kwargs.get('offsetting', True)
         out_resolution = kwargs.get('out_resolution', None)
         bbox0 = np.array(bbox).reshape(4)
+        outwd = round(bbox0[2]-bbox0[0])
+        outht = round(bbox0[3]-bbox0[1])
+        empty_output = (np.zeros((outht, outwd), dtype=np.float32),
+                        np.zeros((outht, outwd), dtype=np.float32),
+                        np.zeros((outht, outwd), dtype=np.bool))
         if offsetting:
             bbox0 = bbox0 - np.tile(self._offset.ravel(), 2)
         if mode in (RENDER_LOCAL_RIGID, RENDER_LOCAL_AFFINE):
@@ -376,9 +380,9 @@ class MeshRenderer:
                 svd_clip = kwargs.get('svd_clip', None)
             A, t = self.local_affine_tform(bcntr, offsetting=False, svd_clip=svd_clip)
             if A is None:
-                return None, None, None
-            xs = np.linspace(bbox0[0], bbox0[2], num=int(bbox0[2]-bbox0[0]), endpoint=False, dtype=float)
-            ys = np.linspace(bbox0[1], bbox0[3], num=int(bbox0[3]-bbox0[1]), endpoint=False, dtype=float)
+                return empty_output
+            xs = np.linspace(bbox0[0], bbox0[2], num=outwd, endpoint=False, dtype=float)
+            ys = np.linspace(bbox0[1], bbox0[3], num=outht, endpoint=False, dtype=float)
             if out_resolution is not None:
                 scale = out_resolution / self.resolution
                 xs = spatial.scale_coordinates(xs, scale)
@@ -397,7 +401,7 @@ class MeshRenderer:
         elif mode == RENDER_FULL:
             regions = self.region_finder_for_bbox(bbox0, offsetting=False)
             if regions.size == 0:
-                return None, None, None
+                return empty_output
             elif regions.size == 1:
                 blend = BLEND_NONE
             else:
@@ -428,7 +432,7 @@ class MeshRenderer:
                     y_field[tmask] = yf[tmask]
                     weight[tmask] = wt[tmask]
             if not initialized:
-                return None, None, None
+                return empty_output
             if blend == BLEND_LINEAR:
                 with np.errstate(invalid='ignore', divide='ignore'):
                     x_field = np.nan_to_num(x_field / weight, nan=0,posinf=0, neginf=0)

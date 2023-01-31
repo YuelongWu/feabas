@@ -60,7 +60,7 @@ class Link:
             if isinstance(weight, np.ndarray):
                 weight = weight[indx1]
             indx0[indx0] = indx1
-        return cls(mesh0, mesh1, tid0, tid1, B0, B1, **kwargs), indx0
+        return cls(mesh0, mesh1, tid0, tid1, B0, B1, weight=weight, **kwargs), indx0
 
 
     def combine_link(self, other):

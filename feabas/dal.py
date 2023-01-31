@@ -341,19 +341,16 @@ class AbstractImageLoader(ABC):
         return self._settings_dict(**kwargs)
 
 
-    @abstractmethod
     def _get_cached_dict(self, imgpath):
         """cached_dict get function used in self._crop_from_one_image"""
         pass
 
 
-    @abstractmethod
     def _get_image_bbox(self, imgpath):
         """image_bbox get function used in self._crop_from_one_image"""
         pass
 
 
-    @abstractmethod
     def _get_image_cached_block_rtree(self, imgpath):
         """image_cached_block_rtree get function used in self._crop_from_one_image"""
         pass

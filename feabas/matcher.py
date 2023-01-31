@@ -3,7 +3,7 @@ import numpy as np
 from scipy import fft, ndimage
 from scipy.fftpack import next_fast_len
 
-from feabas import optimizer, dal, miscs, mesh, renderer
+from feabas import optimizer, dal, miscs, mesh, renderer, spatial
 from feabas.constant import *
 
 
@@ -46,7 +46,7 @@ def xcorr_fft(img0, img1, conf_mode=FFT_CONF_MIRROR, **kwargs):
         fftshp = [next_fast_len(max(s0, s1)) for s0, s1 in zip(imgshp0, imgshp1)]
     F0 = fft.rfft2(img0, s=fftshp)
     F1 = fft.rfft2(img1, s=fftshp)
-    C = fft.irfft2(np.conj(F0) * F1)
+    C = fft.irfft2(np.conj(F0) * F1, s=fftshp)
     C = C.reshape(-1, np.prod(fftshp))
     if normalize:
         if mask0 is None:
@@ -55,7 +55,7 @@ def xcorr_fft(img0, img1, conf_mode=FFT_CONF_MIRROR, **kwargs):
             mask1 = np.ones_like(img1)
         M0 = fft.rfft2(mask0, s=fftshp)
         M1 = fft.rfft2(mask1, s=fftshp)
-        NC = fft.irfft2(np.conj(M0) * M1)
+        NC = fft.irfft2(np.conj(M0) * M1, s=fftshp)
         NC = NC.reshape(-1, np.prod(fftshp))
         NC = (NC / (NC.max(axis=-1, keepdims=True).clip(1, None))).clip(0.1, None)
         C = C / NC
@@ -68,10 +68,10 @@ def xcorr_fft(img0, img1, conf_mode=FFT_CONF_MIRROR, **kwargs):
     if conf_mode == FFT_CONF_NONE:
         conf = np.ones_like(dx, dtype=np.float32)
     elif conf_mode == FFT_CONF_MIRROR:
-        C_mirror = np.abs(fft.irfft2(F0 * F1))
+        C_mirror = np.abs(fft.irfft2(F0 * F1, s=fftshp))
         C_mirror = C_mirror.reshape(-1, np.prod(fftshp))
         if normalize:
-            NC = fft.irfft2(M0 * M1)
+            NC = fft.irfft2(M0 * M1, s=fftshp)
             NC = NC.reshape(-1, np.prod(fftshp))
             NC = (NC / (NC.max(axis=-1, keepdims=True).clip(1, None))).clip(0.1, None)
             C_mirror = C_mirror / NC
@@ -97,6 +97,7 @@ def global_translation_matcher(img0, img1, **kwargs):
         img0 = miscs.masked_dog_filter(img0, sigma, mask=mask0)
         img1 = miscs.masked_dog_filter(img1, sigma, mask=mask1)
     tx, ty, conf = xcorr_fft(img0, img1, conf_mode=conf_mode, pad=True)
+    tx, ty, conf = tx.item(), ty.item(), conf.item()
     if conf > conf_thresh:
         return tx, ty, conf
     # divide the image for another shot (avoid local artifacts)
@@ -140,7 +141,7 @@ def global_translation_matcher(img0, img1, **kwargs):
 
 def stitching_matcher(img0, img1, **kwargs):
     """
-    given two images with rectangular mask, return the displacement vectors on a
+    given two images with rectangular shape, return the displacement vectors on a
     grid of sample points. Mostly for stitching matching.
     """
     sigma = kwargs.get('sigma', 0.0)
@@ -152,8 +153,19 @@ def stitching_matcher(img0, img1, **kwargs):
     opt_tol = kwargs.get('opt_tol', 1e-6)
     coarse_downsample = kwargs.get('coarse_downsample', 1)
     fine_downsample = kwargs.get('fine_downsample', 1)
-    spacings = np.array(kwargs.get('spacings', [0.25, 100]), copy=False)
+    spacings = kwargs.get('spacings', None)
     min_num_blocks = kwargs.get('min_num_blocks', 2)
+    if spacings is None:
+        imgshp = np.minimum(img0.shape, img1.shape)
+        smx = max(imgshp) * 0.25
+        smn = max(min(75, min(imgshp)/3), 25)
+        if smn > smx:
+            spacings = [smn]
+        else:
+            Nsp = max(1, round(np.log(smx/smn)/np.log(4)))
+            spacings = np.exp(np.linspace(np.log(smn), np.log(smx), num=Nsp, endpoint=True))
+    else:
+        spacings = np.array(spacings, copy=False)
     if coarse_downsample != 1:
         img0_g = cv2.resize(img0, None, fx=coarse_downsample, fy=coarse_downsample, interpolation=cv2.INTER_AREA)
         img1_g = cv2.resize(img1, None, fx=coarse_downsample, fy=coarse_downsample, interpolation=cv2.INTER_AREA)
@@ -203,7 +215,8 @@ def stitching_matcher(img0, img1, **kwargs):
     tx0 = tx0 * fine_downsample / coarse_downsample
     ty0 = ty0 * fine_downsample / coarse_downsample
     err_thresh = err_thresh * fine_downsample
-    err_tol = err_tol * fine_downsample
+    img_loader0 = dal.StreamLoader(img0_f)
+    img_loader1 = dal.StreamLoader(img1_f)
     if np.any(spacings < 1):
         bbox0 = np.array(img_loader0.bounds) + np.tile((tx0, ty0), 2)
         bbox1 = img_loader1.bounds
@@ -213,8 +226,6 @@ def stitching_matcher(img0, img1, **kwargs):
         lside = max(wd0, ht0)
         spacings[spacings < 1] *= lside
     spacings = spacings * fine_downsample
-    img_loader0 = dal.StreamLoader(img0_f)
-    img_loader1 = dal.StreamLoader(img1_f)
     min_spacing = np.min(spacings)
     mesh0 = mesh.Mesh.from_bbox(img_loader0.bounds, cartesian=True,
         mesh_size=min_spacing, min_num_blocks=min_num_blocks, uid=0)
@@ -225,11 +236,14 @@ def stitching_matcher(img0, img1, **kwargs):
         conf_mode=conf_mode, conf_thresh=conf_thresh, err_thresh=err_thresh,
         opt_tol=opt_tol, spacings=spacings, distributor=BLOCKDIST_CART_BBOX,
         min_num_blocks=min_num_blocks)
+    if (fine_downsample != 1) and (xy0 is not None):
+        xy0 = spatial.scale_coordinates(xy0, 1/fine_downsample)
+        xy1 = spatial.scale_coordinates(xy1, 1/fine_downsample)
     return weight, xy0, xy1
 
 
 
-def iterative_mesh_matcher(mesh0, mesh1, image_loader0, image_loader1, **kwargs):
+def iterative_mesh_matcher(mesh0, mesh1, image_loader0, image_loader1, spacings, **kwargs):
     """
     find the corresponding points by alternatively performing template matching
     and mesh relaxation.
@@ -267,6 +281,7 @@ def iterative_mesh_matcher(mesh0, mesh1, image_loader0, image_loader1, **kwargs)
             the template-matching block size compared to the spacing.
         render_mode: the rendering mode when generating the blocks for template-
             matching.
+        allow_dwell(int): number of times each spacing settings can be repeated. 
     Return:
         weight: weight of each mathing point pairs.
         xy0, xy1: xy coordinates of the matching points in the images before any
@@ -277,13 +292,14 @@ def iterative_mesh_matcher(mesh0, mesh1, image_loader0, image_loader1, **kwargs)
     conf_thresh = kwargs.get('conf_thresh', 0.3)
     err_thresh = kwargs.get('err_thresh', 0)
     opt_tol = kwargs.get('opt_tol', 1e-5)
-    spacings = np.array(kwargs.get('spacings', [0.25, 100]), copy=False)
     distributor = kwargs.get('distributor', BLOCKDIST_CART_BBOX)
     min_num_blocks = kwargs.get('min_num_blocks', 2)
     shrink_factor = kwargs.get('shrink_factor', 1)
     render_mode = kwargs.get('render_mode', RENDER_FULL)
+    allow_dwell = kwargs.get('allow_dwell', 0)
     # if any spacing value smaller than 1, means they are relative to longer side
-    min_block_size_multiplier = 5
+    spacings = np.array(spacings, copy=False)
+    min_block_size_multiplier = 4
     if np.any(spacings < 1):
         bbox0 = mesh0.bbox(gear=MESH_GEAR_MOVING)
         bbox1 = mesh1.bbox(gear=MESH_GEAR_MOVING)
@@ -300,6 +316,7 @@ def iterative_mesh_matcher(mesh0, mesh1, image_loader0, image_loader1, **kwargs)
     sp_indx = 0
     initialized = False
     spacing_enlarged = False
+    dwelled = 0
     while sp_indx < spacings.size:
         if sp == spacings[-1]:
             mnb = min_num_blocks
@@ -352,8 +369,12 @@ def iterative_mesh_matcher(mesh0, mesh1, image_loader0, image_loader1, **kwargs)
         spacing_enlarged = True
         if next_pos > sp_indx:
             sp_indx = next_pos
-        else:
+            dwelled = 0
+        elif dwelled >= allow_dwell:
             sp_indx += 1
+            dwelled = 0
+        else:
+            dwelled += 1
         opt.add_link_from_coordinates(mesh0.uid, mesh1.uid, xy0, xy1,
                         gear=(MESH_GEAR_MOVING, MESH_GEAR_MOVING), weight=wt,
                         check_duplicates=False)
@@ -367,6 +388,18 @@ def iterative_mesh_matcher(mesh0, mesh1, image_loader0, image_loader1, **kwargs)
         if sp_indx < spacings.size:
             sp = spacings[sp_indx]
     link = opt.links[0]
+    # # Debug:
+    # import matplotlib.pyplot as plt
+    # bbox0 = mesh0.bbox(gear=MESH_GEAR_MOVING)
+    # bbox1 = mesh1.bbox(gear=MESH_GEAR_MOVING)
+    # bbox, valid = miscs.intersect_bbox(bbox0, bbox1)
+    # render0 = renderer.MeshRenderer.from_mesh(mesh0, image_loader=image_loader0)
+    # render1 = renderer.MeshRenderer.from_mesh(mesh1, image_loader=image_loader1)
+    # img0t = render0.crop(bbox)
+    # img1t = render1.crop(bbox)
+    # imgt = np.stack((img0t, img1t, img0t), axis=-1)
+    # plt.plot(link.xy1(gear=MESH_GEAR_MOVING, use_mask=True)[:,0] - bbox[0], link.xy1(gear=MESH_GEAR_MOVING,  use_mask=True)[:,1] - bbox[1], 'r.')
+    # plt.imshow(imgt)
     xy0 = link.xy0(gear=MESH_GEAR_INITIAL, use_mask=True, combine=True)
     xy1 = link.xy1(gear=MESH_GEAR_INITIAL, use_mask=True, combine=True)
     weight = link.weight(use_mask=True)
