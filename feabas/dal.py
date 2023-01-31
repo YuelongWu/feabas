@@ -830,7 +830,7 @@ class MosaicLoader(StaticImageLoader):
 
 
 
-class StreamImageLoader(AbstractImageLoader):
+class StreamLoader(AbstractImageLoader):
     """
     Loader class for images already in RAM. Should mimic the interface of that
     of MosaicLoader.
