@@ -235,7 +235,7 @@ def stitching_matcher(img0, img1, **kwargs):
     mesh0.lock()
     weight, xy0, xy1 = iterative_mesh_matcher(mesh0, mesh1, img_loader0, img_loader1,
         conf_mode=conf_mode, conf_thresh=conf_thresh, err_method='huber', 
-        err_thresh=err_thresh, opt_tol=opt_tol, spacings=spacings,
+        err_thresh=err_thresh, opt_tol=None, spacings=spacings,
         distributor=BLOCKDIST_CART_BBOX, min_num_blocks=min_num_blocks)
     if (fine_downsample != 1) and (xy0 is not None):
         xy0 = spatial.scale_coordinates(xy0, 1/fine_downsample)
@@ -293,7 +293,7 @@ def iterative_mesh_matcher(mesh0, mesh1, image_loader0, image_loader1, spacings,
     conf_thresh = kwargs.get('conf_thresh', 0.3)
     err_method = kwargs.get('err_method', 'huber')
     err_thresh = kwargs.get('err_thresh', 0)
-    opt_tol = kwargs.get('opt_tol', 1e-5)
+    opt_tol = kwargs.get('opt_tol', None)
     distributor = kwargs.get('distributor', BLOCKDIST_CART_BBOX)
     min_num_blocks = kwargs.get('min_num_blocks', 2)
     shrink_factor = kwargs.get('shrink_factor', 1)
@@ -362,6 +362,10 @@ def iterative_mesh_matcher(mesh0, mesh1, image_loader0, image_loader1, spacings,
         xy1 = xy1[conf > conf_thresh]
         wt = conf[conf > conf_thresh]
         max_dis = np.max(np.sum((xy0 - xy1) ** 2, axis=-1)) ** 0.5
+        if opt_tol is None:
+            opt_tol_t = 0.01 / max(1, max_dis)
+        else:
+            opt_tol_t = opt_tol
         min_block_size = min_block_size_multiplier * max_dis
         next_pos = np.searchsorted(-spacings, -min_block_size) - 1
         if (not spacing_enlarged) and (next_pos < 0):
@@ -380,7 +384,7 @@ def iterative_mesh_matcher(mesh0, mesh1, image_loader0, image_loader1, spacings,
         opt.add_link_from_coordinates(mesh0.uid, mesh1.uid, xy0, xy1,
                         gear=(MESH_GEAR_MOVING, MESH_GEAR_MOVING), weight=wt,
                         check_duplicates=False)
-        opt.optimize_linear(tol=opt_tol, batch_num_matches=np.inf)
+        opt.optimize_linear(tol=opt_tol_t, batch_num_matches=np.inf)
         opt.clear_equation_terms()
         if err_thresh > 0:
             if err_method == 'huber':
@@ -391,7 +395,7 @@ def iterative_mesh_matcher(mesh0, mesh1, image_loader0, image_loader1, spacings,
                 raise ValueError
             weight_modified, _ = opt.adjust_link_weight_by_residue()
             if weight_modified and (sp_indx < spacings.size):
-                opt.optimize_linear(tol=opt_tol, batch_num_matches=np.inf)
+                opt.optimize_linear(tol=opt_tol_t, batch_num_matches=np.inf)
                 opt.clear_equation_terms()
         initialized = True
         if sp_indx < spacings.size:
