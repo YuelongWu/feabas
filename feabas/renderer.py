@@ -107,18 +107,22 @@ class MeshRenderer:
         weight_params = kwargs.pop('weight_params', MESH_TRIFINDER_INNERMOST)
         local_cache = kwargs.get('cache', False)
         render_mask = srcmesh.triangle_mask_for_render()
-        tri_info = srcmesh.tri_info(gear=gear[0], tri_mask=render_mask, include_flipped=include_flipped, cache=local_cache)
-        offset0 = srcmesh.offset(gear=gear[0])
-        region_tree = tri_info['region_tree']
-        mattri_list = tri_info['matplotlib_tri']
-        tidx_list = tri_info['triangle_index']
-        vidx_list = tri_info['vertex_index']
         collisions = srcmesh.triangle_collisions(gear=gear[0], tri_mask=render_mask)
         if (collisions.size == 0) or (len(mattri_list) <= 1):
             weight_params = MESH_TRIFINDER_WHATEVER
         else:
             render_mask_indx = np.nonzero(render_mask)[0]
             collision_tidx = render_mask_indx[np.unique(collisions)]
+        if weight_params == MESH_TRIFINDER_INNERMOST:
+            asymmetry = False
+        else:
+            asymmetry = True
+        tri_info = srcmesh.tri_info(gear=gear[0], tri_mask=render_mask, include_flipped=include_flipped, cache=local_cache, asymmetry=asymmetry)
+        offset0 = srcmesh.offset(gear=gear[0])
+        region_tree = tri_info['region_tree']
+        mattri_list = tri_info['matplotlib_tri']
+        tidx_list = tri_info['triangle_index']
+        vidx_list = tri_info['vertex_index']
         vertices_img = srcmesh.vertices_w_offset(gear=gear[-1])
         interpolators = []
         weight_generator = []

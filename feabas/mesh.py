@@ -1464,11 +1464,11 @@ class Mesh:
 
 
     @config_cache('TBD')
-    def tri_info(self, gear=None, tri_mask=None, include_flipped=False, contigeous=True):
+    def tri_info(self, gear=None, tri_mask=None, include_flipped=False, contigeous=True, asymmetry=True):
         # return geometry STRtree, matplotlib tri list, global index list and border segment STRtree
         if gear is None:
             gear = self._current_gear
-        groupings = self.nonoverlap_triangle_groups(gear=gear, contigeous=contigeous, include_flipped=include_flipped, tri_mask=tri_mask)
+        groupings = self.nonoverlap_triangle_groups(gear=gear, contigeous=contigeous, include_flipped=include_flipped, tri_mask=tri_mask, asymmetry=asymmetry)
         geometry_list = []
         mattri_list = []
         tindex_list = []
@@ -1536,9 +1536,10 @@ class Mesh:
         contigeous = kwargs.get('contigeous', True)
         extrapolate = kwargs.get('extrapolate', False)
         inner_cache = kwargs.get('inner_cache', None)
+        asymmetry = kwargs.get('asymmetry', True)
         if gear is None:
             gear = self._current_gear
-        tri_info = self.tri_info(gear=gear, tri_mask=tri_mask, include_flipped=include_flipped, contigeous=contigeous, cache=inner_cache)
+        tri_info = self.tri_info(gear=gear, tri_mask=tri_mask, include_flipped=include_flipped, contigeous=contigeous, cache=inner_cache, asymmetry=asymmetry)
         tree = tri_info['region_tree']
         mattri_list = tri_info['matplotlib_tri']
         index_list = tri_info['triangle_index']
@@ -2047,7 +2048,7 @@ class Mesh:
         return candidate_tids[np.array(collisions)]
 
 
-    def _graph_coloring_overlapped_triangles(self, collisions=None, gear=None, tri_mask=None, include_flipped=False):
+    def _graph_coloring_overlapped_triangles(self, collisions=None, gear=None, tri_mask=None, include_flipped=False, asymmetry=True):
         if gear is None:
             gear = self._current_gear
         if collisions is None:
@@ -2094,12 +2095,21 @@ class Mesh:
                 colors[t0] = group_id
         else:
             colors[order_flip] = -1
-        groupings[indx_loc] = colors
+        if asymmetry:
+            groupings[indx_loc] = colors
+        else:
+            D = self.triangle_distances(tri_mask=tri_mask)
+            dis = []
+            for c in np.unique(colors):
+                start_pos = indx_loc[colors == c]
+                d0 = csgraph.shortest_path(D, directed=False, indices=start_pos)
+                dis.append(d0.min(axis=0))
+            groupings = np.argmin(dis, axis=0)
         return groupings
 
 
     @config_cache('TBD')
-    def nonoverlap_triangle_groups(self, gear=MESH_GEAR_MOVING, contigeous=True, include_flipped=False, tri_mask=None):
+    def nonoverlap_triangle_groups(self, gear=MESH_GEAR_MOVING, contigeous=True, include_flipped=False, tri_mask=None, asymmetry=True):
         """
         devide triangles to subgroups so that within each group there are no
         overlapping triangles. This prevents error when using matplotlib.tri to
@@ -2123,7 +2133,7 @@ class Mesh:
                 if self.is_valid(gear=gear, tri_mask=l_mask):
                     grp = np.full(self._num_masked_tri(l_mask), num_groups0, dtype=groupings0.dtype)
                 else:
-                    grp = self._graph_coloring_overlapped_triangles(gear=gear, tri_mask=l_mask, include_flipped=include_flipped)
+                    grp = self._graph_coloring_overlapped_triangles(gear=gear, tri_mask=l_mask, include_flipped=include_flipped, asymmetry=asymmetry)
                     grp[grp >= 0] += num_groups0
                 groupings0[l_mask] = grp
                 num_groups0 = grp.max() + 1
@@ -2139,7 +2149,7 @@ class Mesh:
             if self.is_valid(gear=gear, tri_mask=tri_mask):
                 grp = np.zeros(self._num_masked_tri(tri_mask), dtype=self.triangles.dtype)
             else:
-                grp = self._graph_coloring_overlapped_triangles(gear=gear, tri_mask=tri_mask, include_flipped=include_flipped)
+                grp = self._graph_coloring_overlapped_triangles(gear=gear, tri_mask=tri_mask, include_flipped=include_flipped, asymmetry=asymmetry)
             if tri_mask is not None:
                 groupings = np.full(self.num_triangles, -1, dtype=self.triangles.dtype)
                 groupings[tri_mask] = grp
