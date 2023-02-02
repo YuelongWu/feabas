@@ -108,7 +108,7 @@ class AbstractImageLoader(ABC):
         self._cache_size = kwargs.get('cache_size', 0)
         self._use_cache = (self._cache_size is None) or (self._cache_size > 0)
         self._init_tile_divider(**kwargs)
-        self._cache_type = kwargs.get('cache_type', 'mfu')
+        self._cache_type = kwargs.get('cache_type', 'fifo')
         self._cache = generate_cache(self._cache_type, maxlen=self._cache_size)
         self._preprocess = kwargs.get('preprocess', None)
         self.resolution = kwargs.get('resolution', DEFAULT_RESOLUTION)
@@ -483,8 +483,12 @@ class StaticImageLoader(AbstractImageLoader):
     """
     def __init__(self, filepaths, **kwargs):
         super().__init__(**kwargs)
-        self.imgrootdir = os.path.dirname(os.path.commonprefix(filepaths))
-        self.imgrelpaths = [os.path.relpath(s, self.imgrootdir) for s in filepaths]
+        if bool(kwargs.get('root_dir', None)):
+            self.imgrootdir = kwargs['root_dir']
+            self.imgrelpaths = filepaths
+        else:
+            self.imgrootdir = os.path.dirname(os.path.commonprefix(filepaths))
+            self.imgrelpaths = [os.path.relpath(s, self.imgrootdir) for s in filepaths]
         self.check_filename_uniqueness()
         self._tile_size = kwargs.get('tile_size', None)
         self._cached_block_rtree = {}

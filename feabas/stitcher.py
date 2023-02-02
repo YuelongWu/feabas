@@ -1,9 +1,12 @@
+from concurrent.futures.process import ProcessPoolExecutor
 import cv2
 import numpy as np
 import os
 from rtree import index
 
-from feabas import matcher, optimizer, dal, miscs
+from feabas.matcher import stitching_matcher
+from feabas.dal import StaticImageLoader
+from feabas import optimizer, miscs
 from feabas.constant import *
 
 
@@ -100,6 +103,13 @@ class Stitcher:
         return cls(imgpaths, bboxes, root_dir=root_dir)
 
 
+    def dispatch_matchers(self, **kwargs):
+        """
+        run matching between overlapping tiles.
+        """
+        NotImplemented
+
+
     def find_overlaps(self):
         overlaps = []
         tree = index.Index(interleaved=True)
@@ -147,3 +157,33 @@ class Stitcher:
         bbox_int = np.concatenate((xy_min, xy_max), axis=-1)
         valid = np.all((xy_max - xy_min) > 0, axis=-1)
         return bbox_int, valid
+
+
+
+def match_list_of_overlaps(overlaps, imgpaths, bboxes, **kwargs):
+    """
+    matching function used as the target function in Stitcher.dispatch_matchers.
+    Args:
+        overlaps(Kx2 ndarray): pairs of indices of the images to match.
+        imgpaths(list of str): the paths to the image files.
+        bboxes(Nx4 ndarray): the estimated bounding boxes of each image.
+    Kwargs:
+        root_dir(str): if provided, the paths in imgpaths are relative paths to
+            this root directory.
+        min_width: minimum amount of overlapping width (in pixels) to use.
+            overlaps below this threshold will be skipped.
+        index_mapper(N ndarray): the mapper to map the local image indices to
+            the global ones, in case the imgpaths fed to this function is only
+            a subset of all the images from the dispatcher
+        loader_config(dict): key-word arguments passed to configure ImageLoader.
+        matcher_config(dict): key-word arguments passed to configure matching.
+    Return:
+        matches(dict): res[(global_index0, global_index1)] = (xy0, xy1, conf).
+    """
+    root_dir = kwargs.get('root_dir', None)
+    min_width = kwargs.get('min_width', 0)
+    index_mapper = kwargs.get('index_mapper', None)
+    loader_config = kwargs.get('loader_config', {})
+    matcher_config = kwargs.get('matcher_config', {})
+    NotImplemented
+    
