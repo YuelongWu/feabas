@@ -96,7 +96,7 @@ class MeshRenderer:
         self.weight_generator = kwargs.get('weight_generator', [None for _ in range(n_region)])
         self._collision_region = kwargs.get('collision_region', None)
         self._image_loader = kwargs.get('image_loader', None)
-        self.resolution = kwargs.get('resolution', 4)
+        self.resolution = kwargs.get('resolution', DEFAULT_RESOLUTION)
         self._default_fillval = kwargs.get('fillval', None)
         self._dtype = kwargs.get('dtype', None)
 

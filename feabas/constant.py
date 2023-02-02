@@ -39,4 +39,5 @@ FFT_CONF_MIRROR = 2     # confidence value derived from the convolution
 
 BLOCKDIST_CART_BBOX = 0
 
+DEFAULT_RESOLUTION = 4.0
 EPSILON0 = 1e-5

@@ -12,6 +12,7 @@ import numpy as np
 from rtree import index
 
 from feabas.miscs import generate_cache, crop_image_from_bbox
+from feabas.constant import *
 
 
 # bbox :int: [xmin, ymin, xmax, ymax]
@@ -110,7 +111,7 @@ class AbstractImageLoader(ABC):
         self._cache_type = kwargs.get('cache_type', 'mfu')
         self._cache = generate_cache(self._cache_type, maxlen=self._cache_size)
         self._preprocess = kwargs.get('preprocess', None)
-        self.resolution = kwargs.get('resolution', 4.0)
+        self.resolution = kwargs.get('resolution', DEFAULT_RESOLUTION)
 
 
     def clear_cache(self, instant_gc=False):
@@ -845,7 +846,7 @@ class StreamLoader(AbstractImageLoader):
         self._preprocess = kwargs.get('preprocess', None)
         self._inverse = kwargs.get('inverse', False)
         self._default_fillval = kwargs.get('fillval', 0)
-        self.resolution = kwargs.get('resolution', 4.0)
+        self.resolution = kwargs.get('resolution', DEFAULT_RESOLUTION)
         self.x0 = kwargs.get('x0', 0)
         self.y0 = kwargs.get('y0', 0)
 

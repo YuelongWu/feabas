@@ -9,6 +9,28 @@ import scipy.sparse.csgraph as csgraph
 
 
 
+def z_order(indices, base=2):
+    """
+    generating z-order from multi-dimensional indices.
+    Args:
+        indices(Nxd ndarray): indexing arrays with each colume as a dimension.
+            Integer entries assumed.
+    Return:
+        z-order(Nx1 ndarray): the indices that would sort the points in z-order.
+    """
+    ndim = indices.shape[-1]
+    indices = indices - indices.min(axis=0)
+    indices_casted = np.zeros_like(indices)
+    pw = 0
+    while np.any(indices > 0):
+        mod = indices % base
+        indices_casted = indices_casted + mod * (base ** (ndim * pw))
+        indices = np.floor(indices / base)
+        pw += 1
+    z_order_score = np.sum(indices_casted * (base ** np.arange(ndim)), axis=-1)
+    return np.argsort(z_order_score)
+
+
 def masked_dog_filter(img, sigma, mask=None):
     """
     apply Difference of Gaussian filter to an image. if a mask is provided, make
