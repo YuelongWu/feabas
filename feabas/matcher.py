@@ -233,7 +233,7 @@ def stitching_matcher(img0, img1, **kwargs):
         mesh_size=min_spacing, min_num_blocks=min_num_blocks, uid=1)
     mesh0.apply_translation((tx0, ty0), MESH_GEAR_FIXED)
     mesh0.lock()
-    weight, xy0, xy1 = iterative_mesh_matcher(mesh0, mesh1, img_loader0, img_loader1,
+    weight, xy0, xy1 = iterative_xcorr_matcher_w_mesh(mesh0, mesh1, img_loader0, img_loader1,
         conf_mode=conf_mode, conf_thresh=conf_thresh, err_method='huber', 
         err_thresh=err_thresh, opt_tol=None, spacings=spacings,
         distributor=BLOCKDIST_CART_BBOX, min_num_blocks=min_num_blocks)
@@ -243,8 +243,7 @@ def stitching_matcher(img0, img1, **kwargs):
     return weight, xy0, xy1
 
 
-
-def iterative_mesh_matcher(mesh0, mesh1, image_loader0, image_loader1, spacings, **kwargs):
+def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, spacings, **kwargs):
     """
     find the corresponding points by alternatively performing template matching
     and mesh relaxation.
@@ -384,19 +383,18 @@ def iterative_mesh_matcher(mesh0, mesh1, image_loader0, image_loader1, spacings,
         opt.add_link_from_coordinates(mesh0.uid, mesh1.uid, xy0, xy1,
                         gear=(MESH_GEAR_MOVING, MESH_GEAR_MOVING), weight=wt,
                         check_duplicates=False)
-        opt.optimize_linear(tol=opt_tol_t, batch_num_matches=np.inf)
-        opt.clear_equation_terms()
-        if err_thresh > 0:
-            if err_method == 'huber':
-                opt.set_link_residue_huber(err_thresh)
-            elif err_method == 'threshold':
-                opt.set_link_residue_threshold(err_thresh)
-            else:
-                raise ValueError
-            weight_modified, _ = opt.adjust_link_weight_by_residue()
-            if weight_modified and (sp_indx < spacings.size):
-                opt.optimize_linear(tol=opt_tol_t, batch_num_matches=np.inf)
-                opt.clear_equation_terms()
+        if max_dis > 0.1:
+            opt.optimize_linear(tol=opt_tol_t, batch_num_matches=np.inf)
+            if err_thresh > 0:
+                if err_method == 'huber':
+                    opt.set_link_residue_huber(err_thresh)
+                elif err_method == 'threshold':
+                    opt.set_link_residue_threshold(err_thresh)
+                else:
+                    raise ValueError
+                weight_modified, _ = opt.adjust_link_weight_by_residue()
+                if weight_modified and (sp_indx < spacings.size):
+                    opt.optimize_linear(tol=opt_tol_t, batch_num_matches=np.inf)
         initialized = True
         if sp_indx < spacings.size:
             sp = spacings[sp_indx]
@@ -419,7 +417,6 @@ def iterative_mesh_matcher(mesh0, mesh1, image_loader0, image_loader1, spacings,
     xy1 = link.xy1(gear=MESH_GEAR_INITIAL, use_mask=True, combine=True)
     weight = link.weight(use_mask=True)
     return weight, xy0, xy1
-
 
 
 ## ----------------- matching block distributors --------------------------- ##

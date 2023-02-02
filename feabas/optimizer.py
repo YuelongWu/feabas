@@ -824,6 +824,9 @@ class SLM:
             batch_num_matches: the accumulated number of matches to scan before
                 constructing the incremental sparse matrices. Larger number
                 needs more RAM but faster
+            auto_clear(bool): automatically clear the stiffness term after
+                optimization is done. In some occasions, like flip checking
+                in Newton_Raphson method, this could be set to False.
         """
         maxiter = kwargs.get('maxiter', None)
         tol = kwargs.get('tol', 1e-7)
@@ -836,6 +839,7 @@ class SLM:
         inner_cache = kwargs.get('inner_cache', self._shared_cache)
         cont_on_flip = kwargs.get('continue_on_flip', False)
         batch_num_matches = kwargs.get('batch_num_matches', None)
+        auto_clear = kwargs.get('auto_clear', True)
         check_flip = not cont_on_flip
         stiff_m, stress_v = self.stiffness_matrix(gear=(shape_gear,start_gear),
             inner_cache=inner_cache, check_flip=check_flip,
@@ -859,6 +863,8 @@ class SLM:
                 end_idx = stt_idx + m.num_vertices * 2
                 dxy = dd[stt_idx:end_idx].reshape(-1,2)
                 m.set_field(dxy, gear=(start_gear, targt_gear))
+            if auto_clear:
+                self._stiffness_matrix = None
         return cost
 
 
@@ -941,7 +947,7 @@ class SLM:
                 stiffness_lambda=stiffness_lambda[ke],
                 crosslink_lambda=crosslink_lambda[ke]*cshrink,
                 inner_cache=inner_cache, continue_on_flip=cont_on_flip,
-                batch_num_matches=batch_num_matches)
+                batch_num_matches=batch_num_matches, auto_clear=False)
             if (step_cost[0] is None) or (step_cost[0] < step_cost[1]):
                 break
             if anneal_mode[ke] is not None:
