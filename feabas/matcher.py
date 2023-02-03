@@ -150,7 +150,7 @@ def stitching_matcher(img0, img1, **kwargs):
     conf_mode = kwargs.get('conf_mode', FFT_CONF_MIRROR)
     conf_thresh = kwargs.get('conf_thresh', 0.3)
     err_thresh = kwargs.get('err_thresh', 5)
-    opt_tol = kwargs.get('opt_tol', 1e-6)
+    opt_tol = kwargs.get('opt_tol', None)
     coarse_downsample = kwargs.get('coarse_downsample', 1)
     fine_downsample = kwargs.get('fine_downsample', 1)
     spacings = kwargs.get('spacings', None)
@@ -215,8 +215,8 @@ def stitching_matcher(img0, img1, **kwargs):
     tx0 = tx0 * fine_downsample / coarse_downsample
     ty0 = ty0 * fine_downsample / coarse_downsample
     err_thresh = err_thresh * fine_downsample
-    img_loader0 = dal.StreamLoader(img0_f)
-    img_loader1 = dal.StreamLoader(img1_f)
+    img_loader0 = dal.StreamLoader(img0_f, fillval=0)
+    img_loader1 = dal.StreamLoader(img1_f, fillval=0)
     if np.any(spacings < 1):
         bbox0 = np.array(img_loader0.bounds) + np.tile((tx0, ty0), 2)
         bbox1 = img_loader1.bounds
@@ -235,7 +235,7 @@ def stitching_matcher(img0, img1, **kwargs):
     mesh0.lock()
     weight, xy0, xy1 = iterative_xcorr_matcher_w_mesh(mesh0, mesh1, img_loader0, img_loader1,
         conf_mode=conf_mode, conf_thresh=conf_thresh, err_method='huber', 
-        err_thresh=err_thresh, opt_tol=None, spacings=spacings,
+        err_thresh=err_thresh, opt_tol=opt_tol, spacings=spacings,
         distributor=BLOCKDIST_CART_BBOX, min_num_blocks=min_num_blocks)
     if (fine_downsample != 1) and (xy0 is not None):
         xy0 = spatial.scale_coordinates(xy0, 1/fine_downsample)
@@ -336,10 +336,10 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
         stack1 = []
         xy_ctr = []
         for x0, y0, x1, y1 in zip(*block_indices):
-            img0 = render0.crop((x0, y0, x1, y1), mode=render_mode, log_sigma=sigma)
+            img0 = render0.crop((x0, y0, x1, y1), mode=render_mode, log_sigma=sigma, remap_interp=cv2.INTER_LINEAR)
             if img0 is None:
                 continue
-            img1 = render1.crop((x0, y0, x1, y1), mode=render_mode, log_sigma=sigma)
+            img1 = render1.crop((x0, y0, x1, y1), mode=render_mode, log_sigma=sigma, remap_interp=cv2.INTER_LINEAR)
             if img1 is None:
                 continue
             stack0.append(img0)

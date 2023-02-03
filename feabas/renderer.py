@@ -36,10 +36,10 @@ def render_by_subregions(map_x, map_y, mask, img_loader, **kwargs):
         xx0 = map_x[indx0_sel, indx1_sel]
         yy0 = map_y[indx0_sel, indx1_sel]
         mskt = (np.abs(map_x - xx0) < mx_dis) & (np.abs(map_y - yy0) < mx_dis) & to_render
-        xmin = np.floor(map_x[mskt].min())
-        xmax = np.ceil(map_x[mskt].max()) + 2
-        ymin = np.floor(map_y[mskt].min())
-        ymax = np.ceil(map_y[mskt].max()) + 2
+        xmin = np.floor(map_x[mskt].min()) - 4 # Lanczos 8x8 kernel
+        xmax = np.ceil(map_x[mskt].max()) + 4
+        ymin = np.floor(map_y[mskt].min()) - 4
+        ymax = np.ceil(map_y[mskt].max()) + 4
         bbox = (int(xmin), int(ymin), int(xmax), int(ymax))
         img0 = img_loader.crop(bbox, **kwargs)
         if img0 is None:
