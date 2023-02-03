@@ -1,5 +1,8 @@
 from concurrent.futures.process import ProcessPoolExecutor
+from concurrent.futures import as_completed
 import cv2
+from functools import partial
+from multiprocessing import get_context
 import numpy as np
 import os
 from rtree import index
@@ -37,6 +40,7 @@ class Stitcher:
         self.average_tile_size = np.median(self.tile_sizes, axis=0)
         init_offset = miscs.bbox_centers(bboxes)
         self._init_offset = init_offset - init_offset.min(axis=0)
+        self.matches = {}
 
 
     @classmethod
@@ -107,7 +111,57 @@ class Stitcher:
         """
         run matching between overlapping tiles.
         """
-        NotImplemented
+        over_write = kwargs.get('over_write', False)
+        num_workers = kwargs.get('num_workers', 1)
+        min_width = kwargs.get('min_width', 0)
+        margin = kwargs.get('margin', 1.0)
+        image_to_mask_path = kwargs.get('image_to_mask_path', None)
+        matcher_config = kwargs.get('matcher_config', {})
+        loader_config = kwargs.get('loader_config', {})
+        if bool(loader_config.get('cache_size', None)) and (num_workers > 1):
+            loader_config['cache_size'] = int(np.ceil(loader_config['cache_size'] / num_workers))
+        loader_config['number_of_channels'] = 1 # only gray-scale matching are supported
+        target_func = partial(Stitcher.match_list_of_overlaps,
+                              root_dir=self.imgrootdir,
+                              min_width=min_width,
+                              margin=margin,
+                              image_to_mask_path=image_to_mask_path,
+                              loader_config=loader_config,
+                              matcher_config=matcher_config)
+        
+        if over_write:
+            self.matches = {}
+            overlaps = self.overlaps
+        else:
+            overlaps = self.overlaps_without_matches
+        num_overlaps = len(overlaps)
+        if ((num_workers is not None) and (num_workers <= 1)) or (num_overlaps <= 1):
+            new_matches = target_func(overlaps, self.imgrelpaths, self.init_bboxes)
+            self.matches.update(new_matches)
+            return len(new_matches)
+        num_workers = min(num_workers, num_overlaps)
+        # 180 roughly number of overlaps in an MultiSEM mFoV
+        num_overlaps_per_job = min(num_overlaps//num_workers, 180)
+        N_jobs = round(num_overlaps / num_overlaps_per_job)
+        indx_j = np.linspace(0, num_overlaps, num=N_jobs+1, endpoint=True)
+        indx_j = np.unique(np.round(indx_j).astype(np.int32))
+        # divide works
+        jobs = []
+        num_new_matches = 0
+        with ProcessPoolExecutor(max_workers=num_workers, mp_context=get_context('spawn')) as executor:
+            for idx0, idx1 in zip(indx_j[:-1], indx_j[1:]):
+                ovlp_g = overlaps[idx0:idx1] # global indices of overlaps
+                mapper, ovlp = np.unique(ovlp_g, return_inverse=True, axis=None)
+                ovlp = ovlp.reshape(ovlp_g.shape)
+                bboxes = self.init_bboxes[mapper]
+                imgpaths = [self.imgrelpaths[s] for s in mapper]
+                job = executor.submit(target_func, ovlp, imgpaths, bboxes, index_mapper=mapper)
+                jobs.append(job)
+            for job in as_completed(jobs):
+                matches = job.result()
+                num_new_matches += len(matches)
+                self.matches.update(matches)
+        return num_new_matches
 
 
     def find_overlaps(self):
@@ -127,6 +181,12 @@ class Stitcher:
         ov_indices = np.round((ov_cntr - ov_cntr.min(axis=0))/average_step_size)
         z_order = miscs.z_order(ov_indices)
         return overlaps[z_order]
+
+
+    @property
+    def overlaps_without_matches(self):
+        overlaps = self.overlaps
+        return np.array([s for s in overlaps if (tuple(s) not in self.matches)])
 
 
     @property
@@ -171,17 +231,20 @@ class Stitcher:
         root_dir = kwargs.get('root_dir', None)
         min_width = kwargs.get('min_width', 0)
         index_mapper = kwargs.get('index_mapper', None)
-        margin = kwargs.get('margin', 1.5)
+        margin = kwargs.get('margin', 1.0)
         image_to_mask_path = kwargs.get('image_to_mask_path', None)
         loader_config = kwargs.get('loader_config', {})
-        matcher_config = kwargs.get('matcher_config', {'sigma': 3.0})
-        margin_ratio_switch = 3
-        bboxes_overlap, overlap_wds = miscs.bbox_intersections(bboxes[overlaps[:,0]], bboxes[overlaps[:,1]])
+        matcher_config = kwargs.get('matcher_config', {})
+        margin_ratio_switch = 2
+        if len(overlaps) == 0:
+            return {}
+        bboxes_overlap, wds = miscs.bbox_intersections(bboxes[overlaps[:,0]], bboxes[overlaps[:,1]])
         if 'cache_border_margin' not in loader_config:
+            overlap_wd0 = 6 * np.median(np.abs(wds - np.median(wds))) + np.median(wds) + 1
             if margin < margin_ratio_switch:
-                loader_config['loader_config'] = int(np.max(overlap_wds) * margin)
+                loader_config['cache_border_margin'] = int(overlap_wd0 * (1 + margin))
             else:
-                loader_config['loader_config'] = int(margin)
+                loader_config['cache_border_margin'] = int(overlap_wd0 + margin)
         image_loader = StaticImageLoader(imgpaths, bboxes, root_dir=root_dir, **loader_config)
         if image_to_mask_path is not None:
             mask_paths = [s.replace(image_to_mask_path[0], image_to_mask_path[1])
@@ -195,7 +258,7 @@ class Stitcher:
         else:
             mask_exist = np.zeros(len(imgpaths), dtype=bool)
         matches = {}
-        for indices, bbox_ov, wd in zip(overlaps, bboxes_overlap, overlap_wds):
+        for indices, bbox_ov, wd in zip(overlaps, bboxes_overlap, wds):
             if wd <= min_width:
                 continue
             if margin < margin_ratio_switch:

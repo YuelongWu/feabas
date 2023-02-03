@@ -144,7 +144,7 @@ def stitching_matcher(img0, img1, **kwargs):
     given two images with rectangular shape, return the displacement vectors on a
     grid of sample points. Mostly for stitching matching.
     """
-    sigma = kwargs.get('sigma', 0.0)
+    sigma = kwargs.get('sigma', 2.5)
     mask0 = kwargs.get('mask0', None)
     mask1 = kwargs.get('mask1', None)
     conf_mode = kwargs.get('conf_mode', FFT_CONF_MIRROR)
