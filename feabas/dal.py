@@ -108,7 +108,7 @@ class AbstractImageLoader(ABC):
         self._cache_size = kwargs.get('cache_size', 0)
         self._use_cache = (self._cache_size is None) or (self._cache_size > 0)
         self._init_tile_divider(**kwargs)
-        self._cache_type = kwargs.get('cache_type', 'fifo')
+        self._cache_type = kwargs.get('cache_type', 'mfu')
         self._cache = generate_cache(self._cache_type, maxlen=self._cache_size)
         self._preprocess = kwargs.get('preprocess', None)
         self.resolution = kwargs.get('resolution', DEFAULT_RESOLUTION)
@@ -323,6 +323,8 @@ class AbstractImageLoader(ABC):
             img = img.mean(axis=-1)
         if dtype is not None:
             img = img.astype(dtype, copy=False)
+        else:
+            dtype = img.dtype
         if apply_CLAHE:
             img = self._CLAHE.apply(img)
         if self._preprocess is not None:
@@ -470,18 +472,23 @@ class DynamicImageLoader(AbstractImageLoader):
 class StaticImageLoader(AbstractImageLoader):
     """
     Class for image loader with predetermined image list.
-    Assuming all the images are of the same dimensions dtype and bitdepth.
+    Assuming all the images are of the same dtype and bitdepth.
 
     Args:
-        filepaths(list): fullpaths of the image file list
+        filepaths(list): fullpaths of the image file list.
+        bboxes(ndarray of int): bounding boxes of each file. If set to None,
+            assume all the tiles have the same tile size (either by reading in
+            the first image or defined by the key-word argument) and all the
+            bboxes are default to (0, 0, imgwd, imght).
     Kwargs:
-        tile_size(tuple): the size of tiles.
-            If None(default), infer from the first image encountered.
+        root_dir(str): if set, the paths in filepaths are relative path to this
+            root directory.
+        tile_size(tuple): the size of tiles. If None(default), infer from the
+            first image encountered.
     caching format:
         self._cache[imgpath] = cache_dict{blkid: tile}
-        self._cached_block_rtree = rtree
     """
-    def __init__(self, filepaths, **kwargs):
+    def __init__(self, filepaths, bboxes=[], **kwargs):
         super().__init__(**kwargs)
         if bool(kwargs.get('root_dir', None)):
             self.imgrootdir = kwargs['root_dir']
@@ -490,9 +497,16 @@ class StaticImageLoader(AbstractImageLoader):
             self.imgrootdir = os.path.dirname(os.path.commonprefix(filepaths))
             self.imgrelpaths = [os.path.relpath(s, self.imgrootdir) for s in filepaths]
         self.check_filename_uniqueness()
-        self._tile_size = kwargs.get('tile_size', None)
+        if not bool(bboxes):
+            tile_size = kwargs.get('tile_size', None)
+            if tile_size is None:
+                imgpath = os.path.join(self.imgrootdir, self.imgrelpaths[0])
+                img = super()._read_image(imgpath, number_of_channels=1, apply_CLAHE=False, inverse=False)
+                tile_size = img.shape[:2]
+            bboxes = np.tile((0, 0, tile_size[-1], tile_size[0]), (len(filepaths), 1))
+        self._file_bboxes = np.round(bboxes).astype(np.int32)
         self._cached_block_rtree = {}
-        self._divider = None
+        self._divider = {}
 
 
     def check_filename_uniqueness(self):
@@ -511,12 +525,22 @@ class StaticImageLoader(AbstractImageLoader):
     def from_json(cls, jsonname, **kwargs):
         settings, json_obj = cls._load_settings_from_json(jsonname)
         filepaths = []
+        if 'root_dir' in json_obj:
+            settings['root_dir'] = json_obj['root_dir']
         if 'tile_size' in json_obj:
             settings['tile_size'] = json_obj['tile_size']
         settings.update(kwargs)
+        filepaths = []
+        bboxes = []
+        bboxes_included = True
         for f in json_obj['images']:
             filepaths.append(f['filepath'])
-        return cls(filepaths=filepaths, **settings)
+            if bboxes_included:
+                if 'bbox' in f:
+                    bboxes.append(f['bbox'])
+                else:
+                    bboxes = False
+        return cls(filepaths=filepaths, bboxes=bboxes, **settings)
 
 
     def _cache_image(self, fileid, img=None, **kwargs):
@@ -533,7 +557,7 @@ class StaticImageLoader(AbstractImageLoader):
         else:
             cache_dict = {}
         new_cache = False
-        for bid, blkbbox in self.divider.items():
+        for bid, blkbbox in self.divider(fileid).items():
             if (bid > 0) and (bid not in cache_dict):
                 if img is None:
                     img = self._read_image(fileid, **kwargs)
@@ -546,10 +570,9 @@ class StaticImageLoader(AbstractImageLoader):
 
     def _export_dict(self, output_controls=True, cache_settings=True, image_list=True):
         out = super()._settings_dict(output_controls=output_controls, cache_settings=cache_settings)
-        if self._tile_size is not None:
-            out['tile_size'] = self._tile_size
+        out['root_dir'] = self.imgrootdir
         if image_list:
-            out['images'] = [{'filepath':s} for s in self.filepaths_generator]
+            out['images'] = [{'filepath':p, 'bbox':b} for p, b in zip(self.imgrelpaths, self._file_bboxes)]
         return out
 
 
@@ -559,22 +582,36 @@ class StaticImageLoader(AbstractImageLoader):
                 imgpath = fileid
             else:
                 imgpath = os.path.join(self.imgrootdir, self.imgrelpaths[fileid])
-            imgpath = os.path.join(self.imgrootdir, self.imgrelpaths[fileid])
-            image_not_in_cache = '{} not in the image loader cache'.format(imgpath)
-            raise KeyError(image_not_in_cache)
+            raise KeyError(f'{imgpath} not in the image loader cache')
         else:
             return self._cache[fileid]
 
 
     def _get_image_bbox(self, fileid):
-        imght, imgwd = self.tile_size
-        return (0,0, imgwd, imght)
+        if isinstance(fileid, str):
+            filepath = fileid
+            fileid = self.fileid_lookup(filepath)
+            if fileid == -1:
+                raise KeyError(f'{filepath} not in the image loader list')
+        return self._file_bboxes[fileid]
+
+
+    def file_bboxes(self, margin=0):
+        for bbox in self._file_bboxes:
+            bbox_m = [bbox[0]-margin, bbox[1]-margin, bbox[2]+margin, bbox[3]+margin]
+            yield bbox_m
 
 
     def _get_image_cached_block_rtree(self, fileid):
-        tile_ht, tile_wd = self.tile_size
-        bbox_img = (0, 0, tile_wd, tile_ht)
-        return self.cached_block_rtree[bbox_img]
+        bbox_img = self._get_image_bbox(fileid)
+        xmin, ymin, xmax, ymax = bbox_img
+        # normalize bbox to reduce number of rtrees needed
+        imgwd, imght = round(xmax - xmin), round(ymax - ymin)
+        bbox_normalized = (0, 0, imgwd, imght)
+        if bbox_normalized not in self._cached_block_rtree:
+            self._cached_block_rtree[bbox_normalized] = index.Index(
+                    self._cached_block_rtree_generator(bbox_normalized), interleaved=True)
+        return self._cached_block_rtree[bbox_normalized]
 
 
     def _read_image(self, fileid, **kwargs):
@@ -583,16 +620,6 @@ class StaticImageLoader(AbstractImageLoader):
         else:
             imgpath = os.path.join(self.imgrootdir, self.imgrelpaths[fileid])
         img = super()._read_image(imgpath, **kwargs)
-        if self._tile_size is None:
-            self._tile_size = img.shape[:2]
-        tile_ht, tile_wd = self._tile_size
-        bbox_img = (0, 0, tile_wd, tile_ht)
-        if bbox_img not in self._cached_block_rtree:
-            self._cached_block_rtree[bbox_img] = index.Index(
-                self._cached_block_rtree_generator(bbox_img), interleaved=True)
-        if self._divider is None:
-            tile_ht, tile_wd = self._tile_size
-            self._divider = self._tile_divider(tile_ht, tile_wd, x0=0, y0=0)
         if self._dtype is None:
             self._dtype = img.dtype
         if self._number_of_channels is None:
@@ -614,18 +641,15 @@ class StaticImageLoader(AbstractImageLoader):
             return -1
 
 
-    @property
-    def cached_block_rtree(self):
-        if self._cached_block_rtree is None:
-            self._read_image(0)
-        return self._cached_block_rtree
-
-
-    @property
-    def divider(self):
-        if self._divider is None:
-            self._read_image(0)
-        return self._divider
+    def divider(self, fileid):
+        bbox_img = self._get_image_bbox(fileid)
+        xmin, ymin, xmax, ymax = bbox_img
+        # normalize bbox to reduce number of rtrees needed
+        imgwd, imght = round(xmax - xmin), round(ymax - ymin)
+        bbox_normalized = (0, 0, imgwd, imght)
+        if bbox_normalized not in self._divider:
+            self._divider[bbox_normalized] = self._tile_divider(imght, imgwd, x0=0, y0=0)
+        return self._divider[bbox_normalized]
 
 
     @property
@@ -653,13 +677,6 @@ class StaticImageLoader(AbstractImageLoader):
         return self._number_of_channels
 
 
-    @property
-    def tile_size(self):
-        if self._tile_size is None:
-            self._read_image(0)
-        return self._tile_size
-
-
 
 class MosaicLoader(StaticImageLoader):
     """
@@ -668,8 +685,7 @@ class MosaicLoader(StaticImageLoader):
     """
     def __init__(self, filepaths, bboxes, **kwargs):
         assert len(filepaths) == len(bboxes)
-        super().__init__(filepaths, **kwargs)
-        self._file_bboxes = bboxes
+        super().__init__(filepaths, bboxes, **kwargs)
         self._init_rtrees()
 
 
@@ -709,18 +725,6 @@ class MosaicLoader(StaticImageLoader):
         return cls(filepaths=imgpaths, bboxes=bboxes, **kwargs)
 
 
-    @classmethod
-    def from_json(cls, jsonname, **kwargs):
-        settings, json_obj = cls._load_settings_from_json(jsonname)
-        settings.update(kwargs)
-        filepaths = []
-        bboxes = []
-        for f in json_obj['images']:
-            filepaths.append(f['filepath'])
-            bboxes.append(f['bbox'])
-        return cls(filepaths=filepaths, bboxes=bboxes, **settings)
-
-
     def _file_rtree_generator(self):
         """
         generator function to build rtree of image bounding boxes.
@@ -748,40 +752,6 @@ class MosaicLoader(StaticImageLoader):
             else:
                 out = None
         return out
-
-
-    def file_bboxes(self, margin=0):
-        for bbox in self._file_bboxes:
-            bbox_m = [bbox[0]-margin, bbox[1]-margin, bbox[2]+margin, bbox[3]+margin]
-            yield bbox_m
-
-
-    def _export_dict(self, output_controls=True, cache_settings=True, image_list=True):
-        out = super()._settings_dict(output_controls=output_controls, cache_settings=cache_settings)
-        if image_list:
-            out['images'] = [{'filepath':p, 'bbox':b} for p, b in zip(self.filepaths_generator, self._file_bboxes)]
-        return out
-
-
-    def _get_image_bbox(self, fileid):
-        if isinstance(fileid, str):
-            filepath = fileid
-            fileid = self.fileid_lookup(filepath)
-            if fileid == -1:
-                image_not_in_list = '{} not in the image loader list'.format(filepath)
-                raise KeyError(image_not_in_list)
-        return self._file_bboxes[fileid]
-
-
-    def _get_image_cached_block_rtree(self, fileid):
-        bbox_img = self._get_image_bbox(fileid)
-        xmin, ymin, xmax, ymax = bbox_img
-        # normalize bbox to reduce number of rtrees needed
-        bbox_normalized = (0, 0, xmax - xmin, ymax - ymin)
-        if bbox_normalized not in self._cached_block_rtree:
-            self._cached_block_rtree[bbox_normalized] = index.Index(
-                    self._cached_block_rtree_generator(bbox_normalized), interleaved=True)
-        return self._cached_block_rtree[bbox_normalized]
 
 
     def _get_image_hits(self, fileid, bbox):
