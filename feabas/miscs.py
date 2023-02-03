@@ -94,7 +94,7 @@ def intersect_bbox(bbox0, bbox1):
     ymin = max(bbox0[1], bbox1[1])
     xmax = min(bbox0[2], bbox1[2])
     ymax = min(bbox0[3], bbox1[3])
-    return (xmin, ymin, xmax, ymax), (xmin < xmax) and (ymin < ymax)    
+    return (xmin, ymin, xmax, ymax), (xmin < xmax) and (ymin < ymax)
 
 
 def find_elements_in_array(array, elements, tol=0):
@@ -231,7 +231,7 @@ def chain_segment_rings(segments, directed=True, conn_lable=None) -> list:
         A = sparse.csc_matrix((S_conn+1, (seg_n[:,0], seg_n[:,1])), shape=(Npts, Npts))
     for n in range(N_conn):
         if conn_lable is None:
-            vtx_mask = V_conn == n    
+            vtx_mask = V_conn == n
             An = A[vtx_mask][:, vtx_mask]
         else:
             An0 = A == (n+1)
@@ -271,6 +271,30 @@ def signed_area(vertices, triangles) -> np.ndarray:
     v0 = tripts[:,1,:] - tripts[:,0,:]
     v1 = tripts[:,2,:] - tripts[:,1,:]
     return np.cross(v0, v1)
+
+
+def bbox_centers(bboxes):
+    bboxes = np.array(bboxes, copy=False)
+    cntr = 0.5 * bboxes @ np.array([[1,0],[0,1],[1,0],[0,1]]) - 0.5
+    return cntr
+
+
+def bbox_sizes(bboxes):
+    bboxes = np.array(bboxes, copy=False)
+    szs = bboxes @ np.array([[0,-1],[-1,0],[0,1],[1,0]])
+    return szs.clip(0, None)
+
+
+def bbox_intersections(bboxes0, bboxes1):
+    xy_min = np.maximum(bboxes0[...,:2], bboxes1[...,:2])
+    xy_max = np.minimum(bboxes0[...,-2:], bboxes1[...,-2:])
+    bbox_int = np.concatenate((xy_min, xy_max), axis=-1)
+    width = np.min(xy_max - xy_min, axis=-1)
+    return bbox_int, width
+
+
+def bbox_enlarge(bboxes, margin=0):
+    return bboxes + np.array([-margin, -margin, margin, margin])
 
 
 ##--------------------------------- caches -----------------------------------##

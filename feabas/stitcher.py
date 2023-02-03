@@ -18,7 +18,7 @@ class Stitcher:
         imgpaths(list): fullpaths of the image file list
         bboxes(N x 4 ndarray): initial estimation of the bounding boxes for each
             image tiles. Could be from the microscope stage coordinates or rough
-            stitching results. (xmin, ymin, xmax, ymax)
+            stitching results. (xmin, ymin, xmax, ymax), supposed integers.
     Kwargs:
         root_dir(str): if provided, imgpaths arg is considered to be relative
             paths and root_dir will be prepended to generate the fullpaths.
@@ -31,11 +31,11 @@ class Stitcher:
         else:
             self.imgrootdir = os.path.dirname(os.path.commonprefix(imgpaths))
             self.imgrelpaths = [os.path.relpath(s, self.imgrootdir) for s in imgpaths]
-        bboxes = np.array(bboxes, copy=False)
+        bboxes = np.round(bboxes).astype(np.int32)
         self.init_bboxes = bboxes
-        self.tile_sizes = Stitcher.bbox_sizes(bboxes)
+        self.tile_sizes = miscs.bbox_sizes(bboxes)
         self.average_tile_size = np.median(self.tile_sizes, axis=0)
-        init_offset = Stitcher.bbox_centers(bboxes)
+        init_offset = miscs.bbox_centers(bboxes)
         self._init_offset = init_offset - init_offset.min(axis=0)
 
 
@@ -121,8 +121,8 @@ class Stitcher:
         overlaps = np.array(overlaps)
         bboxes0 = self.init_bboxes[overlaps[:,0]]
         bboxes1 = self.init_bboxes[overlaps[:,1]]
-        bbox_ov, _ = Stitcher.bbox_intersections(bboxes0, bboxes1)
-        ov_cntr = Stitcher.bbox_centers(bbox_ov)
+        bbox_ov, _ = miscs.bbox_intersections(bboxes0, bboxes1)
+        ov_cntr = miscs.bbox_centers(bbox_ov)
         average_step_size = self.average_tile_size[::-1] / 2
         ov_indices = np.round((ov_cntr - ov_cntr.min(axis=0))/average_step_size)
         z_order = miscs.z_order(ov_indices)
@@ -134,29 +134,6 @@ class Stitcher:
         if (not hasattr(self, '_overlaps')) or (self._overlaps is None):
             self._overlaps = self.find_overlaps()
         return self._overlaps
-
-
-    @staticmethod
-    def bbox_centers(bboxes):
-        bboxes = np.array(bboxes, copy=False)
-        cntr = 0.5 * bboxes @ np.array([[1,0],[0,1],[1,0],[0,1]]) - 0.5
-        return cntr
-
-
-    @staticmethod
-    def bbox_sizes(bboxes):
-        bboxes = np.array(bboxes, copy=False)
-        szs = bboxes @ np.array([[0,-1],[-1,0],[0,1],[1,0]])
-        return szs.clip(0, None)
-
-
-    @staticmethod
-    def bbox_intersections(bboxes0, bboxes1):
-        xy_min = np.maximum(bboxes0[...,:2], bboxes1[...,:2])
-        xy_max = np.minimum(bboxes0[...,-2:], bboxes1[...,-2:])
-        bbox_int = np.concatenate((xy_min, xy_max), axis=-1)
-        valid = np.all((xy_max - xy_min) > 0, axis=-1)
-        return bbox_int, valid
 
 
     @staticmethod
@@ -174,7 +151,18 @@ class Stitcher:
                 overlaps below this threshold will be skipped.
             index_mapper(N ndarray): the mapper to map the local image indices to
                 the global ones, in case the imgpaths fed to this function is only
-                a subset of all the images from the dispatcher
+                a subset of all the images from the dispatcher.
+            margin: extra image to include for matching around the overlapping
+                regions to accommodate for inaccurate starting location. If
+                smaller than 3, multiply it with the shorter edges of the
+                overlapping bboxes before use.
+            image_to_mask_path (list of str): this provide a way to input masks
+                for matching. The file structure of the masks should mirror
+                mirror that of the images, so that
+                  imgpath.replace(image_to_mask_path[0], image_to_mask_path[1])
+                direct to the mask of the corresponding images. In the mask,
+                pixels with 0 values are not used. If no mask image are found,
+                default to keep.
             loader_config(dict): key-word arguments passed to configure ImageLoader.
             matcher_config(dict): key-word arguments passed to configure matching.
         Return:
@@ -183,7 +171,61 @@ class Stitcher:
         root_dir = kwargs.get('root_dir', None)
         min_width = kwargs.get('min_width', 0)
         index_mapper = kwargs.get('index_mapper', None)
+        margin = kwargs.get('margin', 1.5)
+        image_to_mask_path = kwargs.get('image_to_mask_path', None)
         loader_config = kwargs.get('loader_config', {})
-        matcher_config = kwargs.get('matcher_config', {})
-        NotImplemented
-    
+        matcher_config = kwargs.get('matcher_config', {'sigma': 3.0})
+        margin_ratio_switch = 3
+        bboxes_overlap, overlap_wds = miscs.bbox_intersections(bboxes[overlaps[:,0]], bboxes[overlaps[:,1]])
+        if 'cache_border_margin' not in loader_config:
+            if margin < margin_ratio_switch:
+                loader_config['loader_config'] = int(np.max(overlap_wds) * margin)
+            else:
+                loader_config['loader_config'] = int(margin)
+        image_loader = StaticImageLoader(imgpaths, bboxes, root_dir=root_dir, **loader_config)
+        if image_to_mask_path is not None:
+            mask_paths = [s.replace(image_to_mask_path[0], image_to_mask_path[1])
+                for s in image_loader.filepaths_generator]
+            mask_exist = np.array([os.path.isfile(s) for s in mask_paths])
+            loader_config.update({'apply_CLAHE': False,
+                                  'inverse': False,
+                                  'number_of_channels': None,
+                                  'preprocess': None})
+            mask_loader = StaticImageLoader(mask_paths, bboxes, root_dir=None, **loader_config)
+        else:
+            mask_exist = np.zeros(len(imgpaths), dtype=bool)
+        matches = {}
+        for indices, bbox_ov, wd in zip(overlaps, bboxes_overlap, overlap_wds):
+            if wd <= min_width:
+                continue
+            if margin < margin_ratio_switch:
+                real_margin = int(margin * wd)
+            else:
+                real_margin = int(margin)
+            bbox_ov = miscs.bbox_enlarge(bbox_ov, real_margin)
+            idx0, idx1 = indices
+            bbox0 = bboxes[idx0]
+            bbox1 = bboxes[idx1]
+            bbox_ov0 = miscs.bbox_intersections(bbox_ov, bbox0)
+            bbox_ov1 = miscs.bbox_intersections(bbox_ov, bbox1)
+            img0 = image_loader.crop(bbox_ov0, idx0, return_index=False)
+            img1 = image_loader.crop(bbox_ov1, idx1, return_index=False)
+            if mask_exist[idx0]:
+                mask0 = mask_loader.crop(bbox_ov0, idx0, return_index=False)
+            else:
+                mask0 = None
+            if mask_exist[idx1]:
+                mask1 = mask_loader.crop(bbox_ov1, idx1, return_index=False)
+            else:
+                mask1 = None
+            weight, xy0, xy1 = stitching_matcher(img0, img1, mask0=mask0, mask1=mask1, **matcher_config)
+            if xy0 is not None:
+                offset0 = bbox_ov0[:2] - bbox0[:2]
+                offset1 = bbox_ov1[:2] - bbox1[:2]
+                xy0 = xy0 + offset0
+                xy1 = xy1 + offset1
+            if index_mapper is not None:
+                idx0 = index_mapper[idx0]
+                idx1 = index_mapper[idx1]
+            matches[(idx0, idx1)] = (xy0, xy1, weight)
+        return matches

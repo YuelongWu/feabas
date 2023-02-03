@@ -36,7 +36,7 @@ def _tile_divider_blank(imght, imgwd, x0=0, y0=0):
 def _tile_divider_border(imght, imgwd, x0=0, y0=0, cache_border_margin=10):
     """Divide image borders to cache separately. Interior is not cached."""
     divider = OrderedDict()
-    if cache_border_margin == 0:
+    if (cache_border_margin == 0) or (cache_border_margin >= min(imght//2, imgwd//2)):
         divider[1] = (x0, y0, x0+imgwd, y0+imght)
     else:
         border_ht = min(cache_border_margin, imght // 2)
@@ -485,6 +485,7 @@ class StaticImageLoader(AbstractImageLoader):
             root directory.
         tile_size(tuple): the size of tiles. If None(default), infer from the
             first image encountered.
+        The rest of the kwargs are passed to AbstractImageLoader constructor.
     caching format:
         self._cache[imgpath] = cache_dict{blkid: tile}
     """
