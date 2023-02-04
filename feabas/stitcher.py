@@ -41,6 +41,8 @@ class Stitcher:
         init_offset = miscs.bbox_centers(bboxes)
         self._init_offset = init_offset - init_offset.min(axis=0)
         self.matches = {}
+        self.meshes = None
+        self._groupings = None # used to capture concept like mFoV in MultiSEM data
 
 
     @classmethod
@@ -111,7 +113,7 @@ class Stitcher:
         """
         run matching between overlapping tiles.
         """
-        over_write = kwargs.get('over_write', False)
+        overwrite = kwargs.get('overwrite', False)
         num_workers = kwargs.get('num_workers', 1)
         min_width = kwargs.get('min_width', 0)
         margin = kwargs.get('margin', 1.0)
@@ -128,8 +130,7 @@ class Stitcher:
                               image_to_mask_path=image_to_mask_path,
                               loader_config=loader_config,
                               matcher_config=matcher_config)
-        
-        if over_write:
+        if overwrite:
             self.matches = {}
             overlaps = self.overlaps
         else:
@@ -181,6 +182,15 @@ class Stitcher:
         ov_indices = np.round((ov_cntr - ov_cntr.min(axis=0))/average_step_size)
         z_order = miscs.z_order(ov_indices)
         return overlaps[z_order]
+
+
+    def initialize_meshes(self, **kwargs):
+        NotImplemented
+
+
+    def set_groupings(self, groupings):
+        assert (groupings is None) or (len(groupings) == len(self.imgrelpaths))
+        self._groupings = groupings
 
 
     @property
