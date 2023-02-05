@@ -587,8 +587,8 @@ class SLM:
                 stiff, stress = m.stiffness_matrix(gear=gear, **kwargs)
                 if stiff is None:
                     return None, None
-                STIFF_M.append(stiff)
-                STRESS_v.append(stress)
+                STIFF_M.append(stiff * m.soft_factor)
+                STRESS_v.append(stress * m.soft_factor)
             stiffness_matrix = sparse.block_diag(STIFF_M, format='csr')
             stress_vector = np.concatenate(STRESS_v, axis=None)
             if to_cache:

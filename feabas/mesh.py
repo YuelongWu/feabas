@@ -8,6 +8,7 @@ import matplotlib.tri
 import numpy as np
 import os
 from rtree import index
+from scipy.interpolate import interp1d
 from scipy import sparse
 import scipy.sparse.csgraph as csgraph
 from scipy.spatial import KDTree
@@ -265,6 +266,8 @@ class Mesh:
         self._update_caching_keys(gear=MESH_GEAR_FIXED)
         # used for optimizer
         self.locked = kwargs.get('locked', False) # whether to allow modification
+        # make mesh softer during stiffness matrix assembly
+        self.soft_factor = kwargs.get('soft_factor', 1.0)
         uid = kwargs.get('uid', None)   # numbering of the mesh
         if uid is None:
             self.uid = float(Mesh.uid_counter)
@@ -547,6 +550,7 @@ class Mesh:
             init_dict['name'] = self._name
         init_dict['token'] = self.token
         init_dict['uid'] = self.uid
+        init_dict['soft_factor'] = self.soft_factor
         init_dict.update(kwargs)
         return init_dict
 
@@ -809,21 +813,29 @@ class Mesh:
         self._material_table = material_table
 
 
-    def set_stiffness_multiplier(self, stiffness, tri_mask=None):
+    def set_stiffness_multiplier(self, stiffness, tri_mask=None, composite=False):
+        """
+        Set stiffness multiplier. If tri_mask provided, only change a subset. If
+        composite is True, the input stiffness will multiplied to the original
+        stiffness multiplier.
+        """
+        if stiffness is None:
+            stiffness = 1.0
+        if composite:
+            stiffness0 = self.stiffness_multiplier.copy()
+            if tri_mask is not None:
+                stiffness0 = stiffness0[tri_mask]
+            stiffness = stiffness * stiffness0
         if tri_mask is None:
             self._stiffness_multiplier = stiffness
         else:
-            if self._stiffness_multiplier is None:
-                self._stiffness_multiplier = np.ones(self.num_triangles)
-            elif isinstance(self._stiffness_multiplier, float):
-                self._stiffness_multiplier = np.full(self.num_triangles, self._stiffness_multiplier)
-            else:
-                self._stiffness_multiplier = self._stiffness_multiplier.copy()
-            self._stiffness_multiplier[tri_mask] = stiffness
+            stiffness0 = self.stiffness_multiplier.copy()
+            stiffness0[tri_mask] = stiffness
+            self._stiffness_multiplier = stiffness0
         self._update_caching_keys(gear=MESH_GEAR_INITIAL)
 
 
-    def set_stiffness_multiplier_from_image(self, img, gear=MESH_GEAR_INITIAL, scale=1.0, tri_mask=None):
+    def set_stiffness_multiplier_from_image(self, img, gear=MESH_GEAR_INITIAL, scale=1.0, tri_mask=None, composite=False):
         if isinstance(img, str):
             img = cv2.imread(img, cv2.IMREAD_GRAYSCALE)
         pts = self.triangle_centers(gear=gear, tri_mask=tri_mask) + self.offset(gear=gear)
@@ -833,7 +845,40 @@ class Mesh:
         stiffness = img[indx0, indx1]
         if np.issubdtype(stiffness.dtype, np.integer):
             stiffness = stiffness.astype(float) / np.iinfo(stiffness.dtype).max
-        self.set_stiffness_multiplier(stiffness, tri_mask=tri_mask)
+        self.set_stiffness_multiplier(stiffness, tri_mask=tri_mask, composite=composite)
+
+
+    def set_stiffness_multiplier_from_interp(self, xinterp=None, yinterp=None, tri_mask=None, composite=False):
+        """
+        set stiffness multiplier by provinding piecewise linear interpolants in
+        both directions.
+        Kwargs:
+            xinterp, yinterp (2xN ndarray): the control points info for x, y
+                interpolants. the first rows are the positions (relative to
+                the bounding box of the mesh), and the second rows are the
+                stiffness values.
+        """
+        if xinterp is None and yinterp is None:
+            return
+        pts = self.triangle_centers(gear=MESH_GEAR_INITIAL, tri_mask=tri_mask)
+        bbox = self.bbox(gear=MESH_GEAR_INITIAL, offsetting=False)
+        pts = (pts - bbox[:2]) / (bbox[-2:] - bbox[:2])
+        stiffness = np.ones(pts.shape[0], dtype=np.float32)
+        if callable(xinterp):
+            stiffness = stiffness * xinterp(pts[:,0])
+        elif isinstance(xinterp, (np.ndarray, list, tuple)):
+            pos = xinterp[0]
+            stf = xinterp[1]
+            f = interp1d(pos, stf, kind='linear', bounds_error=False, fill_value=(stf[0], stf[-1]))
+            stiffness = stiffness * f(pts[:,0])
+        if callable(yinterp):
+            stiffness = stiffness * yinterp(pts[:,1])
+        elif isinstance(yinterp, (np.ndarray, list, tuple)):
+            pos = yinterp[0]
+            stf = yinterp[1]
+            f = interp1d(pos, stf, kind='linear', bounds_error=False, fill_value=(stf[0], stf[-1]))
+            stiffness = stiffness * f(pts[:,1])
+        self.set_stiffness_multiplier(stiffness, tri_mask=tri_mask, composite=composite)
 
 
     def lock(self):
@@ -1181,7 +1226,7 @@ class Mesh:
     def stiffness_multiplier(self):
         if self._stiffness_multiplier is None:
             return np.ones(self.num_triangles)
-        elif isinstance(self._stiffness_multiplier, float):
+        elif hasattr(self._stiffness_multiplier, '__len__'):
             return np.full(self.num_triangles, self._stiffness_multiplier)
         else:
             return self._stiffness_multiplier
@@ -1852,8 +1897,11 @@ class Mesh:
             raise ValueError
 
 
-    def bbox(self, gear=MESH_GEAR_MOVING):
-        vertices = self.vertices_w_offset(gear=gear)
+    def bbox(self, gear=MESH_GEAR_MOVING, offsetting=True):
+        if offsetting:
+            vertices = self.vertices_w_offset(gear=gear)
+        else:
+            vertices = self.vertices(gear=gear)
         v_min = vertices.min(axis=0)
         v_max = vertices.max(axis=0)
         return np.concatenate((v_min, v_max), axis=None)

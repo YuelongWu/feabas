@@ -233,14 +233,14 @@ def stitching_matcher(img0, img1, **kwargs):
         mesh_size=min_spacing, min_num_blocks=min_num_blocks, uid=1)
     mesh0.apply_translation((tx0, ty0), MESH_GEAR_FIXED)
     mesh0.lock()
-    weight, xy0, xy1 = iterative_xcorr_matcher_w_mesh(mesh0, mesh1, img_loader0, img_loader1,
+    weight, xy0, xy1, strain = iterative_xcorr_matcher_w_mesh(mesh0, mesh1, img_loader0, img_loader1,
         conf_mode=conf_mode, conf_thresh=conf_thresh, err_method='huber', 
         err_thresh=err_thresh, opt_tol=opt_tol, spacings=spacings,
         distributor=BLOCKDIST_CART_BBOX, min_num_blocks=min_num_blocks)
     if (fine_downsample != 1) and (xy0 is not None):
         xy0 = spatial.scale_coordinates(xy0, 1/fine_downsample)
         xy1 = spatial.scale_coordinates(xy1, 1/fine_downsample)
-    return weight, xy0, xy1
+    return weight, xy0, xy1, strain
 
 
 def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, spacings, **kwargs):
@@ -281,11 +281,15 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
             the template-matching block size compared to the spacing.
         render_mode: the rendering mode when generating the blocks for template-
             matching.
-        allow_dwell(int): number of times each spacing settings can be repeated. 
+        allow_dwell(int): number of times each spacing settings can be repeated.
+        compute_strain(bool): whether to caculate the largest strain in
+            the final relaxed meshes. Could be an indicator of how "crazy" the
+            matching points are
     Return:
         weight: weight of each mathing point pairs.
         xy0, xy1: xy coordinates of the matching points in the images before any
             transformations.
+        strain: the largest strain of the mesh. 
     """
     sigma = kwargs.get('sigma', 0.0)
     conf_mode = kwargs.get('conf_mode', FFT_CONF_MIRROR)
@@ -298,15 +302,18 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
     shrink_factor = kwargs.get('shrink_factor', 1)
     render_mode = kwargs.get('render_mode', RENDER_FULL)
     allow_dwell = kwargs.get('allow_dwell', 0)
+    compute_strain = kwargs.get('compute_strain', True)
     # if any spacing value smaller than 1, means they are relative to longer side
     spacings = np.array(spacings, copy=False)
     min_block_size_multiplier = 4
+    strain = 0.0
+    invalid_output = (0, None, None, strain)
     if np.any(spacings < 1):
         bbox0 = mesh0.bbox(gear=MESH_GEAR_MOVING)
         bbox1 = mesh1.bbox(gear=MESH_GEAR_MOVING)
         bbox, valid = miscs.intersect_bbox(bbox0, bbox1)
         if not valid:
-            return 0, None, None
+            return invalid_output
         wd0 = bbox[2] - bbox[0]
         ht0 = bbox[3] - bbox[1]
         lside = max(wd0, ht0)
@@ -329,7 +336,7 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
         else:
             raise ValueError
         if block_indices is None:
-            return 0, None, None
+            return invalid_output
         render0 = renderer.MeshRenderer.from_mesh(mesh0, image_loader=image_loader0)
         render1 = renderer.MeshRenderer.from_mesh(mesh1, image_loader=image_loader1)
         stack0 = []
@@ -353,7 +360,7 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
         xy1 = xy_ctr + dxy/2
         if np.all(conf <= conf_thresh):
             if not initialized:
-                return 0, None, None
+                return invalid_output
             else:
                 break
         opt.clear_links()
@@ -416,7 +423,13 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
     xy0 = link.xy0(gear=MESH_GEAR_INITIAL, use_mask=True, combine=True)
     xy1 = link.xy1(gear=MESH_GEAR_INITIAL, use_mask=True, combine=True)
     weight = link.weight(use_mask=True)
-    return weight, xy0, xy1
+    if compute_strain:
+        for m in opt.meshes:
+            if not m.locked:
+                ss = np.exp(np.abs(np.log(m.triangle_tform_svd().clip(1e-3, None)))) - 1
+                smx = np.quantile(ss, 0.9, axis=None)
+                strain = max(strain, smx)
+    return weight, xy0, xy1, strain
 
 
 ## ----------------- matching block distributors --------------------------- ##

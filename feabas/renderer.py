@@ -373,7 +373,7 @@ class MeshRenderer:
         outht = round(bbox0[3]-bbox0[1])
         empty_output = (np.zeros((outht, outwd), dtype=np.float32),
                         np.zeros((outht, outwd), dtype=np.float32),
-                        np.zeros((outht, outwd), dtype=np.bool))
+                        np.zeros((outht, outwd), dtype=bool))
         if offsetting:
             bbox0 = bbox0 - np.tile(self._offset.ravel(), 2)
         if mode in (RENDER_LOCAL_RIGID, RENDER_LOCAL_AFFINE):
