@@ -42,7 +42,7 @@ class Stitcher:
         self.init_bboxes = bboxes
         self.tile_sizes = miscs.bbox_sizes(bboxes)
         self.average_tile_size = np.median(self.tile_sizes, axis=0)
-        init_offset = miscs.bbox_centers(bboxes)
+        init_offset = bboxes[...,:2]
         self._init_offset = init_offset - init_offset.min(axis=0)
         self.matches = {}
         self.match_strains = {}
@@ -348,10 +348,10 @@ class Stitcher:
             for gear in MESH_GEARS:
                 M0.set_default_cache(cache=default_caches[gear], gear=gear)
             meshes.append(M0)
+        for M, offset in zip(meshes, self._init_offset):
+            M.apply_translation(offset, gear=MESH_GEAR_FIXED)
         self.meshes = meshes
         self.mesh_sharing = mesh_indx
-
-
 
 
     def set_groupings(self, groupings):
