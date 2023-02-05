@@ -343,6 +343,7 @@ class Stitcher:
                     mesh_growth=interior_growth, mesh_size=tmsz, uid=k,
                     soft_factor=tsf)
                 M0.set_stiffness_multiplier_from_interp(xinterp=stf_x, yinterp=stf_y)
+                M0.center_meshes_w_offsets(gear=MESH_GEAR_FIXED)
                 default_caches[key] = k
                 mesh_indx[k] = k
             for gear in MESH_GEARS:
@@ -363,7 +364,7 @@ class Stitcher:
         sizes.
         """
         if groupings is None:
-            groupings = np.arange(self.num_tiles)
+            groupings = None
         else:
             groupings = np.array(groupings, copy=False)
             assert len(groupings) == len(self.imgrelpaths)
@@ -385,9 +386,13 @@ class Stitcher:
 
 
     def groupings(self, normalize=False):
+        if self._groupings is None:
+            return np.arange(self.num_tiles)
         if normalize:
-            _, indx = np.unique(self._groupings, return_inverse=True)
-            return indx
+            if not hasattr(self, '_normalized_groupings') or self._normalized_groupings is None:
+                _, indx = np.unique(self._groupings, return_inverse=True)
+                self._normalized_groupings = indx
+            return self._normalized_groupings
         else:
             return self._groupings
 

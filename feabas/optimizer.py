@@ -824,6 +824,10 @@ class SLM:
             batch_num_matches: the accumulated number of matches to scan before
                 constructing the incremental sparse matrices. Larger number
                 needs more RAM but faster
+            groupings(ndarray): a ndarray of shape (N_mesh,) with entries as
+                the group identities of the corresponding meshes. meshes in the
+                same group have identical deformations, therefore they need to
+                have exact the same mesh as well.
             auto_clear(bool): automatically clear the stiffness term after
                 optimization is done. In some occasions, like flip checking
                 in Newton_Raphson method, this could be set to False.
@@ -839,27 +843,70 @@ class SLM:
         inner_cache = kwargs.get('inner_cache', self._shared_cache)
         cont_on_flip = kwargs.get('continue_on_flip', False)
         batch_num_matches = kwargs.get('batch_num_matches', None)
+        groupings = kwargs.get('groupings', None)
         auto_clear = kwargs.get('auto_clear', True)
         check_flip = not cont_on_flip
         stiff_m, stress_v = self.stiffness_matrix(gear=(shape_gear,start_gear),
             inner_cache=inner_cache, check_flip=check_flip,
             continue_on_flip=cont_on_flip)
+        lock_flags = self.lock_flags
+        if np.all(lock_flags):
+            return 0, 0 # all locked, nothing to optimize
         if stiff_m is None:
-            return None, None
+            return None, None # flipped triangles
         Cs_lft, Cs_rht = self.crosslink_terms(start_gear=start_gear,
             target_gear=targt_gear, batch_num_matches=batch_num_matches)
         stiffness_lambda, crosslink_lambda = self.relative_lambda(stiffness_lambda, crosslink_lambda)
         A = stiffness_lambda * stiff_m + crosslink_lambda * Cs_lft
         A = 0.5*(A + A.transpose())
         b = crosslink_lambda * Cs_rht - stiffness_lambda * stress_v
+        if groupings is not None:
+            group_u, indx, group_nm = np.unique(self._groupings, return_index=True, return_inverse=True)
+            if group_u.size < groupings.size:
+                grouped_lock_flags = np.zeros_like(indx, dtype=bool)
+                np.logical_or.at(grouped_lock_flags, group_nm, lock_flags)
+                lock_flags = grouped_lock_flags[group_nm]
+                if np.all(lock_flags):
+                    return 0, 0
+                vnum = [self.meshes[s].num_vertices for s in indx]
+                vnum = vnum * (~grouped_lock_flags)
+                vnum_accum = np.cumsum(vnum)
+                grouped_dof = int(vnum_accum[-1])
+                grouped_index_offsets = np.concatenate(([0], vnum_accum[:-1]))
+                grouped_index_offsets[grouped_lock_flags] = -1
+                expanded_gio = grouped_index_offsets[group_nm]
+                crnt_offet = 0
+                indx0 = []
+                indx1 = []
+                for m, gio in zip(self.meshes, expanded_gio):
+                    if m.locked:
+                        continue
+                    stf_sz = 2 * self.num_vertices
+                    if gio > 0:
+                        indx0.append(np.arange(crnt_offet, crnt_offet+stf_sz))
+                        indx1.append(np.arange(gio, gio+stf_sz))
+                    crnt_offet += stf_sz
+                indx0 = np.concatenate(indx0, axis=None)
+                indx1 = np.concatenate(indx1, axis=None)
+                T_m = sparse.csr_matrix((np.ones_like(indx0, dtype=np.float32), 
+                                        (indx1, indx0)), shape=(grouped_dof, A.shape[0]))
+                A = T_m @ A @ T_m.transpose()
+                b = T_m @ b
+            else:
+                groupings = None
         dd, _ = sparse.linalg.bicgstab(A, b, tol=tol, maxiter=maxiter, atol=atol)
         cost = (np.linalg.norm(b), np.linalg.norm(A.dot(dd) - b))
         if cost[1] < cost[0]:
             index_offsets = self.index_offsets
-            for m in self.meshes:
-                if m.locked or (m.uid not in index_offsets) or (index_offsets[m.uid] < 0):
+            for k, m in enumerate(self.meshes):
+                if m.locked or (m.uid not in index_offsets):
                     continue
-                stt_idx = index_offsets[m.uid]
+                if groupings is None:
+                    stt_idx = index_offsets[m.uid]
+                else:
+                    stt_idx = expanded_gio[k]
+                if stt_idx < 0:
+                    continue
                 end_idx = stt_idx + m.num_vertices * 2
                 dxy = dd[stt_idx:end_idx].reshape(-1,2)
                 m.set_field(dxy, gear=(start_gear, targt_gear))
@@ -911,6 +958,7 @@ class SLM:
         cont_on_flip = kwargs.get('continue_on_flip', False)
         crosslink_shrink = kwargs.get('crosslink_shrink', 0.25)
         shrink_trial = kwargs.get('shrink_trial', 3)
+        groupings = kwargs.get('groupings', None)
         batch_num_matches = kwargs.get('batch_num_matches', None)
         shape_gear = MESH_GEAR_FIXED
         start_gear = MESH_GEAR_MOVING
@@ -947,7 +995,8 @@ class SLM:
                 stiffness_lambda=stiffness_lambda[ke],
                 crosslink_lambda=crosslink_lambda[ke]*cshrink,
                 inner_cache=inner_cache, continue_on_flip=cont_on_flip,
-                batch_num_matches=batch_num_matches, auto_clear=False)
+                batch_num_matches=batch_num_matches, groupings=groupings, 
+                auto_clear=False)
             if (step_cost[0] is None) or (step_cost[0] < step_cost[1]):
                 break
             if anneal_mode[ke] is not None:
@@ -1007,7 +1056,6 @@ class SLM:
         stiffness_lambda, crosslink_lambda = self.relative_lambda(stiffness_lambda, crosslink_lambda)
         Cs_rht, Cs_rht = self._crosslink_terms
         return np.linalg.norm(crosslink_lambda * Cs_rht - stiffness_lambda * stress_v)
-
 
 
   ## ----------------------------- cached attr ----------------------------- ##
