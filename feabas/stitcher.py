@@ -3,16 +3,20 @@ from concurrent.futures.process import ProcessPoolExecutor
 from concurrent.futures import as_completed
 import cv2
 from functools import partial
+import gc
 from multiprocessing import get_context
 import numpy as np
 import os
 from rtree import index
 from scipy.interpolate import interp1d
+from scipy import sparse
+import scipy.sparse.csgraph as csgraph
 
 from feabas.dal import StaticImageLoader
 from feabas.matcher import stitching_matcher
 from feabas.mesh import Mesh
-from feabas import optimizer, miscs
+from feabas.optimizer import SLM
+from feabas import miscs
 from feabas.constant import *
 
 
@@ -48,6 +52,8 @@ class Stitcher:
         self.match_strains = {}
         self.meshes = None
         self.mesh_sharing = np.arange(self.num_tiles)
+        self._optimizer = None
+        self._default_mesh_cache = None
         self.set_groupings(groupings)
 
 
@@ -328,6 +334,7 @@ class Stitcher:
         default_caches = {}
         for gear in MESH_GEARS:
             default_caches[gear] = defaultdict(lambda: miscs.CacheFIFO(maxlen=cache_size))
+        self._default_mesh_cache = default_caches
         for k, tile_size in enumerate(self.tile_sizes):
             tmsz = tile_mesh_sizes[k]
             tbwd = tile_border_widths[k]
@@ -353,6 +360,261 @@ class Stitcher:
             M.apply_translation(offset, gear=MESH_GEAR_FIXED)
         self.meshes = meshes
         self.mesh_sharing = mesh_indx
+
+
+    def initilize_optimizer(self, **kwargs):
+        if (not kwargs.get('force_update', False)) and (self._optimizer is not None):
+            return False
+        if (self.meshes is None) or (self.num_links == 0):
+            raise RuntimeError('meshes and matches not initialized for Stitcher.')
+        self._optimizer = SLM(self.meshes, **kwargs)
+        for key, match in self.matches.items():
+            uid0, uid1 = key
+            xy0, xy1, weight = match
+            self._optimizer.add_link_from_coordinates(uid0, uid1, xy0, xy1,
+                weight=weight, check_duplicates=False)
+        return True
+
+
+    def optimize_translation(self, **kwargs):
+        """
+        optimize the translation of tiles according to the matches for a specific
+        gear.
+        Kwargs:
+            maxiter: maximum number of iterations in LSQR. None if no limit.
+            tol: the stopping tolerance of the least-square iterations.
+            start_gear: gear that associated with the vertices before applying
+                the translation.
+            target_gear: gear that associated with the vertices at the final
+                postions for locked meshes. Also the results are saved to this
+                gear as well.
+            residue_threshold: if set, links with average error larger than this
+                at the end of the optimization will be removed one at a time.
+
+        """
+        maxiter = kwargs.get('maxiter', None)
+        tol = kwargs.get('tol', 1e-07)
+        start_gear = kwargs.get('start_gear', MESH_GEAR_FIXED)
+        target_gear = kwargs.get('target_gear', start_gear)
+        residue_threshold = kwargs.get('residue_threshold', None)
+        if self._optimizer is None:
+            self.initilize_optimizer()
+        self._optimizer.optimize_translation_lsqr(maxiter=maxiter, tol=tol,
+            start_gear=start_gear, target_gear=target_gear)
+        num_disabled = 0
+        if (residue_threshold is not None) and (residue_threshold > 0):
+            while True:
+                lnks_w_large_dis = []
+                mxdis = 0
+                for k, lnk in enumerate(self._optimizer.links):
+                    if not lnk.relevant():
+                        continue
+                    dxy = lnk.dxy(gear=(target_gear, target_gear), use_mask=True)
+                    dxy_m = np.median(dxy, axis=0)
+                    dis = np.sqrt(np.sum(dxy_m**2))
+                    mxdis = max(mxdis, dis)
+                    if dis > residue_threshold:
+                        lnks_w_large_dis.append((dis, lnk.uids, k))
+                if not lnks_w_large_dis:
+                    break
+                else:
+                    lnks_w_large_dis.sort(reverse=True)
+                    uid_record = set()
+                    for lnk in lnks_w_large_dis:
+                        dis, lnk_uids, lnk_k = lnk
+                        if uid_record.isdisjoint(lnk_uids):
+                            self._optimizer.links[lnk_k].disable()
+                            num_disabled += 1
+                        uid_record.update(lnk_uids)
+                    self._optimizer.optimize_translation_lsqr(maxiter=maxiter,
+                        tol=tol,start_gear=start_gear, target_gear=target_gear)
+        return num_disabled
+
+
+    def optimize_group_iterface(self, **kwargs):
+        """
+        initialize the mesh transformation based only on the matches between
+        tiles from different groups. tiles within each group will have the same
+        transformation.
+        Kwargs: refer to the input of feabas.optimizer.SLM.optimize_linear.
+        """
+        if 'target_gear' in kwargs:
+            target_gear = kwargs['target_gear']
+        else:
+            target_gear = MESH_GEAR_MOVING
+            kwargs['target_gear'] = target_gear
+        if not self.has_groupings:
+            return
+        groupings = self.groupings(normalize=True)
+        match_uids = np.array(list(self.matches.keys()))
+        match_grps = groupings[match_uids]
+        idxt = match_grps[:,0] != match_grps[:,1]
+        if not np.any(idxt):
+            return
+        match_uids = match_uids[idxt]
+        sel_uids, sel_match_uids = np.unique(match_uids, return_inverse=True)
+        sel_match_uids = sel_match_uids.reshape(-1,2)
+        sel_grps = groupings[sel_uids]
+        sel_meshes = [self.meshes[s].copy(override_dict={'uid':k}) for k,s in enumerate(sel_uids)]
+        opt = SLM(sel_meshes)
+        for uids0, uids1 in zip(match_uids, sel_match_uids):
+            match = self.matches[tuple(uids0)]
+            xy0, xy1, weight = match
+            opt.add_link_from_coordinates(uids1[0], uids1[1], xy0, xy1,
+                weight=weight, check_duplicates=False)
+        opt.optimize_linear(groupings=sel_grps, **kwargs)
+        for g, m in zip(groupings, self.meshes):
+            sel_idx = np.nonzero(sel_grps == g)[0]
+            if sel_idx.size == 0:
+                continue
+            else:
+                m_border = opt.meshes[sel_idx[0]]
+                v = m_border.vertices(gear=target_gear)
+                m.set_vertices(v, target_gear)
+
+
+    def optimize_elastic(self, **kwargs):
+        """
+        elastically optimize the spring mesh system.
+        Kwargs:
+            use_groupings(bool): whether to bundle the meshes within the same
+                group when applying the transformation.
+            residue_len(float): if set, the link weight will be adjusted
+                according to the length before attempting another optimization
+                routine.
+            residue_mode: the mode to adjust residue. Could be 'huber' or
+                'threshold'.
+        other kwargs refer to the input of feabas.optimizer.SLM.optimize_linear.
+        """
+        use_groupings = kwargs.get('use_groupings', False) and self.has_groupings
+        residue_len = kwargs.get('residue_len', 0)
+        residue_mode = kwargs.get('residue_mode', None)
+        if 'target_gear' in kwargs:
+            target_gear = kwargs['target_gear']
+        else:
+            target_gear = MESH_GEAR_MOVING
+            kwargs['target_gear'] = target_gear
+        if use_groupings:
+            groupings = self.groupings(normalize=True)
+        else:
+            groupings = None
+        if self._optimizer is None:
+            self.initilize_optimizer()
+        cost = self._optimizer.optimize_linear(groupings=groupings, **kwargs)
+        if (residue_mode is not None) and (residue_len > 0):
+            if residue_mode == 'huber':
+                self._optimizer.set_link_residue_huber(residue_len)
+            else:
+                self._optimizer.set_link_residue_threshold(residue_len)
+            self._optimizer.adjust_link_weight_by_residue(gear=(target_gear, target_gear))
+            cost1 = self._optimizer.optimize_linear(groupings=groupings, **kwargs)
+            cost = [cost[0], cost1[-1]]
+        return cost
+
+
+    def connect_isolated_subsystem(self, **kwargs):
+        """
+        translate blocks of tiles that are connected by links as a whole so that
+        disconnected blocks roughly maintain the initial relative positions.
+        """
+        gear = (MESH_GEAR_INITIAL, MESH_GEAR_MOVING)
+        maxiter = kwargs.get('maxiter', None)
+        tol = kwargs.get('tol', 1e-07)
+        if self._optimizer is None:
+            raise RuntimeError('optimizer of the stitcher not initialized.')
+        Lbls, N_conn = self._optimizer.connected_subsystems
+        if N_conn <= 1:
+            return N_conn
+        cnt = np.zeros(N_conn)
+        np.add.at(cnt, Lbls, 1)
+        overlaps = self.overlaps
+        L_ov = Lbls[overlaps]
+        idxt = L_ov[:,0] != L_ov[:,1]
+        L_ov = L_ov[idxt]
+        overlaps = overlaps[idxt]
+        Neq = overlaps.shape[0]
+        idx0 = np.stack((np.arange(Neq), np.arange(Neq)), axis=-1).ravel()
+        idx1 = L_ov.ravel()
+        v = (np.ones_like(L_ov) * np.array([1, -1])).ravel()
+        idx0 = np.append(idx0, Neq)
+        idx1 = np.append(idx1, np.argmax(cnt))
+        v = np.append(v, 1)
+        A = sparse.csr_matrix((v, (idx0, idx1)), shape=(Neq+1, N_conn))
+        overlaps_u, overlaps_inverse = np.unique(overlaps, return_inverse=True)
+        overlaps_inverse = overlaps_inverse.reshape(overlaps.shape)
+        txy = np.array([self.meshes[s].estimate_translation(gear=gear) for s in overlaps_u])
+        offset1 = txy[overlaps_inverse[:,0]] - txy[overlaps_inverse[:,1]]
+        offset0 = self._init_offset[overlaps[:,0]] - self._init_offset[overlaps[:,1]]
+        bxy = np.append(offset0 - offset1, [[0, 0]], axis=0)
+        Tx = sparse.linalg.lsqr(A, bxy[:,0], atol=tol, btol=tol, iter_lim=maxiter)[0]
+        Ty = sparse.linalg.lsqr(A, bxy[:,1], atol=tol, btol=tol, iter_lim=maxiter)[0]
+        if np.any(Tx != 0) or np.any(Ty != 0):
+            for m, lbl in zip(self.meshes, Lbls):
+                tx = Tx[lbl]
+                ty = Ty[lbl]
+                m.unlock()
+                m.apply_translation((tx, ty), gear[-1])
+        # if still not fully connected, align average point
+        A_blk = sparse.csr_matrix((np.ones_like(L_ov[:,0]), (L_ov[:,0], L_ov[:,1])), shape=(N_conn, N_conn))
+        N_blk, L_blk = csgraph.connected_components(A_blk, directed=False, return_labels=True)
+        if N_blk > 1:
+            offset1 = np.array([m.estimate_translation(gear=gear) for m in self.meshes])
+            dxy = self._init_offset - offset1
+            Ls = L_blk[Lbls]
+            for lbl in range(N_blk):
+                txy = np.mean(dxy[Ls == lbl], axis = 0)
+                for m, l in zip(self.meshes, Ls):
+                    if l != lbl:
+                        continue
+                    m.unlock()
+                    m.apply_translation(txy, gear[-1])
+        return N_conn
+
+
+    def normalize_coordinates(self, **kwargs):
+        """
+        apply uniform rigid transforms to the meshes so that the rotation is
+        less than rotation_threshold and the upper-left corner is aligned to
+        the offset.
+        """
+        gear = (MESH_GEAR_INITIAL, MESH_GEAR_MOVING)
+        rotation_threshold = kwargs.get('rotation_threshold', None)
+        offset = kwargs.get('offset', None)
+        theta0 = np.nan
+        offset0 = None
+        if self._optimizer is None:
+            raise RuntimeError('optimizer of the stitcher not initialized.')
+        if rotation_threshold is not None:
+            rotations = []
+            for m in self.meshes:
+                R = m.estimate_affine(gear=gear, svd_clip=(1,1))
+                rotations.append(np.arctan2(R[0,1], R[0,0]))
+            rotations = np.array(rotations, copy=False)
+            L_ss, N_ss = self._optimizer.connected_subsystems
+            theta = {}
+            for lbl in range(N_ss):
+                theta = np.median(rotations[L_ss == lbl])
+                theta_d = theta * 180 / np.pi
+                theta0 = max(theta0, theta_d)
+                if theta > rotation_threshold:
+                    c, s = np.cos(theta), np.sin(theta)
+                    R = np.array([[c, s, 0], [-s, c, 0], [0, 0, 1]], dtype=np.float32)
+                    for m, l in zip(self.meshes, L_ss):
+                        if l != lbl:
+                            continue
+                        m.unlock()
+                        m.apply_affine(R, gear[-1])
+        if offset is not None:
+            offset0 = np.array([np.inf, np.inf])
+            for m in self.meshes:
+                xy_min = m.bbox(gear=gear[-1], offsetting=True)[:2]
+                offset0 = np.minimum(offset0, xy_min)
+            txy = np.array(offset) - offset0
+            if np.any(txy != 0):
+                for m in self.meshes:
+                    m.unlock()
+                    m.apply_translation(txy, gear[-1])
+        return theta0, offset0
 
 
     def set_groupings(self, groupings):
@@ -398,6 +660,17 @@ class Stitcher:
 
 
     @property
+    def has_groupings(self):
+        if self._groupings is None:
+            return False
+        groupings = self.groupings(normalize=True)
+        if groupings.size == np.max(groupings):
+            return False
+        else:
+            return True
+
+
+    @property
     def overlaps_without_matches(self):
         overlaps = self.overlaps
         return np.array([s for s in overlaps if (tuple(s) not in self.matches)])
@@ -410,9 +683,30 @@ class Stitcher:
         return self._overlaps
 
 
+    def clear_mesh_cache(self, gear=None, instant_gc=True):
+        if self._default_mesh_cache is not None:
+            if gear is None:
+                for g in MESH_GEARS:
+                    self.clear_mesh_cache(gear=g)
+            else:
+                cache = self._default_mesh_cache[gear]
+                if isinstance(cache, miscs.CacheNull):
+                    cache.clear()
+                elif isinstance(cache, dict):
+                    for c in cache.values():
+                        c.clear()
+        if instant_gc:
+            gc.collect()
+
+
     @property
     def num_tiles(self):
         return len(self.imgrelpaths)
+
+
+    @property
+    def num_links(self):
+        return len(self.matches)
 
 
     @staticmethod
@@ -455,6 +749,7 @@ class Stitcher:
         image_to_mask_path = kwargs.get('image_to_mask_path', None)
         loader_config = kwargs.get('loader_config', {})
         matcher_config = kwargs.get('matcher_config', {})
+        instant_gc = kwargs.get('instant_gc', False)
         margin_ratio_switch = 2
         if len(overlaps) == 0:
             return {}, {}
@@ -514,4 +809,6 @@ class Stitcher:
                 idx1 = index_mapper[idx1]
             matches[(idx0, idx1)] = (xy0, xy1, weight)
             strains[(idx0, idx1)] = strain
+        if instant_gc:
+            gc.collect()
         return matches, strains

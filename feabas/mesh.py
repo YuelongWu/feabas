@@ -744,7 +744,7 @@ class Mesh:
                         _ = f.create_dataset(prefix+key, data=val, compression="gzip")
 
 
-    def copy(self, deep=True, save_material=True, override_dict={}):
+    def copy(self, deep=False, save_material=True, override_dict={}):
         init_dict = self.get_init_dict(save_material=save_material, **override_dict)
         if deep:
             init_dict = copy.deepcopy(init_dict)
@@ -1576,7 +1576,7 @@ class Mesh:
         Args:
             pts (N x 2 ndarray): x-y coordinates of querry points
         """
-        include_flipped = kwargs.get('inner_cache', False)
+        include_flipped = kwargs.get('include_flipped', False)
         mode = kwargs.get('mode', MESH_TRIFINDER_LEAST_DEFORM)
         contigeous = kwargs.get('contigeous', True)
         extrapolate = kwargs.get('extrapolate', False)
@@ -1815,6 +1815,25 @@ class Mesh:
             v1 = v0[vtx_mask] @ A[:-1,:-1] + offset0 @ A[:-1,:-1] + A[-1,:-1] - offset1
             self.set_vertices(v1, gear=gear[-1], vtx_mask=vtx_mask)
             self.set_offset(offset1, gear=gear[-1])
+
+
+    def estimate_affine(self, gear=(MESH_GEAR_FIXED, MESH_GEAR_MOVING), svd_clip=None, vtx_mask=None):
+        """
+        estimate an affine transformation matrix so that:
+            vertices[gear[0]] ~ vertices[gear[-1]] @ A
+        """
+        if gear[0] == gear[-1]:
+            return np.eye(3)
+        v0 = self.vertices_w_offset(gear=gear[0])
+        v1 = self.vertices_w_offset(gear=gear[-1])
+        if vtx_mask is not None:
+            v0 = v0[vtx_mask]
+            v1 = v1[vtx_mask]
+        if svd_clip is None:
+            A = spatial.fit_affine(v0, v1, return_rigid=False)
+        else:
+            _, A = spatial.fit_affine(v0, v1, return_rigid=True, svd_clip=svd_clip)
+        return A
 
 
     def apply_field(self, dxy, gear, vtx_mask=None):

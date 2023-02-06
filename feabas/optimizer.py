@@ -442,6 +442,26 @@ class SLM:
                                   weight=None, submesh_exclusive=True,
                                   check_duplicates=True,
                                   **kwargs):
+        """
+        add link by providing the coordinates and the mesh uids.
+        Args:
+            uid0, uid1: the uid of meshes. The meshes must already loaded into
+                the SLM.
+            xy0, xy1: Nx2 ndarrays providing the coordinates of the matching
+                points in the two meshes.
+        Kwargs:
+            gear(tuple): the gear to use when localizing the matching points to
+                the meshes.
+            weight: ndarray of shape (N,) giving the weights for the matching
+                points.
+            submesh_exclusive(bool): if one of the mesh involved in this link
+                has been divided into submeshes so that the matching points
+                should be re-distributed among the submeshes, whether each point
+                should only appear in one of the submeshes.
+            check_duplicates(bool): test if the link has already been loaded
+                based on the name of the link.
+        other kwargs refer to feabas.mesh.Mesh.tri_finder.
+        """
         link_added = False
         if check_duplicates:
             if ('name' in kwargs) and (kwargs['name'] in self.link_names):
