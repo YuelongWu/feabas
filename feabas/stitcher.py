@@ -4,6 +4,7 @@ from concurrent.futures import as_completed
 import cv2
 from functools import partial
 import gc
+import h5py
 from multiprocessing import get_context
 import numpy as np
 import os
@@ -33,6 +34,7 @@ class Stitcher:
         root_dir(str): if provided, imgpaths arg is considered to be relative
             paths and root_dir will be prepended to generate the fullpaths.
     """
+  ## ------------------------- initialization & IO ------------------------- ##
     def __init__(self, imgpaths, bboxes, **kwargs):
         root_dir = kwargs.get('root_dir', None)
         groupings = kwargs.get('groupings', None)
@@ -134,6 +136,179 @@ class Stitcher:
         return cls(imgpaths, bboxes, root_dir=root_dir)
 
 
+    @classmethod
+    def from_h5(cls, filename, load_matches=True, load_meshes=True):
+        with h5py.File(filename, 'r') as f:
+            root_dir = miscs.numpy_to_str_ascii(f['imgrootdir'][()])
+            imgpaths = miscs.numpy_to_str_ascii(f['imgrelpaths'][()]).split('\n')
+            bboxes = f['init_bboxes'][()]
+            if 'groupings' in f:
+                groupings = f['groupings'][()]
+            else:
+                groupings = None
+        obj = cls(imgpaths, bboxes, root_dir=root_dir, groupings=groupings)
+        if load_matches:
+            obj.load_matches_from_h5(filename, check_order=False)
+        if load_matches:
+            obj.load_meshes_from_h5(filename, check_order=False)
+        return obj
+
+
+    def save_to_h5(self, fname, **kwargs):
+        save_matches = kwargs.get('save_matches', True)
+        save_meshes = kwargs.get('save_meshes', True)
+        compression = kwargs.get('compression', True)
+        with h5py.File(fname, 'w') as f:
+            if compression:
+                create_dataset = partial(f.create_dataset, compression='gzip')
+            else:
+                create_dataset = f.create_dataset
+            f.create_dataset('imgrootdir', data=miscs.str_to_numpy_ascii(self.imgrootdir))
+            imgnames_encoded = miscs.str_to_numpy_ascii('\n'.join(self.imgrelpaths))
+            create_dataset('imgrelpaths', data=imgnames_encoded)
+            create_dataset('init_bboxes', data=self.init_bboxes)
+            if self._groupings is not None:
+                create_dataset('groupings', self._groupings)
+            if save_matches and (len(self.matches) > 0):
+                for uids, mtch in self.matches.items():
+                    prefix = 'matches/' + '_'.join(str(int(s)) for s in uids)
+                    xy0, xy1, weight = mtch
+                    strain = self.match_strains[uids]
+                    data = np.concatenate((xy0, xy1, weight, strain), axis=None)
+                    data = data.astype(np.float32, copy=False)
+                    create_dataset(prefix, data=data)
+            if save_meshes and (self.meshes is not None):
+                soft_factors = np.array([m.soft_factor for m in self.meshes], dtype=np.float32)
+                create_dataset('mesh_soft_factors', data=soft_factors)
+                create_dataset('mesh_sharing_indx', data=self.mesh_sharing)
+                mesh_share_u, mesh_share_sample = np.unique(self.mesh_sharing, return_index=True)
+                for indx_u, indx_m in zip(mesh_share_u, mesh_share_sample):
+                    M0 = self.meshes[indx_m]
+                    prefix = 'master_meshes/' + str(int(indx_u))
+                    M0.save_to_h5(f, vertex_flags=(MESH_GEAR_INITIAL,), prefix=prefix,
+                        save_material=False, compression=compression)
+                moving_offsets = np.array([m.offset(gear=MESH_GEAR_MOVING) for m in self.meshes])
+                create_dataset('moving_offsets', data=moving_offsets)
+                f.create_group('moving_vertices')
+                for k, m in enumerate(self.meshes):
+                    if m.vertices_initialized(gear=MESH_GEAR_MOVING):
+                        prefix = 'moving_vertices/' + str(k)
+                        v = m.vertices(gear=MESH_GEAR_MOVING)
+                        create_dataset(prefix, data=v)
+
+
+    def load_matches_from_h5(self, fname, check_order=False):
+        with h5py.File(fname, 'r') as f:
+            match_cnt = 0
+            if 'matches' not in f:
+                return match_cnt
+            if check_order:
+                imgnames = miscs.numpy_to_str_ascii(f['imgrelpaths'][()]).split('\n')
+                name_lut = {name: k for k, name in enumerate(self.imgrelpaths)}
+                indx_mapper = [name_lut.get(s, -1) for s in imgnames]
+            else:
+                indx_mapper = None
+            matches = f['matches']
+            for key in matches:
+                uid0, uid1 = [int(s) for s in key.split('_')]
+                if indx_mapper is not None:
+                    uid0 = indx_mapper[uid0]
+                    uid1 = indx_mapper[uid1]
+                if (uid0 < 0) or (uid1 < 0):
+                    continue
+                data = matches[key][()]
+                Npt = (data.size - 1)/5
+                xy0 = data[0:(2*Npt)].reshape(-1, 2)
+                xy1 = data[(2*Npt):(4*Npt)].reshape(-1, 2)
+                weight = data[(4*Npt):(5*Npt)]
+                strain = data[-1]
+                self.matches[(uid0, uid1)] = (xy0, xy1, weight)
+                self.match_strains[(uid0, uid1)] = strain
+                match_cnt += 1
+        return match_cnt
+
+
+    def load_meshes_from_h5(self, fname, check_order=False, force_update=False):
+        mesh_loaded = False
+        if (not force_update) and (self.meshes is not None):
+            return mesh_loaded
+        with h5py.File(fname, 'r') as f:
+            if 'mesh_sharing_indx' not in f:
+                return mesh_loaded
+            mesh_sharing_indx = f['mesh_sharing_indx'][()]
+            if check_order:
+                imgnames = miscs.numpy_to_str_ascii(f['imgrelpaths'][()]).split('\n')
+                if len(imgnames) < len(self.imgrelpaths):
+                    # mesh not complete
+                    return mesh_loaded
+                name_lut = {name: k for k, name in enumerate(imgnames)}
+                indx_mapper = np.array([name_lut.get(s, -1) for s in self.imgrelpaths])
+                if np.any(indx_mapper < 0):
+                    # mesh not complete
+                    return mesh_loaded
+                _, mesh_sharing = np.unique(mesh_sharing_indx[indx_mapper], return_inverse=True)
+            else:
+                indx_mapper = None
+                mesh_sharing = mesh_sharing_indx
+            mesh_soft_factors = f['mesh_soft_factors'][()]
+            moving_offsets = f['moving_offsets'][()]
+            master_meshes = {}
+            for uid_src in f['master_meshes']:
+                prefix = 'master_meshes/' + uid_src
+                M0 = Mesh.from_h5(f, prefix=prefix)
+                M0.unlock()
+                master_meshes[int(uid_src)] = M0
+            self.meshes = []
+            for uid in range(self.num_tiles):
+                if indx_mapper is None:
+                    uid_src = uid
+                else:
+                    uid_src = indx_mapper[uid]
+                tile_sft_factor = mesh_soft_factors[uid_src]
+                tile_mstr_indx = mesh_sharing_indx[uid_src]
+                M0 = master_meshes[tile_mstr_indx]
+                M = M0.copy(save_material=False,
+                    override_dict={'uid':uid, 'soft_factor':tile_sft_factor})
+                if str(uid_src) in f['moving_vertices']:
+                    prefix = 'moving_vertices/' + str(uid_src)
+                    v = f[prefix][()]
+                    M.set_vertices(v, MESH_GEAR_MOVING)
+                    M.set_offset(moving_offsets[uid_src], MESH_GEAR_MOVING)
+                self.meshes.append(M)
+            self.mesh_sharing = mesh_sharing
+            mesh_loaded = True
+        return mesh_loaded
+                
+
+    def set_groupings(self, groupings):
+        """
+        groupings can be used to indicate a subset of tiles should share the
+        same mechanical properties and meshing options. Their fixed-pattern
+        deformation will also be compensated identically (as necessary). This
+        also means the tiles within the same group should share the same tile
+        sizes.
+        """
+        if groupings is not None:
+            groupings = np.array(groupings, copy=False)
+            assert len(groupings) == len(self.imgrelpaths)
+            tile_ht = self.tile_sizes[:,0]
+            tile_wd = self.tile_sizes[:,1]
+            grp_u, cnt = np.unique(groupings, return_counts=True)
+            grp_u = grp_u[cnt > 1]
+            if tile_ht.ptp() > 0:
+                for g in grp_u:
+                    idx = groupings == g
+                    if tile_ht[idx].ptp() > 0:
+                        raise RuntimeError(f'tile size in group {g} not consistent')
+            if tile_wd.ptp() > 0:
+                for g in grp_u:
+                    idx = groupings == g
+                    if tile_ht[idx].ptp() > 0:
+                        raise RuntimeError(f'tile size in group {g} not consistent')
+        self._groupings = groupings
+
+
+  ## ------------------------------ matching ------------------------------- ##
     def dispatch_matchers(self, **kwargs):
         """
         run matching between overlapping tiles.
@@ -212,6 +387,112 @@ class Stitcher:
         return overlaps[z_order]
 
 
+    @staticmethod
+    def match_list_of_overlaps(overlaps, imgpaths, bboxes, **kwargs):
+        """
+        matching function used as the target function in Stitcher.dispatch_matchers.
+        Args:
+            overlaps(Kx2 ndarray): pairs of indices of the images to match.
+            imgpaths(list of str): the paths to the image files.
+            bboxes(Nx4 ndarray): the estimated bounding boxes of each image.
+        Kwargs:
+            root_dir(str): if provided, the paths in imgpaths are relative paths to
+                this root directory.
+            min_width: minimum amount of overlapping width (in pixels) to use.
+                overlaps below this threshold will be skipped.
+            index_mapper(N ndarray): the mapper to map the local image indices to
+                the global ones, in case the imgpaths fed to this function is only
+                a subset of all the images from the dispatcher.
+            margin: extra image to include for matching around the overlapping
+                regions to accommodate for inaccurate starting location. If
+                smaller than 3, multiply it with the shorter edges of the
+                overlapping bboxes before use.
+            image_to_mask_path (list of str): this provide a way to input masks
+                for matching. The file structure of the masks should mirror
+                mirror that of the images, so that
+                  imgpath.replace(image_to_mask_path[0], image_to_mask_path[1])
+                direct to the mask of the corresponding images. In the mask,
+                pixels with 0 values are not used. If no mask image are found,
+                default to keep.
+            loader_config(dict): key-word arguments passed to configure ImageLoader.
+            matcher_config(dict): key-word arguments passed to configure matching.
+        Return:
+            matches(dict): M[(global_index0, global_index1)] = (xy0, xy1, conf).
+            match_strains(dict): D[(global_index0, global_index1)] = strain.
+        """
+        root_dir = kwargs.get('root_dir', None)
+        min_width = kwargs.get('min_width', 0)
+        index_mapper = kwargs.get('index_mapper', None)
+        margin = kwargs.get('margin', 1.0)
+        image_to_mask_path = kwargs.get('image_to_mask_path', None)
+        loader_config = kwargs.get('loader_config', {})
+        matcher_config = kwargs.get('matcher_config', {})
+        instant_gc = kwargs.get('instant_gc', False)
+        margin_ratio_switch = 2
+        if len(overlaps) == 0:
+            return {}, {}
+        bboxes_overlap, wds = miscs.bbox_intersections(bboxes[overlaps[:,0]], bboxes[overlaps[:,1]])
+        if 'cache_border_margin' not in loader_config:
+            overlap_wd0 = 6 * np.median(np.abs(wds - np.median(wds))) + np.median(wds) + 1
+            if margin < margin_ratio_switch:
+                loader_config['cache_border_margin'] = int(overlap_wd0 * (1 + margin))
+            else:
+                loader_config['cache_border_margin'] = int(overlap_wd0 + margin)
+        image_loader = StaticImageLoader(imgpaths, bboxes, root_dir=root_dir, **loader_config)
+        if image_to_mask_path is not None:
+            mask_paths = [s.replace(image_to_mask_path[0], image_to_mask_path[1])
+                for s in image_loader.filepaths_generator]
+            mask_exist = np.array([os.path.isfile(s) for s in mask_paths])
+            loader_config.update({'apply_CLAHE': False,
+                                  'inverse': False,
+                                  'number_of_channels': None,
+                                  'preprocess': None})
+            mask_loader = StaticImageLoader(mask_paths, bboxes, root_dir=None, **loader_config)
+        else:
+            mask_exist = np.zeros(len(imgpaths), dtype=bool)
+        matches = {}
+        strains = {}
+        for indices, bbox_ov, wd in zip(overlaps, bboxes_overlap, wds):
+            if wd <= min_width:
+                continue
+            if margin < margin_ratio_switch:
+                real_margin = int(margin * wd)
+            else:
+                real_margin = int(margin)
+            bbox_ov = miscs.bbox_enlarge(bbox_ov, real_margin)
+            idx0, idx1 = indices
+            bbox0 = bboxes[idx0]
+            bbox1 = bboxes[idx1]
+            bbox_ov0 = miscs.bbox_intersections(bbox_ov, bbox0)
+            bbox_ov1 = miscs.bbox_intersections(bbox_ov, bbox1)
+            img0 = image_loader.crop(bbox_ov0, idx0, return_index=False)
+            img1 = image_loader.crop(bbox_ov1, idx1, return_index=False)
+            if mask_exist[idx0]:
+                mask0 = mask_loader.crop(bbox_ov0, idx0, return_index=False)
+            else:
+                mask0 = None
+            if mask_exist[idx1]:
+                mask1 = mask_loader.crop(bbox_ov1, idx1, return_index=False)
+            else:
+                mask1 = None
+            weight, xy0, xy1, strain = stitching_matcher(img0, img1, mask0=mask0, mask1=mask1, **matcher_config)
+            if xy0 is not None:
+                continue
+            offset0 = bbox_ov0[:2] - bbox0[:2]
+            offset1 = bbox_ov1[:2] - bbox1[:2]
+            xy0 = xy0 + offset0
+            xy1 = xy1 + offset1
+            if index_mapper is not None:
+                idx0 = index_mapper[idx0]
+                idx1 = index_mapper[idx1]
+            matches[(idx0, idx1)] = (xy0, xy1, weight)
+            strains[(idx0, idx1)] = strain
+        if instant_gc:
+            gc.collect()
+        return matches, strains
+
+
+  ## -------------------------- mesh relaxation ---------------------------- ##
     def initialize_meshes(self, mesh_sizes, **kwargs):
         """
         initialize meshes of each tile for mesh relaxation.
@@ -283,7 +564,8 @@ class Stitcher:
             np.maxium.at(tile_border_widths, indx, np.stack((ovlp_wds, ovlp_wds)), axis=-1)
             tile_border_widths = tile_border_widths / np.min(self.tile_sizes, axis=-1)
             # rounding to make mesh reuse more likely
-            tile_border_widths = max(np.round(tile_border_widths/0.1), 1.0) * 0.1
+            rfct = np.median(tile_border_widths) * 1.5
+            tile_border_widths = max(np.round(tile_border_widths/rfct), 1.0) * rfct
             # tiles in a group share mesh
             grp_u, cnt = np.unique(groupings, return_counts=True)
             grp_u = grp_u[cnt>1]
@@ -359,18 +641,19 @@ class Stitcher:
         for M, offset in zip(meshes, self._init_offset):
             M.apply_translation(offset, gear=MESH_GEAR_FIXED)
         self.meshes = meshes
-        self.mesh_sharing = mesh_indx
+        _, mesh_indx_nm = np.unique(mesh_indx, return_inverse=True)
+        self.mesh_sharing = mesh_indx_nm
 
 
-    def initilize_optimizer(self, **kwargs):
+    def initialize_optimizer(self, **kwargs):
         if (not kwargs.get('force_update', False)) and (self._optimizer is not None):
             return False
         if (self.meshes is None) or (self.num_links == 0):
             raise RuntimeError('meshes and matches not initialized for Stitcher.')
         self._optimizer = SLM(self.meshes, **kwargs)
-        for key, match in self.matches.items():
+        for key, mtch in self.matches.items():
             uid0, uid1 = key
-            xy0, xy1, weight = match
+            xy0, xy1, weight = mtch
             self._optimizer.add_link_from_coordinates(uid0, uid1, xy0, xy1,
                 weight=weight, check_duplicates=False)
         return True
@@ -398,7 +681,7 @@ class Stitcher:
         target_gear = kwargs.get('target_gear', start_gear)
         residue_threshold = kwargs.get('residue_threshold', None)
         if self._optimizer is None:
-            self.initilize_optimizer()
+            self.initialize_optimizer()
         self._optimizer.optimize_translation_lsqr(maxiter=maxiter, tol=tol,
             start_gear=start_gear, target_gear=target_gear)
         num_disabled = 0
@@ -431,7 +714,7 @@ class Stitcher:
         return num_disabled
 
 
-    def optimize_group_iterface(self, **kwargs):
+    def optimize_group_intersection(self, **kwargs):
         """
         initialize the mesh transformation based only on the matches between
         tiles from different groups. tiles within each group will have the same
@@ -499,7 +782,7 @@ class Stitcher:
         else:
             groupings = None
         if self._optimizer is None:
-            self.initilize_optimizer()
+            self.initialize_optimizer()
         cost = self._optimizer.optimize_linear(groupings=groupings, **kwargs)
         if (residue_mode is not None) and (residue_len > 0):
             if residue_mode == 'huber':
@@ -617,36 +900,23 @@ class Stitcher:
         return theta0, offset0
 
 
-    def set_groupings(self, groupings):
-        """
-        groupings can be used to indicate a subset of tiles should share the
-        same mechanical properties and meshing options. Their fixed-pattern
-        deformation will also be compensated identically (as necessary). This
-        also means the tiles within the same group should share the same tile
-        sizes.
-        """
-        if groupings is None:
-            groupings = None
-        else:
-            groupings = np.array(groupings, copy=False)
-            assert len(groupings) == len(self.imgrelpaths)
-            tile_ht = self.tile_sizes[:,0]
-            tile_wd = self.tile_sizes[:,1]
-            grp_u, cnt = np.unique(groupings, return_counts=True)
-            grp_u = grp_u[cnt > 1]
-            if tile_ht.ptp() > 0:
-                for g in grp_u:
-                    idx = groupings == g
-                    if tile_ht[idx].ptp() > 0:
-                        raise RuntimeError(f'tile size in group {g} not consistent')
-            if tile_wd.ptp() > 0:
-                for g in grp_u:
-                    idx = groupings == g
-                    if tile_ht[idx].ptp() > 0:
-                        raise RuntimeError(f'tile size in group {g} not consistent')
-        self._groupings = groupings
+    def clear_mesh_cache(self, gear=None, instant_gc=True):
+        if self._default_mesh_cache is not None:
+            if gear is None:
+                for g in MESH_GEARS:
+                    self.clear_mesh_cache(gear=g)
+            else:
+                cache = self._default_mesh_cache[gear]
+                if isinstance(cache, miscs.CacheNull):
+                    cache.clear()
+                elif isinstance(cache, dict):
+                    for c in cache.values():
+                        c.clear()
+        if instant_gc:
+            gc.collect()
 
 
+  ## ----------------------------- properties ------------------------------ ##
     def groupings(self, normalize=False):
         if self._groupings is None:
             return np.arange(self.num_tiles)
@@ -683,22 +953,6 @@ class Stitcher:
         return self._overlaps
 
 
-    def clear_mesh_cache(self, gear=None, instant_gc=True):
-        if self._default_mesh_cache is not None:
-            if gear is None:
-                for g in MESH_GEARS:
-                    self.clear_mesh_cache(gear=g)
-            else:
-                cache = self._default_mesh_cache[gear]
-                if isinstance(cache, miscs.CacheNull):
-                    cache.clear()
-                elif isinstance(cache, dict):
-                    for c in cache.values():
-                        c.clear()
-        if instant_gc:
-            gc.collect()
-
-
     @property
     def num_tiles(self):
         return len(self.imgrelpaths)
@@ -707,108 +961,3 @@ class Stitcher:
     @property
     def num_links(self):
         return len(self.matches)
-
-
-    @staticmethod
-    def match_list_of_overlaps(overlaps, imgpaths, bboxes, **kwargs):
-        """
-        matching function used as the target function in Stitcher.dispatch_matchers.
-        Args:
-            overlaps(Kx2 ndarray): pairs of indices of the images to match.
-            imgpaths(list of str): the paths to the image files.
-            bboxes(Nx4 ndarray): the estimated bounding boxes of each image.
-        Kwargs:
-            root_dir(str): if provided, the paths in imgpaths are relative paths to
-                this root directory.
-            min_width: minimum amount of overlapping width (in pixels) to use.
-                overlaps below this threshold will be skipped.
-            index_mapper(N ndarray): the mapper to map the local image indices to
-                the global ones, in case the imgpaths fed to this function is only
-                a subset of all the images from the dispatcher.
-            margin: extra image to include for matching around the overlapping
-                regions to accommodate for inaccurate starting location. If
-                smaller than 3, multiply it with the shorter edges of the
-                overlapping bboxes before use.
-            image_to_mask_path (list of str): this provide a way to input masks
-                for matching. The file structure of the masks should mirror
-                mirror that of the images, so that
-                  imgpath.replace(image_to_mask_path[0], image_to_mask_path[1])
-                direct to the mask of the corresponding images. In the mask,
-                pixels with 0 values are not used. If no mask image are found,
-                default to keep.
-            loader_config(dict): key-word arguments passed to configure ImageLoader.
-            matcher_config(dict): key-word arguments passed to configure matching.
-        Return:
-            matches(dict): M[(global_index0, global_index1)] = (xy0, xy1, conf).
-            match_strains(dict): D[(global_index0, global_index1)] = strain.
-        """
-        root_dir = kwargs.get('root_dir', None)
-        min_width = kwargs.get('min_width', 0)
-        index_mapper = kwargs.get('index_mapper', None)
-        margin = kwargs.get('margin', 1.0)
-        image_to_mask_path = kwargs.get('image_to_mask_path', None)
-        loader_config = kwargs.get('loader_config', {})
-        matcher_config = kwargs.get('matcher_config', {})
-        instant_gc = kwargs.get('instant_gc', False)
-        margin_ratio_switch = 2
-        if len(overlaps) == 0:
-            return {}, {}
-        bboxes_overlap, wds = miscs.bbox_intersections(bboxes[overlaps[:,0]], bboxes[overlaps[:,1]])
-        if 'cache_border_margin' not in loader_config:
-            overlap_wd0 = 6 * np.median(np.abs(wds - np.median(wds))) + np.median(wds) + 1
-            if margin < margin_ratio_switch:
-                loader_config['cache_border_margin'] = int(overlap_wd0 * (1 + margin))
-            else:
-                loader_config['cache_border_margin'] = int(overlap_wd0 + margin)
-        image_loader = StaticImageLoader(imgpaths, bboxes, root_dir=root_dir, **loader_config)
-        if image_to_mask_path is not None:
-            mask_paths = [s.replace(image_to_mask_path[0], image_to_mask_path[1])
-                for s in image_loader.filepaths_generator]
-            mask_exist = np.array([os.path.isfile(s) for s in mask_paths])
-            loader_config.update({'apply_CLAHE': False,
-                                  'inverse': False,
-                                  'number_of_channels': None,
-                                  'preprocess': None})
-            mask_loader = StaticImageLoader(mask_paths, bboxes, root_dir=None, **loader_config)
-        else:
-            mask_exist = np.zeros(len(imgpaths), dtype=bool)
-        matches = {}
-        strains = {}
-        for indices, bbox_ov, wd in zip(overlaps, bboxes_overlap, wds):
-            if wd <= min_width:
-                continue
-            if margin < margin_ratio_switch:
-                real_margin = int(margin * wd)
-            else:
-                real_margin = int(margin)
-            bbox_ov = miscs.bbox_enlarge(bbox_ov, real_margin)
-            idx0, idx1 = indices
-            bbox0 = bboxes[idx0]
-            bbox1 = bboxes[idx1]
-            bbox_ov0 = miscs.bbox_intersections(bbox_ov, bbox0)
-            bbox_ov1 = miscs.bbox_intersections(bbox_ov, bbox1)
-            img0 = image_loader.crop(bbox_ov0, idx0, return_index=False)
-            img1 = image_loader.crop(bbox_ov1, idx1, return_index=False)
-            if mask_exist[idx0]:
-                mask0 = mask_loader.crop(bbox_ov0, idx0, return_index=False)
-            else:
-                mask0 = None
-            if mask_exist[idx1]:
-                mask1 = mask_loader.crop(bbox_ov1, idx1, return_index=False)
-            else:
-                mask1 = None
-            weight, xy0, xy1, strain = stitching_matcher(img0, img1, mask0=mask0, mask1=mask1, **matcher_config)
-            if xy0 is not None:
-                continue
-            offset0 = bbox_ov0[:2] - bbox0[:2]
-            offset1 = bbox_ov1[:2] - bbox1[:2]
-            xy0 = xy0 + offset0
-            xy1 = xy1 + offset1
-            if index_mapper is not None:
-                idx0 = index_mapper[idx0]
-                idx1 = index_mapper[idx1]
-            matches[(idx0, idx1)] = (xy0, xy1, weight)
-            strains[(idx0, idx1)] = strain
-        if instant_gc:
-            gc.collect()
-        return matches, strains
