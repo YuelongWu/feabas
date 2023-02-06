@@ -961,3 +961,38 @@ class Stitcher:
     @property
     def num_links(self):
         return len(self.matches)
+
+
+class MontageRenderer:
+    """
+    A class to render Montage with overlapping tiles
+    """
+    def __init__(self):
+        pass
+
+
+    def crop(self, bbox, return_empty=False, **kwargs):
+        fillval = kwargs.get('fillval', self._default_fillval)
+        dtype = kwargs.get('dtype', self.dtype)
+        blend_mode = kwargs.get('blend', BLEND_LINEAR)
+        pass
+
+
+    @property
+    def bounds(self):
+        pass
+
+
+    @property
+    def dtype(self):
+        if self._dtype is None:
+            if hasattr(self._image_loader, 'dtype') and self._image_loader.dtype is not None:
+                self._dtype = self._image_loader.dtype
+            else:
+                self._dtype = np.uint8
+        return self._dtype
+
+
+    @property
+    def default_fillval(self):
+        return self._default_fillval

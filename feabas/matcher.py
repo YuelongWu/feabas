@@ -3,7 +3,8 @@ import numpy as np
 from scipy import fft, ndimage
 from scipy.fftpack import next_fast_len
 
-from feabas import optimizer, dal, miscs, mesh, renderer, spatial
+from feabas.mesh import Mesh, MeshRenderer
+from feabas import optimizer, dal, miscs, spatial
 from feabas.constant import *
 
 
@@ -227,9 +228,9 @@ def stitching_matcher(img0, img1, **kwargs):
         spacings[spacings < 1] *= lside
     spacings = spacings * fine_downsample
     min_spacing = np.min(spacings)
-    mesh0 = mesh.Mesh.from_bbox(img_loader0.bounds, cartesian=True,
+    mesh0 = Mesh.from_bbox(img_loader0.bounds, cartesian=True,
         mesh_size=min_spacing, min_num_blocks=min_num_blocks, uid=0)
-    mesh1 = mesh.Mesh.from_bbox(img_loader1.bounds, cartesian=True,
+    mesh1 = Mesh.from_bbox(img_loader1.bounds, cartesian=True,
         mesh_size=min_spacing, min_num_blocks=min_num_blocks, uid=1)
     mesh0.apply_translation((tx0, ty0), MESH_GEAR_FIXED)
     mesh0.lock()
@@ -337,8 +338,8 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
             raise ValueError
         if block_indices is None:
             return invalid_output
-        render0 = renderer.MeshRenderer.from_mesh(mesh0, image_loader=image_loader0)
-        render1 = renderer.MeshRenderer.from_mesh(mesh1, image_loader=image_loader1)
+        render0 = MeshRenderer.from_mesh(mesh0, image_loader=image_loader0)
+        render1 = MeshRenderer.from_mesh(mesh1, image_loader=image_loader1)
         stack0 = []
         stack1 = []
         xy_ctr = []
@@ -411,8 +412,8 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
     # bbox0 = mesh0.bbox(gear=MESH_GEAR_MOVING)
     # bbox1 = mesh1.bbox(gear=MESH_GEAR_MOVING)
     # bbox, valid = miscs.intersect_bbox(bbox0, bbox1)
-    # render0 = renderer.MeshRenderer.from_mesh(mesh0, image_loader=image_loader0)
-    # render1 = renderer.MeshRenderer.from_mesh(mesh1, image_loader=image_loader1)
+    # render0 = MeshRenderer.from_mesh(mesh0, image_loader=image_loader0)
+    # render1 = MeshRenderer.from_mesh(mesh1, image_loader=image_loader1)
     # img0t = render0.crop(bbox)
     # img1t = render1.crop(bbox)
     # imgt = np.stack((img0t, img1t, img0t), axis=-1)
