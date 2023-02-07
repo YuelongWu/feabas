@@ -177,7 +177,7 @@ def images_to_polygons(imgs, labels, offset=(0, 0), scale=1.0, upsample=2):
                 polygons[name] = p_lbl
     else:
         if isinstance(imgs, str): # input is a file path
-            tile = cv2.imread(imgs, cv2.IMREAD_UNCHANGED)
+            tile = common.imread(imgs, flag=cv2.IMREAD_UNCHANGED)
         elif isinstance(imgs, np.ndarray):
             tile = imgs
         else:

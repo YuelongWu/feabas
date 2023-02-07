@@ -9,6 +9,14 @@ from scipy.ndimage import gaussian_filter1d
 import scipy.sparse.csgraph as csgraph
 
 
+def imread(path, **kwargs):
+    flag = kwargs.get('flag', cv2.IMREAD_UNCHANGED)
+    return cv2.imread(path, flag)
+
+
+def imwrite(path, image):
+    return cv2.imwrite(path, image)
+
 
 def z_order(indices, base=2):
     """

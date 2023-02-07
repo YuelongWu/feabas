@@ -838,7 +838,7 @@ class Mesh:
 
     def set_stiffness_multiplier_from_image(self, img, gear=MESH_GEAR_INITIAL, scale=1.0, tri_mask=None, composite=False):
         if isinstance(img, str):
-            img = cv2.imread(img, cv2.IMREAD_GRAYSCALE)
+            img = common.imread(img, flag=cv2.IMREAD_GRAYSCALE)
         pts = self.triangle_centers(gear=gear, tri_mask=tri_mask) + self.offset(gear=gear)
         pts = np.round(spatial.scale_coordinates(pts, scale=scale))
         indx0 = (pts[:,1].clip(0, img.shape[0]-1)).astype(np.uint16)

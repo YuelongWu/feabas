@@ -129,7 +129,7 @@ class Stitcher:
                         mpath_f = os.path.join(root_dir, mpath)
                     else:
                         mpath_f = mpath
-                    img = cv2.imread(mpath_f,cv2.IMREAD_GRAYSCALE)
+                    img = common.imread(mpath_f, flag=cv2.IMREAD_GRAYSCALE)
                     tile_size = img.shape
                 x_max = x_min + tile_size[-1]
                 y_max = y_min + tile_size[0]
@@ -338,7 +338,7 @@ class Stitcher:
         if bool(loader_config.get('cache_size', None)) and (num_workers > 1):
             loader_config['cache_size'] = int(np.ceil(loader_config['cache_size'] / num_workers))
         loader_config['number_of_channels'] = 1 # only gray-scale matching are supported
-        target_func = partial(Stitcher.match_list_of_overlaps,
+        target_func = partial(Stitcher.subprocess_match_list_of_overlaps,
                               root_dir=self.imgrootdir,
                               min_width=min_width,
                               margin=margin,
@@ -403,7 +403,7 @@ class Stitcher:
 
 
     @staticmethod
-    def match_list_of_overlaps(overlaps, imgpaths, bboxes, **kwargs):
+    def subprocess_match_list_of_overlaps(overlaps, imgpaths, bboxes, **kwargs):
         """
         matching function used as the target function in Stitcher.dispatch_matchers.
         Args:
@@ -978,6 +978,7 @@ class Stitcher:
         return len(self.matches)
 
 
+
 class MontageRenderer:
     """
     A class to render Montage with overlapping tiles.
@@ -1034,6 +1035,25 @@ class MontageRenderer:
         return cls.from_stitcher(stitcher, gear=gear, **kwargs)
 
 
+    def init_args(self, selected=None):
+        if selected is None:
+            imgpaths = self.imgrelpaths
+            mesh_info = self._mesh_info
+            tile_size = self._tile_sizes
+        else:
+            imgpaths = [self.imgrelpaths[s] for s in selected]
+            mesh_info = [self._mesh_info[s] for s in selected]
+            if not self._identical_tile_size:
+                tile_size = self._tile_sizes[selected]
+            else:
+                tile_size = self._tile_sizes[0]
+            args = [imgpaths, mesh_info, tile_size]
+            kwargs = {}
+            kwargs['root_dir'] = self.imgrootdir
+            kwargs['loader_settings'] = self._loader_settings
+        return args, kwargs
+
+
     def clear_cache(self, instant_gc=False):
         self._interpolants = None
         self._rtree = None
@@ -1064,11 +1084,7 @@ class MontageRenderer:
         blend = kwargs.pop('blend', BLEND_LINEAR)
         clip_ltrb = kwargs.pop('clip_lrtb', (0,0,0,0))
         scale = kwargs.pop('scale', 1)
-        if 'fillval' in kwargs:
-            fillval = kwargs['fillval']
-        else:
-            fillval = self.image_loader.default_fillval
-        bbox = scale_coordinates(bbox, 1)
+        bbox = scale_coordinates(bbox, 1/scale)
         hits = list(self.mesh_tree.intersection(bbox, objects=False))
         if len(hits) == 0:
             return None
@@ -1111,14 +1127,16 @@ class MontageRenderer:
             weight = weight.clip(0, None).astype(np.float32)
             if len(imgt.shape) > len(weight.shape):
                 weight = np.stack((weight, )*imgt.shape[-1], axis=-1)
-            if blend == BLEND_LINEAR:
-                out_dtype = imgt.dtype
-                imgt = imgt.astype(np.float32) * weight
             if image_accum is None:
-                image_accum = imgt
+                if blend == BLEND_LINEAR:
+                    out_dtype = imgt.dtype
+                    image_accum = imgt.astype(np.float32) * weight
+                    imgt0 = imgt
+                else:
+                    image_accum = imgt
                 weight_accum = weight
             elif blend == BLEND_LINEAR:
-                image_accum = image_accum + imgt
+                image_accum = image_accum + imgt.astype(np.float32) * weight
                 weight_accum = weight_accum + weight
             elif blend == BLEND_MAX:
                 image_accum[weight > weight_accum] = imgt[weight > weight_accum]
@@ -1129,9 +1147,76 @@ class MontageRenderer:
             return None
         if blend == BLEND_LINEAR:
             img_out = (image_accum / weight_accum.clip(1e-3, None)).astype(out_dtype)
+            img_out[weight_accum == 0] = imgt0[weight_accum == 0]
         else:
             img_out = image_accum
         return img_out
+
+
+    def render_series_to_file(self, bboxes, filenames, **kwargs):
+        rendered = {}
+        for bbox, filename in zip(bboxes, filenames):
+            imgt = self.crop(bbox, **kwargs)
+            if imgt is None:
+                continue
+            common.imwrite(filename, imgt)
+            rendered[filename] = bbox
+        return rendered
+
+
+    def plan_render_series(self, tile_size, prefix='', **kwargs):
+        """
+        Return the output filenames and bboxes that cover the entire montage in
+        z-order. Set pattern to provide filename formatting appended to the
+        prefix. Keywords in the formatting include:
+            {ROW_IND}: row_index
+            {COL_IND}: col_index
+            {X_MIN}: minimum of x coordinates
+            {Y_MIN}: minimum of y coordinates
+            {X_MAX}: maximum of x coordinates
+            {Y_MAX}: maximum of y coordinates
+        e.g. pattern: Section001_tr{ROW_IND}_tc{COL_IND}.png
+        """
+        pattern = kwargs.get('pattern', 'tr{ROW_IND}_tc{COL_IND}.png')
+        scale = kwargs.get('scale', 1)
+        keywords = ['{ROW_IND}', '{COL_IND}', '{X_MIN}', '{Y_MIN}', '{X_MAX}', '{Y_MAX}']
+        if not hasattr(tile_size, '__len__'):
+            tile_ht, tile_wd = tile_size, tile_size
+        else:
+            tile_ht, tile_wd = tile_size[0], tile_size[-1]
+        bounds = self.bounds
+        if scale != 1:
+            bounds = scale_coordinates(bounds, scale)
+        montage_wd = bounds[2]
+        montage_ht = bounds[3]
+        Ncol = int(np.ceil(montage_wd / tile_wd))
+        Nrow = int(np.ceil(montage_ht / tile_ht))
+        cols, rows = np.meshgrid(np.arange(Ncol), np.arange(Nrow))
+        cols, rows = cols.ravel(), rows.ravel()
+        idxz = common.z_order(np.stack((rows, cols), axis=-1))
+        rows, cols = rows[idxz], cols[idxz]
+        hits = []
+        bboxes = []
+        filenames = []
+        for r, c in zip(rows, cols):
+            bbox = (c*tile_wd, r*tile_ht, (c+1)*tile_wd, (r+1)*tile_ht)
+            if scale != 1:
+                bbox_hit = scale_coordinates(bbox, 1/scale)
+            else:
+                bbox_hit = bbox
+            hit = list(self.mesh_tree.intersection(bbox_hit, objects=False))
+            if len(hit) == 0:
+                continue
+            hits.append(hit)
+            bboxes.append(bbox)
+            xmin, ymin, xmax, ymax = bbox
+            keyword_replaces = [str(r), str(c), str(xmin), str(ymin), str(xmax), str(ymax)]
+            fname = pattern
+            for kw, kwr in zip(keywords, keyword_replaces):
+                fname = fname.replace(kw, kwr)
+            filenames.append(prefix + fname)
+        return bboxes, filenames, hits
+
 
 
     def tile_size(self, indx):
@@ -1207,3 +1292,21 @@ class MontageRenderer:
     @property
     def default_fillval(self):
         return self.image_loader.default_fillval
+
+
+    @staticmethod
+    def subprocess_render_montages(montage, bboxes, outnames, **kwargs):
+        selected = kwargs.pop('selected', None)
+        if isinstance(montage, str):
+            M = MontageRenderer.from_h5(montage, selected=selected, **kwargs)
+        elif isinstance(montage, (list, tuple)):
+            margs = montage[0]
+            mkwargs = montage[1]
+            M = MontageRenderer(*margs, **mkwargs)
+        elif isinstance(montage, Stitcher):
+            M = MontageRenderer.from_stitcher(montage, **kwargs)
+        elif isinstance(montage, MontageRenderer):
+            M = montage
+        else:
+            raise TypeError
+        M.render_series_to_file(bboxes, outnames, **kwargs)

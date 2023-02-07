@@ -11,7 +11,7 @@ import cv2
 import numpy as np
 from rtree import index
 
-from feabas.common import generate_cache, crop_image_from_bbox
+from feabas.common import generate_cache, crop_image_from_bbox, imread
 from feabas.constant import *
 
 
@@ -313,9 +313,9 @@ class AbstractImageLoader(ABC):
         apply_CLAHE = kwargs.get('apply_CLAHE', self._apply_CLAHE)
         inverse = kwargs.get('inverse', self._inverse)
         if number_of_channels == 3:
-            img = cv2.imread(imgpath, cv2.IMREAD_COLOR)
+            img = imread(imgpath, flag=cv2.IMREAD_COLOR)
         else:
-            img = cv2.imread(imgpath, cv2.IMREAD_UNCHANGED)
+            img = imread(imgpath, flag=cv2.IMREAD_UNCHANGED)
         if img is None:
             invalid_image_file_error = 'Image file {} not valid!'.format(imgpath)
             raise RuntimeError(invalid_image_file_error)
@@ -691,13 +691,16 @@ class MosaicLoader(StaticImageLoader):
 
 
     @classmethod
-    def from_filepath(cls, imgpaths, pattern='_tr(\d+)-tc(\d+)', rc_offset=[1, 1], rc_order=True, **kwargs):
+    def from_filepath(cls, imgpaths, pattern='_tr({ROW_IND}\d+)-tc({COL_IND}\d+)', **kwargs):
         """
-        pattern:    regexp pattern to parse row-column pattern
-        rc_offset:  if None, normalize
-        rc_order:   True:row-colume or False:colume-row
+        pattern: See MosaicLoader._filename_parser
+        tile_size: Size of the tile. If not provide, read-in the first image.
+        tile_offset: x-y offset added to the bboxes in the unit of tile size.
+        pixel_offset: x-y offset added to the bboxes in the unit of pixel.
         """
         tile_size = kwargs.get('tile_size', None)   # if None, read in first image
+        tile_offset = kwargs.get('tile_offset', None)
+        pixel_offset = kwargs.get('pixel_offset', None)
         if isinstance(imgpaths, str):
             if '*' in imgpaths:
                 imgpaths = glob.glob(imgpaths)
@@ -705,23 +708,20 @@ class MosaicLoader(StaticImageLoader):
                 imgpaths.sort()
             else:
                 imgpaths = [imgpaths]
-        if len(imgpaths) == 1:
-            r_c = np.array([(0, 0)])
-        else:
-            r_c = np.array([MosaicLoader._filename_parser(s, pattern, rc_order=rc_order) for s in imgpaths])
-            if rc_offset is None:
-                r_c -= r_c.min(axis=0)
-            else:
-                r_c -= np.array(rc_offset).reshape(1,2)
         if tile_size is None:
-            img = cv2.imread(imgpaths[0], cv2.IMREAD_UNCHANGED)
+            img = imread(imgpaths[0], flag=cv2.IMREAD_UNCHANGED)
             imght, imgwd = img.shape[0], img.shape[1]
             tile_size = (imght, imgwd)
         bboxes = []
-        for rc in r_c:
-            r = rc[0]
-            c = rc[1]
-            bbox = [c*tile_size[1], r*tile_size[0], (c+1)*tile_size[1], (r+1)*tile_size[0]]
+        for fname in imgpaths:
+            bbox = MosaicLoader._filename_parser(fname, pattern, tile_size)
+            if tile_offset is not None:
+                dx = tile_offset[0] * tile_size[-1]
+                dy = tile_offset[-1] * tile_size[0] 
+                bbox = (bbox[0]+dx, bbox[1]+dy, bbox[2]+dx, bbox[3]+dy)
+            if pixel_offset is not None:
+                dx, dy = pixel_offset
+                bbox = (bbox[0]+dx, bbox[1]+dy, bbox[2]+dx, bbox[3]+dy)
             bboxes.append(bbox)
         return cls(filepaths=imgpaths, bboxes=bboxes, **kwargs)
 
@@ -786,15 +786,60 @@ class MosaicLoader(StaticImageLoader):
 
 
     @ staticmethod
-    def _filename_parser(fname, pattern, rc_order=True):
+    def _filename_parser(fname, pattern, tile_size):
+        """
+        given a filename and pattern, return the bboxes. pattern str follows
+        regular expression, expect the following reserved keywords, which are
+        used to indicate the nature of the field and the will be removed during
+        parsing.
+            {ROW_IND}: row_index
+            {COL_IND}: col_index
+            {X_MIN}: minimum of x coordinates
+            {Y_MIN}: minimum of y coordinates
+            {X_MAX}: maximum of x coordinates
+            {Y_MAX}: maximum of y coordinates
+        each keyword should only appear once and has one-to-one correspondance
+        with a group in regexp.
+        e.g. feabas_tr1_is_not_a_pokemon_tc2.png can be parsed with pattern:
+            _tr({ROW_IND}\d+)\w+_tc({COL_IND}\d+)
+        """
+        keywords = ['{ROW_IND}','{COL_IND}','{X_MIN}','{Y_MIN}','{X_MAX}','{Y_MAX}']
+        pos = np.array([pattern.find(s) for s in keywords])
+        kw_pos = sorted([(p, s) for p, s in zip(pos, keywords) if p >= 0])
+        used_keywords = [s[1] for s in kw_pos]
+        for kw in used_keywords:
+            pattern = pattern.replace(kw, '')
         m = re.findall(pattern, fname)
-        if rc_order:
-            r = int(m[0][0])
-            c = int(m[0][1])
+        grps = {}
+        for k, kw in enumerate(used_keywords):
+            grps[kw] = int(m[0][k])
+        if ('{X_MIN}' in grps) and ('{X_MAX}' in grps):
+            xmin, xmax = grps['{X_MIN}'], grps['{X_MAX}']
+        elif '{X_MIN}' in grps:
+            xmin = grps['{X_MIN}']
+            xmax = xmin + tile_size[-1]
+        elif '{X_MAX}' in grps:
+            xmax = grps['{X_MAX}']
+            xmin = xmax - tile_size[-1]
+        elif '{COL_IND}' in grps:
+            xmin = grps['{COL_IND}'] * tile_size[-1]
+            xmax = xmin + tile_size[-1]
         else:
-            c = int(m[0][0])
-            r = int(m[0][1])
-        return r, c
+            raise RuntimeError(f'x position of tile not defined in filename {fname}')
+        if ('{Y_MIN}' in grps) and ('{Y_MAX}' in grps):
+            ymin, ymax = grps['{Y_MIN}'], grps['{Y_MAX}']
+        elif '{Y_MIN}' in grps:
+            ymin = grps['{Y_MIN}']
+            ymax = ymin + tile_size[0]
+        elif '{Y_MAX}' in grps:
+            ymax = grps['{Y_MAX}']
+            ymin = ymax - tile_size[0]
+        elif '{ROW_IND}' in grps:
+            ymin = grps['{ROW_IND}'] * tile_size[0]
+            ymax = ymin + tile_size[0]
+        else:
+            raise RuntimeError(f'y position of tile not defined in filename {fname}')
+        return (xmin, ymin, xmax, ymax)
 
 
     @property
@@ -828,7 +873,7 @@ class StreamLoader(AbstractImageLoader):
 
     @classmethod
     def from_filepath(cls, imgpath, **kwargs):
-        img = cv2.imread(imgpath, cv2.IMREAD_UNCHANGED)
+        img = imread(imgpath, flag=cv2.IMREAD_UNCHANGED)
         return cls(img, **kwargs)
 
 
