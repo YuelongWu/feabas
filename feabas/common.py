@@ -1,3 +1,4 @@
+import cv2
 import collections
 import gc
 import importlib
@@ -29,6 +30,82 @@ def z_order(indices, base=2):
         pw += 1
     z_order_score = np.sum(indices_casted * (base ** np.arange(ndim)), axis=-1)
     return np.argsort(z_order_score)
+
+
+def render_by_subregions(map_x, map_y, mask, img_loader, fileid=None,  **kwargs):
+    """
+    break the render job to small regions in case the target source image is
+    too large to fit in RAM.
+    """
+    rintp = kwargs.get('remap_interp', cv2.INTER_LANCZOS4)
+    mx_dis = kwargs.get('mx_dis', 16300)
+    fillval = kwargs.get('fillval', img_loader.default_fillval)
+    dtype_out = kwargs.get('dtype_out', img_loader.dtype)
+    return_empty = kwargs.get('return_empty', False)
+    if map_x.size == 0:
+        return None
+    if not np.any(mask, axis=None):
+        if return_empty:
+            return np.full_like(map_x, fillval, dtype=dtype_out)
+        else:
+            return None
+    imgt = np.full_like(map_x, fillval, dtype=dtype_out)
+    to_render = mask
+    multichannel = False
+    while np.any(to_render, axis=None):
+        indx0, indx1 = np.nonzero(to_render)
+        indx0_sel = indx0[indx0.size//2]
+        indx1_sel = indx1[indx1.size//2]
+        xx0 = map_x[indx0_sel, indx1_sel]
+        yy0 = map_y[indx0_sel, indx1_sel]
+        mskt = (np.abs(map_x - xx0) < mx_dis) & (np.abs(map_y - yy0) < mx_dis) & to_render
+        xmin = np.floor(map_x[mskt].min()) - 4 # Lanczos 8x8 kernel
+        xmax = np.ceil(map_x[mskt].max()) + 4
+        ymin = np.floor(map_y[mskt].min()) - 4
+        ymax = np.ceil(map_y[mskt].max()) + 4
+        bbox = (int(xmin), int(ymin), int(xmax), int(ymax))
+        if fileid is None:
+            img0 = img_loader.crop(bbox, **kwargs)
+        else:
+            img0 = img_loader.crop(bbox, fileid, **kwargs)
+        if img0 is None:
+            to_render = to_render & (~mskt)
+            continue
+        if (len(img0.shape) > 2) and (not multichannel):
+            # multichannel
+            num_channel = img0.shape[-1]
+            imgt = np.stack((imgt, )*num_channel, axis=-1)
+            multichannel = True
+        cover_ratio = np.sum(mskt) / mskt.size
+        if cover_ratio > 0.25:
+            map_xt = map_x - xmin
+            map_yt = map_y - ymin
+            imgtt = cv2.remap(img0, map_xt.astype(np.float32), map_yt.astype(np.float32),
+                interpolation=rintp, borderMode=cv2.BORDER_CONSTANT, borderValue=fillval)
+            if multichannel:
+                mskt3 = np.stack((mskt, )*imgtt.shape[-1], axis=-1)
+                imgt[mskt3] = imgtt[mskt3]
+            else:
+                imgt[mskt] = imgtt[mskt]
+        else:
+            map_xt = map_x[mskt] - xmin
+            map_yt = map_y[mskt] - ymin
+            N_pad = int(np.ceil((map_xt.size)**0.5))
+            map_xt_pad = np.pad(map_xt, (0, N_pad**2 - map_xt.size)).reshape(N_pad, N_pad)
+            map_yt_pad = np.pad(map_yt, (0, N_pad**2 - map_yt.size)).reshape(N_pad, N_pad)
+            imgt_pad = cv2.remap(img0, map_xt_pad.astype(np.float32), map_yt_pad.astype(np.float32),
+                interpolation=rintp, borderMode=cv2.BORDER_CONSTANT, borderValue=fillval)
+            if multichannel:
+                imgtt = imgt_pad.reshape(-1, num_channel)
+                imgtt = imgtt[:(map_xt.size), :]
+                mskt3 = np.stack((mskt, )*imgtt.shape[-1], axis=-1)
+                imgt[mskt3] = imgtt.ravel()
+            else:
+                imgtt = imgt_pad.ravel()
+                imgtt = imgtt[:(map_xt.size)]
+                imgt[mskt] = imgtt.ravel()
+        to_render = to_render & (~mskt)
+    return imgt
 
 
 def masked_dog_filter(img, sigma, mask=None):

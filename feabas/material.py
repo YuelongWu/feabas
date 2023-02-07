@@ -4,7 +4,7 @@ import json
 import numpy as np
 from scipy.interpolate import interp1d
 
-from feabas import miscs
+from feabas import common
 from feabas.constant import *
 
 
@@ -98,7 +98,7 @@ class Material:
             if 'lambda' in self._stiffness_func_factory:
                 self._stiffness_func = eval(self._stiffness_func_factory)
             else:
-                stiffness_func_factory = miscs.load_plugin(self._stiffness_func_factory)
+                stiffness_func_factory = common.load_plugin(self._stiffness_func_factory)
                 self._stiffness_func = stiffness_func_factory(**self._stiffness_func_params)
         elif callable(self._stiffness_func_factory):
             self._stiffness_func = self._stiffness_func_factory(**self._stiffness_func_params)

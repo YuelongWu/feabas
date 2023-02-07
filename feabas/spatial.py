@@ -7,7 +7,7 @@ import shapely.geometry as shpgeo
 from shapely.ops import unary_union, linemerge, polygonize
 from shapely import wkb
 
-from feabas import dal, miscs, material
+from feabas import dal, common, material
 from feabas.constant import *
 
 
@@ -489,7 +489,7 @@ class Geometry:
             if 'resolution' in f:
                 kwargs['resolution'] = f['resolution'][()]
             if 'zorder' in f:
-                kwargs['zorder'] = miscs.numpy_to_str_ascii(f['zorder'][()]).split('\n')
+                kwargs['zorder'] = common.numpy_to_str_ascii(f['zorder'][()]).split('\n')
             if 'epsilon' in f:
                 kwargs['epsilon'] = f['epsilon'][()]
             if 'roi' in f:
@@ -505,7 +505,7 @@ class Geometry:
             _ = f.create_dataset('resolution', data=self._resolution)
             _ = f.create_dataset('epsilon', data=self._epsilon)
             if bool(self._zorder):
-                zorder_encoded = miscs.str_to_numpy_ascii('\n'.join(self._zorder))
+                zorder_encoded = common.str_to_numpy_ascii('\n'.join(self._zorder))
                 _ = f.create_dataset('zorder', data=zorder_encoded)
             if hasattr(self._roi, 'wkb_hex'):
                 _ = f.create_dataset('roi', data=self._roi.wkb_hex)

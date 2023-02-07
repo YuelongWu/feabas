@@ -5,6 +5,7 @@ import cv2
 from functools import partial
 import gc
 import h5py
+import matplotlib.tri
 from multiprocessing import get_context
 import numpy as np
 import os
@@ -17,7 +18,8 @@ from feabas.dal import StaticImageLoader
 from feabas.matcher import stitching_matcher
 from feabas.mesh import Mesh
 from feabas.optimizer import SLM
-from feabas import miscs
+from feabas import common
+from feabas.spatial import scale_coordinates
 from feabas.constant import *
 
 
@@ -46,7 +48,7 @@ class Stitcher:
             self.imgrelpaths = [os.path.relpath(s, self.imgrootdir) for s in imgpaths]
         bboxes = np.round(bboxes).astype(np.int32)
         self.init_bboxes = bboxes
-        self.tile_sizes = miscs.bbox_sizes(bboxes)
+        self.tile_sizes = common.bbox_sizes(bboxes)
         self.average_tile_size = np.median(self.tile_sizes, axis=0)
         init_offset = bboxes[...,:2]
         self._init_offset = init_offset - init_offset.min(axis=0)
@@ -137,20 +139,31 @@ class Stitcher:
 
 
     @classmethod
-    def from_h5(cls, filename, load_matches=True, load_meshes=True):
+    def from_h5(cls, filename, load_matches=True, load_meshes=True, selected=None):
+        """
+        selected (ndarray of int): if provided, only load tiles whose indices
+        are in selected.
+        """
         with h5py.File(filename, 'r') as f:
-            root_dir = miscs.numpy_to_str_ascii(f['imgrootdir'][()])
-            imgpaths = miscs.numpy_to_str_ascii(f['imgrelpaths'][()]).split('\n')
+            root_dir = common.numpy_to_str_ascii(f['imgrootdir'][()])
+            imgpaths = common.numpy_to_str_ascii(f['imgrelpaths'][()]).split('\n')
             bboxes = f['init_bboxes'][()]
             if 'groupings' in f:
                 groupings = f['groupings'][()]
             else:
                 groupings = None
+        if selected is not None:
+            imgpaths = [s for k, s in enumerate(imgpaths) if k in selected]
+            bboxes = bboxes[selected]
+            groupings = groupings[selected]
+            check_order = True
+        else:
+            check_order = False
         obj = cls(imgpaths, bboxes, root_dir=root_dir, groupings=groupings)
         if load_matches:
-            obj.load_matches_from_h5(filename, check_order=False)
-        if load_matches:
-            obj.load_meshes_from_h5(filename, check_order=False)
+            obj.load_matches_from_h5(filename, check_order=check_order)
+        if load_meshes:
+            obj.load_meshes_from_h5(filename, check_order=check_order)
         return obj
 
 
@@ -163,8 +176,8 @@ class Stitcher:
                 create_dataset = partial(f.create_dataset, compression='gzip')
             else:
                 create_dataset = f.create_dataset
-            f.create_dataset('imgrootdir', data=miscs.str_to_numpy_ascii(self.imgrootdir))
-            imgnames_encoded = miscs.str_to_numpy_ascii('\n'.join(self.imgrelpaths))
+            f.create_dataset('imgrootdir', data=common.str_to_numpy_ascii(self.imgrootdir))
+            imgnames_encoded = common.str_to_numpy_ascii('\n'.join(self.imgrelpaths))
             create_dataset('imgrelpaths', data=imgnames_encoded)
             create_dataset('init_bboxes', data=self.init_bboxes)
             if self._groupings is not None:
@@ -203,7 +216,7 @@ class Stitcher:
             if 'matches' not in f:
                 return match_cnt
             if check_order:
-                imgnames = miscs.numpy_to_str_ascii(f['imgrelpaths'][()]).split('\n')
+                imgnames = common.numpy_to_str_ascii(f['imgrelpaths'][()]).split('\n')
                 name_lut = {name: k for k, name in enumerate(self.imgrelpaths)}
                 indx_mapper = [name_lut.get(s, -1) for s in imgnames]
             else:
@@ -237,7 +250,7 @@ class Stitcher:
                 return mesh_loaded
             mesh_sharing_indx = f['mesh_sharing_indx'][()]
             if check_order:
-                imgnames = miscs.numpy_to_str_ascii(f['imgrelpaths'][()]).split('\n')
+                imgnames = common.numpy_to_str_ascii(f['imgrelpaths'][()]).split('\n')
                 if len(imgnames) < len(self.imgrelpaths):
                     # mesh not complete
                     return mesh_loaded
@@ -246,7 +259,7 @@ class Stitcher:
                 if np.any(indx_mapper < 0):
                     # mesh not complete
                     return mesh_loaded
-                _, mesh_sharing = np.unique(mesh_sharing_indx[indx_mapper], return_inverse=True)
+                mesh_sharing_u, mesh_sharing = np.unique(mesh_sharing_indx[indx_mapper], return_inverse=True)
             else:
                 indx_mapper = None
                 mesh_sharing = mesh_sharing_indx
@@ -254,6 +267,8 @@ class Stitcher:
             moving_offsets = f['moving_offsets'][()]
             master_meshes = {}
             for uid_src in f['master_meshes']:
+                if (indx_mapper is not None) and (uid_src not in mesh_sharing_u):
+                    continue
                 prefix = 'master_meshes/' + uid_src
                 M0 = Mesh.from_h5(f, prefix=prefix)
                 M0.unlock()
@@ -278,7 +293,7 @@ class Stitcher:
             self.mesh_sharing = mesh_sharing
             mesh_loaded = True
         return mesh_loaded
-                
+
 
     def set_groupings(self, groupings):
         """
@@ -379,11 +394,11 @@ class Stitcher:
         overlaps = np.array(overlaps)
         bboxes0 = self.init_bboxes[overlaps[:,0]]
         bboxes1 = self.init_bboxes[overlaps[:,1]]
-        bbox_ov, _ = miscs.bbox_intersections(bboxes0, bboxes1)
-        ov_cntr = miscs.bbox_centers(bbox_ov)
+        bbox_ov, _ = common.bbox_intersections(bboxes0, bboxes1)
+        ov_cntr = common.bbox_centers(bbox_ov)
         average_step_size = self.average_tile_size[::-1] / 2
         ov_indices = np.round((ov_cntr - ov_cntr.min(axis=0))/average_step_size)
-        z_order = miscs.z_order(ov_indices)
+        z_order = common.z_order(ov_indices)
         return overlaps[z_order]
 
 
@@ -431,7 +446,7 @@ class Stitcher:
         margin_ratio_switch = 2
         if len(overlaps) == 0:
             return {}, {}
-        bboxes_overlap, wds = miscs.bbox_intersections(bboxes[overlaps[:,0]], bboxes[overlaps[:,1]])
+        bboxes_overlap, wds = common.bbox_intersections(bboxes[overlaps[:,0]], bboxes[overlaps[:,1]])
         if 'cache_border_margin' not in loader_config:
             overlap_wd0 = 6 * np.median(np.abs(wds - np.median(wds))) + np.median(wds) + 1
             if margin < margin_ratio_switch:
@@ -459,12 +474,12 @@ class Stitcher:
                 real_margin = int(margin * wd)
             else:
                 real_margin = int(margin)
-            bbox_ov = miscs.bbox_enlarge(bbox_ov, real_margin)
+            bbox_ov = common.bbox_enlarge(bbox_ov, real_margin)
             idx0, idx1 = indices
             bbox0 = bboxes[idx0]
             bbox1 = bboxes[idx1]
-            bbox_ov0 = miscs.bbox_intersections(bbox_ov, bbox0)
-            bbox_ov1 = miscs.bbox_intersections(bbox_ov, bbox1)
+            bbox_ov0 = common.bbox_intersections(bbox_ov, bbox0)
+            bbox_ov1 = common.bbox_intersections(bbox_ov, bbox1)
             img0 = image_loader.crop(bbox_ov0, idx0, return_index=False)
             img1 = image_loader.crop(bbox_ov1, idx1, return_index=False)
             if mask_exist[idx0]:
@@ -559,7 +574,7 @@ class Stitcher:
         if border_width is None:
             indx = self.overlaps
             bboxes = self.init_bboxes
-            _, ovlp_wds = miscs.bbox_intersections(bboxes[indx[:,0]], bboxes[indx[:,1]])
+            _, ovlp_wds = common.bbox_intersections(bboxes[indx[:,0]], bboxes[indx[:,1]])
             tile_border_widths = np.zeros(self.num_tiles, dtype=np.float32)
             np.maxium.at(tile_border_widths, indx, np.stack((ovlp_wds, ovlp_wds)), axis=-1)
             tile_border_widths = tile_border_widths / np.min(self.tile_sizes, axis=-1)
@@ -615,7 +630,7 @@ class Stitcher:
         mesh_params_ptr = {} # map the parameters of the mesh to
         default_caches = {}
         for gear in MESH_GEARS:
-            default_caches[gear] = defaultdict(lambda: miscs.CacheFIFO(maxlen=cache_size))
+            default_caches[gear] = defaultdict(lambda: common.CacheFIFO(maxlen=cache_size))
         self._default_mesh_cache = default_caches
         for k, tile_size in enumerate(self.tile_sizes):
             tmsz = tile_mesh_sizes[k]
@@ -907,7 +922,7 @@ class Stitcher:
                     self.clear_mesh_cache(gear=g)
             else:
                 cache = self._default_mesh_cache[gear]
-                if isinstance(cache, miscs.CacheNull):
+                if isinstance(cache, common.CacheNull):
                     cache.clear()
                 elif isinstance(cache, dict):
                     for c in cache.values():
@@ -965,34 +980,230 @@ class Stitcher:
 
 class MontageRenderer:
     """
-    A class to render Montage with overlapping tiles
+    A class to render Montage with overlapping tiles.
+    Here I won't consider flipped triangle cases as in feabas.mesh.MeshRenderer,
+    it would be too messed up for a stitching problem and need human intervention
+    anyway.
+    Args:
+        imgpaths(list): list of paths of the image tile.
+        mesh_info(list): list of mesh information with each element as
+            (moving_vertices, moving_offsets, triangles, fixed_offsets).
+        tile_sizes(N x 2 ndarray): tile sizes of each tile.
+    Kwargs:
+        loader_settings(dict): settings to initialize the image loader, refer to
+            feabas.dal.AbstractImageLoade
+        root_dir(str): if set, the paths in filepaths are relative path to this
+            root directory.
     """
-    def __init__(self):
-        pass
+    def __init__(self, imgpaths, mesh_info, tile_sizes, **kwargs):
+        self._loader_settings = kwargs.get('loader_settings', {})
+        if bool(kwargs.get('root_dir', None)):
+            self.imgrootdir = kwargs['root_dir']
+            self.imgrelpaths = imgpaths
+        else:
+            self.imgrootdir = os.path.dirname(os.path.commonprefix(imgpaths))
+            self.imgrelpaths = [os.path.relpath(s, self.imgrootdir) for s in imgpaths]
+        self._tile_sizes = tile_sizes.reshape(-1,2)
+        self._identical_tile_size = np.all(np.ptp(self._tile_sizes, axis=0) == 0)
+        self._mesh_info = mesh_info
+        self._interpolators = None
+        self._rtree = None
+        self._image_loader = None
 
 
-    def crop(self, bbox, return_empty=False, **kwargs):
-        fillval = kwargs.get('fillval', self._default_fillval)
-        dtype = kwargs.get('dtype', self.dtype)
-        blend_mode = kwargs.get('blend', BLEND_LINEAR)
-        pass
+    @classmethod
+    def from_stitcher(cls, stitcher, gear=(MESH_GEAR_INITIAL, MESH_GEAR_MOVING), **kwargs):
+        if stitcher.meshes is None:
+            raise RuntimeError('stitcher meshes not initializad.')
+        root_dir = stitcher.imgrootdir
+        imgpaths = stitcher.imgrelpaths
+        tile_sizes = stitcher.tile_sizes
+        mesh_info = []
+        for M in stitcher.meshes:
+            v0 = M.vertices_w_offset(gear=gear[0])
+            v1 = M.vertices(gear=gear[1])
+            offset = M.offset(gear=gear[1])
+            T = M.triangles
+            mesh_info.append((v1, offset, T, v0))
+        return cls(imgpaths, mesh_info, tile_sizes, root_dir=root_dir, **kwargs)
+
+
+    @classmethod
+    def from_h5(cls, fname, selected=None, gear=(MESH_GEAR_INITIAL, MESH_GEAR_MOVING), **kwargs):
+        stitcher = Stitcher.from_h5(fname, load_matches=False, load_meshes=True, selected=selected)
+        return cls.from_stitcher(stitcher, gear=gear, **kwargs)
+
+
+    def clear_cache(self, instant_gc=False):
+        self._interpolants = None
+        self._rtree = None
+        if self._image_loader is not None:
+            self._image_loader.clear_cache(instant_gc=False)
+            self._image_loader = None
+        if instant_gc:
+            gc.collect()
+
+
+    def CLAHE_off(self):
+        self.image_loader.CLAHE_off()
+
+
+    def CLAHE_on(self):
+        self.image_loader.CLAHE_on()
+
+
+    def inverse_off(self):
+        self.image_loader.inverse_off()
+
+
+    def inverse_on(self):
+        self.image_loader.inverse_on()
+
+
+    def crop(self, bbox, **kwargs):
+        blend = kwargs.pop('blend', BLEND_LINEAR)
+        clip_ltrb = kwargs.pop('clip_lrtb', (0,0,0,0))
+        scale = kwargs.pop('scale', 1)
+        if 'fillval' in kwargs:
+            fillval = kwargs['fillval']
+        else:
+            fillval = self.image_loader.default_fillval
+        bbox = scale_coordinates(bbox, 1)
+        hits = list(self.mesh_tree.intersection(bbox, objects=False))
+        if len(hits) == 0:
+            return None
+        x_min = bbox[0]
+        y_min = bbox[1]
+        ht = round(bbox[3] - y_min)
+        wd = round(bbox[2] - x_min)
+        x0 = np.arange(x_min, x_min+wd, 1/scale)
+        y0 = np.arange(y_min, y_min+ht, 1/scale)
+        xx, yy = np.meshgrid(x0, y0)
+        image_accum = None
+        weight_accum = None
+        for indx in hits:
+            x_interp, y_interp = self.interpolators[indx]
+            _, offset, _, _ = self._mesh_info[indx]
+            xxt = xx - offset[0]
+            map_x = x_interp(xxt, yyt)
+            mask =map_x.mask
+            if np.all(mask, axis=None):
+                continue
+            yyt = yy - offset[1]
+            map_y = y_interp(xxt, yyt)
+            x_field = np.nan_to_num(map_x.data, nan=-1, copy=False)
+            y_field = np.nan_to_num(map_y.data, nan=-1, copy=False)
+            tile_ht, tile_wd = self.tile_size(indx)
+            weight = np.minimum.reduce([x_field + 0.5, -x_field + tile_wd - 0.5,
+                                     y_field + 0.5, -y_field + tile_ht - 0.5])
+            if np.any(clip_ltrb):
+                dis_t = np.minimum.reduce([x_field-clip_ltrb[0] + 0.5,
+                                     -x_field + tile_wd-clip_ltrb[2] - 0.5,
+                                     y_field-clip_ltrb[1] + 0.5,
+                                     -y_field + tile_ht - clip_ltrb[3] - 0.5])
+                weight[dis_t < 0] *= 1/1000
+            mask = weight > 0
+            if not np.any(mask, axis=None):
+                continue
+            imgt = common.render_by_subregions(x_field, y_field, mask, self.image_loader, fileid=indx, **kwargs)
+            if imgt is None:
+                continue
+            weight = weight.clip(0, None).astype(np.float32)
+            if len(imgt.shape) > len(weight.shape):
+                weight = np.stack((weight, )*imgt.shape[-1], axis=-1)
+            if blend == BLEND_LINEAR:
+                out_dtype = imgt.dtype
+                imgt = imgt.astype(np.float32) * weight
+            if image_accum is None:
+                image_accum = imgt
+                weight_accum = weight
+            elif blend == BLEND_LINEAR:
+                image_accum = image_accum + imgt
+                weight_accum = weight_accum + weight
+            elif blend == BLEND_MAX:
+                image_accum[weight > weight_accum] = imgt[weight > weight_accum]
+                weight_accum = np.maximum(weight_accum, weight)
+            else:
+                image_accum[weight > 0] = imgt[weight > 0]
+        if image_accum is None:
+            return None
+        if blend == BLEND_LINEAR:
+            img_out = (image_accum / weight_accum.clip(1e-3, None)).astype(out_dtype)
+        else:
+            img_out = image_accum
+        return img_out
+
+
+    def tile_size(self, indx):
+        if self._identical_tile_size:
+            return self._tile_sizes[0]
+        else:
+            return self._tile_sizes[indx]
+
+
+    def _mesh_rtree_generator(self):
+        for k, msh in enumerate(self._mesh_info):
+            vertices, offset, _, _ = msh
+            xy_min = vertices.min(axis=0)
+            xy_max = vertices.max(axis=0)
+            bbox = (xy_min[0] + offset[0], xy_min[1] + offset[1],
+                xy_max[0] + offset[0], xy_max[1] + offset[1])
+            yield (k, bbox, None)
+
+
+    @property
+    def mesh_tree(self):
+        if self._rtree is None:
+            self._rtree = index.Index(self._mesh_rtree_generator())
+        return self._rtree
+
+
+    @property
+    def interpolators(self):
+        if self._interpolators is None:
+            self._interpolators = []
+            for msh in self._mesh_info:
+                v1, _, T, v0 = msh
+                mattri = matplotlib.tri.Triangulation(v1[:,0], v1[:,1], triangles=T)
+                xinterp = matplotlib.tri.LinearTriInterpolator(mattri, v0[:,0])
+                yinterp = matplotlib.tri.LinearTriInterpolator(mattri, v0[:,1])
+                self._interpolators.append((xinterp, yinterp))
+        return self._interpolators
+
+
+    @property
+    def image_loader(self):
+        if self._image_loader is None:
+            if self._identical_tile_size:
+                tile_size = self._tile_sizes[0]
+                self._image_loader = StaticImageLoader(self.imgrelpaths,
+                    root_dir=self.imgrootdir, tile_size=tile_size,
+                    **self._loader_settings)
+            else:
+                xy_min = np.zeros_like(self._tile_sizes)
+                xy_max = self._tile_sizes[:,::-1]
+                bboxes = np.concatenate((xy_min, xy_max), axis=-1)
+                self._image_loader = StaticImageLoader(self.imgrelpaths,
+                    bboxes=bboxes, root_dir=self.imgrootdir,
+                    **self._loader_settings)
+        return self._image_loader
 
 
     @property
     def bounds(self):
-        pass
+        return self.mesh_tree.bounds
+
+    
+    @property
+    def number_of_channels(self):
+        return self.image_loader.number_of_channels
 
 
     @property
     def dtype(self):
-        if self._dtype is None:
-            if hasattr(self._image_loader, 'dtype') and self._image_loader.dtype is not None:
-                self._dtype = self._image_loader.dtype
-            else:
-                self._dtype = np.uint8
-        return self._dtype
+        return self.image_loader.dtype
 
 
     @property
     def default_fillval(self):
-        return self._default_fillval
+        return self.image_loader.default_fillval

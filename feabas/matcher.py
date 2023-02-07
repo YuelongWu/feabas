@@ -4,7 +4,7 @@ from scipy import fft, ndimage
 from scipy.fftpack import next_fast_len
 
 from feabas.mesh import Mesh, MeshRenderer
-from feabas import optimizer, dal, miscs, spatial
+from feabas import optimizer, dal, common, spatial
 from feabas.constant import *
 
 
@@ -37,8 +37,8 @@ def xcorr_fft(img0, img1, conf_mode=FFT_CONF_MIRROR, **kwargs):
     normalize = kwargs.get('normalize', False)
     pad = kwargs.get('pad', True)
     if sigma > 0:
-        img0 = miscs.masked_dog_filter(img0, sigma, mask=mask0)
-        img1 = miscs.masked_dog_filter(img1, sigma, mask=mask1)
+        img0 = common.masked_dog_filter(img0, sigma, mask=mask0)
+        img1 = common.masked_dog_filter(img1, sigma, mask=mask1)
     imgshp0 = img0.shape[-2:]
     imgshp1 = img1.shape[-2:]
     if pad:
@@ -95,8 +95,8 @@ def global_translation_matcher(img0, img1, **kwargs):
     conf_thresh = kwargs.get('conf_thresh', 0.3)
     divide_factor = kwargs.get('divide_factor', 6)
     if sigma > 0:
-        img0 = miscs.masked_dog_filter(img0, sigma, mask=mask0)
-        img1 = miscs.masked_dog_filter(img1, sigma, mask=mask1)
+        img0 = common.masked_dog_filter(img0, sigma, mask=mask0)
+        img1 = common.masked_dog_filter(img1, sigma, mask=mask1)
     tx, ty, conf = xcorr_fft(img0, img1, conf_mode=conf_mode, pad=True)
     tx, ty, conf = tx.item(), ty.item(), conf.item()
     if conf > conf_thresh:
@@ -122,8 +122,8 @@ def global_translation_matcher(img0, img1, **kwargs):
             if rr < ratio:
                 ratio = rr
                 divide_N = (int(r0), int(divide_factor/r0))
-    xmin0, ymin0, xmax0, ymax0 = miscs.divide_bbox((0, 0, imgshp0[1], imgshp0[0]), min_num_blocks=divide_N)
-    xmin1, ymin1, xmax1, ymax1 = miscs.divide_bbox((0, 0, imgshp1[1], imgshp1[0]), min_num_blocks=divide_N)
+    xmin0, ymin0, xmax0, ymax0 = common.divide_bbox((0, 0, imgshp0[1], imgshp0[0]), min_num_blocks=divide_N)
+    xmin1, ymin1, xmax1, ymax1 = common.divide_bbox((0, 0, imgshp1[1], imgshp1[0]), min_num_blocks=divide_N)
     stack0 = []
     stack1 = []
     for k in range(xmin0.size):
@@ -184,8 +184,8 @@ def stitching_matcher(img0, img1, **kwargs):
         mask0_g = mask0
         mask1_g = mask1
     if sigma > 0:
-        img0_g = miscs.masked_dog_filter(img0_g, sigma*coarse_downsample, mask=mask0_g)
-        img1_g = miscs.masked_dog_filter(img1_g, sigma*coarse_downsample, mask=mask1_g)
+        img0_g = common.masked_dog_filter(img0_g, sigma*coarse_downsample, mask=mask0_g)
+        img1_g = common.masked_dog_filter(img1_g, sigma*coarse_downsample, mask=mask1_g)
     tx0, ty0, conf0 = global_translation_matcher(img0_g, img1_g, conf_mode=conf_mode,
         conf_thresh=conf_thresh)
     if conf0 < conf_thresh:
@@ -211,8 +211,8 @@ def stitching_matcher(img0, img1, **kwargs):
             mask0_f = mask0
             mask1_f = mask1
         if sigma > 0:
-            img0_f = miscs.masked_dog_filter(img0_f, sigma*fine_downsample, mask=mask0_f)
-            img1_f = miscs.masked_dog_filter(img1_f, sigma*fine_downsample, mask=mask1_f)
+            img0_f = common.masked_dog_filter(img0_f, sigma*fine_downsample, mask=mask0_f)
+            img1_f = common.masked_dog_filter(img1_f, sigma*fine_downsample, mask=mask1_f)
     tx0 = tx0 * fine_downsample / coarse_downsample
     ty0 = ty0 * fine_downsample / coarse_downsample
     err_thresh = err_thresh * fine_downsample
@@ -221,7 +221,7 @@ def stitching_matcher(img0, img1, **kwargs):
     if np.any(spacings < 1):
         bbox0 = np.array(img_loader0.bounds) + np.tile((tx0, ty0), 2)
         bbox1 = img_loader1.bounds
-        bbox, _ = miscs.intersect_bbox(bbox0, bbox1)
+        bbox, _ = common.intersect_bbox(bbox0, bbox1)
         wd0 = bbox[2] - bbox[0]
         ht0 = bbox[3] - bbox[1]
         lside = max(wd0, ht0)
@@ -312,7 +312,7 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
     if np.any(spacings < 1):
         bbox0 = mesh0.bbox(gear=MESH_GEAR_MOVING)
         bbox1 = mesh1.bbox(gear=MESH_GEAR_MOVING)
-        bbox, valid = miscs.intersect_bbox(bbox0, bbox1)
+        bbox, valid = common.intersect_bbox(bbox0, bbox1)
         if not valid:
             return invalid_output
         wd0 = bbox[2] - bbox[0]
@@ -411,7 +411,7 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
     # import matplotlib.pyplot as plt
     # bbox0 = mesh0.bbox(gear=MESH_GEAR_MOVING)
     # bbox1 = mesh1.bbox(gear=MESH_GEAR_MOVING)
-    # bbox, valid = miscs.intersect_bbox(bbox0, bbox1)
+    # bbox, valid = common.intersect_bbox(bbox0, bbox1)
     # render0 = MeshRenderer.from_mesh(mesh0, image_loader=image_loader0)
     # render1 = MeshRenderer.from_mesh(mesh1, image_loader=image_loader1)
     # img0t = render0.crop(bbox)
@@ -440,9 +440,9 @@ def distributor_cartesian_bbox(mesh0, mesh1, spacing, **kwargs):
     shrink_factor = kwargs.get('shrink_factor', 1)
     bbox0 = mesh0.bbox(gear=gear)
     bbox1 = mesh1.bbox(gear=gear)
-    bbox, valid = miscs.intersect_bbox(bbox0, bbox1)
+    bbox, valid = common.intersect_bbox(bbox0, bbox1)
     if not valid:
         return None
-    xstt, ystt, xend, yend = miscs.divide_bbox(bbox, block_size=spacing,
+    xstt, ystt, xend, yend = common.divide_bbox(bbox, block_size=spacing,
         min_num_blocks=min_num_blocks, shrink_factor=shrink_factor)
     return xstt, ystt, xend, yend

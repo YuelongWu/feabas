@@ -3,7 +3,7 @@ import gc
 import numpy as np
 from scipy import sparse
 
-from feabas import spatial, miscs
+from feabas import spatial, common
 from feabas.constant import *
 
 
@@ -779,7 +779,7 @@ class SLM:
         svd_clip = kwargs.get('svd_clip', (1, 1))
         A = self.linkage_adjacency()
         to_optimize = ~self.lock_flags
-        linked_pairs = miscs.find_elements_in_array(self.mesh_uids, self.link_uids)
+        linked_pairs = common.find_elements_in_array(self.mesh_uids, self.link_uids)
         idxt = np.any(linked_pairs<0, axis=-1, keepdims=False)
         linked_pairs[idxt] = -1
         modified = False
@@ -1109,7 +1109,7 @@ class SLM:
         is considered connected.
         """
         if self._linkage_adjacency is None:
-            edges = miscs.find_elements_in_array(self.mesh_uids, self.link_uids)
+            edges = common.find_elements_in_array(self.mesh_uids, self.link_uids)
             num_matches = np.array([lnk.weight_sum for lnk in self.links])
             indx = np.all(edges>=0, axis=-1, keepdims=False)
             if not np.all(indx):

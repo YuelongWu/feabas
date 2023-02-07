@@ -17,7 +17,7 @@ import shapely.geometry as shpgeo
 from shapely.ops import polygonize, unary_union
 import triangle
 
-from feabas import miscs, material, spatial
+from feabas import common, material, spatial
 from feabas.constant import *
 
 
@@ -68,7 +68,7 @@ def config_cache(gear):
             otherwise, use self._current_gear.
     cache: If False, no caching;
         If True, save to self as an attribute (default);
-        If type of miscs.Cache, save to the cache object with key;
+        If type of common.Cache, save to the cache object with key;
         If type defaultdict,  save to cache object with key under dict[prop_name].
     assign_value: if kwargs assign_value is given, instead of computing the property,
         directly return that value and force cache it if required.
@@ -167,7 +167,7 @@ def config_cache(gear):
                     return prop
             else:
                 cache_key = self.caching_keys(gear=cgear)
-                if isinstance(cache, miscs.CacheNull):
+                if isinstance(cache, common.CacheNull):
                     key = (*cache_key, prop_name0)
                     if not force_update and (key in cache):
                         prop = cache[key]
@@ -596,7 +596,7 @@ class Mesh:
         if append_name: # append the name with a hash to differentiate from parent
             if ('name' not in kwargs) and ('name' in init_dict):
                 parent_name = init_dict['name']
-                new_name = (parent_name, miscs.hash_numpy_array(tri_mask))
+                new_name = (parent_name, common.hash_numpy_array(tri_mask))
                 init_dict['name'] = new_name
         if ('locked' not in kwargs):
             init_dict['locked'] = self.locked
@@ -725,7 +725,7 @@ class Mesh:
                 if val is None:
                     continue
                 if isinstance(val, str):
-                    val = miscs.str_to_numpy_ascii(val)
+                    val = common.str_to_numpy_ascii(val)
                 if np.isscalar(val) or not compression:
                     _ = fname.create_dataset(prefix+key, data=val)
                 else:
@@ -738,7 +738,7 @@ class Mesh:
                     if val is None:
                         continue
                     if isinstance(val, str):
-                        val = miscs.str_to_numpy_ascii(val)
+                        val = common.str_to_numpy_ascii(val)
                     if np.isscalar(val) or not compression:
                         _ = f.create_dataset(prefix+key, data=val)
                     else:
@@ -773,7 +773,7 @@ class Mesh:
                 self._stiffness_multiplier = self._stiffness_multiplier[tidx]
             if isinstance(self._material_ids, np.ndarray):
                 self._material_ids = self._material_ids[tidx]
-            self.vertices_changed(gear=MESH_GEAR_INITIAL)
+            self._vertices_changed(gear=MESH_GEAR_INITIAL)
 
 
     def delete_orphaned_vertices(self):
@@ -804,7 +804,7 @@ class Mesh:
         elif isinstance(mtb, material.MaterialTable):
             material_table = mtb
         elif isinstance(mtb, np.ndarray):
-            ss = miscs.numpy_to_str_ascii(mtb)
+            ss = common.numpy_to_str_ascii(mtb)
             if ss[-5:] == '.json':
                 material_table = material.MaterialTable.from_json(ss, stream=False)
             else:
@@ -898,22 +898,6 @@ class Mesh:
             raise ValueError
 
 
-    def switch_to_ini(self):
-        self._current_gear = MESH_GEAR_INITIAL
-
-
-    def switch_to_fix(self):
-        self._current_gear = MESH_GEAR_FIXED
-
-
-    def switch_to_mov(self):
-        self._current_gear = MESH_GEAR_MOVING
-
-
-    def switch_to_stg(self):
-        self._current_gear = MESH_GEAR_STAGING
-
-
     def __getitem__(self, gear):
         if isinstance(gear, str):
             if gear.lower() in ('m', 'moving'):
@@ -974,7 +958,7 @@ class Mesh:
                 if np.max(np.abs(m), axis=None) > self._epsilon:
                     self._vertices[gear] = v - m
                     self._offsets[gear] = self._offsets[gear] + m
-                    self.vertices_changed(gear=gear)
+                    self._vertices_changed(gear=gear)
 
 
     def vertices_w_offset(self, gear=None):
@@ -1024,10 +1008,10 @@ class Mesh:
 
   ## -------------------------------- caching ------------------------------ ##
     def _hash_token(self):
-        var0 = miscs.hash_numpy_array(self._vertices[MESH_GEAR_INITIAL])
-        var1 = miscs.hash_numpy_array(self.triangles)
-        var2 = miscs.hash_numpy_array(self._material_ids)
-        var3 = miscs.hash_numpy_array(self._stiffness_multiplier)
+        var0 = common.hash_numpy_array(self._vertices[MESH_GEAR_INITIAL])
+        var1 = common.hash_numpy_array(self.triangles)
+        var2 = common.hash_numpy_array(self._material_ids)
+        var3 = common.hash_numpy_array(self._stiffness_multiplier)
         self.token = hash((var0, var1, var2, var3, self._resolution))
 
 
@@ -1045,7 +1029,7 @@ class Mesh:
             key = self.token
         else:
             v = self.vertices(gear=gear)
-            key = miscs.hash_numpy_array(v)
+            key = common.hash_numpy_array(v)
         if key != self._caching_keys_dict[gear]:
             self._latest_expired_caching_keys_dict[gear] = self._caching_keys_dict[gear]
             self._caching_keys_dict[gear] = key
@@ -1138,7 +1122,7 @@ class Mesh:
                     keys_to_probe = (current_keys[0], *[s for s in current_keys[1:] if isinstance(s, tuple)])
                 else:
                     keys_to_probe = (current_keys[0], *[s for s in current_keys[1:] if isinstance(s, str)])
-            if isinstance(cache, miscs.CacheNull):
+            if isinstance(cache, common.CacheNull):
                 if len(cache) == 0:
                     return
                 keys_to_delete = []
@@ -1159,12 +1143,12 @@ class Mesh:
             gc.collect()
 
 
-    def vertices_changed(self, gear):
+    def _vertices_changed(self, gear):
         self._update_caching_keys(gear=gear)
         self.clear_cached_attr(gear=gear)
         for g in MESH_GEARS:
             if (g > gear) and (self._vertices[g] is None):
-                self.vertices_changed(gear=g)
+                self._vertices_changed(gear=g)
 
 
     def set_default_cache(self, cache=True, gear=None):
@@ -1253,7 +1237,7 @@ class Mesh:
 
 
     @config_cache(MESH_GEAR_INITIAL)
-    def vertex_adjacencies(self, vtx_mask=None, tri_mask=None):
+    def _vertex_adjacencies(self, vtx_mask=None, tri_mask=None):
         """sparse adjacency matrix of vertices."""
         if Mesh._masked_all(vtx_mask):
             edges = self.edges(tri_mask=tri_mask)
@@ -1264,28 +1248,28 @@ class Mesh:
             A = sparse.csr_matrix((V, (idx0, idx1)), shape=(Npt, Npt))
             return A
         else:
-            A = self.vertex_adjacencies(vtx_mask=None, tri_mask=tri_mask)
+            A = self._vertex_adjacencies(vtx_mask=None, tri_mask=tri_mask)
             return A[vtx_mask][:, vtx_mask]
 
 
     @config_cache('TBD')
-    def vertex_distances(self, gear=MESH_GEAR_INITIAL, vtx_mask=None, tri_mask=None):
+    def _vertex_distances(self, gear=MESH_GEAR_INITIAL, vtx_mask=None, tri_mask=None):
         """sparse matrix storing lengths of the edges."""
         if Mesh._masked_all(vtx_mask):
             vertices = self.vertices(gear=gear)
-            A = self.vertex_adjacencies(tri_mask=tri_mask)
+            A = self._vertex_adjacencies(tri_mask=tri_mask)
             idx0, idx1 = A.nonzero()
             edges_len = np.sum((vertices[idx0] - vertices[idx1])**2, axis=-1)**0.5
             Npt = self.num_vertices
             D = sparse.csr_matrix((edges_len, (idx0, idx1)), shape=(Npt, Npt))
             return D
         else:
-            D = self.vertex_distances(gear=gear, vtx_mask=None, tri_mask=tri_mask)
+            D = self._vertex_distances(gear=gear, vtx_mask=None, tri_mask=tri_mask)
             return D[vtx_mask][:, vtx_mask]
 
 
     @config_cache(MESH_GEAR_INITIAL)
-    def triangle_adjacencies(self, tri_mask=None):
+    def _triangle_adjacencies(self, tri_mask=None):
         """
         sparse adjacency matrix of triangles.
         triangles that share an edge are considered adjacent
@@ -1293,7 +1277,7 @@ class Mesh:
         if Mesh._masked_all(tri_mask):
             T = self.triangles
         else:
-            A0 = self.triangle_adjacencies(tri_mask=None, no_compute=True)
+            A0 = self._triangle_adjacencies(tri_mask=None, no_compute=True)
             if A0 is not None:
                 return A0[tri_mask][:, tri_mask]
             T = self.triangles[tri_mask]
@@ -1348,14 +1332,14 @@ class Mesh:
 
 
     @config_cache('TBD')
-    def triangle_distances(self, gear=MESH_GEAR_INITIAL, tri_mask=None):
+    def _triangle_distances(self, gear=MESH_GEAR_INITIAL, tri_mask=None):
         """sparse matrix storing distances of neighboring triangles."""
         if tri_mask is not None:
-            D0 = self.triangle_distances(gear=gear, tri_mask=None, no_compute=True)
+            D0 = self._triangle_distances(gear=gear, tri_mask=None, no_compute=True)
             if D0 is not None:
                 return D0[tri_mask][:, tri_mask]
         tri_centers = self.triangle_centers(gear=gear, tri_mask=tri_mask)
-        A = self.triangle_adjacencies(tri_mask=tri_mask)
+        A = self._triangle_adjacencies(tri_mask=tri_mask)
         idx0, idx1 = A.nonzero()
         dis = np.sum((tri_centers[idx0] - tri_centers[idx1])**2, axis=-1)**0.5
         D = sparse.csr_matrix((dis, (idx0, idx1)), shape=A.shape)
@@ -1374,7 +1358,7 @@ class Mesh:
             vtx_mask[vtx_idx] = True
         else:
             vtx_mask = None
-        A = self.vertex_adjacencies(vtx_mask=vtx_mask, tri_mask=tri_mask)
+        A = self._vertex_adjacencies(vtx_mask=vtx_mask, tri_mask=tri_mask)
         N_conn, V_conn0 = csgraph.connected_components(A, directed=False, return_labels=True)
         if (tri_mask is not None) and (not local_index):
             V_conn = np.full_like(V_conn0, -1, shape=(self.num_vertices,))
@@ -1390,13 +1374,13 @@ class Mesh:
         connected components of triangles.
         triangles sharing an edge are considered adjacent.
         """
-        A = self.triangle_adjacencies(tri_mask=tri_mask)
+        A = self._triangle_adjacencies(tri_mask=tri_mask)
         N_conn, T_conn = csgraph.connected_components(A, directed=False, return_labels=True)
         return N_conn, T_conn
 
 
     @config_cache(MESH_GEAR_INITIAL)
-    def grouped_segment_chains(self, tri_mask=None):
+    def _grouped_segment_chains(self, tri_mask=None):
         """
         group segments into chains.
         return a list of list of chains. Segment chains belong to the same
@@ -1405,7 +1389,7 @@ class Mesh:
         """
         sgmnts, tids = self.segments_w_triangle_ids(tri_mask=tri_mask)
         N_conn, T_conn = self.connected_triangles(tri_mask=tri_mask)
-        chains = miscs.chain_segment_rings(sgmnts, directed=True, conn_lable=T_conn[tids])
+        chains = common.chain_segment_rings(sgmnts, directed=True, conn_lable=T_conn[tids])
         vertices = self.initial_vertices
         grouped_chains = [[] for _ in range(N_conn)]
         if Mesh._masked_all(tri_mask):
@@ -1442,7 +1426,7 @@ class Mesh:
         """
         if gear is None:
             gear = self._current_gear
-        grouped_chains = self.grouped_segment_chains(tri_mask=tri_mask)
+        grouped_chains = self._grouped_segment_chains(tri_mask=tri_mask)
         vertices = self.vertices_w_offset(gear=gear)
         polygons = []
         for chains in grouped_chains:
@@ -1698,7 +1682,7 @@ class Mesh:
         else:
             self._vertices[gear] = self.vertices(gear=gear).copy()
             self._vertices[gear][vtx_mask] = v
-        self.vertices_changed(gear=gear)
+        self._vertices_changed(gear=gear)
 
 
     def set_offset(self, offset, gear):
@@ -1710,7 +1694,7 @@ class Mesh:
     @fixed_vertices.setter
     def fixed_vertices(self, v):
         self._vertices[MESH_GEAR_FIXED] = v
-        self.vertices_changed(gear=MESH_GEAR_FIXED)
+        self._vertices_changed(gear=MESH_GEAR_FIXED)
 
 
     @moving_vertices.setter
@@ -1718,7 +1702,7 @@ class Mesh:
         if self.locked:
             return
         self._vertices[MESH_GEAR_MOVING] = v
-        self.vertices_changed(gear=MESH_GEAR_MOVING)
+        self._vertices_changed(gear=MESH_GEAR_MOVING)
 
 
     @staging_vertices.setter
@@ -1726,7 +1710,7 @@ class Mesh:
         if self.locked:
             return
         self._vertices[MESH_GEAR_STAGING] = v
-        self.vertices_changed(gear=MESH_GEAR_STAGING)
+        self._vertices_changed(gear=MESH_GEAR_STAGING)
 
 
     def apply_translation(self, dxy, gear, vtx_mask=None):
@@ -1937,7 +1921,7 @@ class Mesh:
         else:
             vindx, T = self._filter_triangles(tri_mask)
             vertices = vertices[vindx]
-        matplt_tri = matplotlib.tri.Triangulation(vertices[:,0], vertices[:,1], triangles = T)
+        matplt_tri = matplotlib.tri.Triangulation(vertices[:,0], vertices[:,1], triangles=T)
         try:
             matplt_tri.get_trifinder()
             return True
@@ -1969,7 +1953,7 @@ class Mesh:
         if gear is None:
             gear = self._current_gear
         vertices = self.vertices(gear=gear)
-        SRs = self.grouped_segment_chains(tri_mask=tri_mask)
+        SRs = self._grouped_segment_chains(tri_mask=tri_mask)
         covered = None
         valid = True
         for sr in SRs:
@@ -1999,7 +1983,7 @@ class Mesh:
         """
         if gear is None:
             gear = self._current_gear
-        SRs = self.grouped_segment_chains(tri_mask=tri_mask)
+        SRs = self._grouped_segment_chains(tri_mask=tri_mask)
         vertices = self.vertices(gear=gear)
         boundaries = []
         polygons_rings = []
@@ -2064,8 +2048,8 @@ class Mesh:
         else:
             T = self.triangles[tri_mask]
         vertices = self.vertices(gear=gear)
-        A0 = miscs.signed_area(vertices0, T)
-        A1 = miscs.signed_area(vertices, T)
+        A0 = common.signed_area(vertices0, T)
+        A1 = common.signed_area(vertices, T)
         flipped_sel = (A0 * A1) <= 0
         if return_triangles:
             return np.nonzero(flipped_sel)[0], T[flipped_sel]
@@ -2126,7 +2110,7 @@ class Mesh:
         elif isinstance(tri_mask, np.ndarray) and (tri_mask.dtype == bool):
             groupings = np.zeros(np.sum(tri_mask), dtype=self.triangles.dtype)
         else:
-            tri_mask = miscs.indices_to_bool_mask(tri_mask, size=self.num_triangles)
+            tri_mask = common.indices_to_bool_mask(tri_mask, size=self.num_triangles)
             groupings = np.zeros(np.sum(tri_mask), dtype=self.triangles.dtype)
         if collisions.size == 0:
             return groupings
@@ -2166,7 +2150,7 @@ class Mesh:
         if asymmetry:
             groupings[indx_loc] = colors
         else:
-            D = self.triangle_distances(tri_mask=tri_mask)
+            D = self._triangle_distances(tri_mask=tri_mask)
             dis = []
             for c in np.unique(colors):
                 start_pos = indx_loc[colors == c]
@@ -2224,19 +2208,6 @@ class Mesh:
             else:
                 groupings = grp
         return groupings
-
-
-    def _smooth_mesh_by_regular_resample(self, gear=MESH_GEAR_MOVING, tri_mask=None, decimate=16):
-        covered_region = self.shapely_regions(gear=MESH_GEAR_INITIAL, tri_mask=tri_mask)
-        num_tri0 = self._num_masked_tri(tri_mask=tri_mask)
-        avg_tri_area0 = covered_region.area / num_tri0
-        mesh_size = (avg_tri_area0 * 2.31) ** 0.5 * decimate
-        coarse_mesh = Mesh.from_polygon_equilateral(covered_region, mesh_size=mesh_size, resolution=self._resolution)
-        NotImplemented
-
-
-    def fix_segment_collision(self):
-        NotImplemented
 
 
   ## ------------------------- stiffness matrices -------------------------- ##
@@ -2805,11 +2776,11 @@ class MeshRenderer:
             scale = self.resolution / image_loader.resolution
             x_field = spatial.scale_coordinates(x_field, scale)
             y_field = spatial.scale_coordinates(y_field, scale)
-        imgt = MeshRenderer.render_by_subregions(x_field, y_field, mask, image_loader, **kwargs)
+        imgt = common.render_by_subregions(x_field, y_field, mask, image_loader, **kwargs)
         if (log_sigma > 0) and (imgt is not None):
             if len(imgt.size) > 2:
                 imgt = np.moveaxis(imgt, -1, 0)
-            imgt = miscs.masked_dog_filter(imgt, log_sigma, mask=mask)
+            imgt = common.masked_dog_filter(imgt, log_sigma, mask=mask)
             if len(imgt.size) > 2:
                 imgt = np.moveaxis(imgt, 0, -1)
         return imgt
@@ -2846,77 +2817,3 @@ class MeshRenderer:
             else:
                 self._default_fillval = 0
         return self._default_fillval
-
-
-    @staticmethod
-    def render_by_subregions(map_x, map_y, mask, img_loader, **kwargs):
-        """
-        break the render job to small regions in case the target source image is
-        too large to fit in RAM.
-        """
-        rintp = kwargs.get('remap_interp', cv2.INTER_LANCZOS4)
-        mx_dis = kwargs.get('mx_dis', 16300)
-        fillval = kwargs.get('fillval', img_loader.default_fillval)
-        dtype_out = kwargs.get('dtype_out', img_loader.dtype)
-        return_empty = kwargs.get('return_empty', False)
-        if map_x.size == 0:
-            return None
-        if not np.any(mask, axis=None):
-            if return_empty:
-                return np.full_like(map_x, fillval, dtype=dtype_out)
-            else:
-                return None
-        imgt = np.full_like(map_x, fillval, dtype=dtype_out)
-        to_render = mask
-        multichannel = False
-        while np.any(to_render, axis=None):
-            indx0, indx1 = np.nonzero(to_render)
-            indx0_sel = indx0[indx0.size//2]
-            indx1_sel = indx1[indx1.size//2]
-            xx0 = map_x[indx0_sel, indx1_sel]
-            yy0 = map_y[indx0_sel, indx1_sel]
-            mskt = (np.abs(map_x - xx0) < mx_dis) & (np.abs(map_y - yy0) < mx_dis) & to_render
-            xmin = np.floor(map_x[mskt].min()) - 4 # Lanczos 8x8 kernel
-            xmax = np.ceil(map_x[mskt].max()) + 4
-            ymin = np.floor(map_y[mskt].min()) - 4
-            ymax = np.ceil(map_y[mskt].max()) + 4
-            bbox = (int(xmin), int(ymin), int(xmax), int(ymax))
-            img0 = img_loader.crop(bbox, **kwargs)
-            if img0 is None:
-                to_render = to_render & (~mskt)
-                continue
-            if (len(img0.shape) > 2) and (not multichannel):
-                # multichannel
-                num_channel = img0.shape[-1]
-                imgt = np.stack((imgt, )*num_channel, axis=-1)
-                multichannel = True
-            cover_ratio = np.sum(mskt) / mskt.size
-            if cover_ratio > 0.25:
-                map_xt = map_x - xmin
-                map_yt = map_y - ymin
-                imgtt = cv2.remap(img0, map_xt.astype(np.float32), map_yt.astype(np.float32),
-                    interpolation=rintp, borderMode=cv2.BORDER_CONSTANT, borderValue=fillval)
-                if multichannel:
-                    mskt3 = np.stack((mskt, )*imgtt.shape[-1], axis=-1)
-                    imgt[mskt3] = imgtt[mskt3]
-                else:
-                    imgt[mskt] = imgtt[mskt]
-            else:
-                map_xt = map_x[mskt] - xmin
-                map_yt = map_y[mskt] - ymin
-                N_pad = int(np.ceil((map_xt.size)**0.5))
-                map_xt_pad = np.pad(map_xt, (0, N_pad**2 - map_xt.size)).reshape(N_pad, N_pad)
-                map_yt_pad = np.pad(map_yt, (0, N_pad**2 - map_yt.size)).reshape(N_pad, N_pad)
-                imgt_pad = cv2.remap(img0, map_xt_pad.astype(np.float32), map_yt_pad.astype(np.float32),
-                    interpolation=rintp, borderMode=cv2.BORDER_CONSTANT, borderValue=fillval)
-                if multichannel:
-                    imgtt = imgt_pad.reshape(-1, num_channel)
-                    imgtt = imgtt[:(map_xt.size), :]
-                    mskt3 = np.stack((mskt, )*imgtt.shape[-1], axis=-1)
-                    imgt[mskt3] = imgtt.ravel()
-                else:
-                    imgtt = imgt_pad.ravel()
-                    imgtt = imgtt[:(map_xt.size)]
-                    imgt[mskt] = imgtt.ravel()
-            to_render = to_render & (~mskt)
-        return imgt

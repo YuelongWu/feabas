@@ -18,9 +18,9 @@ RENDER_LOCAL_AFFINE = 1
 RENDER_CONTIGEOUS = 2
 RENDER_FULL = 3
 
-BLEND_NONE = 0
-BLEND_MAX = 1
-BLEND_LINEAR = 2
+BLEND_NONE = 0      # no blending, randomly select a tile
+BLEND_MAX = 1       # keep the pixel with the largest weight
+BLEND_LINEAR = 2    # linear blend the pixels based on their weight
 
 ANNEAL_GLOBAL_RIGID = 0
 ANNEAL_GLOBAL_AFFINE = 1

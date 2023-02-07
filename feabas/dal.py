@@ -11,7 +11,7 @@ import cv2
 import numpy as np
 from rtree import index
 
-from feabas.miscs import generate_cache, crop_image_from_bbox
+from feabas.common import generate_cache, crop_image_from_bbox
 from feabas.constant import *
 
 
