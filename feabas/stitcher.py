@@ -478,8 +478,8 @@ class Stitcher:
             idx0, idx1 = indices
             bbox0 = bboxes[idx0]
             bbox1 = bboxes[idx1]
-            bbox_ov0 = common.bbox_intersections(bbox_ov, bbox0)
-            bbox_ov1 = common.bbox_intersections(bbox_ov, bbox1)
+            bbox_ov0 = common.bbox_intersections(bbox_ov, bbox0)[0]
+            bbox_ov1 = common.bbox_intersections(bbox_ov, bbox1)[0]
             img0 = image_loader.crop(bbox_ov0, idx0, return_index=False)
             img1 = image_loader.crop(bbox_ov1, idx1, return_index=False)
             if mask_exist[idx0]:
@@ -491,7 +491,7 @@ class Stitcher:
             else:
                 mask1 = None
             weight, xy0, xy1, strain = stitching_matcher(img0, img1, mask0=mask0, mask1=mask1, **matcher_config)
-            if xy0 is not None:
+            if xy0 is None:
                 continue
             offset0 = bbox_ov0[:2] - bbox0[:2]
             offset1 = bbox_ov1[:2] - bbox1[:2]

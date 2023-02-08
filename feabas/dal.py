@@ -498,7 +498,7 @@ class StaticImageLoader(AbstractImageLoader):
             self.imgrootdir = os.path.dirname(os.path.commonprefix(filepaths))
             self.imgrelpaths = [os.path.relpath(s, self.imgrootdir) for s in filepaths]
         self.check_filename_uniqueness()
-        if not bool(bboxes):
+        if len(bboxes) == 0:
             tile_size = kwargs.get('tile_size', None)
             if tile_size is None:
                 imgpath = os.path.join(self.imgrootdir, self.imgrelpaths[0])
@@ -601,6 +601,23 @@ class StaticImageLoader(AbstractImageLoader):
         for bbox in self._file_bboxes:
             bbox_m = [bbox[0]-margin, bbox[1]-margin, bbox[2]+margin, bbox[3]+margin]
             yield bbox_m
+
+
+    def _get_image_hits(self, fileid, bbox):
+        # hits[blkid] = bbox
+        imgbbox = self._get_image_bbox(fileid)
+        xmin_img, ymin_img, _, _ = imgbbox
+        bbox_normalized = (bbox[0]-xmin_img, bbox[1]-ymin_img,
+            bbox[2]-xmin_img, bbox[3]-ymin_img)
+        cached_block_rtree_normalized = self._get_image_cached_block_rtree(fileid)
+        hit_list = list(cached_block_rtree_normalized.intersection(bbox_normalized, objects=True))
+        hits = {}
+        for item in hit_list:
+            bbox_hit = item.bbox
+            bbox_out = (bbox_hit[0]+xmin_img, bbox_hit[1]+ymin_img,
+                bbox_hit[2]+xmin_img, bbox_hit[3]+ymin_img)
+            hits[item.id] = bbox_out
+        return hits
 
 
     def _get_image_cached_block_rtree(self, fileid):
@@ -753,23 +770,6 @@ class MosaicLoader(StaticImageLoader):
             else:
                 out = None
         return out
-
-
-    def _get_image_hits(self, fileid, bbox):
-        # hits[blkid] = bbox
-        imgbbox = self._get_image_bbox(fileid)
-        xmin_img, ymin_img, _, _ = imgbbox
-        bbox_normalized = (bbox[0]-xmin_img, bbox[1]-ymin_img,
-            bbox[2]-xmin_img, bbox[3]-ymin_img)
-        cached_block_rtree_normalized = self._get_image_cached_block_rtree(fileid)
-        hit_list = list(cached_block_rtree_normalized.intersection(bbox_normalized, objects=True))
-        hits = {}
-        for item in hit_list:
-            bbox_hit = item.bbox
-            bbox_out = (bbox_hit[0]+xmin_img, bbox_hit[1]+ymin_img,
-                bbox_hit[2]+xmin_img, bbox_hit[3]+ymin_img)
-            hits[item.id] = bbox_out
-        return hits
 
 
     def _init_rtrees(self):
