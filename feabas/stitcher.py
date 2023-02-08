@@ -40,6 +40,7 @@ class Stitcher:
     def __init__(self, imgpaths, bboxes, **kwargs):
         root_dir = kwargs.get('root_dir', None)
         groupings = kwargs.get('groupings', None)
+        self._connected_subsystem = kwargs.get('connected_subsystem', None)
         if bool(root_dir):
             self.imgrootdir = root_dir
             self.imgrelpaths = imgpaths
@@ -152,6 +153,10 @@ class Stitcher:
                 groupings = f['groupings'][()]
             else:
                 groupings = None
+            if 'connected_subsystem' in f:
+                connected_subsystem = f['connected_subsystem'][()]
+            else:
+                connected_subsystem = None
         if selected is not None:
             imgpaths = [s for k, s in enumerate(imgpaths) if k in selected]
             bboxes = bboxes[selected]
@@ -159,7 +164,8 @@ class Stitcher:
             check_order = True
         else:
             check_order = False
-        obj = cls(imgpaths, bboxes, root_dir=root_dir, groupings=groupings)
+        obj = cls(imgpaths, bboxes, root_dir=root_dir, groupings=groupings,
+            connected_subsystem=connected_subsystem)
         if load_matches:
             obj.load_matches_from_h5(filename, check_order=check_order)
         if load_meshes:
@@ -181,7 +187,9 @@ class Stitcher:
             create_dataset('imgrelpaths', data=imgnames_encoded)
             create_dataset('init_bboxes', data=self.init_bboxes)
             if self._groupings is not None:
-                create_dataset('groupings', self._groupings)
+                create_dataset('groupings', data=self._groupings)
+            if self.connected_subsystem is not None:
+                create_dataset('connected_subsystem', data=self._connected_subsystem)
             if save_matches and (len(self.matches) > 0):
                 for uids, mtch in self.matches.items():
                     prefix = 'matches/' + '_'.join(str(int(s)) for s in uids)
@@ -821,6 +829,7 @@ class Stitcher:
         if self._optimizer is None:
             raise RuntimeError('optimizer of the stitcher not initialized.')
         Lbls, N_conn = self._optimizer.connected_subsystems
+        self._connected_subsystem = Lbls
         if N_conn <= 1:
             return N_conn
         cnt = np.zeros(N_conn)
@@ -942,6 +951,17 @@ class Stitcher:
             return self._normalized_groupings
         else:
             return self._groupings
+
+
+    @property
+    def connected_subsystem(self):
+        if (len(self.matches) > 0) and (self._connected_subsystem is None):
+            edges = np.array([uids for uids in self.matches])
+            V = np.ones(edges.shape[0], dtype=bool)
+            A = sparse.csr_matrix((V, (edges[:,0], edges[:,1])), shape=(self.num_tiles, self.num_tiles))
+            _, V_conn = csgraph.connected_components(A, directed=False, return_labels=True)
+            self._connected_subsystem = V_conn
+        return self._connected_subsystem
 
 
     @property
