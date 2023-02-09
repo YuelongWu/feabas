@@ -76,7 +76,10 @@ def xcorr_fft(img0, img1, conf_mode=FFT_CONF_MIRROR, **kwargs):
             NC = NC.reshape(-1, np.prod(fftshp))
             NC = (NC / (NC.max(axis=-1, keepdims=True).clip(1, None))).clip(0.1, None)
             C_mirror = C_mirror / NC
-        conf = 1 - C_mirror.max(axis=-1) / C.max(axis=-1)
+        mx_rl = C.max(axis=-1)
+        mx_mr = C_mirror.max(axis=-1)
+        conf = np.zeros_like(dx, dtype=np.float32)
+        conf[mx_rl>0] = 1 -  mx_mr[mx_rl>0]/mx_rl[mx_rl>0]
         conf = conf.clip(0, 1)
     elif conf_mode == FFT_CONF_STD:
         C_std = C.std(axis=-1)
@@ -189,7 +192,7 @@ def stitching_matcher(img0, img1, **kwargs):
     tx0, ty0, conf0 = global_translation_matcher(img0_g, img1_g, conf_mode=conf_mode,
         conf_thresh=conf_thresh)
     if conf0 < conf_thresh:
-        return conf_thresh, None, None
+        return conf_thresh, None, None, None
     if fine_downsample == coarse_downsample:
         img0_f = img0_g
         img1_f = img1_g

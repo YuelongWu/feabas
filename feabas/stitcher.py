@@ -362,7 +362,7 @@ class Stitcher:
             overlaps = self.overlaps_without_matches
         num_overlaps = len(overlaps)
         if ((num_workers is not None) and (num_workers <= 1)) or (num_overlaps <= 1):
-            new_matches, match_strains = target_func(overlaps, self.imgrelpaths, self.init_bboxes)
+            new_matches, match_strains, err_raised = target_func(overlaps, self.imgrelpaths, self.init_bboxes)
             self.matches.update(new_matches)
             self.match_strains.update(match_strains)
             return len(new_matches)
@@ -375,6 +375,7 @@ class Stitcher:
         # divide works
         jobs = []
         num_new_matches = 0
+        err_raised = False
         with ProcessPoolExecutor(max_workers=num_workers, mp_context=get_context('spawn')) as executor:
             for idx0, idx1 in zip(indx_j[:-1], indx_j[1:]):
                 ovlp_g = overlaps[idx0:idx1] # global indices of overlaps
@@ -386,16 +387,17 @@ class Stitcher:
                 jobs.append(job)
             verbose_counter = 0
             for job in as_completed(jobs):
-                matches, match_strains = job.result()
+                matches, match_strains, ouch = job.result()
+                err_raised = err_raised or ouch
                 num_new_matches += len(matches)
                 self.matches.update(matches)
                 self.match_strains.update(match_strains)
                 if verbose:
                     verbose_counter += len(matches)
                     if verbose_counter > (len(overlaps)/10):
-                        print(f'\tmatching in progress: {len(self.matches)}/{len(overlaps)}')
+                        print(f'\tmatching in progress: {num_new_matches}/{len(overlaps)}')
                         verbose_counter = 0
-        return num_new_matches
+        return num_new_matches, err_raised
 
 
     def find_overlaps(self):
@@ -459,8 +461,9 @@ class Stitcher:
         matcher_config = kwargs.get('matcher_config', {})
         instant_gc = kwargs.get('instant_gc', False)
         margin_ratio_switch = 2
+        err_raised = False
         if len(overlaps) == 0:
-            return {}, {}
+            return {}, {}, err_raised
         bboxes_overlap, wds = common.bbox_intersections(bboxes[overlaps[:,0]], bboxes[overlaps[:,1]])
         if 'cache_border_margin' not in loader_config:
             overlap_wd0 = 6 * np.median(np.abs(wds - np.median(wds))) + np.median(wds) + 1
@@ -491,35 +494,41 @@ class Stitcher:
                 real_margin = int(margin)
             bbox_ov = common.bbox_enlarge(bbox_ov, real_margin)
             idx0, idx1 = indices
-            bbox0 = bboxes[idx0]
-            bbox1 = bboxes[idx1]
-            bbox_ov0 = common.bbox_intersections(bbox_ov, bbox0)[0]
-            bbox_ov1 = common.bbox_intersections(bbox_ov, bbox1)[0]
-            img0 = image_loader.crop(bbox_ov0, idx0, return_index=False)
-            img1 = image_loader.crop(bbox_ov1, idx1, return_index=False)
-            if mask_exist[idx0]:
-                mask0 = mask_loader.crop(bbox_ov0, idx0, return_index=False)
-            else:
-                mask0 = None
-            if mask_exist[idx1]:
-                mask1 = mask_loader.crop(bbox_ov1, idx1, return_index=False)
-            else:
-                mask1 = None
-            weight, xy0, xy1, strain = stitching_matcher(img0, img1, mask0=mask0, mask1=mask1, **matcher_config)
-            if xy0 is None:
-                continue
-            offset0 = bbox_ov0[:2] - bbox0[:2]
-            offset1 = bbox_ov1[:2] - bbox1[:2]
-            xy0 = xy0 + offset0
-            xy1 = xy1 + offset1
-            if index_mapper is not None:
-                idx0 = index_mapper[idx0]
-                idx1 = index_mapper[idx1]
-            matches[(idx0, idx1)] = (xy0, xy1, weight)
-            strains[(idx0, idx1)] = strain
+            try:
+                bbox0 = bboxes[idx0]
+                bbox1 = bboxes[idx1]
+                bbox_ov0 = common.bbox_intersections(bbox_ov, bbox0)[0]
+                bbox_ov1 = common.bbox_intersections(bbox_ov, bbox1)[0]
+                img0 = image_loader.crop(bbox_ov0, idx0, return_index=False)
+                img1 = image_loader.crop(bbox_ov1, idx1, return_index=False)
+                if mask_exist[idx0]:
+                    mask0 = mask_loader.crop(bbox_ov0, idx0, return_index=False)
+                else:
+                    mask0 = None
+                if mask_exist[idx1]:
+                    mask1 = mask_loader.crop(bbox_ov1, idx1, return_index=False)
+                else:
+                    mask1 = None
+                weight, xy0, xy1, strain = stitching_matcher(img0, img1, mask0=mask0, mask1=mask1, **matcher_config)
+                if xy0 is None:
+                    continue
+                offset0 = bbox_ov0[:2] - bbox0[:2]
+                offset1 = bbox_ov1[:2] - bbox1[:2]
+                xy0 = xy0 + offset0
+                xy1 = xy1 + offset1
+                if index_mapper is not None:
+                    idx0 = index_mapper[idx0]
+                    idx1 = index_mapper[idx1]
+                matches[(idx0, idx1)] = (xy0, xy1, weight)
+                strains[(idx0, idx1)] = strain
+            except Exception as err:
+                if not err_raised:
+                    print(image_loader.imgrootdir, err)
+                    err_raised = True
+                print(f'error: {image_loader.imgrelpaths[idx0]} <-> {image_loader.imgrelpaths[idx1]}')
         if instant_gc:
             gc.collect()
-        return matches, strains
+        return matches, strains, err_raised
 
 
   ## -------------------------- mesh relaxation ---------------------------- ##
