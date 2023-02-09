@@ -1122,6 +1122,7 @@ class MontageRenderer:
         scale = kwargs.pop('scale', 1)
         bbox = scale_coordinates(bbox, 1/scale)
         hits = list(self.mesh_tree.intersection(bbox, objects=False))
+        clip_factor = 1e-3
         if len(hits) == 0:
             return None
         x_min = bbox[0]
@@ -1135,25 +1136,26 @@ class MontageRenderer:
         weight_accum = None
         for indx in hits:
             x_interp, y_interp = self.interpolators[indx]
-            offset = self._mesh_info[indx].moving_offsets
+            offset = self._mesh_info[indx].moving_offsets.ravel()
             xxt = xx - offset[0]
+            yyt = yy - offset[1]
             map_x = x_interp(xxt, yyt)
             mask =map_x.mask
             if np.all(mask, axis=None):
                 continue
-            yyt = yy - offset[1]
             map_y = y_interp(xxt, yyt)
             x_field = np.nan_to_num(map_x.data, nan=-1, copy=False)
             y_field = np.nan_to_num(map_y.data, nan=-1, copy=False)
             tile_ht, tile_wd = self.tile_size(indx)
             weight = np.minimum.reduce([x_field + 0.5, -x_field + tile_wd - 0.5,
-                                     y_field + 0.5, -y_field + tile_ht - 0.5])
+                y_field + 0.5, -y_field + tile_ht - 0.5]) * 0.01
+            weight = weight.clip(0, None) ** 2
             if np.any(clip_ltrb):
                 dis_t = np.minimum.reduce([x_field-clip_ltrb[0] + 0.5,
                                      -x_field + tile_wd-clip_ltrb[2] - 0.5,
                                      y_field-clip_ltrb[1] + 0.5,
                                      -y_field + tile_ht - clip_ltrb[3] - 0.5])
-                weight[dis_t < 0] *= 1/1000
+                weight[dis_t < 0] *= clip_factor
             mask = weight > 0
             if not np.any(mask, axis=None):
                 continue
@@ -1182,7 +1184,7 @@ class MontageRenderer:
         if image_accum is None:
             return None
         if blend == BLEND_LINEAR:
-            img_out = (image_accum / weight_accum.clip(1e-3, None)).astype(out_dtype)
+            img_out = (image_accum / weight_accum.clip(clip_factor, None)).astype(out_dtype)
             img_out[weight_accum == 0] = imgt0[weight_accum == 0]
         else:
             img_out = image_accum
@@ -1192,6 +1194,8 @@ class MontageRenderer:
     def render_series_to_file(self, bboxes, filenames, **kwargs):
         rendered = {}
         for bbox, filename in zip(bboxes, filenames):
+            if os.path.isfile(filename):
+                continue
             imgt = self.crop(bbox, **kwargs)
             if imgt is None:
                 continue
@@ -1254,6 +1258,26 @@ class MontageRenderer:
         return bboxes, filenames, hits
 
 
+    def divide_render_jobs(render_series, num_workers=1, **kwargs):
+        max_tile_per_job = kwargs.get('max_tile_per_job', None)
+        bboxes, filenames, hits = render_series
+        num_tiles = len(filenames)
+        num_tile_per_job = max(1, num_tiles // num_workers)
+        if max_tile_per_job is not None:
+            num_tile_per_job = min(num_tile_per_job, max_tile_per_job)
+        N_jobs = round(num_tiles / num_tile_per_job)
+        indices = np.round(np.linspace(0, num_tiles, num=N_jobs+1, endpoint=True))
+        indices = np.unique(indices).astype(np.uint32)
+        bboxes_list = []
+        filenames_list = []
+        hits_list = []
+        for idx0, idx1 in zip(indices[:-1], indices[1:]):
+            idx0, idx1 = int(idx0), int(idx1)
+            bboxes_list.append([bboxes[idx0:idx1]])
+            filenames_list.append([filenames[idx0:idx1]])
+            hits_list.append(set(s for hit in hits[idx0:idx1] for s in hit))
+        return bboxes_list, filenames_list, hits_list
+
 
     def tile_size(self, indx):
         if self._identical_tile_size:
@@ -1264,7 +1288,7 @@ class MontageRenderer:
 
     def _mesh_rtree_generator(self):
         for k, msh in enumerate(self._mesh_info):
-            vertices, offset = msh.msh.moving_vertices, msh.moving_offsets
+            vertices, offset = msh.moving_vertices, msh.moving_offsets.ravel()
             xy_min = vertices.min(axis=0)
             xy_max = vertices.max(axis=0)
             bbox = (xy_min[0] + offset[0], xy_min[1] + offset[1],

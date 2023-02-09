@@ -18,6 +18,22 @@ def imwrite(path, image):
     return cv2.imwrite(path, image)
 
 
+def inverse_image(img, dtype=np.uint8):
+    if dtype is None:
+        if isinstance(img, np.ndarray):
+            dtype = img.dtype
+        else:
+            dtype = type(img)
+    dtype = np.dtype(dtype)
+    if np.issubdtype(dtype, np.integer):
+        intmx = np.iinfo(dtype).max
+        return intmx - img
+    elif np.issubdtype(dtype, np.floating):
+        return -img
+    else:
+        raise TypeError(f'{dtype} not invertable.')
+
+
 def z_order(indices, base=2):
     """
     generating z-order from multi-dimensional indices.

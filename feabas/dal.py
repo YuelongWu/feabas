@@ -11,7 +11,7 @@ import cv2
 import numpy as np
 from rtree import index
 
-from feabas.common import generate_cache, crop_image_from_bbox, imread
+from feabas.common import generate_cache, crop_image_from_bbox, imread, inverse_image
 from feabas.constant import *
 
 
@@ -330,12 +330,7 @@ class AbstractImageLoader(ABC):
         if self._preprocess is not None:
             img = self._preprocess(img)
         if inverse:
-            if np.dtype(dtype) == np.dtype('uint8'):
-                img = 255 - img
-            elif np.dtype(dtype) == np.dtype('uint16'):
-                img = 65535 - img
-            else:
-                img = img.max() - img
+            img = inverse_image(img, dtype)
         return img
 
 
@@ -915,12 +910,7 @@ class StreamLoader(AbstractImageLoader):
         if self._preprocess is not None:
             img = self._preprocess(img)
         if inverse:
-            if np.dtype(dtype) == np.dtype('uint8'):
-                img = 255 - img
-            elif np.dtype(dtype) == np.dtype('uint16'):
-                img = 65535 - img
-            else:
-                img = img.max() - img
+            img = inverse_image(img, dtype)
         return img
 
 
