@@ -755,11 +755,7 @@ class Stitcher:
         Kwargs: refer to the input of feabas.optimizer.SLM.optimize_linear.
         """
         cache_size = kwargs.get('cache_size', None)
-        if 'target_gear' in kwargs:
-            target_gear = kwargs['target_gear']
-        else:
-            target_gear = MESH_GEAR_MOVING
-            kwargs['target_gear'] = target_gear
+        target_gear = kwargs.setdefault('target_gear', MESH_GEAR_FIXED)
         if not self.has_groupings:
             return
         groupings = self.groupings(normalize=True)
@@ -817,11 +813,7 @@ class Stitcher:
         use_groupings = kwargs.get('use_groupings', False) and self.has_groupings
         residue_len = kwargs.get('residue_len', 0)
         residue_mode = kwargs.get('residue_mode', None)
-        if 'target_gear' in kwargs:
-            target_gear = kwargs['target_gear']
-        else:
-            target_gear = MESH_GEAR_MOVING
-            kwargs['target_gear'] = target_gear
+        target_gear = kwargs.setdefault('target_gear', MESH_GEAR_MOVING)
         if use_groupings:
             groupings = self.groupings(normalize=True)
         else:

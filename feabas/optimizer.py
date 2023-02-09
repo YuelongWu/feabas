@@ -934,7 +934,7 @@ class SLM:
                 dxy = dd[stt_idx:end_idx].reshape(-1,2)
                 m.set_field(dxy, gear=(start_gear, targt_gear))
             if auto_clear:
-                self._stiffness_matrix = None
+                self.clear_equation_terms()
         return cost
 
 
