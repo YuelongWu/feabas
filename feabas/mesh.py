@@ -1726,8 +1726,8 @@ class Mesh:
         if not np.any(dxy, axis=None):
             return
         v = self.vertices(gear=gear)
-        self._vertices[gear] = v
         offset = self.offset(gear=gear)
+        self._vertices[gear] = v
         if Mesh._masked_all(vtx_mask):
             self.set_offset(offset + dxy, gear=gear)
         else:

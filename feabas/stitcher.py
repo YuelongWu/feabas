@@ -1,4 +1,4 @@
-from collections import defaultdict
+from collections import defaultdict, namedtuple
 from concurrent.futures.process import ProcessPoolExecutor
 from concurrent.futures import as_completed
 import cv2
@@ -1012,6 +1012,8 @@ class Stitcher:
         return len(self.matches)
 
 
+Mesh_Info = namedtuple('Mesh_Info', ['moving_vertices', 'moving_offsets', 'triangles', 'fixed_verticess'])
+
 
 class MontageRenderer:
     """
@@ -1022,7 +1024,7 @@ class MontageRenderer:
     Args:
         imgpaths(list): list of paths of the image tile.
         mesh_info(list): list of mesh information with each element as
-            (moving_vertices, moving_offsets, triangles, fixed_offsets).
+            (moving_vertices, moving_offsets, triangles, fixed_verticess).
         tile_sizes(N x 2 ndarray): tile sizes of each tile.
     Kwargs:
         loader_settings(dict): settings to initialize the image loader, refer to
@@ -1059,7 +1061,7 @@ class MontageRenderer:
             v1 = M.vertices(gear=gear[1])
             offset = M.offset(gear=gear[1])
             T = M.triangles
-            mesh_info.append((v1, offset, T, v0))
+            mesh_info.append(Mesh_Info(v1, offset, T, v0))
         return cls(imgpaths, mesh_info, tile_sizes, root_dir=root_dir, **kwargs)
 
 
@@ -1133,7 +1135,7 @@ class MontageRenderer:
         weight_accum = None
         for indx in hits:
             x_interp, y_interp = self.interpolators[indx]
-            _, offset, _, _ = self._mesh_info[indx]
+            offset = self._mesh_info[indx].moving_offsets
             xxt = xx - offset[0]
             map_x = x_interp(xxt, yyt)
             mask =map_x.mask
@@ -1262,7 +1264,7 @@ class MontageRenderer:
 
     def _mesh_rtree_generator(self):
         for k, msh in enumerate(self._mesh_info):
-            vertices, offset, _, _ = msh
+            vertices, offset = msh.msh.moving_vertices, msh.moving_offsets
             xy_min = vertices.min(axis=0)
             xy_max = vertices.max(axis=0)
             bbox = (xy_min[0] + offset[0], xy_min[1] + offset[1],
@@ -1282,7 +1284,7 @@ class MontageRenderer:
         if self._interpolators is None:
             self._interpolators = []
             for msh in self._mesh_info:
-                v1, _, T, v0 = msh
+                v1, T, v0 = msh.moving_vertices, msh.triangles, msh.fixed_verticess
                 mattri = matplotlib.tri.Triangulation(v1[:,0], v1[:,1], triangles=T)
                 xinterp = matplotlib.tri.LinearTriInterpolator(mattri, v0[:,0])
                 yinterp = matplotlib.tri.LinearTriInterpolator(mattri, v0[:,1])

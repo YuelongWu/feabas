@@ -747,7 +747,7 @@ class SLM:
             col_k += 1
         if col_k == 0:
             return False
-        wt = A.sum(axis=None) / A.getnnz(axis=None)
+        wt = (A.power(2).sum(axis=None) / A.getnnz(axis=None)) ** 0.5
         for lbl in uncontraint_labels:
             pos = np.nonzero(conn_lbl_active == lbl)[0][0]
             A[col_k, pos] = wt
