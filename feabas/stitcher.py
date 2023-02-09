@@ -238,7 +238,7 @@ class Stitcher:
                 if (uid0 < 0) or (uid1 < 0):
                     continue
                 data = matches[key][()]
-                Npt = (data.size - 1)/5
+                Npt = int((data.size - 1)/5)
                 xy0 = data[0:(2*Npt)].reshape(-1, 2)
                 xy1 = data[(2*Npt):(4*Npt)].reshape(-1, 2)
                 weight = data[(4*Npt):(5*Npt)]
@@ -343,6 +343,7 @@ class Stitcher:
         image_to_mask_path = kwargs.get('image_to_mask_path', None)
         matcher_config = kwargs.get('matcher_config', {})
         loader_config = kwargs.get('loader_config', {})
+        verbose = kwargs.get('verbose', False)
         if bool(loader_config.get('cache_size', None)) and (num_workers > 1):
             loader_config['cache_size'] = int(np.ceil(loader_config['cache_size'] / num_workers))
         loader_config['number_of_channels'] = 1 # only gray-scale matching are supported
@@ -383,11 +384,17 @@ class Stitcher:
                 imgpaths = [self.imgrelpaths[s] for s in mapper]
                 job = executor.submit(target_func, ovlp, imgpaths, bboxes, index_mapper=mapper)
                 jobs.append(job)
+            verbose_counter = 0
             for job in as_completed(jobs):
                 matches, match_strains = job.result()
                 num_new_matches += len(matches)
                 self.matches.update(matches)
                 self.match_strains.update(match_strains)
+                if verbose:
+                    verbose_counter += len(matches)
+                    if verbose_counter > (len(overlaps)/10):
+                        print(f'\tmatching in progress: {len(self.matches)}/{len(overlaps)}')
+                        verbose_counter = 0
         return num_new_matches
 
 
@@ -584,17 +591,17 @@ class Stitcher:
             bboxes = self.init_bboxes
             _, ovlp_wds = common.bbox_intersections(bboxes[indx[:,0]], bboxes[indx[:,1]])
             tile_border_widths = np.zeros(self.num_tiles, dtype=np.float32)
-            np.maxium.at(tile_border_widths, indx, np.stack((ovlp_wds, ovlp_wds)), axis=-1)
+            np.maximum.at(tile_border_widths, indx, np.stack((ovlp_wds, ovlp_wds), axis=-1))
             tile_border_widths = tile_border_widths / np.min(self.tile_sizes, axis=-1)
-            # rounding to make mesh reuse more likely
-            rfct = np.median(tile_border_widths) * 1.5
-            tile_border_widths = max(np.round(tile_border_widths/rfct), 1.0) * rfct
             # tiles in a group share mesh
             grp_u, cnt = np.unique(groupings, return_counts=True)
             grp_u = grp_u[cnt>1]
             for g in grp_u:
                 idx = groupings == g
-                tile_border_widths[idx] = np.max(tile_border_widths[idx])
+                tile_border_widths[idx] = np.median(tile_border_widths[idx])
+            # rounding to make mesh reuse more likely
+            rfct = np.median(tile_border_widths) * 1.5
+            tile_border_widths = np.maximum(np.round(tile_border_widths/rfct), 1.0) * rfct
         elif hasattr(border_width,'__len__'):
             tile_border_widths = border_width
         else:
@@ -636,10 +643,13 @@ class Stitcher:
         meshes = []
         mesh_indx = np.full(self.num_tiles, -1)
         mesh_params_ptr = {} # map the parameters of the mesh to
-        default_caches = {}
-        for gear in MESH_GEARS:
-            default_caches[gear] = defaultdict(lambda: common.CacheFIFO(maxlen=cache_size))
-        self._default_mesh_cache = default_caches
+        if self._default_mesh_cache is None:
+            default_caches = {}
+            for gear in MESH_GEARS:
+                default_caches[gear] = defaultdict(lambda: common.CacheFIFO(maxlen=cache_size))
+            self._default_mesh_cache = default_caches
+        else:
+            default_caches = self._default_mesh_cache
         for k, tile_size in enumerate(self.tile_sizes):
             tmsz = tile_mesh_sizes[k]
             tbwd = tile_border_widths[k]
@@ -656,7 +666,7 @@ class Stitcher:
                     soft_factor=tsf)
                 M0.set_stiffness_multiplier_from_interp(xinterp=stf_x, yinterp=stf_y)
                 M0.center_meshes_w_offsets(gear=MESH_GEAR_FIXED)
-                default_caches[key] = k
+                mesh_params_ptr[key] = k
                 mesh_indx[k] = k
             for gear in MESH_GEARS:
                 M0.set_default_cache(cache=default_caches[gear], gear=gear)
@@ -744,6 +754,7 @@ class Stitcher:
         transformation.
         Kwargs: refer to the input of feabas.optimizer.SLM.optimize_linear.
         """
+        cache_size = kwargs.get('cache_size', None)
         if 'target_gear' in kwargs:
             target_gear = kwargs['target_gear']
         else:
@@ -762,13 +773,23 @@ class Stitcher:
         sel_match_uids = sel_match_uids.reshape(-1,2)
         sel_grps = groupings[sel_uids]
         sel_meshes = [self.meshes[s].copy(override_dict={'uid':k}) for k,s in enumerate(sel_uids)]
+        if self._default_mesh_cache is None:
+            default_caches = {}
+            for gear in MESH_GEARS:
+                default_caches[gear] = defaultdict(lambda: common.CacheFIFO(maxlen=cache_size))
+            self._default_mesh_cache = default_caches
+        else:
+            default_caches = self._default_mesh_cache
+        for M0 in sel_meshes:
+            for gear in MESH_GEARS:
+                M0.set_default_cache(cache=default_caches[gear], gear=gear)
         opt = SLM(sel_meshes)
         for uids0, uids1 in zip(match_uids, sel_match_uids):
             match = self.matches[tuple(uids0)]
             xy0, xy1, weight = match
             opt.add_link_from_coordinates(uids1[0], uids1[1], xy0, xy1,
                 weight=weight, check_duplicates=False)
-        opt.optimize_linear(groupings=sel_grps, **kwargs)
+        cost = opt.optimize_linear(groupings=sel_grps, **kwargs)
         for g, m in zip(groupings, self.meshes):
             sel_idx = np.nonzero(sel_grps == g)[0]
             if sel_idx.size == 0:
@@ -777,6 +798,7 @@ class Stitcher:
                 m_border = opt.meshes[sel_idx[0]]
                 v = m_border.vertices(gear=target_gear)
                 m.set_vertices(v, target_gear)
+        return cost
 
 
     def optimize_elastic(self, **kwargs):

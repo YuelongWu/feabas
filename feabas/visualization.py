@@ -44,7 +44,7 @@ def dynamic_typing_decorator(func):
     return wrapped
 
 
-def plot_mesh(M, show_mat=False, show_conn=False, gear=MESH_GEAR_MOVING, show=False, colors=['b', 'k']):
+def plot_mesh(M, show_mat=False, show_conn=False, gear=MESH_GEAR_MOVING, show=False, colors=('b', 'k')):
     if isinstance(M, (list, tuple)):
         for m in M:
             plot_mesh(m, show_mat=show_mat, show_conn=show_conn, gear=gear, show=False)

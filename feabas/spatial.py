@@ -417,7 +417,9 @@ class Geometry:
         zorder(list): list of keys in the regions dict. If overlaps exist
             between regions, regions later in the list will trump early ones
     """
-    def __init__(self, roi=None, regions={}, **kwargs):
+    def __init__(self, roi=None, regions=None, **kwargs):
+        if regions is None:
+            regions = {}
         self._roi = roi
         self._default_region = None
         self._regions = regions

@@ -711,7 +711,9 @@ class Mesh:
 
 
     def save_to_h5(self, fname, vertex_flags=(MESH_GEAR_INITIAL, MESH_GEAR_MOVING),
-                   override_dict={}, **kwargs):
+                   override_dict=None, **kwargs):
+        if override_dict is None:
+            override_dict = {}
         prefix = kwargs.get('prefix', '')
         save_material = kwargs.get('save_material', True)
         compression = kwargs.get('compression', True)
@@ -745,7 +747,9 @@ class Mesh:
                         _ = f.create_dataset(prefix+key, data=val, compression="gzip")
 
 
-    def copy(self, deep=False, save_material=True, override_dict={}):
+    def copy(self, deep=False, save_material=True, override_dict=None):
+        if override_dict is None:
+            override_dict = {}
         init_dict = self.get_init_dict(save_material=save_material, **override_dict)
         if deep:
             init_dict = copy.deepcopy(init_dict)
@@ -1677,6 +1681,8 @@ class Mesh:
     def set_vertices(self, v, gear, vtx_mask=None):
         if self.locked:
             return
+        if self._vertices[gear] is None:
+            self.set_offset(self.offset(gear), gear)
         if Mesh._masked_all(vtx_mask):
             self._vertices[gear] = v
         else:

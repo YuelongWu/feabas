@@ -89,8 +89,10 @@ class Material:
         return out
 
 
-    def update_stiffness_func(self, stiffness_func_factory=None, stiffness_func_params={}):
+    def update_stiffness_func(self, stiffness_func_factory=None, stiffness_func_params=None):
         self._stiffness_func_factory = stiffness_func_factory
+        if stiffness_func_params is None:
+            stiffness_func_params = {}
         self._stiffness_func_params = stiffness_func_params
         if self._stiffness_func_factory is None:
             self._stiffness_func = None
@@ -283,7 +285,9 @@ class MaterialTable:
             'default' label in the table, use that as the default material.
             Otherwise, use MATERIAL_DEFAULT as the default material.
     """
-    def __init__(self, table={}, default_material=None):
+    def __init__(self, table=None, default_material=None):
+        if table is None:
+            table = {}
         if default_material is not None:
             table['default'] = default_material
             default_factory = lambda: default_material

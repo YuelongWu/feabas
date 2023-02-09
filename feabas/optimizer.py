@@ -319,7 +319,9 @@ class SLM:
     Spring Linked Meshes: spring connected mesh system used for optimization.
     """
   ## --------------------------- initialization  --------------------------- ##
-    def __init__(self, meshes, links=[], **kwargs):
+    def __init__(self, meshes, links=None, **kwargs):
+        if links is None:
+            links = []
         self.meshes = meshes
         self.links = links
         self._stiffness_lambda = kwargs.get('stiffness_lambda', 1.0)
@@ -856,8 +858,8 @@ class SLM:
         tol = kwargs.get('tol', 1e-7)
         atol = kwargs.get('atol', None)
         shape_gear = kwargs.get('shape_gear', MESH_GEAR_FIXED)
-        start_gear = kwargs.get('start_gear', MESH_GEAR_MOVING)
         targt_gear = kwargs.get('target_gear', MESH_GEAR_MOVING)
+        start_gear = kwargs.get('start_gear', targt_gear)
         stiffness_lambda = kwargs.get('stiffness_lambda', self._stiffness_lambda)
         crosslink_lambda = kwargs.get('crosslink_lambda', self._crosslink_lambda)
         inner_cache = kwargs.get('inner_cache', self._shared_cache)
@@ -881,14 +883,14 @@ class SLM:
         A = 0.5*(A + A.transpose())
         b = crosslink_lambda * Cs_rht - stiffness_lambda * stress_v
         if groupings is not None:
-            group_u, indx, group_nm = np.unique(self._groupings, return_index=True, return_inverse=True)
+            group_u, indx, group_nm, g_cnt = np.unique(groupings, return_index=True, return_inverse=True, return_counts=True)
             if group_u.size < groupings.size:
                 grouped_lock_flags = np.zeros_like(indx, dtype=bool)
                 np.logical_or.at(grouped_lock_flags, group_nm, lock_flags)
                 lock_flags = grouped_lock_flags[group_nm]
                 if np.all(lock_flags):
                     return 0, 0
-                vnum = [self.meshes[s].num_vertices for s in indx]
+                vnum = [self.meshes[s].num_vertices * 2 for s in indx]
                 vnum = vnum * (~grouped_lock_flags)
                 vnum_accum = np.cumsum(vnum)
                 grouped_dof = int(vnum_accum[-1])
@@ -901,7 +903,7 @@ class SLM:
                 for m, gio in zip(self.meshes, expanded_gio):
                     if m.locked:
                         continue
-                    stf_sz = 2 * self.num_vertices
+                    stf_sz = 2 * m.num_vertices
                     if gio > 0:
                         indx0.append(np.arange(crnt_offet, crnt_offet+stf_sz))
                         indx1.append(np.arange(gio, gio+stf_sz))
@@ -910,11 +912,12 @@ class SLM:
                 indx1 = np.concatenate(indx1, axis=None)
                 T_m = sparse.csr_matrix((np.ones_like(indx0, dtype=np.float32), 
                                         (indx1, indx0)), shape=(grouped_dof, A.shape[0]))
-                A = T_m @ A @ T_m.transpose()
-                b = T_m @ b
+                A = T_m @ A @ T_m.transpose() / np.mean(g_cnt)
+                b = T_m @ b / np.mean(g_cnt)
             else:
                 groupings = None
-        dd, _ = sparse.linalg.bicgstab(A, b, tol=tol, maxiter=maxiter, atol=atol)
+        M = sparse.diags(1/(A.diagonal().clip(1,None))) # Jacobi precondition
+        dd, _ = sparse.linalg.bicgstab(A, b, tol=tol, maxiter=maxiter, atol=atol, M=M)
         cost = (np.linalg.norm(b), np.linalg.norm(A.dot(dd) - b))
         if cost[1] < cost[0]:
             index_offsets = self.index_offsets

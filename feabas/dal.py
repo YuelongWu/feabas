@@ -489,8 +489,10 @@ class StaticImageLoader(AbstractImageLoader):
     caching format:
         self._cache[imgpath] = cache_dict{blkid: tile}
     """
-    def __init__(self, filepaths, bboxes=[], **kwargs):
+    def __init__(self, filepaths, bboxes=None, **kwargs):
         super().__init__(**kwargs)
+        if bboxes is None:
+            bboxes = []
         if bool(kwargs.get('root_dir', None)):
             self.imgrootdir = kwargs['root_dir']
             self.imgrelpaths = filepaths
