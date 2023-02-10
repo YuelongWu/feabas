@@ -244,7 +244,7 @@ class Mesh:
             # use default model
             default_mat = self._material_table['default']
             material_ids = np.full(tri_num, default_mat.uid, dtype=np.int8)
-        indx = np.argsort(material_ids, axis=None)
+        indx = np.argsort(material_ids, axis=None, kind='stable')
         self._stiffness_multiplier = kwargs.get('stiffness_multiplier', None)
         if np.any(indx!=np.arange(indx.size)):
             triangles = triangles[indx]
@@ -566,10 +566,8 @@ class Mesh:
             T = self.triangles
         else:
             masked_tri = self.triangles[tri_mask]
-            vindx = np.unique(masked_tri, axis=None)
-            rindx = np.full_like(masked_tri, -1, shape=np.max(vindx)+1)
-            rindx[vindx] = np.arange(vindx.size)
-            T = rindx[masked_tri]
+            vindx, T = np.unique(masked_tri, return_inverse=True, axis=None)
+            T = T.reshape(-1, 3)
         return vindx, T
 
 

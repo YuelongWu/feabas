@@ -904,7 +904,7 @@ class SLM:
                     if m.locked:
                         continue
                     stf_sz = 2 * m.num_vertices
-                    if gio > 0:
+                    if gio >= 0:
                         indx0.append(np.arange(crnt_offet, crnt_offet+stf_sz))
                         indx1.append(np.arange(gio, gio+stf_sz))
                     crnt_offet += stf_sz
