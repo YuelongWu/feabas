@@ -112,6 +112,7 @@ class AbstractImageLoader(ABC):
         self._cache = generate_cache(self._cache_type, maxlen=self._cache_size)
         self._preprocess = kwargs.get('preprocess', None)
         self.resolution = kwargs.get('resolution', DEFAULT_RESOLUTION)
+        self._read_counter = 0
 
 
     def clear_cache(self, instant_gc=False):
@@ -316,9 +317,9 @@ class AbstractImageLoader(ABC):
             img = imread(imgpath, flag=cv2.IMREAD_COLOR)
         else:
             img = imread(imgpath, flag=cv2.IMREAD_UNCHANGED)
+        self._read_counter += 1
         if img is None:
-            invalid_image_file_error = 'Image file {} not valid!'.format(imgpath)
-            raise RuntimeError(invalid_image_file_error)
+            raise RuntimeError(f'Image file {imgpath} not valid!')
         if (number_of_channels == 1) and (len(img.shape) > 2) and (img.shape[-1] > 1):
             img = img.mean(axis=-1)
         if dtype is not None:

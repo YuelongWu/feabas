@@ -1,0 +1,12 @@
+stitching:
+    matching:
+        num_workers: 16         # number of workers in the multiprocessing pool
+        min_overlap_width: 25   # overlaps thinner than this will be skipped
+        margin: 100             # extra width of image to include during match to accommondate inaccurate stage movement
+        loader_config:
+            cache_size: 256     # total number of images allowed to cache in RAM
+        matcher_config:
+            conf_thresh: 0.33   # cross-correlations with confidence value smaller than this will be rejected
+            sigma: 2.5          # sigma of DoG filter applied to the images before matching
+            coarse_downsample: 0.5      # down-sample the images at the coase-level matching
+            fine_downsample: 1.0        # down-sample the images at the fine-level matching to save time at the cost of accuracy
