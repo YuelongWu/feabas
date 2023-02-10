@@ -1182,6 +1182,19 @@ class SLM:
         return [lnk for lnk in self.links if (self.link_is_relevant(lnk) == 1)]
 
 
+    def match_residues(self, gear=MESH_GEAR_MOVING, use_mask=False, quantile=1):
+        dis = []
+        for lnk in self.links:
+            dxy = np.sum(lnk.dxy(gear=gear, use_mask=use_mask)**2, axis=-1)**0.5
+            if quantile == 1:
+                dis.append(np.max(dxy))
+            elif quantile == 0:
+                dis.append(np.min(dxy))
+            else:
+                dis.append(np.quantile(dxy, quantile))
+        return np.array(dis)
+
+
   ## ------------------------------ utilities ------------------------------ ##
     def link_is_relevant(self, link):
         """

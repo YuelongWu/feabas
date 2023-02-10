@@ -11,6 +11,7 @@ import numpy as np
 import os
 from rtree import index
 from scipy.interpolate import interp1d
+from scipy.ndimage import gaussian_filter
 from scipy import sparse
 import scipy.sparse.csgraph as csgraph
 
@@ -719,8 +720,8 @@ class Stitcher:
         """
         maxiter = kwargs.get('maxiter', None)
         tol = kwargs.get('tol', 1e-07)
-        start_gear = kwargs.get('start_gear', MESH_GEAR_FIXED)
-        target_gear = kwargs.get('target_gear', start_gear)
+        target_gear = kwargs.get('target_gear', MESH_GEAR_FIXED)
+        start_gear = kwargs.get('start_gear', target_gear)
         residue_threshold = kwargs.get('residue_threshold', None)
         if self._optimizer is None:
             self.initialize_optimizer()
@@ -766,13 +767,13 @@ class Stitcher:
         cache_size = kwargs.get('cache_size', None)
         target_gear = kwargs.setdefault('target_gear', MESH_GEAR_FIXED)
         if not self.has_groupings:
-            return
+            return 0, 0
         groupings = self.groupings(normalize=True)
         match_uids = np.array(list(self.matches.keys()))
         match_grps = groupings[match_uids]
         idxt = match_grps[:,0] != match_grps[:,1]
         if not np.any(idxt):
-            return
+            return 0, 0
         match_uids = match_uids[idxt]
         sel_uids, sel_match_uids = np.unique(match_uids, return_inverse=True)
         sel_match_uids = sel_match_uids.reshape(-1,2)
@@ -1126,14 +1127,37 @@ class MontageRenderer:
 
 
     def crop(self, bbox, **kwargs):
-        blend = kwargs.pop('blend', BLEND_LINEAR)
+        """
+        crop out the tile defined by the bounding box in output space, blend the
+        source tiles if necessary.
+        blend(str):
+            LINEAR: the weight is proportional to the distance to the tile edge.
+            NEAREST: find the pixel innermost to any tiles.
+            PYRAMID: two-level pyramid where hp part use NEAREST and lp part use
+                LINEAR.
+            MAX: find the maximum value
+            MIN: find the minimum value
+            NONE: no blending, simply place the src tiles.
+        kwargs:
+            clip_lrtb (tuple): the left, right, top, bottom pixels in a source
+                tile to be excluded (in case there are e.g consistent distortion
+                at the begininig of the scan).
+            scale (float): scale factor of the output image.
+        refer to feabas.common.render_by_subregions for other kwargs
+        """
+        blend = kwargs.pop('blend', 'LINEAR')
         clip_ltrb = kwargs.pop('clip_lrtb', (0,0,0,0))
         scale = kwargs.pop('scale', 1)
+        fillval = kwargs.get('fillval', self.image_loader.default_fillval)
+        dtype_out = kwargs.get('dtype_out', self.image_loader.dtype)
+        sigma = 2.5 # sigma for pyramid generation.
+        weight_eps = 1e-3
         bbox = scale_coordinates(bbox, 1/scale)
         hits = list(self.mesh_tree.intersection(bbox, objects=False))
-        clip_factor = 1e-3
         if len(hits) == 0:
             return None
+        elif len(hits) == 1:
+            blend = None
         x_min = bbox[0]
         y_min = bbox[1]
         ht = round(bbox[3] - y_min)
@@ -1141,8 +1165,10 @@ class MontageRenderer:
         x0 = np.arange(x_min, x_min+wd, 1/scale)
         y0 = np.arange(y_min, y_min+ht, 1/scale)
         xx, yy = np.meshgrid(x0, y0)
-        image_accum = None
-        weight_accum = None
+        image_hp = None
+        image_lp = None
+        weight_sum = None
+        weight_max = None
         for indx in hits:
             x_interp, y_interp = self.interpolators[indx]
             offset = self._mesh_info[indx].moving_offsets.ravel()
@@ -1156,47 +1182,71 @@ class MontageRenderer:
             x_field = np.nan_to_num(map_x.data, nan=-1, copy=False)
             y_field = np.nan_to_num(map_y.data, nan=-1, copy=False)
             tile_ht, tile_wd = self.tile_size(indx)
-            weight = np.minimum.reduce([x_field + 0.5, -x_field + tile_wd - 0.5,
-                y_field + 0.5, -y_field + tile_ht - 0.5]) * 0.01
-            weight = weight.clip(0, None) ** 2
-            if np.any(clip_ltrb):
-                dis_t = np.minimum.reduce([x_field-clip_ltrb[0] + 0.5,
-                                     -x_field + tile_wd-clip_ltrb[2] - 0.5,
-                                     y_field-clip_ltrb[1] + 0.5,
-                                     -y_field + tile_ht - clip_ltrb[3] - 0.5])
-                weight[dis_t < 0] *= clip_factor
+            weight = np.minimum.reduce([x_field - clip_ltrb[0] + 0.5,
+                                    - x_field + tile_wd - clip_ltrb[2] - 0.5,
+                                    y_field - clip_ltrb[1] + 0.5,
+                                    - y_field + tile_ht - clip_ltrb[3] - 0.5])
             mask = weight > 0
             if not np.any(mask, axis=None):
                 continue
             imgt = common.render_by_subregions(x_field, y_field, mask, self.image_loader, fileid=indx, **kwargs)
+            if blend is None:
+                image_hp = imgt
+                break
             if imgt is None:
                 continue
+            if not np.issubdtype(imgt.dtype, np.floating):
+                imgt = imgt.astype(np.float32, copy=False)
+            imgshp = imgt.shape
             weight = weight.clip(0, None).astype(np.float32)
-            if len(imgt.shape) > len(weight.shape):
+            if len(imgshp) > 2:
                 weight = np.stack((weight, )*imgt.shape[-1], axis=-1)
-            if image_accum is None:
-                if blend == BLEND_LINEAR:
-                    out_dtype = imgt.dtype
-                    image_accum = imgt.astype(np.float32) * weight
-                    imgt0 = imgt
-                else:
-                    image_accum = imgt
-                weight_accum = weight
-            elif blend == BLEND_LINEAR:
-                image_accum = image_accum + imgt.astype(np.float32) * weight
-                weight_accum = weight_accum + weight
-            elif blend == BLEND_MAX:
-                image_accum[weight > weight_accum] = imgt[weight > weight_accum]
-                weight_accum = np.maximum(weight_accum, weight)
+            if image_hp is None:
+                image_hp = np.zeros_like(imgt)
+                image_lp = np.zeros_like(imgt)
+                weight_sum = np.zeros_like(weight)
+                weight_max = np.zeros_like(weight)
+                if blend == 'MAX':
+                    image_hp = image_hp - np.inf
+                elif blend == 'MIN':
+                    image_hp = image_hp + np.inf
+            weight_sum += weight
+            if blend == 'LINEAR':
+                image_hp = imgt * weight + image_hp
+            elif blend == 'NEAREST':
+                maskb = weight > weight_max
+                image_hp[maskb] = imgt[maskb]
+                weight_max[maskb] = weight[maskb]
+            elif blend == 'PYRAMID':
+                sigmas = [sigma, sigma] + [0]*(len(imgshp)-2)
+                imgt_f = gaussian_filter(imgt, sigma=sigmas)
+                imgt_h = imgt - imgt_f
+                image_lp = imgt_f * weight + image_lp
+                maskb = weight > weight_max
+                image_hp[maskb] = imgt_h[maskb]
+                weight_max[maskb] = weight[maskb]
+            elif blend == 'MAX':
+                maskb = weight > 0
+                image_hp[maskb] = np.maximum(image_hp[maskb], imgt[maskb])
+            elif blend == 'MIN':
+                maskb = weight > 0
+                image_hp[maskb] = np.minimum(image_hp[maskb], imgt[maskb])
+            elif blend == 'NONE':
+                maskb = weight > 0
+                image_hp[maskb] = imgt[maskb]
             else:
-                image_accum[weight > 0] = imgt[weight > 0]
-        if image_accum is None:
+                raise ValueError(f'unsupported blending mode {blend}')
+        if image_hp is None:
             return None
-        if blend == BLEND_LINEAR:
-            img_out = (image_accum / weight_accum.clip(clip_factor, None)).astype(out_dtype)
-            img_out[weight_accum == 0] = imgt0[weight_accum == 0]
+        if blend == 'LINEAR':
+            img_out = image_hp / weight_sum.clip(weight_eps, None)
+        elif blend == 'PYRAMID':
+            image_lp = image_lp / weight_sum.clip(weight_eps, None)
+            img_out = image_lp + image_hp
         else:
-            img_out = image_accum
+            img_out = image_hp
+        img_out[weight_sum <= weight_eps] = fillval
+        img_out = img_out.astype(dtype_out, copy=False)
         return img_out
 
 
