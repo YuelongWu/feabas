@@ -164,7 +164,7 @@ def stitching_matcher(img0, img1, **kwargs):
         smx = max(imgshp) * 0.25
         smn = max(min(75, min(imgshp)/3), 25)
         if smn > smx:
-            spacings = [smn]
+            spacings = np.array([smn])
         else:
             Nsp = max(1, round(np.log(smx/smn)/np.log(4)))
             spacings = np.exp(np.linspace(np.log(smn), np.log(smx), num=Nsp, endpoint=True))

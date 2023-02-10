@@ -365,7 +365,7 @@ class Stitcher:
             new_matches, match_strains, err_raised = target_func(overlaps, self.imgrelpaths, self.init_bboxes)
             self.matches.update(new_matches)
             self.match_strains.update(match_strains)
-            return len(new_matches)
+            return len(new_matches), err_raised
         num_workers = min(num_workers, num_overlaps)
         # 180 roughly number of overlaps in an MultiSEM mFoV
         num_overlaps_per_job = min(num_overlaps//num_workers, 180)
@@ -910,7 +910,7 @@ class Stitcher:
         gear = (MESH_GEAR_INITIAL, MESH_GEAR_MOVING)
         rotation_threshold = kwargs.get('rotation_threshold', None)
         offset = kwargs.get('offset', None)
-        theta0 = np.nan
+        theta0 = 0
         offset0 = None
         if self._optimizer is None:
             raise RuntimeError('optimizer of the stitcher not initialized.')
@@ -924,9 +924,9 @@ class Stitcher:
             theta = {}
             for lbl in range(N_ss):
                 theta = np.median(rotations[L_ss == lbl])
-                theta_d = theta * 180 / np.pi
+                theta_d = np.abs(theta * 180 / np.pi)
                 theta0 = max(theta0, theta_d)
-                if theta > rotation_threshold:
+                if theta_d > rotation_threshold:
                     c, s = np.cos(theta), np.sin(theta)
                     R = np.array([[c, s, 0], [-s, c, 0], [0, 0, 1]], dtype=np.float32)
                     for m, l in zip(self.meshes, L_ss):
