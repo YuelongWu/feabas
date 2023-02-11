@@ -374,6 +374,14 @@ def signed_area(vertices, triangles) -> np.ndarray:
     return np.cross(v0, v1)
 
 
+def expand_image(img, target_size, slices, fillval=0):
+    if len(img.shape) == 3:
+        target_size = list(target_size) + [img.shape[-1]]
+    img_out = np.full_like(img, fillval, shape=target_size)
+    img_out[slices[0], slices[1], ...] = img
+    return img_out
+
+
 def bbox_centers(bboxes):
     bboxes = np.array(bboxes, copy=False)
     cntr = 0.5 * bboxes @ np.array([[1,0],[0,1],[1,0],[0,1]]) - 0.5
@@ -395,7 +403,7 @@ def bbox_intersections(bboxes0, bboxes1):
 
 
 def bbox_enlarge(bboxes, margin=0):
-    return bboxes + np.array([-margin, -margin, margin, margin])
+    return np.array(bboxes, copy=False) + np.array([-margin, -margin, margin, margin])
 
 
 ##--------------------------------- caches -----------------------------------##

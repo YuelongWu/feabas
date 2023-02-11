@@ -138,6 +138,8 @@ def render_one_section(tform_name, out_prefix, meta_name=None, **kwargs):
     if loader_settings.get('cache_size', None) is not None:
         loader_settings['cache_size'] = loader_settings['cache_size'] // num_workers
     render_settings['scale'] = scale
+    if meta_name is not None and os.path.isfile(meta_name):
+        return None
     renderer = MontageRenderer.from_h5(tform_name, loader_settings=loader_settings)
     render_series = renderer.plan_render_series(tile_size, prefix=out_prefix,
         scale=scale, **filename_settings)

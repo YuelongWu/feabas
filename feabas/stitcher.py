@@ -1158,23 +1158,32 @@ class MontageRenderer:
         sigma = 2.5 # sigma for pyramid generation.
         weight_eps = 1e-3
         bbox = scale_coordinates(bbox, 1/scale)
-        hits = list(self.mesh_tree.intersection(bbox, objects=False))
+        hits = list(self.mesh_tree.intersection(bbox, objects=True))
         if len(hits) == 0:
             return None
         elif len(hits) == 1:
             blend = None
-        x_min = bbox[0]
-        y_min = bbox[1]
-        ht = round(bbox[3] - y_min)
-        wd = round(bbox[2] - x_min)
-        x0 = np.arange(x_min, x_min+wd, 1/scale)
-        y0 = np.arange(y_min, y_min+ht, 1/scale)
-        xx, yy = np.meshgrid(x0, y0)
+        x_min0 = bbox[0]
+        y_min0 = bbox[1]
+        ht0 = round(bbox[3] - y_min0)
+        wd0 = round(bbox[2] - x_min0)
+        x0 = np.arange(x_min0, x_min0+wd0, 1/scale)
+        y0 = np.arange(y_min0, y_min0+ht0, 1/scale)
         image_hp = None
         image_lp = None
         weight_sum = None
         weight_max = None
-        for indx in hits:
+        for hit in hits:
+            indx = hit.id
+            bbox_mesh = common.bbox_enlarge(hit.bbox, 2)
+            bbox_overlap, _ = common.bbox_intersections(bbox, bbox_mesh)
+            msk_x = np.nonzero((x0 >= bbox_overlap[0]) & (x0 <= bbox_overlap[2]))[0]
+            msk_y = np.nonzero((y0 >= bbox_overlap[1]) & (y0 <= bbox_overlap[3]))[0]
+            slc_x = slice(np.min(msk_x), np.max(msk_x)+1, None)
+            slc_y = slice(np.min(msk_y), np.max(msk_y)+1, None)
+            x_msh = x0[slc_x]
+            y_msh = y0[slc_y]
+            xx, yy = np.meshgrid(x_msh, y_msh)
             x_interp, y_interp = self.interpolators[indx]
             offset = self._mesh_info[indx].moving_offsets.ravel()
             xxt = xx - offset[0]
@@ -1194,10 +1203,11 @@ class MontageRenderer:
             mask = weight > 0
             if not np.any(mask, axis=None):
                 continue
+            expand_image = partial(common.expand_image, target_size=(ht0, wd0), slices=(slc_y, slc_x))
             imgt = common.render_by_subregions(x_field, y_field, mask, self.image_loader, fileid=indx, **kwargs)
             if blend is None:
-                image_hp = imgt
-                weight_sum = weight
+                image_hp = expand_image(imgt)
+                weight_sum = expand_image(weight)
                 break
             if imgt is None:
                 continue
@@ -1208,38 +1218,38 @@ class MontageRenderer:
             if len(imgshp) > 2:
                 weight = np.stack((weight, )*imgt.shape[-1], axis=-1)
             if image_hp is None:
-                image_hp = np.zeros_like(imgt)
-                image_lp = np.zeros_like(imgt)
-                weight_sum = np.zeros_like(weight)
-                weight_max = np.zeros_like(weight)
+                image_hp = np.zeros_like(expand_image(imgt))
+                image_lp = np.zeros_like(image_hp)
+                weight_sum = np.zeros_like(expand_image(weight))
+                weight_max = np.zeros_like(weight_sum)
                 if blend == 'MAX':
                     image_hp = image_hp - np.inf
                 elif blend == 'MIN':
                     image_hp = image_hp + np.inf
-            weight_sum += weight
+            weight_sum += expand_image(weight)
             if blend == 'LINEAR':
-                image_hp = imgt * weight + image_hp
+                image_hp = expand_image(imgt * weight) + image_hp
             elif blend == 'NEAREST':
-                maskb = weight > weight_max
-                image_hp[maskb] = imgt[maskb]
-                weight_max[maskb] = weight[maskb]
+                maskb = expand_image(weight) > weight_max
+                image_hp[maskb] = expand_image(imgt)[maskb]
+                weight_max[maskb] = expand_image(weight)[maskb]
             elif blend == 'PYRAMID':
                 sigmas = [sigma, sigma] + [0]*(len(imgshp)-2)
                 imgt_f = gaussian_filter(imgt, sigma=sigmas)
                 imgt_h = imgt - imgt_f
-                image_lp = imgt_f * weight + image_lp
-                maskb = weight > weight_max
-                image_hp[maskb] = imgt_h[maskb]
-                weight_max[maskb] = weight[maskb]
+                image_lp = expand_image(imgt_f * weight) + image_lp
+                maskb = expand_image(weight) > weight_max
+                image_hp[maskb] = expand_image(imgt_h)[maskb]
+                weight_max[maskb] = expand_image(weight)[maskb]
             elif blend == 'MAX':
-                maskb = weight > 0
-                image_hp[maskb] = np.maximum(image_hp[maskb], imgt[maskb])
+                maskb = expand_image(weight > 0)
+                image_hp[maskb] = np.maximum(image_hp[maskb], expand_image(imgt)[maskb])
             elif blend == 'MIN':
-                maskb = weight > 0
-                image_hp[maskb] = np.minimum(image_hp[maskb], imgt[maskb])
+                maskb = expand_image(weight > 0)
+                image_hp[maskb] = np.minimum(image_hp[maskb], expand_image(imgt)[maskb])
             elif blend == 'NONE':
-                maskb = weight > 0
-                image_hp[maskb] = imgt[maskb]
+                maskb = expand_image(weight > 0)
+                image_hp[maskb] = expand_image(imgt)[maskb]
             else:
                 raise ValueError(f'unsupported blending mode {blend}')
         if image_hp is None:
