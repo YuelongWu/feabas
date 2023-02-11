@@ -81,8 +81,11 @@ def optimize_one_section(matchname, outname, **kwargs):
         dis = stitcher.match_residues()
         print(f'\t{bname}: residue after grouped relaxation {np.mean(dis)} | cost {cost}')
     cost = stitcher.optimize_elastic(target_gear=feabas.MESH_GEAR_MOVING, **elastic_settings)
-    stitcher.connect_isolated_subsystem()
     rot, _ = stitcher.normalize_coordinates(**normalize_setting)
+    N_conn = stitcher.connect_isolated_subsystem()
+    if N_conn > 1:
+        rot_1, _ = stitcher.normalize_coordinates(**normalize_setting)
+        rot = max(rot, rot_1)
     if cost[0] < cost[1]:
         stitcher.save_to_h5(outname.replace('.h5', '.h5_err'), save_matches=False, save_meshes=True)
     else:
@@ -132,6 +135,8 @@ def render_one_section(tform_name, out_prefix, meta_name=None, **kwargs):
     loader_settings = kwargs.get('loader_settings', {})
     render_settings = kwargs.get('render_settings', {})
     filename_settings = kwargs.get('filename_settings', {})
+    if loader_settings.get('cache_size', None) is not None:
+        loader_settings['cache_size'] = loader_settings['cache_size'] // num_workers
     render_settings['scale'] = scale
     renderer = MontageRenderer.from_h5(tform_name, loader_settings=loader_settings)
     render_series = renderer.plan_render_series(tile_size, prefix=out_prefix,
@@ -190,14 +195,15 @@ def parse_args(args=None):
 
 if __name__ == '__main__':
     args = parse_args()
-    root_dir = '/n/boslfs02/LABS/lichtman_lab/yuelong/dce/data/Fish2/stitch'
+    # root_dir = '/n/boslfs02/LABS/lichtman_lab/yuelong/dce/data/Fish2/stitch'
+    root_dir = 'debug/test_stitcher'
     coord_dir = os.path.join(root_dir, 'stitch_coord')
     match_dir = os.path.join(root_dir, 'match_h5')
     tform_dir = os.path.join(root_dir, 'tform')
     meta_dir = os.path.join(root_dir, 'rendered_metadata')
     image_outdir = '/n/boslfs02/LABS/lichtman_lab/Lab/STITCHED/Fish2_0422_03'
     conf_files = os.path.join('configs', 'stitching_configs.yaml')
-    mode = 'render'
+    mode = 'optimization'
 
     with open(conf_files, 'r') as f:
         conf = yaml.safe_load(f)

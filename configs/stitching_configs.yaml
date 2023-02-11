@@ -12,7 +12,7 @@ matching:   # see stitcher.Stitcher.subprocess_match_list_of_overlaps for detail
         fine_downsample: 1.0        # down-sample the images at the fine-level matching to save time at the cost of accuracy
 
 optimization:
-    num_workers: 5
+    num_workers: 1
     use_group: true     # whether to bundle the deformation within group of tiles (e.g. mFoV) at the initial stage of the optimization to correct fixed pattern distortion
     msem: true          # if is MultiSEM data. used to group tiles.
     mesh_settings:  # see stitcher.Stitcher.initialize_meshes

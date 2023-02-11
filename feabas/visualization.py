@@ -19,6 +19,12 @@ def hex2rgb(hexcode):
     return tuple(int(hexcode[i:i+2], 16) for i in (1, 3, 5))
 
 
+def random_color():
+    R, G = np.random.randint(256, size=2)
+    B = 255 * 2 - R - G
+    return rgb2hex(R, G, B)
+
+
 def dynamic_typing_decorator(func):
     def wrapped(geo_obj, **kwargs):
         if isinstance(geo_obj, (tuple, list)):
@@ -31,10 +37,7 @@ def dynamic_typing_decorator(func):
             uniform_color = kwargs.get('uniform_color', True)
             kwargs_new = kwargs.copy()
             if uniform_color and (kwargs_new.get('color', None) is None):
-                R, G = np.random.randint(256, size=2)
-                B = 255 * 2 - R - G
-                color = rgb2hex(R, G, B)
-                kwargs_new.update({'color': color})
+                kwargs_new.update({'color': random_color()})
             for g in geo_obj.geoms:
                 wrapped(g, **kwargs_new)
         elif geo_obj is None:
@@ -79,6 +82,25 @@ def plot_mesh(M, show_mat=False, show_conn=False, gear=MESH_GEAR_MOVING, show=Fa
         plt.plot(xx.T, yy.T, colors[-1], alpha=1, linewidth=1)
     if show:
         plt.show()
+
+
+def plot_montage(M, bbox_only=False):
+    if M._connected_subsystem is not None:
+        lbls = M._connected_subsystem
+    else:
+        lbls = np.zeros(M.num_tiles, dtype=np.int8)
+    for lbl in np.unique(lbls):
+        mindx = np.nonzero(lbls == lbl)[0]
+        color = random_color()
+        outlines = []
+        for idx in mindx:
+            m = M.meshes[idx]
+            if bbox_only:
+                tile = shpgeo.box(*m.bbox(gear=MESH_GEAR_MOVING, offsetting=True))
+            else:
+                tile = m.shapely_regions(gear=MESH_GEAR_MOVING)
+            outlines.append(tile)
+        plot_geometries(outlines, color=color)
 
 
 @dynamic_typing_decorator

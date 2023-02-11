@@ -1552,8 +1552,14 @@ class Mesh:
             return '_sub_'.join(str(s) for s in self._name)
 
 
-    def __bool__(self):
-        return self.num_triangles > 0
+    def bbox(self, gear=MESH_GEAR_MOVING, offsetting=True):
+        if offsetting:
+            vertices = self.vertices_w_offset(gear=gear)
+        else:
+            vertices = self.vertices(gear=gear)
+        v_min = vertices.min(axis=0)
+        v_max = vertices.max(axis=0)
+        return np.concatenate((v_min, v_max), axis=None)
 
 
   ## -------------------------------- query -------------------------------- ##
@@ -1765,7 +1771,7 @@ class Mesh:
             v1 = v1[vtx_mask]
         dxy = v1.mean(axis=0) - v0.mean(axis=0)
         dof = offset1 - offset0
-        return dxy.ravel() - dof.ravel()
+        return dxy.ravel() + dof.ravel()
 
 
     def apply_affine(self, A, gear, vtx_mask=None):
@@ -1903,16 +1909,6 @@ class Mesh:
             self.set_offset(offset0, gear[1])
         else:
             raise ValueError
-
-
-    def bbox(self, gear=MESH_GEAR_MOVING, offsetting=True):
-        if offsetting:
-            vertices = self.vertices_w_offset(gear=gear)
-        else:
-            vertices = self.vertices(gear=gear)
-        v_min = vertices.min(axis=0)
-        v_max = vertices.max(axis=0)
-        return np.concatenate((v_min, v_max), axis=None)
 
 
   ## ------------------------ collision management ------------------------- ##
