@@ -307,6 +307,7 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
     render_mode = kwargs.get('render_mode', RENDER_FULL)
     allow_dwell = kwargs.get('allow_dwell', 0)
     compute_strain = kwargs.get('compute_strain', True)
+    batch_size = kwargs.get('batch_size', None)
     # if any spacing value smaller than 1, means they are relative to longer side
     spacings = np.array(spacings, copy=False)
     min_block_size_multiplier = 4
@@ -335,33 +336,53 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
         else:
             mnb = 1
         if distributor == BLOCKDIST_CART_BBOX:
-            block_indices = distributor_cartesian_bbox(mesh0, mesh1, sp,
+            block_indices0 = distributor_cartesian_bbox(mesh0, mesh1, sp,
                 min_num_blocks=mnb, shrink_factor=shrink_factor)
         else:
             raise ValueError
-        if block_indices is None:
+        if block_indices0 is None:
             return invalid_output
+        if batch_size is None:
+            batched_block_indices = [block_indices0]
+        else:
+            num_blocks = block_indices0.shape[0]
+            num_batchs = int(np.ceil(num_blocks / batch_size))
+            batch_indices = np.linspace(0, num_blocks, num=num_batchs+1, endpoint=True)
+            batch_indices = np.unique(batch_indices.astype(np.int32))
+            batched_block_indices = []
+            for bidx0, bidx1 in zip(batch_indices[:-1], batch_indices[1:]):
+                batched_block_indices.append(block_indices0[bidx0:bidx1])
         render0 = MeshRenderer.from_mesh(mesh0, image_loader=image_loader0)
         render1 = MeshRenderer.from_mesh(mesh1, image_loader=image_loader1)
-        stack0 = []
-        stack1 = []
-        xy_ctr = []
-        for x0, y0, x1, y1 in zip(*block_indices):
-            img0 = render0.crop((x0, y0, x1, y1), mode=render_mode, log_sigma=sigma, remap_interp=cv2.INTER_LINEAR)
-            if img0 is None:
-                continue
-            img1 = render1.crop((x0, y0, x1, y1), mode=render_mode, log_sigma=sigma, remap_interp=cv2.INTER_LINEAR)
-            if img1 is None:
-                continue
-            stack0.append(img0)
-            stack1.append(img1)
-            xy_ctr.append(((x0+x1-1)/2, (y0+y1-1)/2))
-        dx, dy, conf = xcorr_fft(np.stack(stack0, axis=0), np.stack(stack1, axis=0),
-            conf_mode=conf_mode, pad=(not initialized))
-        xy_ctr = np.array(xy_ctr)
-        dxy = np.stack((dx, dy), axis=-1)
-        xy0 = xy_ctr - dxy/2
-        xy1 = xy_ctr + dxy/2
+        xy0 = []
+        xy1 = []
+        conf = []
+        for block_indices in batched_block_indices:
+            stack0 = []
+            stack1 = []
+            xy_ctr = []
+            for x0, y0, x1, y1 in block_indices:
+                img0 = render0.crop((x0, y0, x1, y1), mode=render_mode, log_sigma=sigma, remap_interp=cv2.INTER_LINEAR)
+                if img0 is None:
+                    continue
+                img1 = render1.crop((x0, y0, x1, y1), mode=render_mode, log_sigma=sigma, remap_interp=cv2.INTER_LINEAR)
+                if img1 is None:
+                    continue
+                stack0.append(img0)
+                stack1.append(img1)
+                xy_ctr.append(((x0+x1-1)/2, (y0+y1-1)/2))
+            dx, dy, conf_b = xcorr_fft(np.stack(stack0, axis=0), np.stack(stack1, axis=0),
+                conf_mode=conf_mode, pad=(not initialized))
+            xy_ctr = np.array(xy_ctr)
+            dxy = np.stack((dx, dy), axis=-1)
+            xy0_b = xy_ctr - dxy/2
+            xy1_b = xy_ctr + dxy/2
+            xy0.append(xy0_b)
+            xy1.append(xy1_b)
+            conf.append(conf_b)
+        xy0 = np.concatenate(xy0, axis=0)
+        xy1 = np.concatenate(xy1, axis=0)
+        conf = np.concatenate(conf, axis=0)
         if np.all(conf <= conf_thresh):
             if not initialized:
                 return invalid_output
@@ -448,4 +469,4 @@ def distributor_cartesian_bbox(mesh0, mesh1, spacing, **kwargs):
         return None
     xstt, ystt, xend, yend = common.divide_bbox(bbox, block_size=spacing,
         min_num_blocks=min_num_blocks, shrink_factor=shrink_factor)
-    return xstt, ystt, xend, yend
+    return np.stack((xstt, ystt, xend, yend), axis=-1)

@@ -11,7 +11,7 @@ import cv2
 import numpy as np
 from rtree import index
 
-from feabas.common import generate_cache, crop_image_from_bbox, imread, inverse_image
+from feabas import common
 from feabas.constant import *
 
 
@@ -109,7 +109,7 @@ class AbstractImageLoader(ABC):
         self._use_cache = (self._cache_size is None) or (self._cache_size > 0)
         self._init_tile_divider(**kwargs)
         self._cache_type = kwargs.get('cache_type', 'mfu')
-        self._cache = generate_cache(self._cache_type, maxlen=self._cache_size)
+        self._cache = common.generate_cache(self._cache_type, maxlen=self._cache_size)
         self._preprocess = kwargs.get('preprocess', None)
         self.resolution = kwargs.get('resolution', DEFAULT_RESOLUTION)
         self._read_counter = 0
@@ -176,7 +176,7 @@ class AbstractImageLoader(ABC):
                     if dtype is None or number_of_channels is None:
                       # not sufficient info to generate empty tile, read an image to get info
                         img = self._read_image(imgpath, **kwargs)
-                        imgout = crop_image_from_bbox(img, bbox_img, bbox, return_index=False,
+                        imgout = common.crop_image_from_bbox(img, bbox_img, bbox, return_index=False,
                             return_empty=True, fillval=fillval)
                     else:
                         outht = bbox[3] - bbox[1]
@@ -214,16 +214,16 @@ class AbstractImageLoader(ABC):
                     if blk is None:
                         continue
                     if not initialized:
-                        imgp = crop_image_from_bbox(blk, blkbbox, bbox_partial,
+                        imgp = common.crop_image_from_bbox(blk, blkbbox, bbox_partial,
                             return_index=False, return_empty=True, fillval=fillval)
                         initialized = True
                     else:
-                        blkt, indx =  crop_image_from_bbox(blk, blkbbox, bbox_partial,
+                        blkt, indx =  common.crop_image_from_bbox(blk, blkbbox, bbox_partial,
                             return_index=True, return_empty=False, fillval=fillval)
                         if indx is not None and blkt is not None:
                             imgp[indx] = blkt
                 if return_index:
-                    imgout = crop_image_from_bbox(imgp, bbox_partial, bbox, return_index=True,
+                    imgout = common.crop_image_from_bbox(imgp, bbox_partial, bbox, return_index=True,
                         return_empty=return_empty, fillval=fillval)
                 else:
                     imgout = imgp
@@ -235,7 +235,7 @@ class AbstractImageLoader(ABC):
         fillval = kwargs.get('fillval', self._default_fillval)
         img = self._read_image(imgpath, **kwargs)
         bbox_img = self._get_image_bbox(imgpath)
-        imgout = crop_image_from_bbox(img, bbox_img, bbox, return_index=return_index,
+        imgout = common.crop_image_from_bbox(img, bbox_img, bbox, return_index=return_index,
             return_empty=return_empty, fillval=fillval)
         if self._use_cache:
             self._cache_image(imgpath, img=img, **kwargs)
@@ -314,9 +314,9 @@ class AbstractImageLoader(ABC):
         apply_CLAHE = kwargs.get('apply_CLAHE', self._apply_CLAHE)
         inverse = kwargs.get('inverse', self._inverse)
         if number_of_channels == 3:
-            img = imread(imgpath, flag=cv2.IMREAD_COLOR)
+            img = common.imread(imgpath, flag=cv2.IMREAD_COLOR)
         else:
-            img = imread(imgpath, flag=cv2.IMREAD_UNCHANGED)
+            img = common.imread(imgpath, flag=cv2.IMREAD_UNCHANGED)
         self._read_counter += 1
         if img is None:
             raise RuntimeError(f'Image file {imgpath} not valid!')
@@ -331,7 +331,7 @@ class AbstractImageLoader(ABC):
         if self._preprocess is not None:
             img = self._preprocess(img)
         if inverse:
-            img = inverse_image(img, dtype)
+            img = common.inverse_image(img, dtype)
         return img
 
 
@@ -542,6 +542,13 @@ class StaticImageLoader(AbstractImageLoader):
         return cls(filepaths=filepaths, bboxes=bboxes, **settings)
 
 
+    @classmethod
+    def from_coordinate_file(cls, filename, **kwargs):
+        imgpaths, bboxes, root_dir = common.parse_coordinate_files(filename, **kwargs)
+        kwargs.setdefault('root_dir', root_dir)
+        return cls(filepaths=imgpaths, bboxes=bboxes, **kwargs)
+
+
     def _cache_image(self, fileid, img=None, **kwargs):
         if not self._use_cache:
             return
@@ -724,7 +731,7 @@ class MosaicLoader(StaticImageLoader):
             else:
                 imgpaths = [imgpaths]
         if tile_size is None:
-            img = imread(imgpaths[0], flag=cv2.IMREAD_UNCHANGED)
+            img = common.imread(imgpaths[0], flag=cv2.IMREAD_UNCHANGED)
             imght, imgwd = img.shape[0], img.shape[1]
             tile_size = (imght, imgwd)
         bboxes = []
@@ -871,7 +878,7 @@ class StreamLoader(AbstractImageLoader):
 
     @classmethod
     def from_filepath(cls, imgpath, **kwargs):
-        img = imread(imgpath, flag=cv2.IMREAD_UNCHANGED)
+        img = common.imread(imgpath, flag=cv2.IMREAD_UNCHANGED)
         return cls(img, **kwargs)
 
 
@@ -879,7 +886,7 @@ class StreamLoader(AbstractImageLoader):
         fillval = kwargs.get('fillval', self._default_fillval)
         bbox_img = self.bounds
         img = self._read_image(**kwargs)
-        return crop_image_from_bbox(img, bbox_img, bbox,
+        return common.crop_image_from_bbox(img, bbox_img, bbox,
             return_empty=return_empty, return_index=False, fillval=fillval)
 
 
@@ -911,7 +918,7 @@ class StreamLoader(AbstractImageLoader):
         if self._preprocess is not None:
             img = self._preprocess(img)
         if inverse:
-            img = inverse_image(img, dtype)
+            img = common.inverse_image(img, dtype)
         return img
 
 

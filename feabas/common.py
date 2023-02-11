@@ -2,6 +2,7 @@ import cv2
 import collections
 import gc
 import importlib
+import os
 
 import numpy as np
 from scipy import sparse
@@ -404,6 +405,80 @@ def bbox_intersections(bboxes0, bboxes1):
 
 def bbox_enlarge(bboxes, margin=0):
     return np.array(bboxes, copy=False) + np.array([-margin, -margin, margin, margin])
+
+
+def parse_coordinate_files(filename, **kwargs):
+    """
+    parse a coordinate txt file. Each row in the file follows the pattern:
+        image_path  x_min  y_min  x_max(optional)  y_max(optional)
+    if x_max and y_max is not provided, they are inferred from tile_size.
+    If relative path is provided in the image_path colume, at the first line
+    of the file, the root_dir can be defined as:
+        {ROOT_DIR}  rootdir_to_the_path
+        {TILE_SIZE} tile_height tile_width
+    Args:
+        filename(str): full path to the coordinate file.
+    Kwargs:
+        rootdir: if the imgpaths colume in the file is relative paths, can
+            use this to prepend the paths. Set to None to disable.
+        tile_size: the tile size used to compute the bounding boxes in the
+            absense of x_max and y_max in the file. If None, will read an
+            image file to figure out
+        delimiter: the delimiter to separate each colume in the file. If set
+            to None, any whitespace will be considered.
+    """
+    root_dir = kwargs.get('root_dir', None)
+    tile_size = kwargs.get('tile_size', None)
+    delimiter = kwargs.get('delimiter', '\t') # None for any whitespace
+    imgpaths = []
+    bboxes = []
+    with open(filename, 'r') as f:
+        lines = f.readlines()
+    if len(lines) == 0:
+        raise RuntimeError(f'empty file: {filename}')
+    start_line = 0
+    for line in lines:
+        if '{ROOT_DIR}' in line:
+            start_line += 1
+            tlist = line.strip().split(delimiter)
+            if len(tlist) >= 2:
+                root_dir = tlist[1]
+        elif '{TILE_SIZE}' in line:
+            start_line += 1
+            tlist = line.strip().split(delimiter)
+            if len(tlist) == 2:
+                tile_size = (int(tlist[1]), int(tlist[1]))
+            elif len(tlist) > 2:
+                tile_size = (int(tlist[1]), int(tlist[2]))
+            else:
+                continue
+        else:
+            break
+    relpath = bool(root_dir)
+    for line in lines[start_line:]:
+        line = line.strip()
+        tlist = line.split(delimiter)
+        if len(tlist) < 3:
+            raise RuntimeError(f'corrupted coordinate file: {filename}')
+        mpath = tlist[0]
+        x_min = float(tlist[1])
+        y_min = float(tlist[2])
+        if (len(tlist) >= 5) and (tile_size is None):
+            x_max = float(tlist[3])
+            y_max = float(tlist[4])
+        else:
+            if tile_size is None:
+                if relpath:
+                    mpath_f = os.path.join(root_dir, mpath)
+                else:
+                    mpath_f = mpath
+                img = imread(mpath_f, flag=cv2.IMREAD_GRAYSCALE)
+                tile_size = img.shape
+            x_max = x_min + tile_size[-1]
+            y_max = y_min + tile_size[0]
+        imgpaths.append(mpath)
+        bboxes.append((x_min, y_min, x_max, y_max))
+    return imgpaths, bboxes, root_dir
 
 
 ##--------------------------------- caches -----------------------------------##
