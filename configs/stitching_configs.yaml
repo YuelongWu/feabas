@@ -1,0 +1,56 @@
+matching:   # see stitcher.Stitcher.subprocess_match_list_of_overlaps for details
+    num_workers: 15
+    min_overlap_width: 25   # overlaps thinner than this will be skipped
+    margin: 100             # extra width of image to include during match to accommondate inaccurate stage movement
+    loader_config:  # see dal.AbstractImageLoader for details
+        cache_size: 150     # total number of images allowed to cache in RAM
+    matcher_config: # see matcher.stitching_matcher for details
+        spacing: null   # the spacing between grid points. null to decide dynamically
+        conf_thresh: 0.33   # cross-correlations with confidence value smaller than this will be rejected
+        sigma: 2.5          # sigma of DoG filter applied to the images before matching
+        coarse_downsample: 0.5      # down-sample the images at the coase-level matching
+        fine_downsample: 1.0        # down-sample the images at the fine-level matching to save time at the cost of accuracy
+
+optimization:
+    num_workers: 5
+    use_group: true     # whether to bundle the deformation within group of tiles (e.g. mFoV) at the initial stage of the optimization to correct fixed pattern distortion
+    msem: true          # if is MultiSEM data. used to group tiles.
+    mesh_settings:  # see stitcher.Stitcher.initialize_meshes
+        mesh_sizes: [75, 150, 300]   # mesh sizes to select from based on how distorted are the matches
+        cache_size: null    # size of the cache to save intermediate values.
+        border_width: null  # the overlap width where meshes are finer. null to decide dynamically
+        match_soften: [0.1, 0.2]
+        soft_top: 0.2
+        soft_top_width: 0.1
+    translation:    # see stitcher.Stitcher.ptimize_elastic for details
+        maxiter: null
+        tol: 1.0e-7
+        residue_threshold: 50
+    group_elastic: # see stitcher.Stitcher.optimize_group_intersection for details
+        maxiter: null
+        tol: 1.0e-6
+    final_elastic:    # see stitcher.Stitcher.optimize_translation for details
+        maxiter: null
+        tol: 1.0e-4
+        residue_mode: huber # huber or threshold or None, deciding how to damp matches with large residue errors after optimization
+        residue_len: 5      # characteristic residue distance used for damping. use 0 to skip
+    normalize:
+        rotation_threshold: 0.5 # if rotation is larger than the threshold after optimization, rotate back
+        offset: [1, 1]  # the upper-left corner of the section will be normalized to this coordinates as the final step
+
+render:
+    num_workers: 5
+    tile_size: [4096, 4096] # output tile size
+    scale: 1.0
+    loader_settings: # see dal.AbstractImageLoader for details
+        cache_size: 150
+        apply_CLAHE: true
+        inverse: true
+        fillval: 0
+    render_settings:
+        blend: PYRAMID  # options: LINEAR, NEAREST, PYRAMID, MAX, MIN, NONE
+    filename_settings:  # see stitcher.MontageRenderer.plan_render_series for details
+        pattern: _tr{ROW_IND}-tc{COL_IND}.png
+        one_based: true # zero-based or one-based row/colume indexing
+
+    

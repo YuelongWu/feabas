@@ -733,7 +733,7 @@ class Stitcher:
                 lnks_w_large_dis = []
                 mxdis = 0
                 for k, lnk in enumerate(self._optimizer.links):
-                    if not lnk.relevant():
+                    if not lnk.relevant:
                         continue
                     dxy = lnk.dxy(gear=(target_gear, target_gear), use_mask=True)
                     dxy_m = np.median(dxy, axis=0)
@@ -1022,6 +1022,11 @@ class Stitcher:
         return len(self.matches)
 
 
+    def match_residues(self, quantile=1):
+        return self._optimizer.match_residues(gear=MESH_GEAR_MOVING, use_mask=True, quantile=quantile)
+
+
+
 Mesh_Info = namedtuple('Mesh_Info', ['moving_vertices', 'moving_offsets', 'triangles', 'fixed_verticess'])
 
 
@@ -1192,6 +1197,7 @@ class MontageRenderer:
             imgt = common.render_by_subregions(x_field, y_field, mask, self.image_loader, fileid=indx, **kwargs)
             if blend is None:
                 image_hp = imgt
+                weight_sum = weight
                 break
             if imgt is None:
                 continue
@@ -1246,6 +1252,9 @@ class MontageRenderer:
         else:
             img_out = image_hp
         img_out[weight_sum <= weight_eps] = fillval
+        if np.issubdtype(dtype_out, np.integer):
+            iinfo = np.iinfo(dtype_out)
+            img_out = img_out.clip(iinfo.min, iinfo.max)
         img_out = img_out.astype(dtype_out, copy=False)
         return img_out
 
@@ -1254,6 +1263,7 @@ class MontageRenderer:
         rendered = {}
         for bbox, filename in zip(bboxes, filenames):
             if os.path.isfile(filename):
+                rendered[filename] = bbox
                 continue
             imgt = self.crop(bbox, **kwargs)
             if imgt is None:
@@ -1278,6 +1288,7 @@ class MontageRenderer:
         """
         pattern = kwargs.get('pattern', 'tr{ROW_IND}_tc{COL_IND}.png')
         scale = kwargs.get('scale', 1)
+        one_based = kwargs.get('one_based', False)
         keywords = ['{ROW_IND}', '{COL_IND}', '{X_MIN}', '{Y_MIN}', '{X_MAX}', '{Y_MAX}']
         if not hasattr(tile_size, '__len__'):
             tile_ht, tile_wd = tile_size, tile_size
@@ -1309,7 +1320,7 @@ class MontageRenderer:
             hits.append(hit)
             bboxes.append(bbox)
             xmin, ymin, xmax, ymax = bbox
-            keyword_replaces = [str(r), str(c), str(xmin), str(ymin), str(xmax), str(ymax)]
+            keyword_replaces = [str(r+one_based), str(c+one_based), str(xmin), str(ymin), str(xmax), str(ymax)]
             fname = pattern
             for kw, kwr in zip(keywords, keyword_replaces):
                 fname = fname.replace(kw, kwr)
@@ -1317,7 +1328,7 @@ class MontageRenderer:
         return bboxes, filenames, hits
 
 
-    def divide_render_jobs(render_series, num_workers=1, **kwargs):
+    def divide_render_jobs(self, render_series, num_workers=1, **kwargs):
         max_tile_per_job = kwargs.get('max_tile_per_job', None)
         bboxes, filenames, hits = render_series
         num_tiles = len(filenames)
@@ -1332,8 +1343,8 @@ class MontageRenderer:
         hits_list = []
         for idx0, idx1 in zip(indices[:-1], indices[1:]):
             idx0, idx1 = int(idx0), int(idx1)
-            bboxes_list.append([bboxes[idx0:idx1]])
-            filenames_list.append([filenames[idx0:idx1]])
+            bboxes_list.append(bboxes[idx0:idx1])
+            filenames_list.append(filenames[idx0:idx1])
             hits_list.append(set(s for hit in hits[idx0:idx1] for s in hit))
         return bboxes_list, filenames_list, hits_list
 
@@ -1428,4 +1439,4 @@ class MontageRenderer:
             M = montage
         else:
             raise TypeError
-        M.render_series_to_file(bboxes, outnames, **kwargs)
+        return M.render_series_to_file(bboxes, outnames, **kwargs)
