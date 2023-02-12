@@ -619,6 +619,21 @@ class Mesh:
             return meshes
 
 
+    def divide_materials(self, save_material=True, **kwargs):
+        mids = self._material_ids
+        mids_u = np.unique(mids)
+        if mids_u.size == 1:
+            return [self]
+        else:
+            meshes = []
+            uid0 = self.uid
+            uids = uid0 + 0.5 * (np.arange(mids_u.size) + 1)/(10**(np.ceil(np.log10(mids_u.size + 1))))
+            for mid, uid in zip(mids_u, uids):
+                mask = mids == mid
+                meshes.append(self.submesh(mask, save_material=save_material, uid=uid, **kwargs))
+            return meshes
+
+
     @classmethod
     def combine_mesh(cls, meshes, save_material=True, **kwargs):
         if len(meshes) == 1:
@@ -1202,6 +1217,16 @@ class Mesh:
             tid1 = np.array(lut[edges[:,1], edges[:,0]]).ravel() - 1
             tid = np.stack((tid, tid1), axis=-1)
         return tid
+
+
+    @property
+    def material_ids(self):
+        return self._material_ids
+
+
+    @property
+    def material_table(self):
+        return self._material_table.id_table
 
 
     def segments(self, tri_mask=None, **kwargs):
@@ -2413,6 +2438,7 @@ class MeshRenderer:
         self._region_tree = kwargs.get('region_tree', None)
         self._weight_params = kwargs.get('weight_params', MESH_TRIFINDER_WHATEVER)
         self.weight_generator = kwargs.get('weight_generator', [None for _ in range(n_region)])
+        self.weight_multiplier = kwargs.get('weight_multiplier', np.ones(n_region, dtype=np.float32))
         self._collision_region = kwargs.get('collision_region', None)
         self._image_loader = kwargs.get('image_loader', None)
         self.resolution = kwargs.get('resolution', DEFAULT_RESOLUTION)
@@ -2425,9 +2451,17 @@ class MeshRenderer:
         include_flipped = kwargs.get('include_flipped', False)
         weight_params = kwargs.pop('weight_params', MESH_TRIFINDER_INNERMOST)
         local_cache = kwargs.get('cache', False)
+        divide_material = kwargs.get('divide_material', False)
+        if divide_material and np.ptp(srcmesh.material_ids)>0:
+            submeshes = srcmesh.divide_materials(save_material=True)
+            srcmesh = Mesh.combine_mesh(submeshes, save_material=True)
+            material_table = srcmesh.material_table
+            render_weight_lut = {mid: m.render_weight for mid, m in material_table.items()}
+        else:
+            divide_material = False
         render_mask = srcmesh.triangle_mask_for_render()
         collisions = srcmesh.triangle_collisions(gear=gear[0], tri_mask=render_mask)
-        if (collisions.size == 0) or (len(mattri_list) <= 1):
+        if (collisions.size == 0):
             weight_params = MESH_TRIFINDER_WHATEVER
         else:
             render_mask_indx = np.nonzero(render_mask)[0]
@@ -2436,7 +2470,8 @@ class MeshRenderer:
             asymmetry = False
         else:
             asymmetry = True
-        tri_info = srcmesh.tri_info(gear=gear[0], tri_mask=render_mask, include_flipped=include_flipped, cache=local_cache, asymmetry=asymmetry)
+        tri_info = srcmesh.tri_info(gear=gear[0], tri_mask=render_mask, 
+            include_flipped=include_flipped, cache=local_cache, asymmetry=asymmetry)
         offset0 = srcmesh.offset(gear=gear[0])
         region_tree = tri_info['region_tree']
         mattri_list = tri_info['matplotlib_tri']
@@ -2446,11 +2481,17 @@ class MeshRenderer:
         interpolators = []
         weight_generator = []
         collision_region = []
+        weight_multiplier = []
         for mattri, tidx, vidx, region in zip(mattri_list, tidx_list, vidx_list, region_tree.geometries):
             v0 = vertices_img[vidx]
             xinterp = matplotlib.tri.LinearTriInterpolator(mattri, v0[:,0])
             yinterp = matplotlib.tri.LinearTriInterpolator(mattri, v0[:,1])
             interpolators.append((xinterp, yinterp))
+            if divide_material:
+                mid = srcmesh.material_ids[tidx[0]]
+                weight_multiplier.append(render_weight_lut[mid])
+            else:
+                weight_multiplier.append(1.0)
             if weight_params == MESH_TRIFINDER_WHATEVER:
                 weight_generator.append(None)
             else:
@@ -2478,9 +2519,10 @@ class MeshRenderer:
             collision_region = unary_union(collision_region)
         else:
             collision_region = None
-        resolution = srcmesh.resolution
-        return cls(interpolators, offset=offset0, region_tree=region_tree, weight_params=weight_params,
-            weight_generator=weight_generator, collision_region=collision_region, resolution=resolution,
+        return cls(interpolators, offset=offset0, region_tree=region_tree,
+            weight_params=weight_params, weight_generator=weight_generator,
+            weight_multiplier=weight_multiplier, 
+            collision_region=collision_region, resolution=resolution,
             **kwargs)
 
 
@@ -2625,7 +2667,7 @@ class MeshRenderer:
         x_field = np.nan_to_num(map_x.data, copy=False)
         y_field = np.nan_to_num(map_y.data, copy=False)
         weight = 1 - mask.astype(np.float32)
-        weight_generator = self.weight_generator[region_id]
+        weight_generator = self.weight_generator[region_id] * self.weight_multiplier[region_id]
         if compute_wt and (weight_generator is not None):
             if self._weight_params == MESH_TRIFINDER_INNERMOST:
                 wt = weight_generator(xx, yy)

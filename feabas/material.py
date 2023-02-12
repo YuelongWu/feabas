@@ -22,6 +22,8 @@ class Material:
             constraint would be this value multiplied by the size settings
             during meshing. If set to 0, no constraint applied.
         render(bool): whether to render.
+        render_weight(float): when mesh collides, materials with larger render
+            weight have higher priority when render.
         type(int): material type. Possible options include 0::engineering,
             1::St.Venant-Kirchhoff, 2::Neo-Hookean.
         stiffness_multiplier(float): constant multiplied to the stiffness
@@ -43,6 +45,7 @@ class Material:
         self.enable_mesh = kwargs.get('enable_mesh', True)
         self.area_constraint = kwargs.get('area_constraint', 1.0)
         self.render = kwargs.get('render', True)
+        self.render_weight = kwargs.get('render_weight', 1.0)
         self._type = kwargs.get('type', MATERIAL_MODEL_ENG)
         self._stiffness_multiplier = kwargs.get('stiffness_multiplier', 1.0)
         self._poisson_ratio = kwargs.get('poisson_ratio', 0.0)
@@ -63,6 +66,7 @@ class Material:
             'enable_mesh': self.enable_mesh,
             'area_constraint': self.area_constraint,
             'render': self.render,
+            'render_weight': self.render_weight,
             'type': self._type,
             'poisson_ratio': self._poisson_ratio,
             'uid': self.uid
@@ -263,7 +267,8 @@ MATERIAL_HOLE = Material(enable_mesh=False,
                          uid=0,
                          mask_label=None,
                          stiffness_multiplier=0.0,
-                         render=False)
+                         render=False,
+                         render_weight=1.0e-6)
 
 MATERIAL_DEFAULT = Material(enable_mesh=True,
                             area_constraint=1,
