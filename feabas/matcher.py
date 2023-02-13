@@ -1,6 +1,10 @@
 import cv2
+from concurrent.futures.process import ProcessPoolExecutor
+from concurrent.futures import as_completed
+from functools import partial
+from multiprocessing import get_context
 import numpy as np
-from scipy import fft, ndimage
+from scipy import fft
 from scipy.fftpack import next_fast_len
 
 from feabas.mesh import Mesh
@@ -297,8 +301,6 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
         strain: the largest strain of the mesh. 
     """
     num_workers = kwargs.get('num_workers', 1)
-    sigma = kwargs.get('sigma', 0.0)
-    conf_mode = kwargs.get('conf_mode', FFT_CONF_MIRROR)
     conf_thresh = kwargs.get('conf_thresh', 0.3)
     err_method = kwargs.get('err_method', 'huber')
     err_thresh = kwargs.get('err_thresh', 0)
@@ -306,12 +308,13 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
     distributor = kwargs.get('distributor', BLOCKDIST_CART_BBOX)
     min_num_blocks = kwargs.get('min_num_blocks', 2)
     shrink_factor = kwargs.get('shrink_factor', 1)
-    render_mode = kwargs.get('render_mode', RENDER_FULL)
     allow_dwell = kwargs.get('allow_dwell', 0)
     compute_strain = kwargs.get('compute_strain', True)
-    batch_size = kwargs.get('batch_size', None)
+    batch_size = kwargs.pop('batch_size', None)
     if num_workers > 1 and batch_size is not None:
-        batch_size = max(1, batch_size // num_workers)
+        batch_size = max(1, batch_size / num_workers)
+        loader_dict0 = image_loader0.init_dict()
+        loader_dict1 = image_loader1.init_dict()
     # if any spacing value smaller than 1, means they are relative to longer side
     spacings = np.array(spacings, copy=False)
     min_block_size_multiplier = 4
@@ -340,53 +343,56 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
         else:
             mnb = 1
         if distributor == BLOCKDIST_CART_BBOX:
-            block_indices0 = distributor_cartesian_bbox(mesh0, mesh1, sp,
-                min_num_blocks=mnb, shrink_factor=shrink_factor)
+            bboxes0 = distributor_cartesian_bbox(mesh0, mesh1, sp,
+                min_num_blocks=mnb, shrink_factor=shrink_factor, zorder=(num_workers>1))
         else:
             raise ValueError
-        if block_indices0 is None:
+        if bboxes0 is None:
             return invalid_output
-        num_blocks = block_indices0.shape[0]
-        if (batch_size is None) or batch_size >= num_blocks:
-            batched_block_indices = [block_indices0]
-        else:
+        num_blocks = bboxes0.shape[0]
+        if num_workers > 1:
+            if batch_size is None:
+                batch_size = max(1, num_blocks/num_workers)
+            else:
+                batch_size = min(max(1, num_blocks/num_workers), batch_size)
             num_batchs = int(np.ceil(num_blocks / batch_size))
-            batch_indices = np.linspace(0, num_blocks, num=num_batchs+1, endpoint=True)
-            batch_indices = np.unique(batch_indices.astype(np.int32))
-            batched_block_indices = []
-            for bidx0, bidx1 in zip(batch_indices[:-1], batch_indices[1:]):
-                batched_block_indices.append(block_indices0[bidx0:bidx1])
-        render0 = MeshRenderer.from_mesh(mesh0, image_loader=image_loader0)
-        render1 = MeshRenderer.from_mesh(mesh1, image_loader=image_loader1)
-        xy0 = []
-        xy1 = []
-        conf = []
-        for block_indices in batched_block_indices:
-            stack0 = []
-            stack1 = []
-            xy_ctr = []
-            for x0, y0, x1, y1 in block_indices:
-                img0 = render0.crop((x0, y0, x1, y1), mode=render_mode, log_sigma=sigma, remap_interp=cv2.INTER_LINEAR)
-                if img0 is None:
-                    continue
-                img1 = render1.crop((x0, y0, x1, y1), mode=render_mode, log_sigma=sigma, remap_interp=cv2.INTER_LINEAR)
-                if img1 is None:
-                    continue
-                stack0.append(img0)
-                stack1.append(img1)
-                xy_ctr.append(((x0+x1-1)/2, (y0+y1-1)/2))
-            dx, dy, conf_b = xcorr_fft(np.stack(stack0, axis=0), np.stack(stack1, axis=0),
-                conf_mode=conf_mode, pad=(not initialized))
-            xy_ctr = np.array(xy_ctr)
-            dxy = np.stack((dx, dy), axis=-1)
-            xy0_b = xy_ctr - dxy/2
-            xy1_b = xy_ctr + dxy/2
-            xy0.append(xy0_b)
-            xy1.append(xy1_b)
-            conf.append(conf_b)
-        xy0 = np.concatenate(xy0, axis=0)
-        xy1 = np.concatenate(xy1, axis=0)
-        conf = np.concatenate(conf, axis=0)
+            if len(num_batchs) == 1:
+                xy0, xy1, conf = bboxes_mesh_renderer_matcher(mesh0, mesh1,
+                    image_loader0, image_loader1, bboxes0,
+                    batch_size=batch_size, pad=(not initialized), **kwargs)
+            else:
+                batch_indices = np.linspace(0, num_blocks, num=num_batchs+1, endpoint=True)
+                batch_indices = np.unique(batch_indices.astype(np.int32))
+                batched_bboxes = []
+                batched_bboxes_union = []
+                for bidx0, bidx1 in zip(batch_indices[:-1], batch_indices[1:]):
+                    batched_bboxes.append(bboxes0[bidx0:bidx1])
+                    batched_bboxes_union.append(common.bbox_union(bboxes0[bidx0:bidx1]))
+                target_func = partial(bboxes_mesh_renderer_matcher, pad=(not initialized), **kwargs)
+                submeshes0 = mesh0.submeshes_from_bboxes(batched_bboxes_union)
+                submeshes1 = mesh1.submeshes_from_bboxes(batched_bboxes_union)
+                jobs = []
+                xy0 = []
+                xy1 = []
+                conf = []
+                with ProcessPoolExecutor(max_workers=num_workers, mp_context=get_context('spawn')) as executor:
+                    for m0_p, m1_p, bboxes_p in zip(submeshes0, submeshes1, batched_bboxes):
+                        m0dict = m0_p.get_init_dict(vertex_flags=(MESH_GEAR_INITIAL, MESH_GEAR_MOVING))
+                        m1dict = m1_p.get_init_dict(vertex_flags=(MESH_GEAR_INITIAL, MESH_GEAR_MOVING))
+                        job = executor.submit(target_func, m0dict, m1dict, loader_dict0, loader_dict1, bboxes_p)
+                        jobs.append(job)
+                    for job in as_completed(jobs):
+                        pt0, pt1, cnf = job.result()
+                        xy0.append(pt0)
+                        xy1.append(pt1)
+                        conf.append(cnf)
+                xy0 = np.concatenate(xy0, axis=0)
+                xy1 = np.concatenate(xy1, axis=0)
+                conf = np.concatenate(conf, axis=0)
+        else:
+            xy0, xy1, conf = bboxes_mesh_renderer_matcher(mesh0, mesh1,
+                image_loader0, image_loader1, bboxes0,
+                batch_size=batch_size, pad=(not initialized), **kwargs)
         if np.all(conf <= conf_thresh):
             if not initialized:
                 return invalid_output

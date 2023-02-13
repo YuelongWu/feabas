@@ -403,6 +403,13 @@ def bbox_intersections(bboxes0, bboxes1):
     return bbox_int, width
 
 
+def bbox_union(bboxes):
+    bboxes = bboxes.reshape(-1, 4)
+    xy_min = bboxes[:,:2].min(axis=0)
+    xy_max = bboxes[:,-2:].max(axis=0)
+    return np.concatenate((xy_min, xy_max), axis=None)
+
+
 def bbox_enlarge(bboxes, margin=0):
     return np.array(bboxes, copy=False) + np.array([-margin, -margin, margin, margin])
 

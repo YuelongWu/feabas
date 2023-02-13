@@ -1979,6 +1979,7 @@ class Mesh:
             yield (k, bbox, tids[k])
 
 
+    @config_cache('TBD')
     def triangles_rtree(self, gear=None, tri_mask=None):
         if gear is None:
             gear = self._current_gear
@@ -2115,14 +2116,14 @@ class Mesh:
         init_bboxes = np.concatenate((seg_bboxes, flip_bboxes), axis=0)
         if init_bboxes.size == 0:
             return np.empty((0,2), dtype=self.triangles.dtype)
-        rtree0 = self.triangles_rtree(gear=gear, tri_mask=tri_mask)
+        rtree0 = self.triangles_rtree(gear=gear, tri_mask=tri_mask, cache=False)
         candidate_tids = []
         for bbox in init_bboxes:
             bbox_t = (bbox[0]-self._epsilon, bbox[1]-self._epsilon, bbox[2]+self._epsilon, bbox[3]+self._epsilon)
             candidate_tids.extend(list(rtree0.intersection(bbox_t, objects=False)))
         candidate_tids = np.unique(candidate_tids)
         tri_mask_c = Mesh.masked_index_to_global_index(tri_mask, candidate_tids)
-        rtree_c = self.triangles_rtree(gear=gear, tri_mask=tri_mask_c)
+        rtree_c = self.triangles_rtree(gear=gear, tri_mask=tri_mask_c, cache=False)
         vertices = self.vertices(gear=gear)[self.triangles[tri_mask_c]]
         Ts = [shpgeo.Polygon(v) for v in vertices]
         collisions = []
