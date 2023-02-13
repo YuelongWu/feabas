@@ -2519,6 +2519,7 @@ class MeshRenderer:
             collision_region = unary_union(collision_region)
         else:
             collision_region = None
+        resolution = srcmesh.resolution
         return cls(interpolators, offset=offset0, region_tree=region_tree,
             weight_params=weight_params, weight_generator=weight_generator,
             weight_multiplier=weight_multiplier, 
