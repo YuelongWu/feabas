@@ -81,6 +81,30 @@ def _tile_divider_block(imght, imgwd, x0=0, y0=0, cache_block_size=0):
 
 ##------------------------------ image loaders -------------------------------##
 
+def get_loader_from_json(json_info):
+    if isinstance(json_info, str):
+        if json_info.endswith('.json'):
+            with open(json_info, 'r') as f:
+                json_obj = json.load(f)
+        else:
+            json_obj = json.loads(json_info)
+    elif isinstance(json_info, dict):
+        json_obj = json_info
+    else:
+        raise TypeError
+    loader_type = json_obj['ImageLoaderType']
+    if loader_type == 'DynamicImageLoader':
+        return DynamicImageLoader.from_json(json_obj)
+    elif loader_type == 'StaticImageLoader':
+        return StaticImageLoader.from_json(json_obj)
+    elif loader_type == 'MosaicLoader':
+        return MosaicLoader.from_json(json_obj)
+    elif loader_type == 'StreamLoader':
+        return StreamLoader.from_init_dict(json_obj)
+    else:
+        raise TypeError
+
+
 class AbstractImageLoader(ABC):
     """
     Abstract class for image loader.
@@ -144,9 +168,14 @@ class AbstractImageLoader(ABC):
             self._inverse = True
 
 
-    def save_to_json(self, jsonname, **kwargs):
+    def init_dict(self, **kwargs):
         out = {'ImageLoaderType': self.__class__.__name__}
         out.update(self._export_dict(**kwargs))
+        return out
+
+
+    def save_to_json(self, jsonname, **kwargs):
+        out = self.init_dict(**kwargs)
         with open(jsonname, 'w') as f:
             json.dump(out, f, indent=2)
 
@@ -282,8 +311,16 @@ class AbstractImageLoader(ABC):
 
     @staticmethod
     def _load_settings_from_json(jsonname):
-        with open(jsonname, 'r') as f:
-            json_obj = json.load(f)
+        if isinstance(jsonname, str):
+            if jsonname.endswith('.json'):
+                with open(jsonname, 'r') as f:
+                    json_obj = json.load(f)
+            else:
+                json_obj = json.loads(jsonname)
+        elif isinstance(jsonname, dict):
+            json_obj = jsonname
+        else:
+            raise TypeError
         settings = {}
         if 'resolution' in json_obj:
             settings['resolution'] = json_obj['resolution']
@@ -882,6 +919,12 @@ class StreamLoader(AbstractImageLoader):
         return cls(img, **kwargs)
 
 
+    @classmethod
+    def from_init_dict(cls, init_dict):
+        img = init_dict.pop('img')
+        return cls(img, **init_dict)
+
+
     def crop(self, bbox, return_empty=False, **kwargs):
         fillval = kwargs.get('fillval', self._default_fillval)
         bbox_img = self.bounds
@@ -928,8 +971,20 @@ class StreamLoader(AbstractImageLoader):
             gc.collect()
 
 
+    def init_dict(self, **kwargs):
+        return super().init_dict(**kwargs)
+
+
     def save_to_json(self, jsonname, **kwargs):
         raise NotImplementedError
+
+
+    def _export_dict(self):
+        out = super()._export_dict(output_controls=True, cache_settings=False)
+        out['img'] = self._img
+        out['x0'] = self.x0
+        out['y0'] = self.y0
+        return out
 
 
     def file_bboxes(self, margin=0):

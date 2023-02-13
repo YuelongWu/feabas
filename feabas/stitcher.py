@@ -1,7 +1,6 @@
 from collections import defaultdict, namedtuple
 from concurrent.futures.process import ProcessPoolExecutor
 from concurrent.futures import as_completed
-import cv2
 from functools import partial
 import gc
 import h5py
@@ -962,7 +961,7 @@ Mesh_Info = namedtuple('Mesh_Info', ['moving_vertices', 'moving_offsets', 'trian
 class MontageRenderer:
     """
     A class to render Montage with overlapping tiles.
-    Here I won't consider flipped triangle cases as in feabas.mesh.MeshRenderer,
+    Here I won't consider flipped triangle cases as in feabas.renderer.MeshRenderer,
     it would be too messed up for a stitching problem and need human intervention
     anyway.
     Args:

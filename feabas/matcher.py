@@ -3,7 +3,8 @@ import numpy as np
 from scipy import fft, ndimage
 from scipy.fftpack import next_fast_len
 
-from feabas.mesh import Mesh, MeshRenderer
+from feabas.mesh import Mesh
+from feabas.renderer import MeshRenderer
 from feabas import optimizer, dal, common, spatial
 from feabas.constant import *
 
@@ -295,6 +296,7 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
             transformations.
         strain: the largest strain of the mesh. 
     """
+    num_workers = kwargs.get('num_workers', 1)
     sigma = kwargs.get('sigma', 0.0)
     conf_mode = kwargs.get('conf_mode', FFT_CONF_MIRROR)
     conf_thresh = kwargs.get('conf_thresh', 0.3)
@@ -308,6 +310,8 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
     allow_dwell = kwargs.get('allow_dwell', 0)
     compute_strain = kwargs.get('compute_strain', True)
     batch_size = kwargs.get('batch_size', None)
+    if num_workers > 1 and batch_size is not None:
+        batch_size = max(1, batch_size // num_workers)
     # if any spacing value smaller than 1, means they are relative to longer side
     spacings = np.array(spacings, copy=False)
     min_block_size_multiplier = 4
@@ -342,10 +346,10 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
             raise ValueError
         if block_indices0 is None:
             return invalid_output
-        if batch_size is None:
+        num_blocks = block_indices0.shape[0]
+        if (batch_size is None) or batch_size >= num_blocks:
             batched_block_indices = [block_indices0]
         else:
-            num_blocks = block_indices0.shape[0]
             num_batchs = int(np.ceil(num_blocks / batch_size))
             batch_indices = np.linspace(0, num_blocks, num=num_batchs+1, endpoint=True)
             batch_indices = np.unique(batch_indices.astype(np.int32))
@@ -457,11 +461,74 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
     return weight, xy0, xy1, strain
 
 
+def bboxes_mesh_renderer_matcher(mesh0, mesh1, image_loader0, image_loader1, bboxes, **kwargs):
+    batch_size = kwargs.get('batch_size', None)
+    sigma = kwargs.get('sigma', 0.0)
+    render_mode = kwargs.get('render_mode', RENDER_FULL)
+    conf_mode = kwargs.get('conf_mode', FFT_CONF_MIRROR)
+    pad = kwargs.get('pad', True)
+    if isinstance(mesh0, dict):
+        mesh0 = Mesh(**mesh0)
+    elif isinstance(mesh0, str):
+        mesh0 = Mesh.from_h5(mesh0)
+    if isinstance(mesh1, dict):
+        mesh1 = Mesh(**mesh1)
+    elif isinstance(mesh1, str):
+        mesh1 = Mesh.from_h5(mesh1)
+    if isinstance(image_loader0, (str, dict)):
+        image_loader0 = dal.get_loader_from_json(image_loader0)
+    if isinstance(image_loader1, (str, dict)):
+        image_loader1 = dal.get_loader_from_json(image_loader1)
+    num_blocks = bboxes.shape[0]
+    if batch_size is None or batch_size >= num_blocks:
+        batched_block_indices = [bboxes]
+    else:
+        num_batchs = int(np.ceil(num_blocks / batch_size))
+        batch_indices = np.linspace(0, num_blocks, num=num_batchs+1, endpoint=True)
+        batch_indices = np.unique(batch_indices.astype(np.int32))
+        batched_block_indices = []
+        for bidx0, bidx1 in zip(batch_indices[:-1], batch_indices[1:]):
+            batched_block_indices.append(bboxes[bidx0:bidx1])
+    render0 = MeshRenderer.from_mesh(mesh0, image_loader=image_loader0)
+    render1 = MeshRenderer.from_mesh(mesh1, image_loader=image_loader1)
+    xy0 = []
+    xy1 = []
+    conf = []
+    for block_indices in batched_block_indices:
+        stack0 = []
+        stack1 = []
+        xy_ctr = []
+        for x0, y0, x1, y1 in block_indices:
+            img0 = render0.crop((x0, y0, x1, y1), mode=render_mode, log_sigma=sigma, remap_interp=cv2.INTER_LINEAR)
+            if img0 is None:
+                continue
+            img1 = render1.crop((x0, y0, x1, y1), mode=render_mode, log_sigma=sigma, remap_interp=cv2.INTER_LINEAR)
+            if img1 is None:
+                continue
+            stack0.append(img0)
+            stack1.append(img1)
+            xy_ctr.append(((x0+x1-1)/2, (y0+y1-1)/2))
+        dx, dy, conf_b = xcorr_fft(np.stack(stack0, axis=0), np.stack(stack1, axis=0),
+            conf_mode=conf_mode, pad=pad)
+        xy_ctr = np.array(xy_ctr)
+        dxy = np.stack((dx, dy), axis=-1)
+        xy0_b = xy_ctr - dxy/2
+        xy1_b = xy_ctr + dxy/2
+        xy0.append(xy0_b)
+        xy1.append(xy1_b)
+        conf.append(conf_b)
+    xy0 = np.concatenate(xy0, axis=0)
+    xy1 = np.concatenate(xy1, axis=0)
+    conf = np.concatenate(conf, axis=0)
+    return xy0, xy1, conf
+
+
 ## ----------------- matching block distributors --------------------------- ##
 def distributor_cartesian_bbox(mesh0, mesh1, spacing, **kwargs):
     gear = kwargs.get('gear', MESH_GEAR_MOVING)
     min_num_blocks = kwargs.get('min_num_blocks', 1)
     shrink_factor = kwargs.get('shrink_factor', 1)
+    zorder = kwargs.get('zorder', False)
     bbox0 = mesh0.bbox(gear=gear)
     bbox1 = mesh1.bbox(gear=gear)
     bbox, valid = common.intersect_bbox(bbox0, bbox1)
@@ -469,4 +536,9 @@ def distributor_cartesian_bbox(mesh0, mesh1, spacing, **kwargs):
         return None
     xstt, ystt, xend, yend = common.divide_bbox(bbox, block_size=spacing,
         min_num_blocks=min_num_blocks, shrink_factor=shrink_factor)
+    if zorder:
+        x_rnd = np.round((xstt - xstt.min()) / spacing)
+        y_rnd = np.round((ystt - ystt.min()) / spacing)
+        idx = common.z_order(np.stack((x_rnd, y_rnd), axis=-1))
+        xstt, ystt, xend, yend = xstt[idx], ystt[idx], xend[idx], yend[idx]
     return np.stack((xstt, ystt, xend, yend), axis=-1)

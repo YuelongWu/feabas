@@ -33,7 +33,7 @@ def match_one_section(coordname, outname, **kwargs):
 
 
 def match_main(coord_dir, out_dir, stt=0, step=1, stop=None, **conf):
-    if stop == -1:
+    if stop == 0:
         stop = None
     coord_list = sorted(glob.glob(os.path.join(coord_dir, '*.txt')))
     coord_list = coord_list[slice(stt, stop, step)]
@@ -103,7 +103,7 @@ def optimize_one_section(matchname, outname, **kwargs):
 
 def optmization_main(match_dir, out_dir, stt=0, step=1, stop=None, **conf):
     num_workers = conf.pop('num_workers', 1)
-    if stop == -1:
+    if stop == 0:
         stop = None
     match_list = sorted(glob.glob(os.path.join(match_dir, '*.h5')))
     match_list = match_list[slice(stt, stop, step)]
@@ -173,6 +173,8 @@ def render_one_section(tform_name, out_prefix, meta_name=None, **kwargs):
 
 def render_main(tform_dir, out_dir, meta_dir, stt=0, step=1, stop=None, **conf):
     tform_list = sorted(glob.glob(os.path.join(tform_dir, '*.h5')))
+    if stop == 0:
+        stop = None
     tform_list = tform_list[slice(stt, stop, step)]
     os.makedirs(meta_dir, exist_ok=True)
     os.makedirs(out_dir, exist_ok=True)
@@ -185,13 +187,14 @@ def render_main(tform_dir, out_dir, meta_dir, stt=0, step=1, stop=None, **conf):
         meta_name = os.path.join(meta_dir, sec_name+'.txt')
         num_rendered = render_one_section(tname, out_prefix, meta_name=meta_name, **conf)
         print(f'{sec_name}: {num_rendered} tiles | {(time.time()-t0)/60} min')
+    print('finished.')
 
 
 def parse_args(args=None):
     parser = argparse.ArgumentParser(description="Run stitching")
     parser.add_argument("--start", metavar="start", type=int, default=0)
     parser.add_argument("--step", metavar="step", type=int, default=1)
-    parser.add_argument("--stop", metavar="step", type=int, default=-1)
+    parser.add_argument("--stop", metavar="step", type=int, default=0)
     return parser.parse_args(args)
 
 

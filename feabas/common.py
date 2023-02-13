@@ -54,7 +54,7 @@ def z_order(indices, base=2):
         indices = np.floor(indices / base)
         pw += 1
     z_order_score = np.sum(indices_casted * (base ** np.arange(ndim)), axis=-1)
-    return np.argsort(z_order_score)
+    return np.argsort(z_order_score, kind='stable')
 
 
 def render_by_subregions(map_x, map_y, mask, img_loader, fileid=None,  **kwargs):
