@@ -10,11 +10,11 @@ from scipy.fftpack import next_fast_len
 from feabas.mesh import Mesh
 from feabas.renderer import MeshRenderer
 from feabas import optimizer, dal, common, spatial
-from feabas.constant import *
+import feabas.constant as const
 
 
 
-def xcorr_fft(img0, img1, conf_mode=FFT_CONF_MIRROR, **kwargs):
+def xcorr_fft(img0, img1, conf_mode=const.FFT_CONF_MIRROR, **kwargs):
     """
     find the displacements between two image(-stack)s from the Fourier based
     cross-correlation.
@@ -71,9 +71,9 @@ def xcorr_fft(img0, img1, conf_mode=FFT_CONF_MIRROR, **kwargs):
     dx = dx + (imgshp0[1] - imgshp1[1]) / 2
     dy = dy - np.round(dy / fftshp[0]) * fftshp[0]
     dx = dx - np.round(dx / fftshp[1]) * fftshp[1]
-    if conf_mode == FFT_CONF_NONE:
+    if conf_mode == const.FFT_CONF_NONE:
         conf = np.ones_like(dx, dtype=np.float32)
-    elif conf_mode == FFT_CONF_MIRROR:
+    elif conf_mode == const.FFT_CONF_MIRROR:
         C_mirror = np.abs(fft.irfft2(F0 * F1, s=fftshp))
         C_mirror = C_mirror.reshape(-1, np.prod(fftshp))
         if normalize:
@@ -86,7 +86,7 @@ def xcorr_fft(img0, img1, conf_mode=FFT_CONF_MIRROR, **kwargs):
         conf = np.zeros_like(dx, dtype=np.float32)
         conf[mx_rl>0] = 1 -  mx_mr[mx_rl>0]/mx_rl[mx_rl>0]
         conf = conf.clip(0, 1)
-    elif conf_mode == FFT_CONF_STD:
+    elif conf_mode == const.FFT_CONF_STD:
         C_std = C.std(axis=-1)
         C_max = C.max(axis=-1)
         # assuming exponential distribution
@@ -99,7 +99,7 @@ def global_translation_matcher(img0, img1, **kwargs):
     sigma = kwargs.get('sigma', 0.0)
     mask0 = kwargs.get('mask0', None)
     mask1 = kwargs.get('mask1', None)
-    conf_mode = kwargs.get('conf_mode', FFT_CONF_MIRROR)
+    conf_mode = kwargs.get('conf_mode', const.FFT_CONF_MIRROR)
     conf_thresh = kwargs.get('conf_thresh', 0.3)
     divide_factor = kwargs.get('divide_factor', 6)
     if sigma > 0:
@@ -156,7 +156,7 @@ def stitching_matcher(img0, img1, **kwargs):
     sigma = kwargs.get('sigma', 2.5)
     mask0 = kwargs.get('mask0', None)
     mask1 = kwargs.get('mask1', None)
-    conf_mode = kwargs.get('conf_mode', FFT_CONF_MIRROR)
+    conf_mode = kwargs.get('conf_mode', const.FFT_CONF_MIRROR)
     conf_thresh = kwargs.get('conf_thresh', 0.3)
     err_thresh = kwargs.get('err_thresh', 5)
     opt_tol = kwargs.get('opt_tol', None)
@@ -240,12 +240,12 @@ def stitching_matcher(img0, img1, **kwargs):
         mesh_size=min_spacing, min_num_blocks=min_num_blocks, uid=0)
     mesh1 = Mesh.from_bbox(img_loader1.bounds, cartesian=True,
         mesh_size=min_spacing, min_num_blocks=min_num_blocks, uid=1)
-    mesh0.apply_translation((tx0, ty0), MESH_GEAR_FIXED)
+    mesh0.apply_translation((tx0, ty0), const.MESH_GEAR_FIXED)
     mesh0.lock()
     weight, xy0, xy1, strain = iterative_xcorr_matcher_w_mesh(mesh0, mesh1, img_loader0, img_loader1,
         conf_mode=conf_mode, conf_thresh=conf_thresh, err_method='huber', 
         err_thresh=err_thresh, opt_tol=opt_tol, spacings=spacings,
-        distributor=BLOCKDIST_CART_BBOX, min_num_blocks=min_num_blocks)
+        distributor=const.BLOCKDIST_CART_BBOX, min_num_blocks=min_num_blocks)
     if (fine_downsample != 1) and (xy0 is not None):
         xy0 = spatial.scale_coordinates(xy0, 1/fine_downsample)
         xy1 = spatial.scale_coordinates(xy1, 1/fine_downsample)
@@ -305,7 +305,7 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
     err_method = kwargs.get('err_method', 'huber')
     err_thresh = kwargs.get('err_thresh', 0)
     opt_tol = kwargs.get('opt_tol', None)
-    distributor = kwargs.get('distributor', BLOCKDIST_CART_BBOX)
+    distributor = kwargs.get('distributor', const.BLOCKDIST_CART_BBOX)
     min_num_blocks = kwargs.get('min_num_blocks', 2)
     shrink_factor = kwargs.get('shrink_factor', 1)
     allow_dwell = kwargs.get('allow_dwell', 0)
@@ -321,8 +321,8 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
     strain = 0.0
     invalid_output = (0, None, None, strain)
     if np.any(spacings < 1):
-        bbox0 = mesh0.bbox(gear=MESH_GEAR_MOVING)
-        bbox1 = mesh1.bbox(gear=MESH_GEAR_MOVING)
+        bbox0 = mesh0.bbox(gear=const.MESH_GEAR_MOVING)
+        bbox1 = mesh1.bbox(gear=const.MESH_GEAR_MOVING)
         bbox, valid = common.intersect_bbox(bbox0, bbox1)
         if not valid:
             return invalid_output
@@ -342,7 +342,7 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
             mnb = min_num_blocks
         else:
             mnb = 1
-        if distributor == BLOCKDIST_CART_BBOX:
+        if distributor == const.BLOCKDIST_CART_BBOX:
             bboxes0 = distributor_cartesian_bbox(mesh0, mesh1, sp,
                 min_num_blocks=mnb, shrink_factor=shrink_factor, zorder=(num_workers>1))
         else:
@@ -377,8 +377,8 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
                 conf = []
                 with ProcessPoolExecutor(max_workers=num_workers, mp_context=get_context('spawn')) as executor:
                     for m0_p, m1_p, bboxes_p in zip(submeshes0, submeshes1, batched_bboxes):
-                        m0dict = m0_p.get_init_dict(vertex_flags=(MESH_GEAR_INITIAL, MESH_GEAR_MOVING))
-                        m1dict = m1_p.get_init_dict(vertex_flags=(MESH_GEAR_INITIAL, MESH_GEAR_MOVING))
+                        m0dict = m0_p.get_init_dict(vertex_flags=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING))
+                        m1dict = m1_p.get_init_dict(vertex_flags=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING))
                         job = executor.submit(target_func, m0dict, m1dict, loader_dict0, loader_dict1, bboxes_p)
                         jobs.append(job)
                     for job in as_completed(jobs):
@@ -423,7 +423,7 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
         else:
             dwelled += 1
         opt.add_link_from_coordinates(mesh0.uid, mesh1.uid, xy0, xy1,
-                        gear=(MESH_GEAR_MOVING, MESH_GEAR_MOVING), weight=wt,
+                        gear=(const.MESH_GEAR_MOVING, const.MESH_GEAR_MOVING), weight=wt,
                         check_duplicates=False)
         if max_dis > 0.1:
             opt.optimize_linear(tol=opt_tol_t, batch_num_matches=np.inf)
@@ -455,8 +455,8 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
     # plt.plot(link.xy0(gear=MESH_GEAR_MOVING, use_mask=True)[:,0] - bbox[0], link.xy0(gear=MESH_GEAR_MOVING,  use_mask=True)[:,1] - bbox[1], 'r.')
     # plt.plot(link.xy1(gear=MESH_GEAR_MOVING, use_mask=True)[:,0] - bbox[0], link.xy1(gear=MESH_GEAR_MOVING,  use_mask=True)[:,1] - bbox[1], 'g.')
     # plt.show()
-    xy0 = link.xy0(gear=MESH_GEAR_INITIAL, use_mask=True, combine=True)
-    xy1 = link.xy1(gear=MESH_GEAR_INITIAL, use_mask=True, combine=True)
+    xy0 = link.xy0(gear=const.MESH_GEAR_INITIAL, use_mask=True, combine=True)
+    xy1 = link.xy1(gear=const.MESH_GEAR_INITIAL, use_mask=True, combine=True)
     weight = link.weight(use_mask=True)
     if compute_strain:
         for m in opt.meshes:
@@ -470,8 +470,8 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
 def bboxes_mesh_renderer_matcher(mesh0, mesh1, image_loader0, image_loader1, bboxes, **kwargs):
     batch_size = kwargs.get('batch_size', None)
     sigma = kwargs.get('sigma', 0.0)
-    render_mode = kwargs.get('render_mode', RENDER_FULL)
-    conf_mode = kwargs.get('conf_mode', FFT_CONF_MIRROR)
+    render_mode = kwargs.get('render_mode', const.RENDER_FULL)
+    conf_mode = kwargs.get('conf_mode', const.FFT_CONF_MIRROR)
     pad = kwargs.get('pad', True)
     if isinstance(mesh0, dict):
         mesh0 = Mesh(**mesh0)
@@ -531,7 +531,7 @@ def bboxes_mesh_renderer_matcher(mesh0, mesh1, image_loader0, image_loader1, bbo
 
 ## ----------------- matching block distributors --------------------------- ##
 def distributor_cartesian_bbox(mesh0, mesh1, spacing, **kwargs):
-    gear = kwargs.get('gear', MESH_GEAR_MOVING)
+    gear = kwargs.get('gear', const.MESH_GEAR_MOVING)
     min_num_blocks = kwargs.get('min_num_blocks', 1)
     shrink_factor = kwargs.get('shrink_factor', 1)
     zorder = kwargs.get('zorder', False)

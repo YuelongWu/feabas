@@ -4,7 +4,7 @@ import numpy as np
 from scipy import sparse
 
 from feabas import spatial, common
-from feabas.constant import *
+import feabas.constant as const
 
 
 class Link:
@@ -35,7 +35,7 @@ class Link:
 
     @classmethod
     def from_coordinates(cls, mesh0, mesh1, xy0, xy1,
-                         gear=(MESH_GEAR_INITIAL, MESH_GEAR_INITIAL),
+                         gear=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_INITIAL),
                          weight=None,
                          **kwargs):
         tid0, B0 = mesh0.cart2bary(xy0, gear[0], tid=None, **kwargs)
@@ -91,8 +91,8 @@ class Link:
         """computing the contribution needed to add to the FEM assembled matrix."""
         if (not self.relevant) or (self.num_matches == 0) or ((index_offsets[0] < 0) and (index_offsets[1] < 0)):
             return None, None, None, None
-        start_gear = kwargs.get('start_gear', MESH_GEAR_MOVING)
-        targt_gear = kwargs.get('target_gear', MESH_GEAR_MOVING)
+        start_gear = kwargs.get('start_gear', const.MESH_GEAR_MOVING)
+        targt_gear = kwargs.get('target_gear', const.MESH_GEAR_MOVING)
         num_matches = self.num_matches
         gears = [targt_gear if m.locked else start_gear for m in self.meshes]
         m_rht = self.dxy(gear=gears, use_mask=True)
@@ -128,7 +128,7 @@ class Link:
         return V_lft, (indx0_lft, indx1_lft), V_rht, indx_rht
 
 
-    def adjust_weight_from_residue(self, gear=(MESH_GEAR_MOVING, MESH_GEAR_MOVING)):
+    def adjust_weight_from_residue(self, gear=(const.MESH_GEAR_MOVING, const.MESH_GEAR_MOVING)):
         """adjust residue_weight to define nonlinear behaviour of the link."""
         weight_modified = False
         connection_modified = False
@@ -179,7 +179,7 @@ class Link:
         self._mask = None
 
 
-    def xy0(self, gear=MESH_GEAR_MOVING, use_mask=True, combine=True):
+    def xy0(self, gear=const.MESH_GEAR_MOVING, use_mask=True, combine=True):
         tid = self.tid0(use_mask=use_mask)
         B = self.B0(use_mask=use_mask)
         xy = self.meshes[0].bary2cart(tid, B, gear, offsetting=False)
@@ -190,7 +190,7 @@ class Link:
             return xy, offset
 
 
-    def xy1(self, gear=MESH_GEAR_MOVING, use_mask=True, combine=True):
+    def xy1(self, gear=const.MESH_GEAR_MOVING, use_mask=True, combine=True):
         tid = self.tid1(use_mask=use_mask)
         B = self.B1(use_mask=use_mask)
         xy = self.meshes[1].bary2cart(tid, B, gear, offsetting=False)
@@ -201,7 +201,7 @@ class Link:
             return xy, offset
 
 
-    def dxy(self, gear=(MESH_GEAR_MOVING, MESH_GEAR_MOVING), use_mask=False):
+    def dxy(self, gear=(const.MESH_GEAR_MOVING, const.MESH_GEAR_MOVING), use_mask=False):
         if not hasattr(gear, '__len__'):
             gear = (gear, gear)
         xy0, offset0 = self.xy0(gear=gear[0], use_mask=use_mask, combine=False)
@@ -211,7 +211,7 @@ class Link:
         return dxy + dof
 
 
-    def singular_vals(self, gear=(MESH_GEAR_FIXED, MESH_GEAR_FIXED), use_mask=True):
+    def singular_vals(self, gear=(const.MESH_GEAR_FIXED, const.MESH_GEAR_FIXED), use_mask=True):
         if not hasattr(gear, '__len__'):
             gear = (gear, gear)
         xy0 = self.xy0(gear=gear[0], use_mask=use_mask, combine=False)[0]
@@ -403,7 +403,7 @@ class SLM:
                     are separated or combined mesh in the system.
 
         """
-        working_gear = kwargs.get('working_gear', MESH_GEAR_INITIAL)
+        working_gear = kwargs.get('working_gear', const.MESH_GEAR_INITIAL)
         submesh_exclusive = kwargs.get('submesh_exclusive', True)
         if link is None:
             return False
@@ -440,7 +440,7 @@ class SLM:
 
 
     def add_link_from_coordinates(self, uid0, uid1, xy0, xy1,
-                                  gear=(MESH_GEAR_INITIAL, MESH_GEAR_INITIAL),
+                                  gear=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_INITIAL),
                                   weight=None, submesh_exclusive=True,
                                   check_duplicates=True,
                                   **kwargs):
@@ -501,7 +501,7 @@ class SLM:
         else:
             modified = True
         new_links = []
-        working_gear = kwargs.get('working_gear', MESH_GEAR_INITIAL)
+        working_gear = kwargs.get('working_gear', const.MESH_GEAR_INITIAL)
         submesh_exclusive = kwargs.get('submesh_exclusive', True)
         for lnk, flag in zip(self.links, relevance):
             if flag == 1:
@@ -556,13 +556,13 @@ class SLM:
         return modified
 
 
-    def anneal(self, gear=(MESH_GEAR_MOVING, MESH_GEAR_FIXED), mode=ANNEAL_CONNECTED_RIGID):
+    def anneal(self, gear=(const.MESH_GEAR_MOVING, const.MESH_GEAR_FIXED), mode=const.ANNEAL_CONNECTED_RIGID):
         # need to manually reset the stiffness matrix if necessary
         for m in self.meshes:
             m.anneal(gear=gear, mode=mode)
 
 
-    def adjust_link_weight_by_residue(self, gear=(MESH_GEAR_MOVING, MESH_GEAR_MOVING)):
+    def adjust_link_weight_by_residue(self, gear=(const.MESH_GEAR_MOVING, const.MESH_GEAR_MOVING)):
         weight_modified = False
         connection_modified = False
         for lnk in self.links:
@@ -588,7 +588,7 @@ class SLM:
 
 
   ## ------------------------- equation components ------------------------- ##
-    def stiffness_matrix(self,  gear=(MESH_GEAR_FIXED, MESH_GEAR_MOVING),
+    def stiffness_matrix(self,  gear=(const.MESH_GEAR_FIXED, const.MESH_GEAR_MOVING),
                          force_update=False, to_cache=True, **kwargs):
         """
         system stiffness matrix and current stress.
@@ -633,8 +633,8 @@ class SLM:
                 needs more RAM but faster
         """
         if (self._crosslink_terms is None) or force_update:
-            start_gear = kwargs.get('start_gear', MESH_GEAR_MOVING)
-            targt_gear = kwargs.get('target_gear', MESH_GEAR_MOVING)
+            start_gear = kwargs.get('start_gear', const.MESH_GEAR_MOVING)
+            targt_gear = kwargs.get('target_gear', const.MESH_GEAR_MOVING)
             batch_num_matches = kwargs.get('batch_num_matches', None)
             if batch_num_matches is None:
                 batch_num_matches = self.num_matches / 10
@@ -704,8 +704,8 @@ class SLM:
         """
         maxiter = kwargs.get('maxiter', None)
         tol = kwargs.get('tol', 1e-07)
-        start_gear = kwargs.get('start_gear', MESH_GEAR_FIXED)
-        targt_gear = kwargs.get('target_gear', MESH_GEAR_FIXED)
+        start_gear = kwargs.get('start_gear', const.MESH_GEAR_FIXED)
+        targt_gear = kwargs.get('target_gear', const.MESH_GEAR_FIXED)
         locked_flag = self.lock_flags
         active_index = np.nonzero(~locked_flag)[0]
         links = self.relevant_links
@@ -776,8 +776,8 @@ class SLM:
             svd_clip (tuple): the limit on the svds of the affine transforms.
                 default to (1,1) as rigid.
         """
-        start_gear = kwargs.get('start_gear', MESH_GEAR_MOVING)
-        targt_gear = kwargs.get('target_gear', MESH_GEAR_MOVING)
+        start_gear = kwargs.get('start_gear', const.MESH_GEAR_MOVING)
+        targt_gear = kwargs.get('target_gear', const.MESH_GEAR_MOVING)
         svd_clip = kwargs.get('svd_clip', (1, 1))
         A = self.linkage_adjacency()
         to_optimize = ~self.lock_flags
@@ -857,8 +857,8 @@ class SLM:
         maxiter = kwargs.get('maxiter', None)
         tol = kwargs.get('tol', 1e-7)
         atol = kwargs.get('atol', None)
-        shape_gear = kwargs.get('shape_gear', MESH_GEAR_FIXED)
-        targt_gear = kwargs.get('target_gear', MESH_GEAR_MOVING)
+        shape_gear = kwargs.get('shape_gear', const.MESH_GEAR_FIXED)
+        targt_gear = kwargs.get('target_gear', const.MESH_GEAR_MOVING)
         start_gear = kwargs.get('start_gear', targt_gear)
         stiffness_lambda = kwargs.get('stiffness_lambda', self._stiffness_lambda)
         crosslink_lambda = kwargs.get('crosslink_lambda', self._crosslink_lambda)
@@ -984,12 +984,12 @@ class SLM:
         shrink_trial = kwargs.get('shrink_trial', 3)
         groupings = kwargs.get('groupings', None)
         batch_num_matches = kwargs.get('batch_num_matches', None)
-        shape_gear = MESH_GEAR_FIXED
-        start_gear = MESH_GEAR_MOVING
+        shape_gear = const.MESH_GEAR_FIXED
+        start_gear = const.MESH_GEAR_MOVING
         if cont_on_flip:
-            target_gear = MESH_GEAR_MOVING
+            target_gear = const.MESH_GEAR_MOVING
         else:
-            target_gear = MESH_GEAR_STAGING
+            target_gear = const.MESH_GEAR_STAGING
         # initialize cost and check flipped triangles
         check_flip = not cont_on_flip
         stiff_m, _ = self.stiffness_matrix(gear=(shape_gear,start_gear),
@@ -1047,7 +1047,7 @@ class SLM:
                 start_gear=target_gear, target_gear=target_gear,
                 batch_num_matches=batch_num_matches)
             if start_gear != target_gear:
-                self.anneal(gear=(target_gear, start_gear), mode=ANNEAL_COPY_EXACT)
+                self.anneal(gear=(target_gear, start_gear), mode=const.ANNEAL_COPY_EXACT)
             cost = min(cost, self.cost(stiffness_lambda[-1], crosslink_lambda[-1]))
             if (tol0 is not None) and (cost < tol0):
                 break
@@ -1182,7 +1182,7 @@ class SLM:
         return [lnk for lnk in self.links if (self.link_is_relevant(lnk) == 1)]
 
 
-    def match_residues(self, gear=MESH_GEAR_MOVING, use_mask=False, quantile=1):
+    def match_residues(self, gear=const.MESH_GEAR_MOVING, use_mask=False, quantile=1):
         dis = []
         for lnk in self.links:
             dxy = np.sum(lnk.dxy(gear=gear, use_mask=use_mask)**2, axis=-1)**0.5
@@ -1250,7 +1250,7 @@ class SLM:
 
     @staticmethod
     def distribute_link(mesh0_list, mesh1_list, link, exclusive=True,
-                        working_gear=MESH_GEAR_INITIAL, **kwargs):
+                        working_gear=const.MESH_GEAR_INITIAL, **kwargs):
         """ distribute a single links to accommodate separated meshes. """
         xy0 = link.xy0(gear=working_gear, use_mask=False, combine=True)
         xy1 = link.xy1(gear=working_gear, use_mask=False, combine=True)

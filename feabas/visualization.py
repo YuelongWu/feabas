@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 import matplotlib.tri
 import numpy as np
 import shapely.geometry as shpgeo
-from feabas.constant import *
+import feabas.constant as const
 
 def rgb2hex(r,g,b):
     r = min(max(r, 0), 255)
@@ -47,7 +47,7 @@ def dynamic_typing_decorator(func):
     return wrapped
 
 
-def plot_mesh(M, show_mat=False, show_conn=False, gear=MESH_GEAR_MOVING, show=False, colors=('b', 'k')):
+def plot_mesh(M, show_mat=False, show_conn=False, gear=const.MESH_GEAR_MOVING, show=False, colors=('b', 'k')):
     if isinstance(M, (list, tuple)):
         for m in M:
             plot_mesh(m, show_mat=show_mat, show_conn=show_conn, gear=gear, show=False)
@@ -96,9 +96,9 @@ def plot_montage(M, bbox_only=False):
         for idx in mindx:
             m = M.meshes[idx]
             if bbox_only:
-                tile = shpgeo.box(*m.bbox(gear=MESH_GEAR_MOVING, offsetting=True))
+                tile = shpgeo.box(*m.bbox(gear=const.MESH_GEAR_MOVING, offsetting=True))
             else:
-                tile = m.shapely_regions(gear=MESH_GEAR_MOVING)
+                tile = m.shapely_regions(gear=const.MESH_GEAR_MOVING)
             outlines.append(tile)
         plot_geometries(outlines, color=color)
 

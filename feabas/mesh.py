@@ -18,19 +18,19 @@ from shapely.ops import polygonize, unary_union
 import triangle
 
 from feabas import common, material, spatial
-from feabas.constant import *
+import feabas.constant as const
 
 
 def gear_constant_to_str(gear_const):
     if isinstance(gear_const, (tuple, list)):
         gear_str = '_'.join([gear_constant_to_str(s) for s in gear_const])
-    elif gear_const == MESH_GEAR_INITIAL:
+    elif gear_const == const.MESH_GEAR_INITIAL:
         gear_str = 'INITIAL'
-    elif gear_const == MESH_GEAR_FIXED:
+    elif gear_const == const.MESH_GEAR_FIXED:
         gear_str = 'FIXED'
-    elif gear_const == MESH_GEAR_MOVING:
+    elif gear_const == const.MESH_GEAR_MOVING:
         gear_str = 'MOVING'
-    elif gear_const == MESH_GEAR_STAGING:
+    elif gear_const == const.MESH_GEAR_STAGING:
         gear_str = 'STAGING'
     else:
         raise ValueError
@@ -41,13 +41,13 @@ def gear_str_to_constant(gear_str):
     if '_' in gear_str:
         gear_const = tuple(gear_str_to_constant(s) for s in gear_str.split('_'))
     elif gear_str.upper() == 'INITIAL':
-        gear_const = MESH_GEAR_INITIAL
+        gear_const = const.MESH_GEAR_INITIAL
     elif gear_str.upper() == 'FIXED':
-        gear_const = MESH_GEAR_FIXED
+        gear_const = const.MESH_GEAR_FIXED
     elif gear_str.upper() == 'MOVING':
-        gear_const = MESH_GEAR_MOVING
+        gear_const = const.MESH_GEAR_MOVING
     elif gear_str.upper() == 'STAGING':
-        gear_const = MESH_GEAR_STAGING
+        gear_const = const.MESH_GEAR_STAGING
     else:
         raise ValueError
     return gear_const
@@ -57,11 +57,11 @@ def config_cache(gear):
     """
     The decorator that determines the caching behaviour of the Mesh properties.
     gear: used to generate caching key. Possible values include:
-        MESH_GEAR_INITIAL: the property is only related to the initial vertice
+        const.MESH_GEAR_INITIAL: the property is only related to the initial vertice
             positions and their connection;
-        MESH_GEAR_FIXED: the property is also related to the position of fixed
+        const.MESH_GEAR_FIXED: the property is also related to the position of fixed
             vertice positions;
-        MESH_GEAR_MOVING: the property is also related to the position of moving
+        const.MESH_GEAR_MOVING: the property is also related to the position of moving
             vertice positions;
         'TBD': the vertices on which the property is caculated is determined on
             the fly. If 'gear' is provided in the keyward argument, use that;
@@ -226,16 +226,16 @@ class Mesh:
     def __init__(self, vertices, triangles, **kwargs):
         vertices = vertices.reshape(-1, 2)
         triangles = triangles.reshape(-1, 3)
-        self._vertices = {MESH_GEAR_INITIAL: vertices}
-        self._vertices[MESH_GEAR_FIXED] = kwargs.get('fixed_vertices', vertices)
-        self._vertices[MESH_GEAR_MOVING] = kwargs.get('moving_vertices', None)
-        self._vertices[MESH_GEAR_STAGING] = kwargs.get('staging_vertices', None)
+        self._vertices = {const.MESH_GEAR_INITIAL: vertices}
+        self._vertices[const.MESH_GEAR_FIXED] = kwargs.get('fixed_vertices', vertices)
+        self._vertices[const.MESH_GEAR_MOVING] = kwargs.get('moving_vertices', None)
+        self._vertices[const.MESH_GEAR_STAGING] = kwargs.get('staging_vertices', None)
         self._offsets = {}
-        self._offsets[MESH_GEAR_INITIAL] = kwargs.get('initial_offset', np.zeros((1,2), dtype=np.float64))
-        self._offsets[MESH_GEAR_FIXED] = kwargs.get('fixed_offset', np.zeros((1,2), dtype=np.float64))
-        self._offsets[MESH_GEAR_MOVING] = kwargs.get('moving_offset', np.zeros((1,2), dtype=np.float64))
-        self._offsets[MESH_GEAR_STAGING] = kwargs.get('staging_offset', np.zeros((1,2), dtype=np.float64))
-        self._current_gear = MESH_GEAR_FIXED
+        self._offsets[const.MESH_GEAR_INITIAL] = kwargs.get('initial_offset', np.zeros((1,2), dtype=np.float64))
+        self._offsets[const.MESH_GEAR_FIXED] = kwargs.get('fixed_offset', np.zeros((1,2), dtype=np.float64))
+        self._offsets[const.MESH_GEAR_MOVING] = kwargs.get('moving_offset', np.zeros((1,2), dtype=np.float64))
+        self._offsets[const.MESH_GEAR_STAGING] = kwargs.get('staging_offset', np.zeros((1,2), dtype=np.float64))
+        self._current_gear = const.MESH_GEAR_FIXED
         tri_num = triangles.shape[0]
         mtb = kwargs.get('material_table', None)
         self.set_material_table(mtb)
@@ -253,18 +253,18 @@ class Mesh:
                 self._stiffness_multiplier = self._stiffness_multiplier[indx]
         self.triangles = triangles
         self._material_ids = material_ids
-        self._resolution = kwargs.get('resolution', DEFAULT_RESOLUTION)
-        self._epsilon = kwargs.get('epsilon', EPSILON0)
+        self._resolution = kwargs.get('resolution', const.DEFAULT_RESOLUTION)
+        self._epsilon = kwargs.get('epsilon', const.EPSILON0)
         self._name = kwargs.get('name', '')
         self.token = kwargs.get('token', None)
         self._default_cache = kwargs.get('cache', defaultdict(lambda: True))
         if self.token is None:
             self._hash_token()
-        self._caching_keys_dict = {g: None for g in MESH_GEARS}
-        self._caching_keys_dict[MESH_GEAR_INITIAL] = self.token
+        self._caching_keys_dict = {g: None for g in const.MESH_GEARS}
+        self._caching_keys_dict[const.MESH_GEAR_INITIAL] = self.token
         # store the last caching keys for cleaning up
-        self._latest_expired_caching_keys_dict = {g: None for g in MESH_GEARS}
-        self._update_caching_keys(gear=MESH_GEAR_FIXED)
+        self._latest_expired_caching_keys_dict = {g: None for g in const.MESH_GEARS}
+        self._update_caching_keys(gear=const.MESH_GEAR_FIXED)
         # used for optimizer
         self.locked = kwargs.get('locked', False) # whether to allow modification
         # make mesh softer during stiffness matrix assembly
@@ -293,8 +293,8 @@ class Mesh:
                 meshing performance, default to 0.
         """
         material_table = kwargs.get('material_table', material.MaterialTable())
-        resolution = kwargs.get('resolution', DEFAULT_RESOLUTION)
-        mesh_size = kwargs.get('mesh_size', (400*DEFAULT_RESOLUTION/resolution))
+        resolution = kwargs.get('resolution', const.DEFAULT_RESOLUTION)
+        mesh_size = kwargs.get('mesh_size', (400*const.DEFAULT_RESOLUTION/resolution))
         min_angle = kwargs.get('min_mesh_angle', 0)
         mesh_area = mesh_size ** 2
         regions = []
@@ -370,8 +370,8 @@ class Mesh:
         initialize an equilateral mesh that covers the (Multi)Polygon region
         defined by mask.
         """
-        resolution = kwargs.get('resolution', DEFAULT_RESOLUTION)
-        mesh_size = kwargs.get('mesh_size', (400*DEFAULT_RESOLUTION/resolution))
+        resolution = kwargs.get('resolution', const.DEFAULT_RESOLUTION)
+        mesh_size = kwargs.get('mesh_size', (400*const.DEFAULT_RESOLUTION/resolution))
         vertices = spatial.generate_equilat_grid_mask(mask, mesh_size)
         triangles = triangle.delaunay(vertices)
         edges = Mesh.triangle2edge(triangles, directional=True)
@@ -387,8 +387,8 @@ class Mesh:
         # [xmin, ymin, xmax, ymax]
         if cartesian:
             # return a mesh from cartetian grids
-            resolution = kwargs.get('resolution', DEFAULT_RESOLUTION)
-            mesh_size = kwargs.get('mesh_size', (100*DEFAULT_RESOLUTION/resolution)) # tentative block size
+            resolution = kwargs.get('resolution', const.DEFAULT_RESOLUTION)
+            mesh_size = kwargs.get('mesh_size', (100*const.DEFAULT_RESOLUTION/resolution)) # tentative block size
             max_aspect_ratio = kwargs.get('max_aspect_ratio', 2) # the maximum aspect ratio of each block
             min_num_blocks = kwargs.get('min_num_blocks', 1) # minimum number of blocks on each side
             xmin, ymin, xmax, ymax = bbox
@@ -431,8 +431,8 @@ class Mesh:
                 multiples of the mesh size. Otherwise, adjust the mesh size
             mesh_growth: increase of the mesh size in the interior region.
         """
-        resolution = kwargs.get('resolution', DEFAULT_RESOLUTION)
-        mesh_size = kwargs.get('mesh_size', (400*DEFAULT_RESOLUTION/resolution))
+        resolution = kwargs.get('resolution', const.DEFAULT_RESOLUTION)
+        mesh_size = kwargs.get('mesh_size', (400*const.DEFAULT_RESOLUTION/resolution))
         tan_theta = np.tan(55*np.pi/180) / 2
         xmin, ymin, xmax, ymax = bbox
         ht = ymax - ymin
@@ -519,27 +519,27 @@ class Mesh:
         return cls.from_PSLG(vertices, segments, **kwargs)
 
 
-    def get_init_dict(self, save_material=True, vertex_flags=MESH_GEARS, **kwargs):
+    def get_init_dict(self, save_material=True, vertex_flags=const.MESH_GEARS, **kwargs):
         """
         dictionary that can be used for initialization of a duplicate.
         """
         init_dict = {}
-        init_dict['vertices'] = self._vertices[MESH_GEAR_INITIAL]
-        if (MESH_GEAR_FIXED in vertex_flags) and (self._vertices[MESH_GEAR_FIXED] is not self._vertices[MESH_GEAR_INITIAL]):
-            init_dict['fixed_vertices'] = self._vertices[MESH_GEAR_FIXED]
+        init_dict['vertices'] = self._vertices[const.MESH_GEAR_INITIAL]
+        if (const.MESH_GEAR_FIXED in vertex_flags) and (self._vertices[const.MESH_GEAR_FIXED] is not self._vertices[const.MESH_GEAR_INITIAL]):
+            init_dict['fixed_vertices'] = self._vertices[const.MESH_GEAR_FIXED]
         init_dict['triangles'] = self.triangles
-        if (MESH_GEAR_MOVING in vertex_flags) and (self._vertices[MESH_GEAR_MOVING] is not None):
-            init_dict['moving_vertices'] = self._vertices[MESH_GEAR_MOVING]
-        if (MESH_GEAR_STAGING in vertex_flags) and (self._vertices[MESH_GEAR_STAGING] is not None):
-            init_dict['staging_vertices'] = self._vertices[MESH_GEAR_STAGING]
-        if np.any(self._offsets[MESH_GEAR_INITIAL]):
-            init_dict['initial_offset'] = self._offsets[MESH_GEAR_INITIAL]
-        if (MESH_GEAR_FIXED in vertex_flags) and np.any(self._offsets[MESH_GEAR_FIXED]):
-            init_dict['fixed_offset'] = self._offsets[MESH_GEAR_FIXED]
-        if (MESH_GEAR_MOVING in vertex_flags) and np.any(self._offsets[MESH_GEAR_MOVING]):
-            init_dict['moving_offset'] = self._offsets[MESH_GEAR_MOVING]
-        if (MESH_GEAR_STAGING in vertex_flags) and np.any(self._offsets[MESH_GEAR_STAGING]):
-            init_dict['staging_offset'] = self._offsets[MESH_GEAR_STAGING]
+        if (const.MESH_GEAR_MOVING in vertex_flags) and (self._vertices[const.MESH_GEAR_MOVING] is not None):
+            init_dict['moving_vertices'] = self._vertices[const.MESH_GEAR_MOVING]
+        if (const.MESH_GEAR_STAGING in vertex_flags) and (self._vertices[const.MESH_GEAR_STAGING] is not None):
+            init_dict['staging_vertices'] = self._vertices[const.MESH_GEAR_STAGING]
+        if np.any(self._offsets[const.MESH_GEAR_INITIAL]):
+            init_dict['initial_offset'] = self._offsets[const.MESH_GEAR_INITIAL]
+        if (const.MESH_GEAR_FIXED in vertex_flags) and np.any(self._offsets[const.MESH_GEAR_FIXED]):
+            init_dict['fixed_offset'] = self._offsets[const.MESH_GEAR_FIXED]
+        if (const.MESH_GEAR_MOVING in vertex_flags) and np.any(self._offsets[const.MESH_GEAR_MOVING]):
+            init_dict['moving_offset'] = self._offsets[const.MESH_GEAR_MOVING]
+        if (const.MESH_GEAR_STAGING in vertex_flags) and np.any(self._offsets[const.MESH_GEAR_STAGING]):
+            init_dict['staging_offset'] = self._offsets[const.MESH_GEAR_STAGING]
         if self._stiffness_multiplier is not None:
             init_dict['stiffness_multiplier'] = self._stiffness_multiplier
         if save_material:
@@ -601,7 +601,7 @@ class Mesh:
         return self.__class__(**init_dict)
 
 
-    def submeshes_from_bboxes(self, bboxes, gear=MESH_GEAR_MOVING, save_material=True, append_name=False, **kwargs):
+    def submeshes_from_bboxes(self, bboxes, gear=const.MESH_GEAR_MOVING, save_material=True, append_name=False, **kwargs):
         """
         generate multiple submeshes at the same time to save triangles_rtree overhead.
         """
@@ -652,19 +652,19 @@ class Mesh:
             return meshes[0]
         init_dict = {}
         resolution0 = meshes[0].resolution
-        offsets0 = {g: meshes[0].offset(gear=g) for g in MESH_GEARS}
+        offsets0 = {g: meshes[0].offset(gear=g) for g in const.MESH_GEARS}
         epsilon0 = meshes[0]._epsilon
         if save_material:
             material_table0 = meshes[0]._material_table.copy()
             material_ids = []
-        vertices = {g: [] for g in MESH_GEARS}
-        vertices_initialized = {g: False for g in MESH_GEARS}
+        vertices = {g: [] for g in const.MESH_GEARS}
+        vertices_initialized = {g: False for g in const.MESH_GEARS}
         triangles = []
         stiffness = []
         num_vertices = 0
         for m in meshes:
             m.change_resolution(resolution0)
-            for g in MESH_GEARS:
+            for g in const.MESH_GEARS:
                 v = m.vertices(gear=g) + (m.offset(gear=g) - offsets0[g])
                 vertices[g].append(v)
                 vertices_initialized[g] |= m.vertices_initialized(gear=g)
@@ -675,22 +675,22 @@ class Mesh:
             if save_material:
                 material_table0.combine_material_table(m._material_table)
                 material_ids.append(m._material_ids)
-        init_dict['vertices'] = np.concatenate(vertices[MESH_GEAR_INITIAL], axis=0)
+        init_dict['vertices'] = np.concatenate(vertices[const.MESH_GEAR_INITIAL], axis=0)
         init_dict['triangles'] = np.concatenate(triangles, axis=0)
-        if vertices_initialized[MESH_GEAR_FIXED]:
-            init_dict['fixed_vertices'] = np.concatenate(vertices[MESH_GEAR_FIXED], axis=0)
-        if vertices_initialized[MESH_GEAR_MOVING]:
-            init_dict['moving_vertices'] = np.concatenate(vertices[MESH_GEAR_MOVING], axis=0)
-        if vertices_initialized[MESH_GEAR_STAGING]:
-            init_dict['staging_vertices'] = np.concatenate(vertices[MESH_GEAR_STAGING], axis=0)
-        if np.any(offsets0[MESH_GEAR_INITIAL]):
-            init_dict['initial_offset'] = offsets0[MESH_GEAR_INITIAL]
-        if np.any(offsets0[MESH_GEAR_FIXED]):
-            init_dict['fixed_offset'] = offsets0[MESH_GEAR_FIXED]
-        if np.any(offsets0[MESH_GEAR_MOVING]):
-            init_dict['moving_offset'] = offsets0[MESH_GEAR_MOVING]
-        if np.any(offsets0[MESH_GEAR_STAGING]):
-            init_dict['staging_offset'] = offsets0[MESH_GEAR_STAGING]
+        if vertices_initialized[const.MESH_GEAR_FIXED]:
+            init_dict['fixed_vertices'] = np.concatenate(vertices[const.MESH_GEAR_FIXED], axis=0)
+        if vertices_initialized[const.MESH_GEAR_MOVING]:
+            init_dict['moving_vertices'] = np.concatenate(vertices[const.MESH_GEAR_MOVING], axis=0)
+        if vertices_initialized[const.MESH_GEAR_STAGING]:
+            init_dict['staging_vertices'] = np.concatenate(vertices[const.MESH_GEAR_STAGING], axis=0)
+        if np.any(offsets0[const.MESH_GEAR_INITIAL]):
+            init_dict['initial_offset'] = offsets0[const.MESH_GEAR_INITIAL]
+        if np.any(offsets0[const.MESH_GEAR_FIXED]):
+            init_dict['fixed_offset'] = offsets0[const.MESH_GEAR_FIXED]
+        if np.any(offsets0[const.MESH_GEAR_MOVING]):
+            init_dict['moving_offset'] = offsets0[const.MESH_GEAR_MOVING]
+        if np.any(offsets0[const.MESH_GEAR_STAGING]):
+            init_dict['staging_offset'] = offsets0[const.MESH_GEAR_STAGING]
         stiffness_multiplier = np.concatenate(stiffness, axis=None)
         if np.ptp(stiffness_multiplier) > 0:
             init_dict['stiffness_multiplier'] = stiffness_multiplier
@@ -735,7 +735,7 @@ class Mesh:
         return cls(**init_dict)
 
 
-    def save_to_h5(self, fname, vertex_flags=(MESH_GEAR_INITIAL, MESH_GEAR_MOVING),
+    def save_to_h5(self, fname, vertex_flags=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING),
                    override_dict=None, **kwargs):
         if override_dict is None:
             override_dict = {}
@@ -802,7 +802,7 @@ class Mesh:
                 self._stiffness_multiplier = self._stiffness_multiplier[tidx]
             if isinstance(self._material_ids, np.ndarray):
                 self._material_ids = self._material_ids[tidx]
-            self._vertices_changed(gear=MESH_GEAR_INITIAL)
+            self._vertices_changed(gear=const.MESH_GEAR_INITIAL)
 
 
     def delete_orphaned_vertices(self):
@@ -816,7 +816,7 @@ class Mesh:
         if resolution == self._resolution:
             return
         scale = self._resolution / resolution
-        for gear in MESH_GEARS:
+        for gear in const.MESH_GEARS:
             if self._vertices[gear] is not None:
                 self.set_vertices(spatial.scale_coordinates(self.vertices(gear=gear), scale), gear=gear)
                 self._offsets[gear] = scale * self._offsets[gear]
@@ -862,10 +862,10 @@ class Mesh:
             stiffness0 = self.stiffness_multiplier.copy()
             stiffness0[tri_mask] = stiffness
             self._stiffness_multiplier = stiffness0
-        self._update_caching_keys(gear=MESH_GEAR_INITIAL)
+        self._update_caching_keys(gear=const.MESH_GEAR_INITIAL)
 
 
-    def set_stiffness_multiplier_from_image(self, img, gear=MESH_GEAR_INITIAL, scale=1.0, tri_mask=None, composite=False):
+    def set_stiffness_multiplier_from_image(self, img, gear=const.MESH_GEAR_INITIAL, scale=1.0, tri_mask=None, composite=False):
         if isinstance(img, str):
             img = common.imread(img, flag=cv2.IMREAD_GRAYSCALE)
         pts = self.triangle_centers(gear=gear, tri_mask=tri_mask) + self.offset(gear=gear)
@@ -890,8 +890,8 @@ class Mesh:
         """
         if xinterp is None and yinterp is None:
             return
-        pts = self.triangle_centers(gear=MESH_GEAR_INITIAL, tri_mask=tri_mask)
-        bbox = self.bbox(gear=MESH_GEAR_INITIAL, offsetting=False)
+        pts = self.triangle_centers(gear=const.MESH_GEAR_INITIAL, tri_mask=tri_mask)
+        bbox = self.bbox(gear=const.MESH_GEAR_INITIAL, offsetting=False)
         pts = (pts - bbox[:2]) / (bbox[-2:] - bbox[:2])
         stiffness = np.ones(pts.shape[0], dtype=np.float32)
         if callable(xinterp):
@@ -930,13 +930,13 @@ class Mesh:
     def __getitem__(self, gear):
         if isinstance(gear, str):
             if gear.lower() in ('m', 'moving'):
-                gear = MESH_GEAR_MOVING
+                gear = const.MESH_GEAR_MOVING
             elif gear.lower() in ('f', 'fixed'):
-                gear = MESH_GEAR_FIXED
+                gear = const.MESH_GEAR_FIXED
             elif gear.lower() in ('i', 'initial'):
-                gear = MESH_GEAR_INITIAL
+                gear = const.MESH_GEAR_INITIAL
             elif gear.lower() in ('s', 'staging'):
-                gear = MESH_GEAR_STAGING
+                gear = const.MESH_GEAR_STAGING
             else:
                 raise KeyError
         self.switch_gear(gear)
@@ -946,13 +946,13 @@ class Mesh:
     def vertices(self, gear=None):
         if gear is None:
             gear = self._current_gear
-        if gear == MESH_GEAR_INITIAL:
+        if gear == const.MESH_GEAR_INITIAL:
             return self.initial_vertices
-        elif gear == MESH_GEAR_FIXED:
+        elif gear == const.MESH_GEAR_FIXED:
             return self.fixed_vertices
-        elif gear == MESH_GEAR_MOVING:
+        elif gear == const.MESH_GEAR_MOVING:
             return self.moving_vertices
-        elif gear == MESH_GEAR_STAGING:
+        elif gear == const.MESH_GEAR_STAGING:
             return self.staging_vertices
         else:
             raise ValueError
@@ -968,17 +968,17 @@ class Mesh:
         if gear is None:
             gear = self._current_gear
         if self._vertices[gear] is None:
-            if gear == MESH_GEAR_MOVING:
-                return self._offsets[MESH_GEAR_FIXED]
+            if gear == const.MESH_GEAR_MOVING:
+                return self._offsets[const.MESH_GEAR_FIXED]
             else:
-                return self.offset(gear=MESH_GEAR_MOVING)
+                return self.offset(gear=const.MESH_GEAR_MOVING)
         else:
             return self._offsets[gear]
 
 
     def center_meshes_w_offsets(self, gear=None):
         if gear is None:
-            for g in MESH_GEARS:
+            for g in const.MESH_GEARS:
                 self.center_meshes_w_offsets(gear=g)
         else:
             v = self._vertices[gear]
@@ -996,55 +996,55 @@ class Mesh:
 
     @property
     def initial_vertices(self):
-        return self._vertices[MESH_GEAR_INITIAL]
+        return self._vertices[const.MESH_GEAR_INITIAL]
 
 
     @property
     def fixed_vertices(self):
-        return self._vertices[MESH_GEAR_FIXED]
+        return self._vertices[const.MESH_GEAR_FIXED]
 
 
     @property
     def fixed_vertices_w_offset(self):
-        return self.fixed_vertices + self.offset(gear=MESH_GEAR_FIXED)
+        return self.fixed_vertices + self.offset(gear=const.MESH_GEAR_FIXED)
 
 
     @property
     def moving_vertices(self):
-        if self._vertices[MESH_GEAR_MOVING] is None:
+        if self._vertices[const.MESH_GEAR_MOVING] is None:
             return self.fixed_vertices
         else:
-            return self._vertices[MESH_GEAR_MOVING]
+            return self._vertices[const.MESH_GEAR_MOVING]
 
 
     @property
     def moving_vertices_w_offset(self):
-        return self.moving_vertices + self.offset(gear=MESH_GEAR_MOVING)
+        return self.moving_vertices + self.offset(gear=const.MESH_GEAR_MOVING)
 
 
     @property
     def staging_vertices(self):
-        if self._vertices[MESH_GEAR_STAGING] is None:
+        if self._vertices[const.MESH_GEAR_STAGING] is None:
             return self.moving_vertices
         else:
-            return self._vertices[MESH_GEAR_STAGING]
+            return self._vertices[const.MESH_GEAR_STAGING]
 
 
     @property
     def staging_vertices_w_offset(self):
-        return self.staging_vertices + self.offset(gear=MESH_GEAR_STAGING)
+        return self.staging_vertices + self.offset(gear=const.MESH_GEAR_STAGING)
 
 
   ## -------------------------------- caching ------------------------------ ##
     def _hash_token(self):
-        var0 = common.hash_numpy_array(self._vertices[MESH_GEAR_INITIAL])
+        var0 = common.hash_numpy_array(self._vertices[const.MESH_GEAR_INITIAL])
         var1 = common.hash_numpy_array(self.triangles)
         var2 = common.hash_numpy_array(self._material_ids)
         var3 = common.hash_numpy_array(self._stiffness_multiplier)
         self.token = hash((var0, var1, var2, var3, self._resolution))
 
 
-    def _update_caching_keys(self, gear=MESH_GEAR_INITIAL):
+    def _update_caching_keys(self, gear=const.MESH_GEAR_INITIAL):
         """
         used to update caching keys when changes are made to the Mesh.
         also keep a copy of old (gear, hash) pairs in case old caches need to be
@@ -1053,7 +1053,7 @@ class Mesh:
         are not related to translation. Special care needs to be taken if
         the absolute position of the Mesh is relevant.
         """
-        if gear == MESH_GEAR_INITIAL:
+        if gear == const.MESH_GEAR_INITIAL:
             self._hash_token()
             key = self.token
         else:
@@ -1064,7 +1064,7 @@ class Mesh:
             self._caching_keys_dict[gear] = key
 
 
-    def caching_keys(self, gear=MESH_GEAR_INITIAL, current_mesh=True):
+    def caching_keys(self, gear=const.MESH_GEAR_INITIAL, current_mesh=True):
         """
         hashing of the Mesh object served as the keys for caching. the key has
         the following format:
@@ -1074,7 +1074,7 @@ class Mesh:
             ones.
         """
         if gear is None:
-            gear = MESH_GEAR_INITIAL
+            gear = const.MESH_GEAR_INITIAL
         if isinstance(gear, str):
             gear = gear_str_to_constant(gear)
         if not isinstance(gear, tuple):
@@ -1082,7 +1082,7 @@ class Mesh:
         mesh_version = []
         gear_name = []
         for g in gear:
-            if g != MESH_GEAR_INITIAL:
+            if g != const.MESH_GEAR_INITIAL:
                 if current_mesh:
                     hashval = self._caching_keys_dict[g]
                 else:
@@ -1094,7 +1094,7 @@ class Mesh:
 
     def clear_cached_attr(self, gear=None, instant_gc=False):
         prefix = '_cached_'
-        if (gear is None) or (gear == MESH_GEAR_INITIAL):
+        if (gear is None) or (gear == const.MESH_GEAR_INITIAL):
             suffix = ''
         else:
             suffix = gear_constant_to_str(gear)
@@ -1134,7 +1134,7 @@ class Mesh:
             return
         if cache is None:
             if gear is None:
-                gear = MESH_GEARS
+                gear = const.MESH_GEARS
             elif isinstance(gear, int):
                 gear = (gear, )
             elif isinstance(gear, str):
@@ -1175,7 +1175,7 @@ class Mesh:
     def _vertices_changed(self, gear):
         self._update_caching_keys(gear=gear)
         self.clear_cached_attr(gear=gear)
-        for g in MESH_GEARS:
+        for g in const.MESH_GEARS:
             if (g > gear) and (self._vertices[g] is None):
                 self._vertices_changed(gear=g)
 
@@ -1199,7 +1199,7 @@ class Mesh:
         return self.triangles.shape[0]
 
 
-    @config_cache(MESH_GEAR_INITIAL)
+    @config_cache(const.MESH_GEAR_INITIAL)
     def edges(self, tri_mask=None):
         """edge indices of the triangulation mesh."""
         if Mesh._masked_all(tri_mask):
@@ -1210,7 +1210,7 @@ class Mesh:
         return edges
 
 
-    @config_cache(MESH_GEAR_INITIAL)
+    @config_cache(const.MESH_GEAR_INITIAL)
     def _edge_to_tid_lut(self):
         """edge to triangle id look-up table."""
         edges = Mesh.triangle2edge(self.triangles, directional=True)
@@ -1261,7 +1261,7 @@ class Mesh:
         return self._resolution
 
 
-    @config_cache(MESH_GEAR_INITIAL)
+    @config_cache(const.MESH_GEAR_INITIAL)
     def segments_w_triangle_ids(self, tri_mask=None):
         """edge indices for edges on the borders, also return the triangle ids"""
         if Mesh._masked_all(tri_mask):
@@ -1275,7 +1275,7 @@ class Mesh:
         return edges[indx], tid
 
 
-    @config_cache(MESH_GEAR_INITIAL)
+    @config_cache(const.MESH_GEAR_INITIAL)
     def _vertex_adjacencies(self, vtx_mask=None, tri_mask=None):
         """sparse adjacency matrix of vertices."""
         if Mesh._masked_all(vtx_mask):
@@ -1292,7 +1292,7 @@ class Mesh:
 
 
     @config_cache('TBD')
-    def _vertex_distances(self, gear=MESH_GEAR_INITIAL, vtx_mask=None, tri_mask=None):
+    def _vertex_distances(self, gear=const.MESH_GEAR_INITIAL, vtx_mask=None, tri_mask=None):
         """sparse matrix storing lengths of the edges."""
         if Mesh._masked_all(vtx_mask):
             vertices = self.vertices(gear=gear)
@@ -1307,7 +1307,7 @@ class Mesh:
             return D[vtx_mask][:, vtx_mask]
 
 
-    @config_cache(MESH_GEAR_INITIAL)
+    @config_cache(const.MESH_GEAR_INITIAL)
     def _triangle_adjacencies(self, tri_mask=None):
         """
         sparse adjacency matrix of triangles.
@@ -1338,7 +1338,7 @@ class Mesh:
 
 
     @config_cache('TBD')
-    def triangle_centers(self, gear=MESH_GEAR_INITIAL, tri_mask=None):
+    def triangle_centers(self, gear=const.MESH_GEAR_INITIAL, tri_mask=None):
         """corodinates of the centers of the triangles (Ntri x 2)"""
         if Mesh._masked_all(tri_mask):
             T = self.triangles
@@ -1353,7 +1353,7 @@ class Mesh:
 
 
     @config_cache('TBD')
-    def triangle_bboxes(self, gear=MESH_GEAR_MOVING, tri_mask=None):
+    def triangle_bboxes(self, gear=const.MESH_GEAR_MOVING, tri_mask=None):
         """bounding boxes of triangles as in [xmin, ymin, xmax, ymax]."""
         if tri_mask is None:
             T = self.triangles
@@ -1371,7 +1371,7 @@ class Mesh:
 
 
     @config_cache('TBD')
-    def _triangle_distances(self, gear=MESH_GEAR_INITIAL, tri_mask=None):
+    def _triangle_distances(self, gear=const.MESH_GEAR_INITIAL, tri_mask=None):
         """sparse matrix storing distances of neighboring triangles."""
         if tri_mask is not None:
             D0 = self._triangle_distances(gear=gear, tri_mask=None, no_compute=True)
@@ -1385,7 +1385,7 @@ class Mesh:
         return D
 
 
-    @config_cache(MESH_GEAR_INITIAL)
+    @config_cache(const.MESH_GEAR_INITIAL)
     def connected_vertices(self, tri_mask=None, local_index=True):
         """
         connected components vertices.
@@ -1407,7 +1407,7 @@ class Mesh:
         return N_conn, V_conn
 
 
-    @config_cache(MESH_GEAR_INITIAL)
+    @config_cache(const.MESH_GEAR_INITIAL)
     def connected_triangles(self, tri_mask=None):
         """
         connected components of triangles.
@@ -1418,7 +1418,7 @@ class Mesh:
         return N_conn, T_conn
 
 
-    @config_cache(MESH_GEAR_INITIAL)
+    @config_cache(const.MESH_GEAR_INITIAL)
     def _grouped_segment_chains(self, tri_mask=None):
         """
         group segments into chains.
@@ -1446,7 +1446,7 @@ class Mesh:
         return grouped_chains
 
 
-    @config_cache(MESH_GEAR_INITIAL)
+    @config_cache(const.MESH_GEAR_INITIAL)
     def triangle_mask_for_render(self):
         mid_norender = []
         for _, m in self._material_table:
@@ -1477,7 +1477,7 @@ class Mesh:
 
 
     @config_cache('TBD')
-    def triangle_affine_tform(self, gear=(MESH_GEAR_INITIAL, MESH_GEAR_MOVING), tri_mask=None):
+    def triangle_affine_tform(self, gear=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING), tri_mask=None):
         """
         affine transform matrices for each triangles in mesh.
         Return a tuple (m0, A, m1), so that:
@@ -1509,7 +1509,7 @@ class Mesh:
 
 
     @config_cache('TBD')
-    def triangle_tform_svd(self, gear=(MESH_GEAR_INITIAL, MESH_GEAR_MOVING), tri_mask=None):
+    def triangle_tform_svd(self, gear=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING), tri_mask=None):
         """
         singular values of the affine transforms for each triangle.
         """
@@ -1524,7 +1524,7 @@ class Mesh:
 
 
     @config_cache('TBD')
-    def triangle_tform_deform(self, gear=(MESH_GEAR_INITIAL, MESH_GEAR_MOVING), tri_mask=None):
+    def triangle_tform_deform(self, gear=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING), tri_mask=None):
         """
         deformation of the affine transforms for each triangle.
         """
@@ -1589,7 +1589,7 @@ class Mesh:
             return '_sub_'.join(str(s) for s in self._name)
 
 
-    def bbox(self, gear=MESH_GEAR_MOVING, offsetting=True):
+    def bbox(self, gear=const.MESH_GEAR_MOVING, offsetting=True):
         if offsetting:
             vertices = self.vertices_w_offset(gear=gear)
         else:
@@ -1607,7 +1607,7 @@ class Mesh:
             pts (N x 2 ndarray): x-y coordinates of querry points
         """
         include_flipped = kwargs.get('include_flipped', False)
-        mode = kwargs.get('mode', MESH_TRIFINDER_LEAST_DEFORM)
+        mode = kwargs.get('mode', const.MESH_TRIFINDER_LEAST_DEFORM)
         contigeous = kwargs.get('contigeous', True)
         extrapolate = kwargs.get('extrapolate', False)
         inner_cache = kwargs.get('inner_cache', None)
@@ -1637,10 +1637,10 @@ class Mesh:
             uhits, uidx, cnts = np.unique(hits[0], return_index=True, return_counts=True)
             conflict = np.any(cnts > 1)
             if conflict:
-                if mode == MESH_TRIFINDER_WHATEVER:
+                if mode == const.MESH_TRIFINDER_WHATEVER:
                     hits = hits[:, uidx]
                     conflict = False
-                elif mode == MESH_TRIFINDER_INNERMOST:
+                elif mode == const.MESH_TRIFINDER_INNERMOST:
                     conflict_pts_indices = uhits[cnts > 1]
                     for pt_idx in conflict_pts_indices:
                         pmask = hits[0] == pt_idx
@@ -1670,8 +1670,8 @@ class Mesh:
         pts_indices = np.concatenate(pts_indices, axis=0)
         tri_indices = np.concatenate(tri_indices, axis=0)
         if conflict:
-            if mode == MESH_TRIFINDER_LEAST_DEFORM:
-                deforms0 = self.triangle_tform_deform(gear=(MESH_GEAR_INITIAL, gear), tri_mask=None)
+            if mode == const.MESH_TRIFINDER_LEAST_DEFORM:
+                deforms0 = self.triangle_tform_deform(gear=(const.MESH_GEAR_INITIAL, gear), tri_mask=None)
                 deforms = deforms0[tri_indices]
                 idxt = np.argsort(deforms)
                 pts_indices = pts_indices[idxt]
@@ -1740,24 +1740,24 @@ class Mesh:
 
     @fixed_vertices.setter
     def fixed_vertices(self, v):
-        self._vertices[MESH_GEAR_FIXED] = v
-        self._vertices_changed(gear=MESH_GEAR_FIXED)
+        self._vertices[const.MESH_GEAR_FIXED] = v
+        self._vertices_changed(gear=const.MESH_GEAR_FIXED)
 
 
     @moving_vertices.setter
     def moving_vertices(self, v):
         if self.locked:
             return
-        self._vertices[MESH_GEAR_MOVING] = v
-        self._vertices_changed(gear=MESH_GEAR_MOVING)
+        self._vertices[const.MESH_GEAR_MOVING] = v
+        self._vertices_changed(gear=const.MESH_GEAR_MOVING)
 
 
     @staging_vertices.setter
     def staging_vertices(self, v):
         if self.locked:
             return
-        self._vertices[MESH_GEAR_STAGING] = v
-        self._vertices_changed(gear=MESH_GEAR_STAGING)
+        self._vertices[const.MESH_GEAR_STAGING] = v
+        self._vertices_changed(gear=const.MESH_GEAR_STAGING)
 
 
     def apply_translation(self, dxy, gear, vtx_mask=None):
@@ -1776,7 +1776,7 @@ class Mesh:
             self.set_offset(offset, gear=gear)
 
 
-    def set_translation(self, dxy, gear=(MESH_GEAR_FIXED, MESH_GEAR_MOVING), vtx_mask=None):
+    def set_translation(self, dxy, gear=(const.MESH_GEAR_FIXED, const.MESH_GEAR_MOVING), vtx_mask=None):
         if self.locked:
             return
         if gear[0] == gear[-1]:
@@ -1796,7 +1796,7 @@ class Mesh:
             self.set_offset(offset1, gear=gear[-1])
 
 
-    def estimate_translation(self, gear=(MESH_GEAR_FIXED, MESH_GEAR_MOVING), vtx_mask=None):
+    def estimate_translation(self, gear=(const.MESH_GEAR_FIXED, const.MESH_GEAR_MOVING), vtx_mask=None):
         if gear[0] == gear[-1]:
             return np.zeros(2)
         offset0 = self.offset(gear=gear[0])
@@ -1829,7 +1829,7 @@ class Mesh:
             self.set_offset(offset0, gear=gear)
 
 
-    def set_affine(self, A, gear=(MESH_GEAR_FIXED, MESH_GEAR_MOVING), vtx_mask=None):
+    def set_affine(self, A, gear=(const.MESH_GEAR_FIXED, const.MESH_GEAR_MOVING), vtx_mask=None):
         if self.locked:
             return
         if gear[0] == gear[-1]:
@@ -1849,7 +1849,7 @@ class Mesh:
             self.set_offset(offset1, gear=gear[-1])
 
 
-    def estimate_affine(self, gear=(MESH_GEAR_FIXED, MESH_GEAR_MOVING), svd_clip=None, vtx_mask=None):
+    def estimate_affine(self, gear=(const.MESH_GEAR_FIXED, const.MESH_GEAR_MOVING), svd_clip=None, vtx_mask=None):
         """
         estimate an affine transformation matrix so that:
             vertices[gear[0]] ~ vertices[gear[-1]] @ A
@@ -1887,7 +1887,7 @@ class Mesh:
             self.set_offset(offset0, gear=gear)
 
 
-    def set_field(self, dxy, gear=(MESH_GEAR_FIXED, MESH_GEAR_MOVING), vtx_mask=None):
+    def set_field(self, dxy, gear=(const.MESH_GEAR_FIXED, const.MESH_GEAR_MOVING), vtx_mask=None):
         if self.locked:
             return
         if gear[0] == gear[-1]:
@@ -1908,38 +1908,38 @@ class Mesh:
             self.set_offset(offset1, gear=gear[-1])
 
 
-    def anneal(self, gear=(MESH_GEAR_MOVING, MESH_GEAR_FIXED), mode=ANNEAL_CONNECTED_RIGID):
+    def anneal(self, gear=(const.MESH_GEAR_MOVING, const.MESH_GEAR_FIXED), mode=const.ANNEAL_CONNECTED_RIGID):
         """
         adjust the fixed vertices closer to the moving vertices as the new resting
         state for relaxation.
         """
         if self.locked:
             return
-        if mode in (ANNEAL_GLOBAL_RIGID, ANNEAL_GLOBAL_AFFINE):
+        if mode in (const.ANNEAL_GLOBAL_RIGID, const.ANNEAL_GLOBAL_AFFINE):
             v0 = self.vertices_w_offset(gear=gear[0])
             v1 = self.vertices_w_offset(gear=gear[1])
-            if mode == ANNEAL_CONNECTED_RIGID:
+            if mode == const.ANNEAL_CONNECTED_RIGID:
                 _, R = spatial.fit_affine(v0, v1, return_rigid=True)
                 self.apply_affine(R, gear[1])
             else:
                 A = spatial.fit_affine(v0, v1, return_rigid=False)
                 self.apply_affine(A, gear[1])
-        elif mode in (ANNEAL_CONNECTED_RIGID, ANNEAL_CONNECTED_AFFINE):
+        elif mode in (const.ANNEAL_CONNECTED_RIGID, const.ANNEAL_CONNECTED_AFFINE):
             N_conn, V_conn = self.connected_vertices()
-            self.anneal(gear=gear, mode=ANNEAL_GLOBAL_RIGID) # center the mesh
-            if (N_conn == 1) and (mode == ANNEAL_GLOBAL_RIGID):
+            self.anneal(gear=gear, mode=const.ANNEAL_GLOBAL_RIGID) # center the mesh
+            if (N_conn == 1) and (mode == const.ANNEAL_GLOBAL_RIGID):
                 return
             v0 = self.vertices_w_offset(gear=gear[0])
             v1 = self.vertices_w_offset(gear=gear[1])
             for cid in range(N_conn):
                 idx = V_conn == cid
-                if mode == ANNEAL_CONNECTED_RIGID:
+                if mode == const.ANNEAL_CONNECTED_RIGID:
                     _, R = spatial.fit_affine(v0[idx], v1[idx], return_rigid=True)
                     self.apply_affine(R, gear[1], vtx_mask=idx)
                 else:
                     A = spatial.fit_affine(v0[idx], v1[idx], return_rigid=False)
                     self.apply_affine(A, gear[1], vtx_mask=idx)
-        elif mode == ANNEAL_COPY_EXACT:
+        elif mode == const.ANNEAL_COPY_EXACT:
             offset0 = self.offset(gear=gear[0])
             v0 = self.vertices(gear=gear[0])
             self.set_vertices(v0, gear[1])
@@ -2155,7 +2155,7 @@ class Mesh:
         indx_loc, collisions_loc = np.unique(collisions, axis=None, return_inverse=True)
         collisions_loc = collisions_loc.reshape(collisions.shape)
         indx_glb = Mesh.masked_index_to_global_index(tri_mask, indx_loc)
-        svds = self.triangle_tform_svd(gear=(MESH_GEAR_INITIAL, gear), tri_mask=indx_glb)
+        svds = self.triangle_tform_svd(gear=(const.MESH_GEAR_INITIAL, gear), tri_mask=indx_glb)
         deforms = Mesh.svds_to_deform(svds)
         # graph coloring for grouping
         order = np.argsort(deforms) # start from good ones
@@ -2199,7 +2199,7 @@ class Mesh:
 
 
     @config_cache('TBD')
-    def nonoverlap_triangle_groups(self, gear=MESH_GEAR_MOVING, contigeous=True, include_flipped=False, tri_mask=None, asymmetry=True):
+    def nonoverlap_triangle_groups(self, gear=const.MESH_GEAR_MOVING, contigeous=True, include_flipped=False, tri_mask=None, asymmetry=True):
         """
         devide triangles to subgroups so that within each group there are no
         overlapping triangles. This prevents error when using matplotlib.tri to
@@ -2250,7 +2250,7 @@ class Mesh:
 
   ## ------------------------- stiffness matrices -------------------------- ##
     @config_cache('TBD')
-    def stiffness_shape_matrices(self, gear=MESH_GEAR_FIXED):
+    def stiffness_shape_matrices(self, gear=const.MESH_GEAR_FIXED):
         material_table = self._material_table.id_table
         material_ids = self._material_ids
         v = self.vertices(gear=gear)
@@ -2265,7 +2265,7 @@ class Mesh:
 
 
     @config_cache('TBD')
-    def element_stiffness_matrices(self, gear=(MESH_GEAR_FIXED, MESH_GEAR_MOVING), inner_cache=None, **kwargs):
+    def element_stiffness_matrices(self, gear=(const.MESH_GEAR_FIXED, const.MESH_GEAR_MOVING), inner_cache=None, **kwargs):
         """
         compute the stiffness matrices for each element. Each element follow the order
             [u1, v1, u2, v2, u3, v3]
@@ -2313,7 +2313,7 @@ class Mesh:
 
 
     @config_cache('TBD')
-    def stiffness_matrix(self, gear=(MESH_GEAR_FIXED, MESH_GEAR_MOVING), inner_cache=None, **kwargs):
+    def stiffness_matrix(self, gear=(const.MESH_GEAR_FIXED, const.MESH_GEAR_MOVING), inner_cache=None, **kwargs):
         """
         compute the stiffness matrix and the current stress.
         Kwargs:
@@ -2348,7 +2348,7 @@ class Mesh:
 
 
   ## ------------------------- utility functions --------------------------- ##
-    def nearest_vertices(self, xy, gear=MESH_GEAR_MOVING, offset=True):
+    def nearest_vertices(self, xy, gear=const.MESH_GEAR_MOVING, offset=True):
         """find nearest vertices for debug."""
         if offset:
             v = self.vertices_w_offset(gear=gear)

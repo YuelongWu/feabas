@@ -20,7 +20,7 @@ from feabas.mesh import Mesh
 from feabas.optimizer import SLM
 from feabas import common
 from feabas.spatial import scale_coordinates
-from feabas.constant import *
+import feabas.constant as const
 
 
 class Stitcher:
@@ -135,15 +135,15 @@ class Stitcher:
                 for indx_u, indx_m in zip(mesh_share_u, mesh_share_sample):
                     M0 = self.meshes[indx_m]
                     prefix = 'master_meshes/' + str(int(indx_u))
-                    M0.save_to_h5(f, vertex_flags=(MESH_GEAR_INITIAL,), prefix=prefix,
+                    M0.save_to_h5(f, vertex_flags=(const.MESH_GEAR_INITIAL,), prefix=prefix,
                         save_material=False, compression=compression)
-                moving_offsets = np.array([m.offset(gear=MESH_GEAR_MOVING) for m in self.meshes])
+                moving_offsets = np.array([m.offset(gear=const.MESH_GEAR_MOVING) for m in self.meshes])
                 create_dataset('moving_offsets', data=moving_offsets)
                 f.create_group('moving_vertices')
                 for k, m in enumerate(self.meshes):
-                    if m.vertices_initialized(gear=MESH_GEAR_MOVING):
+                    if m.vertices_initialized(gear=const.MESH_GEAR_MOVING):
                         prefix = 'moving_vertices/' + str(k)
-                        v = m.vertices(gear=MESH_GEAR_MOVING)
+                        v = m.vertices(gear=const.MESH_GEAR_MOVING)
                         create_dataset(prefix, data=v)
 
 
@@ -224,8 +224,8 @@ class Stitcher:
                 if str(uid_src) in f['moving_vertices']:
                     prefix = 'moving_vertices/' + str(uid_src)
                     v = f[prefix][()]
-                    M.set_vertices(v, MESH_GEAR_MOVING)
-                    M.set_offset(moving_offsets[uid_src], MESH_GEAR_MOVING)
+                    M.set_vertices(v, const.MESH_GEAR_MOVING)
+                    M.set_offset(moving_offsets[uid_src], const.MESH_GEAR_MOVING)
                 self.meshes.append(M)
             self.mesh_sharing = mesh_sharing
             mesh_loaded = True
@@ -583,7 +583,7 @@ class Stitcher:
         mesh_params_ptr = {} # map the parameters of the mesh to
         if self._default_mesh_cache is None:
             default_caches = {}
-            for gear in MESH_GEARS:
+            for gear in const.MESH_GEARS:
                 default_caches[gear] = defaultdict(lambda: common.CacheFIFO(maxlen=cache_size))
             self._default_mesh_cache = default_caches
         else:
@@ -603,14 +603,14 @@ class Stitcher:
                     mesh_growth=interior_growth, mesh_size=tmsz, uid=k,
                     soft_factor=tsf)
                 M0.set_stiffness_multiplier_from_interp(xinterp=stf_x, yinterp=stf_y)
-                M0.center_meshes_w_offsets(gear=MESH_GEAR_FIXED)
+                M0.center_meshes_w_offsets(gear=const.MESH_GEAR_FIXED)
                 mesh_params_ptr[key] = k
                 mesh_indx[k] = k
-            for gear in MESH_GEARS:
+            for gear in const.MESH_GEARS:
                 M0.set_default_cache(cache=default_caches[gear], gear=gear)
             meshes.append(M0)
         for M, offset in zip(meshes, self._init_offset):
-            M.apply_translation(offset, gear=MESH_GEAR_FIXED)
+            M.apply_translation(offset, gear=const.MESH_GEAR_FIXED)
         self.meshes = meshes
         _, mesh_indx_nm = np.unique(mesh_indx, return_inverse=True)
         self.mesh_sharing = mesh_indx_nm
@@ -648,7 +648,7 @@ class Stitcher:
         """
         maxiter = kwargs.get('maxiter', None)
         tol = kwargs.get('tol', 1e-07)
-        target_gear = kwargs.get('target_gear', MESH_GEAR_FIXED)
+        target_gear = kwargs.get('target_gear', const.MESH_GEAR_FIXED)
         start_gear = kwargs.get('start_gear', target_gear)
         residue_threshold = kwargs.get('residue_threshold', None)
         if self._optimizer is None:
@@ -693,7 +693,7 @@ class Stitcher:
         Kwargs: refer to the input of feabas.optimizer.SLM.optimize_linear.
         """
         cache_size = kwargs.get('cache_size', None)
-        target_gear = kwargs.setdefault('target_gear', MESH_GEAR_FIXED)
+        target_gear = kwargs.setdefault('target_gear', const.MESH_GEAR_FIXED)
         if not self.has_groupings:
             return 0, 0
         groupings = self.groupings(normalize=True)
@@ -709,13 +709,13 @@ class Stitcher:
         sel_meshes = [self.meshes[s].copy(override_dict={'uid':k}) for k,s in enumerate(sel_uids)]
         if self._default_mesh_cache is None:
             default_caches = {}
-            for gear in MESH_GEARS:
+            for gear in const.MESH_GEARS:
                 default_caches[gear] = defaultdict(lambda: common.CacheFIFO(maxlen=cache_size))
             self._default_mesh_cache = default_caches
         else:
             default_caches = self._default_mesh_cache
         for M0 in sel_meshes:
-            for gear in MESH_GEARS:
+            for gear in const.MESH_GEARS:
                 M0.set_default_cache(cache=default_caches[gear], gear=gear)
         opt = SLM(sel_meshes)
         for uids0, uids1 in zip(match_uids, sel_match_uids):
@@ -751,7 +751,7 @@ class Stitcher:
         use_groupings = kwargs.get('use_groupings', False) and self.has_groupings
         residue_len = kwargs.get('residue_len', 0)
         residue_mode = kwargs.get('residue_mode', None)
-        target_gear = kwargs.setdefault('target_gear', MESH_GEAR_MOVING)
+        target_gear = kwargs.setdefault('target_gear', const.MESH_GEAR_MOVING)
         if use_groupings:
             groupings = self.groupings(normalize=True)
         else:
@@ -775,7 +775,7 @@ class Stitcher:
         translate blocks of tiles that are connected by links as a whole so that
         disconnected blocks roughly maintain the initial relative positions.
         """
-        gear = (MESH_GEAR_INITIAL, MESH_GEAR_MOVING)
+        gear = (const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING)
         maxiter = kwargs.get('maxiter', None)
         tol = kwargs.get('tol', 1e-07)
         if self._optimizer is None:
@@ -836,7 +836,7 @@ class Stitcher:
         less than rotation_threshold and the upper-left corner is aligned to
         the offset.
         """
-        gear = (MESH_GEAR_INITIAL, MESH_GEAR_MOVING)
+        gear = (const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING)
         rotation_threshold = kwargs.get('rotation_threshold', None)
         offset = kwargs.get('offset', None)
         theta0 = 0
@@ -879,7 +879,7 @@ class Stitcher:
     def clear_mesh_cache(self, gear=None, instant_gc=True):
         if self._default_mesh_cache is not None:
             if gear is None:
-                for g in MESH_GEARS:
+                for g in const.MESH_GEARS:
                     self.clear_mesh_cache(gear=g)
             else:
                 cache = self._default_mesh_cache[gear]
@@ -951,7 +951,7 @@ class Stitcher:
 
 
     def match_residues(self, quantile=1):
-        return self._optimizer.match_residues(gear=MESH_GEAR_MOVING, use_mask=True, quantile=quantile)
+        return self._optimizer.match_residues(gear=const.MESH_GEAR_MOVING, use_mask=True, quantile=quantile)
 
 
 
@@ -992,7 +992,7 @@ class MontageRenderer:
 
 
     @classmethod
-    def from_stitcher(cls, stitcher, gear=(MESH_GEAR_INITIAL, MESH_GEAR_MOVING), **kwargs):
+    def from_stitcher(cls, stitcher, gear=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING), **kwargs):
         if stitcher.meshes is None:
             raise RuntimeError('stitcher meshes not initializad.')
         root_dir = stitcher.imgrootdir
@@ -1009,7 +1009,7 @@ class MontageRenderer:
 
 
     @classmethod
-    def from_h5(cls, fname, selected=None, gear=(MESH_GEAR_INITIAL, MESH_GEAR_MOVING), **kwargs):
+    def from_h5(cls, fname, selected=None, gear=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING), **kwargs):
         stitcher = Stitcher.from_h5(fname, load_matches=False, load_meshes=True, selected=selected)
         return cls.from_stitcher(stitcher, gear=gear, **kwargs)
 
@@ -1292,6 +1292,23 @@ class MontageRenderer:
             return self._tile_sizes[0]
         else:
             return self._tile_sizes[indx]
+
+
+    def generate_roi_mask(self, scale):
+        """
+        generate low resolution roi mask that can fit in a single image.
+        """
+        bboxes0 = []
+        for msh in self._mesh_rtree_generator():
+            _, bbox, _ = msh
+            bboxes0.append(bbox)
+        bboxes = scale_coordinates(np.array(bboxes0), scale).clip(0, None)
+        bboxes = np.round(bboxes).astype(np.int32)
+        imgwd, imght = np.max(bboxes[:,-2:], axis=0) + 2
+        imgout = np.zeros((imght, imgwd), dtype=np.uint8)
+        for xmin, ymin, xmax, ymax in bboxes:
+            imgout[ymin:ymax, xmin:xmax] = 255
+        return imgout
 
 
     def _mesh_rtree_generator(self):

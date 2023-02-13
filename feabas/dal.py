@@ -1,4 +1,4 @@
-from abc import ABC, abstractmethod
+from abc import ABC
 from collections import OrderedDict
 from functools import partial
 import gc
@@ -12,7 +12,7 @@ import numpy as np
 from rtree import index
 
 from feabas import common
-from feabas.constant import *
+import feabas.constant as const
 
 
 # bbox :int: [xmin, ymin, xmax, ymax]
@@ -102,7 +102,7 @@ def get_loader_from_json(json_info):
     elif loader_type == 'StreamLoader':
         return StreamLoader.from_init_dict(json_obj)
     else:
-        raise TypeError
+        raise ValueError
 
 
 class AbstractImageLoader(ABC):
@@ -135,7 +135,7 @@ class AbstractImageLoader(ABC):
         self._cache_type = kwargs.get('cache_type', 'mfu')
         self._cache = common.generate_cache(self._cache_type, maxlen=self._cache_size)
         self._preprocess = kwargs.get('preprocess', None)
-        self.resolution = kwargs.get('resolution', DEFAULT_RESOLUTION)
+        self.resolution = kwargs.get('resolution', const.DEFAULT_RESOLUTION)
         self._read_counter = 0
 
 
@@ -908,7 +908,7 @@ class StreamLoader(AbstractImageLoader):
         self._preprocess = kwargs.get('preprocess', None)
         self._inverse = kwargs.get('inverse', False)
         self._default_fillval = kwargs.get('fillval', 0)
-        self.resolution = kwargs.get('resolution', DEFAULT_RESOLUTION)
+        self.resolution = kwargs.get('resolution', const.DEFAULT_RESOLUTION)
         self.x0 = kwargs.get('x0', 0)
         self.y0 = kwargs.get('y0', 0)
 

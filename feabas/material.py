@@ -5,7 +5,7 @@ import numpy as np
 from scipy.interpolate import interp1d
 
 from feabas import common
-from feabas.constant import *
+import feabas.constant as const
 
 
 DTYPE = np.float32  # single-precision
@@ -46,7 +46,10 @@ class Material:
         self.area_constraint = kwargs.get('area_constraint', 1.0)
         self.render = kwargs.get('render', True)
         self.render_weight = kwargs.get('render_weight', 1.0)
-        self._type = kwargs.get('type', MATERIAL_MODEL_ENG)
+        mat_type = kwargs.get('type', const.MATERIAL_MODEL_ENG)
+        if isinstance(mat_type, str):
+            mat_type = const.MATERIAL_MODEL_LIST.index(mat_type.upper())
+        self._type = mat_type
         self._stiffness_multiplier = kwargs.get('stiffness_multiplier', 1.0)
         self._poisson_ratio = kwargs.get('poisson_ratio', 0.0)
         self.mask_label = kwargs.get('mask_label', None)
@@ -67,7 +70,8 @@ class Material:
             'area_constraint': self.area_constraint,
             'render': self.render,
             'render_weight': self.render_weight,
-            'type': self._type,
+            'type': const.MATERIAL_MODEL_LIST[self._type],
+            'stiffness_multiplier': self._stiffness_multiplier,
             'poisson_ratio': self._poisson_ratio,
             'uid': self.uid
             }
@@ -170,11 +174,11 @@ class Material:
         else:
             uv = uv.astype(DTYPE).reshape(-1, 6, 1)
         if check_flip is None:
-            if self._type == MATERIAL_MODEL_ENG:
+            if self._type == const.MATERIAL_MODEL_ENG:
                 check_flip = False
             else:
                 check_flip = True
-        if self._type == MATERIAL_MODEL_ENG:
+        if self._type == const.MATERIAL_MODEL_ENG:
             # Engineering strain & stress
             if (self._stiffness_func is not None) or check_flip:
                 Ft = (B @ uv).reshape(-1,2,2) + np.eye(2, dtype=DTYPE)
@@ -190,7 +194,7 @@ class Material:
             K = np.swapaxes(Bn, 1, 2) @ D @ Bn
             K = areas * K
             P = K @ uv
-        elif self._type == MATERIAL_MODEL_SVK:
+        elif self._type == const.MATERIAL_MODEL_SVK:
             # St. Venant-Kirchhoff
             Ft = (B @ uv).reshape(-1,2,2) + np.eye(2, dtype=DTYPE)
             if (self._stiffness_func is not None) or check_flip:
@@ -224,7 +228,7 @@ class Material:
             K = np.swapaxes(Bn, 1, 2) @ D @ Bn + np.swapaxes(B, 1, 2) @ Sg @ B
             P = areas * P
             K = areas * K
-        elif self._type == MATERIAL_MODEL_NHK:
+        elif self._type == const.MATERIAL_MODEL_NHK:
             # Neo-Hookean
             Ft = (B @ uv).reshape(-1,2,2) + np.eye(2, dtype=DTYPE)
             J = np.linalg.det(Ft).reshape(-1,1,1)
@@ -259,20 +263,20 @@ class Material:
 
     @property
     def is_linear(self):
-        return (self._type == MATERIAL_MODEL_ENG) and (self._stiffness_func is None)
+        return (self._type == const.MATERIAL_MODEL_ENG) and (self._stiffness_func is None)
 
 
 
 MATERIAL_HOLE = Material(enable_mesh=False,
                          uid=0,
-                         mask_label=None,
+                         mask_label=255,
                          stiffness_multiplier=0.0,
                          render=False,
                          render_weight=1.0e-6)
 
 MATERIAL_DEFAULT = Material(enable_mesh=True,
                             area_constraint=1,
-                            type=MATERIAL_MODEL_ENG,
+                            type=const.MATERIAL_MODEL_ENG,
                             stiffness_multiplier=1.0,
                             poisson_ratio=0.0,
                             uid=-1,

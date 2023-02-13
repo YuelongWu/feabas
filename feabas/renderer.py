@@ -4,7 +4,7 @@ import numpy as np
 import shapely.geometry as shpgeo
 from shapely.ops import unary_union
 
-from feabas.constant import *
+import feabas.constant as const
 from feabas.mesh import Mesh
 from feabas import common, spatial
 
@@ -18,20 +18,20 @@ class MeshRenderer:
         n_region = len(self._interpolators)
         self._offset = np.array(kwargs.get('offset', np.zeros((1,2))), copy=False).reshape(1,2)
         self._region_tree = kwargs.get('region_tree', None)
-        self._weight_params = kwargs.get('weight_params', MESH_TRIFINDER_WHATEVER)
+        self._weight_params = kwargs.get('weight_params', const.MESH_TRIFINDER_WHATEVER)
         self.weight_generator = kwargs.get('weight_generator', [None for _ in range(n_region)])
         self.weight_multiplier = kwargs.get('weight_multiplier', np.ones(n_region, dtype=np.float32))
         self._collision_region = kwargs.get('collision_region', None)
         self._image_loader = kwargs.get('image_loader', None)
-        self.resolution = kwargs.get('resolution', DEFAULT_RESOLUTION)
+        self.resolution = kwargs.get('resolution', const.DEFAULT_RESOLUTION)
         self._default_fillval = kwargs.get('fillval', None)
         self._dtype = kwargs.get('dtype', None)
 
 
     @classmethod
-    def from_mesh(cls, srcmesh, gear=(MESH_GEAR_MOVING, MESH_GEAR_INITIAL), **kwargs):
+    def from_mesh(cls, srcmesh, gear=(const.MESH_GEAR_MOVING, const.MESH_GEAR_INITIAL), **kwargs):
         include_flipped = kwargs.get('include_flipped', False)
-        weight_params = kwargs.pop('weight_params', MESH_TRIFINDER_INNERMOST)
+        weight_params = kwargs.pop('weight_params', const.MESH_TRIFINDER_INNERMOST)
         local_cache = kwargs.get('cache', False)
         divide_material = kwargs.get('divide_material', False)
         if divide_material and np.ptp(srcmesh.material_ids)>0:
@@ -44,11 +44,11 @@ class MeshRenderer:
         render_mask = srcmesh.triangle_mask_for_render()
         collisions = srcmesh.triangle_collisions(gear=gear[0], tri_mask=render_mask)
         if (collisions.size == 0):
-            weight_params = MESH_TRIFINDER_WHATEVER
+            weight_params = const.MESH_TRIFINDER_WHATEVER
         else:
             render_mask_indx = np.nonzero(render_mask)[0]
             collision_tidx = render_mask_indx[np.unique(collisions)]
-        if weight_params == MESH_TRIFINDER_INNERMOST:
+        if weight_params == const.MESH_TRIFINDER_INNERMOST:
             asymmetry = False
         else:
             asymmetry = True
@@ -74,7 +74,7 @@ class MeshRenderer:
                 weight_multiplier.append(render_weight_lut[mid])
             else:
                 weight_multiplier.append(1.0)
-            if weight_params == MESH_TRIFINDER_WHATEVER:
+            if weight_params == const.MESH_TRIFINDER_WHATEVER:
                 weight_generator.append(None)
             else:
                 hitidx = np.intersect1d(tidx, collision_tidx)
@@ -83,15 +83,15 @@ class MeshRenderer:
                     continue
                 mpl_tri, _, _ = srcmesh.mpl_tri(gear=gear[0], tri_mask=hitidx)
                 collision_region.append(srcmesh.shapely_regions(gear=gear[0], tri_mask=hitidx))
-                if weight_params == MESH_TRIFINDER_INNERMOST:
+                if weight_params == const.MESH_TRIFINDER_INNERMOST:
                     cx = mpl_tri.x
                     cy = mpl_tri.y
                     mpts = list(shpgeo.MultiPoint(np.stack((cx, cy), axis=-1)).geoms)
-                    dis0 = region.boundary.distance(mpts) + EPSILON0
+                    dis0 = region.boundary.distance(mpts) + const.EPSILON0
                     inside = region.intersects(mpts)
                     dis0[~inside] *= -1
                     weight_generator.append(matplotlib.tri.LinearTriInterpolator(mpl_tri, dis0))
-                elif weight_params == MESH_TRIFINDER_LEAST_DEFORM:
+                elif weight_params == const.MESH_TRIFINDER_LEAST_DEFORM:
                     deform = srcmesh.triangle_tform_deform(gear=gear[::-1], tri_mask=hitidx)
                     wt = np.exp(-2 * deform**2)
                     weight_generator.append((mpl_tri.get_trifinder(), wt))
@@ -136,7 +136,7 @@ class MeshRenderer:
         uhits, uidx, cnts = np.unique(hits[0], return_index=True, return_counts=True)
         conflict = np.any(cnts > 1)
         if conflict:
-            if self._weight_params in (MESH_TRIFINDER_INNERMOST, MESH_TRIFINDER_LEAST_DEFORM):
+            if self._weight_params in (const.MESH_TRIFINDER_INNERMOST, const.MESH_TRIFINDER_LEAST_DEFORM):
                 conflict_pts_indices = uhits[cnts > 1]
                 for pt_idx in conflict_pts_indices:
                     pmask = hits[0] == pt_idx
@@ -148,7 +148,7 @@ class MeshRenderer:
                         wg = self.weight_generator[r_id]
                         if wg is None:
                             continue
-                        if self._weight_params == MESH_TRIFINDER_INNERMOST:
+                        if self._weight_params == const.MESH_TRIFINDER_INNERMOST:
                             dis_m = wg(pxy[0], pxy[1])
                             if dis_m.mask:
                                 continue
@@ -252,12 +252,12 @@ class MeshRenderer:
         weight = 1 - mask.astype(np.float32)
         weight_generator = self.weight_generator[region_id] * self.weight_multiplier[region_id]
         if compute_wt and (weight_generator is not None):
-            if self._weight_params == MESH_TRIFINDER_INNERMOST:
+            if self._weight_params == const.MESH_TRIFINDER_INNERMOST:
                 wt = weight_generator(xx, yy)
                 if not np.all(wt.mask, axis=None):
                     wtmx = wt.max()
                     weight = weight * np.nan_to_num(wt.data, copy=False, nan=wtmx)
-            elif self._weight_params == MESH_TRIFINDER_LEAST_DEFORM:
+            elif self._weight_params == const.MESH_TRIFINDER_LEAST_DEFORM:
                 trfd, wt0 = weight_generator
                 tid = trfd(xx, yy)
                 omask = tid < 0
@@ -309,7 +309,7 @@ class MeshRenderer:
                 bounding box not intersecting the interpolator.
             mask (ndarray): region of valid pixels.
         """
-        mode = kwargs.get('mode', RENDER_FULL)
+        mode = kwargs.get('mode', const.RENDER_FULL)
         offsetting = kwargs.get('offsetting', True)
         out_resolution = kwargs.get('out_resolution', None)
         bbox0 = np.array(bbox).reshape(4)
@@ -320,9 +320,9 @@ class MeshRenderer:
                         np.zeros((outht, outwd), dtype=bool))
         if offsetting:
             bbox0 = bbox0 - np.tile(self._offset.ravel(), 2)
-        if mode in (RENDER_LOCAL_RIGID, RENDER_LOCAL_AFFINE):
+        if mode in (const.RENDER_LOCAL_RIGID, const.RENDER_LOCAL_AFFINE):
             bcntr = ((bbox0[0] + bbox0[2] - 1)/2, (bbox0[1] + bbox0[3] - 1)/2)
-            if mode == RENDER_LOCAL_RIGID:
+            if mode == const.RENDER_LOCAL_RIGID:
                 svd_clip = 0
             else:
                 svd_clip = kwargs.get('svd_clip', None)
@@ -339,21 +339,21 @@ class MeshRenderer:
             x_field = xx * A[0,0] + yy * A[1,0] + t[0]
             y_field = xx * A[0,1] + yy * A[1,1] + t[1]
             mask = np.ones_like(x_field, dtype=bool)
-        elif mode == RENDER_CONTIGEOUS:
+        elif mode == const.RENDER_CONTIGEOUS:
             x_field, y_field, weight = self.field_w_weight(bbox0, region_id=None,
                 out_resolution=out_resolution, offsetting=False, compute_wt=True)
             if weight is None:
                 mask = None
             else:
                 mask = weight > 0
-        elif mode == RENDER_FULL:
+        elif mode == const.RENDER_FULL:
             regions = self.region_finder_for_bbox(bbox0, offsetting=False)
             if regions.size == 0:
                 return empty_output
             elif regions.size == 1:
-                blend = BLEND_NONE
+                blend = const.BLEND_NONE
             else:
-                blend = kwargs.get('blend', BLEND_MAX)
+                blend = kwargs.get('blend', const.BLEND_MAX)
             initialized = False
             for rid in regions:
                 xf, yf, wt = self.field_w_weight(bbox0, region_id=rid,
@@ -365,11 +365,11 @@ class MeshRenderer:
                     y_field = np.zeros_like(yf)
                     weight = np.zeros_like(wt)
                     initialized = True
-                if blend == BLEND_LINEAR:
+                if blend == const.BLEND_LINEAR:
                     x_field = x_field + xf * wt
                     y_field = y_field + yf * wt
                     weight = weight + wt
-                elif blend == BLEND_MAX:
+                elif blend == const.BLEND_MAX:
                     tmask = wt >= weight
                     x_field[tmask] = xf[tmask]
                     y_field[tmask] = yf[tmask]
@@ -381,7 +381,7 @@ class MeshRenderer:
                     weight[tmask] = wt[tmask]
             if not initialized:
                 return empty_output
-            if blend == BLEND_LINEAR:
+            if blend == const.BLEND_LINEAR:
                 with np.errstate(invalid='ignore', divide='ignore'):
                     x_field = np.nan_to_num(x_field / weight, nan=0,posinf=0, neginf=0)
                     y_field = np.nan_to_num(y_field / weight, nan=0,posinf=0, neginf=0)
