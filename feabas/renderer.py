@@ -250,10 +250,10 @@ class MeshRenderer:
         x_field = np.nan_to_num(map_x.data, copy=False)
         y_field = np.nan_to_num(map_y.data, copy=False)
         weight = 1 - mask.astype(np.float32)
-        weight_generator = self.weight_generator[region_id] * self.weight_multiplier[region_id]
+        weight_generator = self.weight_generator[region_id]
         if compute_wt and (weight_generator is not None):
             if self._weight_params == const.MESH_TRIFINDER_INNERMOST:
-                wt = weight_generator(xx, yy)
+                wt = weight_generator(xx, yy) * self.weight_multiplier[region_id]
                 if not np.all(wt.mask, axis=None):
                     wtmx = wt.max()
                     weight = weight * np.nan_to_num(wt.data, copy=False, nan=wtmx)

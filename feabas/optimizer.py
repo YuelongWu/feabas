@@ -779,7 +779,7 @@ class SLM:
         start_gear = kwargs.get('start_gear', const.MESH_GEAR_MOVING)
         targt_gear = kwargs.get('target_gear', const.MESH_GEAR_MOVING)
         svd_clip = kwargs.get('svd_clip', (1, 1))
-        A = self.linkage_adjacency()
+        Adj = self.linkage_adjacency()
         to_optimize = ~self.lock_flags
         linked_pairs = common.find_elements_in_array(self.mesh_uids, self.link_uids)
         idxt = np.any(linked_pairs<0, axis=-1, keepdims=False)
@@ -787,9 +787,9 @@ class SLM:
         modified = False
         while np.any(to_optimize):
             # first find the mesh that has the most robust links to optimized ones
-            link_wt_sum = A.dot(~to_optimize) * to_optimize
+            link_wt_sum = Adj.dot(~to_optimize) * to_optimize
             if not np.any(link_wt_sum > 0):
-                link_wt_sum = A.dot(np.ones_like(to_optimize)) * to_optimize
+                link_wt_sum = Adj.dot(np.ones_like(to_optimize)) * to_optimize
             idx0 = np.argmax(link_wt_sum)
             pair_locked_flag = ~to_optimize[linked_pairs]
             link_filter = np.nonzero(np.any(linked_pairs==idx0, axis=-1)

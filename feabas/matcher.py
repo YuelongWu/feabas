@@ -245,14 +245,62 @@ def stitching_matcher(img0, img1, **kwargs):
         mesh_size=min_spacing, min_num_blocks=min_num_blocks, uid=1)
     mesh0.apply_translation((tx0, ty0), const.MESH_GEAR_FIXED)
     mesh0.lock()
-    weight, xy0, xy1, strain = iterative_xcorr_matcher_w_mesh(mesh0, mesh1, img_loader0, img_loader1,
-        conf_mode=conf_mode, conf_thresh=conf_thresh, err_method='huber', 
+    xy0, xy1, weight, strain = iterative_xcorr_matcher_w_mesh(mesh0, mesh1, img_loader0, img_loader1,
+        conf_mode=conf_mode, conf_thresh=conf_thresh, err_method='huber',
         err_thresh=err_thresh, opt_tol=opt_tol, spacings=spacings,
         distributor='cartesian_bbox', min_num_blocks=min_num_blocks)
     if (fine_downsample != 1) and (xy0 is not None):
         xy0 = spatial.scale_coordinates(xy0, 1/fine_downsample)
         xy1 = spatial.scale_coordinates(xy1, 1/fine_downsample)
-    return weight, xy0, xy1, strain
+    return xy0, xy1, weight, strain
+
+
+def section_matcher(mesh0, mesh1, image_loader0, image_loader1, **kwargs):
+    """
+    matching two sections. When initial_matches is givenm handle disconnected
+    subregions if necessary. If no initial_matches are provided, assume the two
+    meshes are roughly aligned in MESH_GEAR_MOVING gears.
+    """
+    initial_matches = kwargs.pop('initial_matches', None)
+    spacings = kwargs.pop('spacings', [100])
+    kwargs.setdefault('sigma', 2.5)
+    kwargs.setdefault('batch_size', 100)
+    kwargs.setdefault('continue_on_flip', True)
+    if (initial_matches is None) or (mesh0.connected_triangles()[0] == 1 and mesh1.connected_triangles()[0] == 1):
+        xy0, xy1, weight, _ = iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1,
+            spacings=spacings, initial_matches=initial_matches, compute_strain=False,
+            distributor='cartesian_region', **kwargs)
+    else:
+        opt = optimizer.SLM([mesh0, mesh1])
+        xy0, xy1, weight = initial_matches
+        opt.add_link_from_coordinates(mesh0.uid, mesh1.uid, xy0, xy1,
+            gear=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_INITIAL), weight=weight,
+            check_duplicates=False)
+        opt.divide_disconnected_submeshes(prune_links=True)
+        xy0 = []
+        xy1 = []
+        weight = []
+        for lnk in opt.links:
+            msh0_t, msh1_t = lnk.meshes
+            ini_xy0_t = lnk.xy0(gear=const.MESH_GEAR_INITIAL, use_mask=False, combine=True)
+            ini_xy1_t = lnk.xy1(gear=const.MESH_GEAR_INITIAL, use_mask=False, combine=True)
+            ini_wt_t = lnk.weight(use_mask=False)
+            ini_mtch_t = (ini_xy0_t, ini_xy1_t, ini_wt_t)
+            xy0_t, xy1_t, wt_t, _ = iterative_xcorr_matcher_w_mesh(msh0_t, msh1_t,
+                image_loader0, image_loader1, spacings=spacings, compute_strain=False,
+                initial_matches=ini_mtch_t,  distributor='cartesian_region', **kwargs)
+            if xy0_t is not None:
+                if (msh0_t.uid - msh1_t.uid) * (mesh0.uid - mesh1.uid) > 0:
+                    xy0.append(xy0_t)
+                    xy1.append(xy1_t)
+                else:
+                    xy0.append(xy1_t)
+                    xy1.append(xy0_t)
+                weight.append(wt_t)
+        xy0 = np.concatenate(xy0, axis=0)
+        xy1 = np.concatenate(xy1, axis=0)
+        weight = np.concatenate(weight, axis=0)
+    return xy0, xy1, weight
 
 
 def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, spacings, **kwargs):
@@ -301,7 +349,7 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
         weight: weight of each mathing point pairs.
         xy0, xy1: xy coordinates of the matching points in the images before any
             transformations.
-        strain: the largest strain of the mesh. 
+        strain: the largest strain of the mesh.
     """
     num_workers = kwargs.get('num_workers', 1)
     conf_thresh = kwargs.get('conf_thresh', 0.3)
@@ -310,6 +358,7 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
     opt_tol = kwargs.get('opt_tol', None)
     distributor = kwargs.get('distributor', 'cartesian_bbox')
     min_num_blocks = kwargs.get('min_num_blocks', 2)
+    min_edge_distance = kwargs.get('min_edge_distance', 0)
     shrink_factor = kwargs.get('shrink_factor', 1)
     allow_dwell = kwargs.get('allow_dwell', 0)
     compute_strain = kwargs.get('compute_strain', True)
@@ -325,7 +374,7 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
     spacings = np.array(spacings, copy=False)
     min_block_size_multiplier = 4
     strain = 0.0
-    invalid_output = (0, None, None, strain)
+    invalid_output = (None, None, 0, strain)
     if np.any(spacings < 1):
         bbox0 = mesh0.bbox(gear=const.MESH_GEAR_MOVING)
         bbox1 = mesh1.bbox(gear=const.MESH_GEAR_MOVING)
@@ -340,11 +389,11 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
     if initial_matches is not None:
         xy0, xy1, weight = initial_matches
         opt.add_link_from_coordinates(mesh0.uid, mesh1.uid, xy0, xy1,
-            gear=(const.MESH_GEAR_MOVING, const.MESH_GEAR_MOVING), weight=weight,
+            gear=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_INITIAL), weight=weight,
             check_duplicates=False)
         opt.optimize_affine_cascade(start_gear=const.MESH_GEAR_INITIAL, targt_gear=const.MESH_GEAR_FIXED, svd_clip=(1,1))
         opt.anneal(gear=(const.MESH_GEAR_FIXED, const.MESH_GEAR_MOVING), mode=const.ANNEAL_COPY_EXACT)
-        opt.optimize_linear(tol=opt_tol_t, batch_num_matches=np.inf, continue_on_flip=continue_on_flip)
+        opt.optimize_linear(tol=1e-6, batch_num_matches=np.inf, continue_on_flip=continue_on_flip)
     spacings = np.sort(spacings)[::-1]
     sp = np.max(spacings)
     sp_indx = 0
@@ -359,6 +408,10 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
         if distributor == 'cartesian_bbox':
             bboxes0 = distributor_cartesian_bbox(mesh0, mesh1, sp,
                 min_num_blocks=mnb, shrink_factor=shrink_factor, zorder=(num_workers>1))
+        elif distributor == 'cartesian_region':
+            bboxes0 = distributor_cartesian_region(mesh0, mesh1, sp,
+                min_edge_distance=min_edge_distance, shrink_factor=shrink_factor,
+                zorder=(num_workers>1))
         else:
             raise ValueError
         if bboxes0 is None:
@@ -482,7 +535,7 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
                 ss = np.exp(np.abs(np.log(m.triangle_tform_svd().clip(1e-3, None)))) - 1
                 smx = np.quantile(ss, 0.9, axis=None)
                 strain = max(strain, smx)
-    return weight, xy0, xy1, strain
+    return xy0, xy1, weight, strain
 
 
 def bboxes_mesh_renderer_matcher(mesh0, mesh1, image_loader0, image_loader1, bboxes, **kwargs):

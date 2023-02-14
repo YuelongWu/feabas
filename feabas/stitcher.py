@@ -438,7 +438,7 @@ class Stitcher:
                     mask1 = mask_loader.crop(bbox_ov1, idx1, return_index=False)
                 else:
                     mask1 = None
-                weight, xy0, xy1, strain = stitching_matcher(img0, img1, mask0=mask0, mask1=mask1, **matcher_config)
+                xy0, xy1, weight, strain = stitching_matcher(img0, img1, mask0=mask0, mask1=mask1, **matcher_config)
                 if xy0 is None:
                     continue
                 offset0 = bbox_ov0[:2] - bbox0[:2]

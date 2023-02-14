@@ -174,10 +174,13 @@ class AbstractImageLoader(ABC):
         return out
 
 
-    def save_to_json(self, jsonname, **kwargs):
+    def save_to_json(self, jsonname=None, **kwargs):
         out = self.init_dict(**kwargs)
-        with open(jsonname, 'w') as f:
-            json.dump(out, f, indent=2)
+        if jsonname is None:
+            return json.dumps(out, indent=2)
+        else:
+            with open(jsonname, 'w') as f:
+                json.dump(out, f, indent=2)
 
 
     def _cached_block_rtree_generator(self, bbox):
@@ -627,7 +630,7 @@ class StaticImageLoader(AbstractImageLoader):
         out = super()._settings_dict(output_controls=output_controls, cache_settings=cache_settings)
         out['root_dir'] = self.imgrootdir
         if image_list:
-            out['images'] = [{'filepath':p, 'bbox':b} for p, b in zip(self.imgrelpaths, self._file_bboxes)]
+            out['images'] = [{'filepath':p, 'bbox':b.tolist()} for p, b in zip(self.imgrelpaths, self._file_bboxes)]
         return out
 
 

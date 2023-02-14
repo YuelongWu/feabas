@@ -26,7 +26,7 @@
     "stiffness_func_params": {}
   },
   "tape": {
-    "enable_mesh": true,
+    "enable_mesh": false,
     "area_constraint": 0,
     "render": true,
     "render_weight": 1.0e-6,
