@@ -68,7 +68,7 @@ if __name__ == '__main__':
     maskdir = 'F:/Fish2/test_alignment/64nm/masks_match'
     outdir = 'F:/Fish2/test_alignment/64nm/meshes_for_matching'
     material_table = 'configs/example_material_table.json'
-    region_tols = {'hole': 5, 'tape': 2}
+    region_tols = {'hole': 5, 'tape': 2.5}
     resolution_src = 64
     resolution_tgt = 16
     generate_mesh_from_mask_main(maskdir, outdir, material_table=material_table,

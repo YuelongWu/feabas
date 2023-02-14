@@ -167,7 +167,7 @@ def images_to_polygons(imgs, labels, offset=(0, 0), scale=1.0, upsample=2):
                     mask = (tile == lbl)
                 if upsample != 1:
                     mask = cv2.resize(mask.astype(np.uint8), None, fx=upsample, fy=upsample, interpolation=cv2.INTER_NEAREST)
-                ct, h = find_contours(mask)
+                ct, h = find_contours(mask.astype(np.uint8))
                 pp = countours_to_polygon(ct, h, offset=xy0, scale=scale, upsample=upsample)
                 if pp is not None:
                     regions_staging[name].append(pp)
@@ -196,7 +196,7 @@ def images_to_polygons(imgs, labels, offset=(0, 0), scale=1.0, upsample=2):
             else:
                 mask = (tile == lbl)
             if upsample != 1:
-                mask = cv2.resize(mask.astype(np.uint8), None, fx=upsample, fy=upsample, interpolation=cv2.INTER_NEAREST)
+                mask = (cv2.resize(255*mask.astype(np.uint8), None, fx=upsample, fy=upsample, interpolation=cv2.INTER_LINEAR)) > 127
             ct, h = find_contours(mask)
             p_lbl = countours_to_polygon(ct, h, offset=np.array(offset), scale=scale, upsample=upsample)
             if p_lbl is not None:

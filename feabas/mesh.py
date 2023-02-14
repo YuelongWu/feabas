@@ -317,11 +317,12 @@ class Mesh:
                     area_constraint = float(mesh_area * mat.area_constraint)
                     region_id = mat.uid
                     if area_constraint == 0:
-                        regions_no_steiner.append(region_id)
+                        regions_no_steiner.extend(pts)
                     for rx, ry in pts:
                         regions.append([rx, ry, region_id, area_constraint])
-            if bool(holes):
-                PSLG['holes'] = holes
+            holes_n_nosteiner = holes + regions_no_steiner
+            if bool(holes_n_nosteiner):
+                PSLG['holes'] = holes_n_nosteiner
             if bool(regions):
                 PSLG['regions'] = regions
             tri_opt += 'Aa'
@@ -334,23 +335,26 @@ class Mesh:
                 tri_opt += area_opt
         if min_angle > 0:
             T = triangle.triangulate(PSLG, opts=tri_opt+'q{}'.format(min_angle))
-            angle_limited = True
         else:
             T = triangle.triangulate(PSLG, opts=tri_opt)
-            angle_limited = False
         if 'triangle_attributes' in T:
+            if bool(regions_no_steiner):
+                PSLG_only_holes = PSLG.copy()
+                if bool(holes):
+                    PSLG_only_holes['holes'] = holes
+                else:
+                    PSLG_only_holes.pop('holes', None)
+                T_0 = triangle.triangulate(PSLG_only_holes, 'pS0')
+                T_1 = triangle.triangulate(PSLG, 'pS0')
+                seg_0 = np.sort(T_0['segments'], axis=-1)
+                seg_1 = np.sort(T_1['segments'], axis=-1)
+                seg_0_cmplx = seg_0[:,0] + seg_0[:,1] *1j
+                seg_1_cmplx = seg_1[:,0] + seg_1[:,1] *1j
+                seg_eaten = seg_0[~np.isin(seg_0_cmplx, seg_1_cmplx)]
+                new_segs = np.concatenate((T['segments'],  seg_eaten), axis=0)
+                PSLG_only_holes.update({'vertices': T['vertices'], 'segments': new_segs})
+                T = triangle.triangulate(PSLG_only_holes, opts=tri_opt)
             material_ids = T['triangle_attributes'].squeeze().astype(np.int16)
-            if angle_limited and bool(regions_no_steiner):
-                t_indx = ~np.isin(material_ids, regions_no_steiner)
-                tri_keep = np.unique(np.concatenate((T['triangles'][t_indx], np.nonzero(T['vertex_markers'])[0]), axis=None))
-                if T['vertices'].shape[0] != tri_keep.shape[0]:
-                    v_keep = T['vertices'][tri_keep]
-                    indx = np.zeros_like(T['segments'], shape=(T['vertices'].shape[0],))
-                    indx[tri_keep] = np.arange(tri_keep.size)
-                    seg_keep = indx[T['segments']]
-                    PSLG.update({'vertices': v_keep, 'segments': seg_keep})
-                    T = triangle.triangulate(PSLG, opts=tri_opt)
-                    material_ids = T['triangle_attributes'].squeeze().astype(np.int16)
         else:
             material_ids = None
         vertices = T['vertices']
