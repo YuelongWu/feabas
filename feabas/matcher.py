@@ -1,3 +1,4 @@
+from collections import namedtuple
 import cv2
 from concurrent.futures.process import ProcessPoolExecutor
 from concurrent.futures import as_completed
@@ -6,6 +7,8 @@ from multiprocessing import get_context
 import numpy as np
 from scipy import fft
 from scipy.fftpack import next_fast_len
+import shapely.geometry as shpgeo
+from shapely.ops import unary_union
 
 from feabas.mesh import Mesh
 from feabas.renderer import MeshRenderer
@@ -245,7 +248,7 @@ def stitching_matcher(img0, img1, **kwargs):
     weight, xy0, xy1, strain = iterative_xcorr_matcher_w_mesh(mesh0, mesh1, img_loader0, img_loader1,
         conf_mode=conf_mode, conf_thresh=conf_thresh, err_method='huber', 
         err_thresh=err_thresh, opt_tol=opt_tol, spacings=spacings,
-        distributor=const.BLOCKDIST_CART_BBOX, min_num_blocks=min_num_blocks)
+        distributor='cartesian_bbox', min_num_blocks=min_num_blocks)
     if (fine_downsample != 1) and (xy0 is not None):
         xy0 = spatial.scale_coordinates(xy0, 1/fine_downsample)
         xy1 = spatial.scale_coordinates(xy1, 1/fine_downsample)
@@ -305,12 +308,15 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
     err_method = kwargs.get('err_method', 'huber')
     err_thresh = kwargs.get('err_thresh', 0)
     opt_tol = kwargs.get('opt_tol', None)
-    distributor = kwargs.get('distributor', const.BLOCKDIST_CART_BBOX)
+    distributor = kwargs.get('distributor', 'cartesian_bbox')
     min_num_blocks = kwargs.get('min_num_blocks', 2)
     shrink_factor = kwargs.get('shrink_factor', 1)
     allow_dwell = kwargs.get('allow_dwell', 0)
     compute_strain = kwargs.get('compute_strain', True)
     batch_size = kwargs.pop('batch_size', None)
+    initial_matches = kwargs.get('initial_matches', None)
+    to_pad = kwargs.get('pad', None)
+    continue_on_flip = kwargs.get('continue_on_flip', True)
     if num_workers > 1 and batch_size is not None:
         batch_size = max(1, batch_size / num_workers)
         loader_dict0 = image_loader0.init_dict()
@@ -331,6 +337,14 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
         lside = max(wd0, ht0)
         spacings[spacings < 1] *= lside
     opt = optimizer.SLM([mesh0, mesh1])
+    if initial_matches is not None:
+        xy0, xy1, weight = initial_matches
+        opt.add_link_from_coordinates(mesh0.uid, mesh1.uid, xy0, xy1,
+            gear=(const.MESH_GEAR_MOVING, const.MESH_GEAR_MOVING), weight=weight,
+            check_duplicates=False)
+        opt.optimize_affine_cascade(start_gear=const.MESH_GEAR_INITIAL, targt_gear=const.MESH_GEAR_FIXED, svd_clip=(1,1))
+        opt.anneal(gear=(const.MESH_GEAR_FIXED, const.MESH_GEAR_MOVING), mode=const.ANNEAL_COPY_EXACT)
+        opt.optimize_linear(tol=opt_tol_t, batch_num_matches=np.inf, continue_on_flip=continue_on_flip)
     spacings = np.sort(spacings)[::-1]
     sp = np.max(spacings)
     sp_indx = 0
@@ -342,7 +356,7 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
             mnb = min_num_blocks
         else:
             mnb = 1
-        if distributor == const.BLOCKDIST_CART_BBOX:
+        if distributor == 'cartesian_bbox':
             bboxes0 = distributor_cartesian_bbox(mesh0, mesh1, sp,
                 min_num_blocks=mnb, shrink_factor=shrink_factor, zorder=(num_workers>1))
         else:
@@ -356,10 +370,14 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
             else:
                 batch_size = min(max(1, num_blocks/num_workers), batch_size)
             num_batchs = int(np.ceil(num_blocks / batch_size))
+            if to_pad is None:
+                pad = not initialized
+            else:
+                pad = to_pad
             if len(num_batchs) == 1:
                 xy0, xy1, conf = bboxes_mesh_renderer_matcher(mesh0, mesh1,
                     image_loader0, image_loader1, bboxes0,
-                    batch_size=batch_size, pad=(not initialized), **kwargs)
+                    batch_size=batch_size, pad=pad, **kwargs)
             else:
                 batch_indices = np.linspace(0, num_blocks, num=num_batchs+1, endpoint=True)
                 batch_indices = np.unique(batch_indices.astype(np.int32))
@@ -368,7 +386,7 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
                 for bidx0, bidx1 in zip(batch_indices[:-1], batch_indices[1:]):
                     batched_bboxes.append(bboxes0[bidx0:bidx1])
                     batched_bboxes_union.append(common.bbox_union(bboxes0[bidx0:bidx1]))
-                target_func = partial(bboxes_mesh_renderer_matcher, pad=(not initialized), **kwargs)
+                target_func = partial(bboxes_mesh_renderer_matcher, pad=pad, **kwargs)
                 submeshes0 = mesh0.submeshes_from_bboxes(batched_bboxes_union)
                 submeshes1 = mesh1.submeshes_from_bboxes(batched_bboxes_union)
                 jobs = []
@@ -426,7 +444,7 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
                         gear=(const.MESH_GEAR_MOVING, const.MESH_GEAR_MOVING), weight=wt,
                         check_duplicates=False)
         if max_dis > 0.1:
-            opt.optimize_linear(tol=opt_tol_t, batch_num_matches=np.inf)
+            opt.optimize_linear(tol=opt_tol_t, batch_num_matches=np.inf, continue_on_flip=continue_on_flip)
             if err_thresh > 0:
                 if err_method == 'huber':
                     opt.set_link_residue_huber(err_thresh)
@@ -436,7 +454,7 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
                     raise ValueError
                 weight_modified, _ = opt.adjust_link_weight_by_residue()
                 if weight_modified and (sp_indx < spacings.size):
-                    opt.optimize_linear(tol=opt_tol_t, batch_num_matches=np.inf)
+                    opt.optimize_linear(tol=opt_tol_t, batch_num_matches=np.inf, continue_on_flip=continue_on_flip)
         initialized = True
         if sp_indx < spacings.size:
             sp = spacings[sp_indx]
@@ -548,3 +566,46 @@ def distributor_cartesian_bbox(mesh0, mesh1, spacing, **kwargs):
         idx = common.z_order(np.stack((x_rnd, y_rnd), axis=-1))
         xstt, ystt, xend, yend = xstt[idx], ystt[idx], xend[idx], yend[idx]
     return np.stack((xstt, ystt, xend, yend), axis=-1)
+
+
+def distributor_cartesian_region(mesh0, mesh1, spacing, **kwargs):
+    gear = kwargs.get('gear', const.MESH_GEAR_MOVING)
+    shrink_factor = kwargs.get('shrink_factor', 1)
+    min_boundary_distance = kwargs.get('min_edge_distance', 0)
+    zorder = kwargs.get('zorder', False)
+    region0 = mesh0.shapely_regions(gear=gear)
+    region1 = mesh1.shapely_regions(gear=gear)
+    reg_crx = region0.intersection(region1)
+    if min_boundary_distance > 0:
+        reg_crx = reg_crx.buffer(-min_boundary_distance)
+    if reg_crx.area == 0:
+        return None
+    if hasattr(reg_crx, 'geoms'):
+        regions = list(reg_crx.geoms)
+    else:
+        regions = [reg_crx]
+    cntrs = []
+    blk_hfsz = np.ceil(spacing * shrink_factor / 2)
+    for reg in regions:
+        if reg.area == 0:
+            continue
+        rx_mn, ry_mn, rx_mx, ry_mx = reg.bounds
+        rpts = reg.representative_point()
+        rx, ry = rpts.x, rpts.y
+        rx_mn = rx - ((rx - rx_mn) // spacing) * spacing
+        ry_mn = ry - ((ry - ry_mn) // spacing) * spacing
+        rxx, ryy = np.meshgrid(np.arange(rx_mn, rx_mx, spacing), np.arange(ry_mn, ry_mx, spacing))
+        rv = np.stack((rxx.ravel(), ryy.ravel()), axis=-1)
+        cntrs.append(shpgeo.MultiPoint(rv).intersection(reg))
+    cntrs = unary_union(cntrs)
+    if hasattr(cntrs, 'geoms'):
+        bcnters = np.array([(p.x, p.y) for p in cntrs.geoms])
+    else:
+        bcnters = np.array((cntrs.x, cntrs.y))
+    bboxes = np.concatenate((bcnters-blk_hfsz, bcnters+blk_hfsz), axis=-1)
+    if zorder:
+        x_rnd = np.round((bcnters[:,0] - bcnters[:,0].min()) / spacing)
+        y_rnd = np.round((bcnters[:,1] - bcnters[:,1].min()) / spacing)
+        idx = common.z_order(np.stack((x_rnd, y_rnd), axis=-1))
+        bboxes = bboxes[idx]
+    return bboxes

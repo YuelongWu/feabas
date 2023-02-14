@@ -34,7 +34,8 @@ def generate_mesh_from_mask(maskname, outname, **kwargs):
     PSLG = G.PSLG(region_tol=region_tols,  roi_tol=roi_tol, area_thresh=area_thresh)
     M = mesh.Mesh.from_PSLG(**PSLG, material_table=material_table, mesh_size=mesh_size, min_mesh_angle=20)
     M.change_resolution(resolution_tgt)
-    M.save_to_h5(outname, save_material=True)
+    mshname = os.path.splitext(os.path.basename(maskname))[0]
+    M.save_to_h5(outname, save_material=True, override_dict={'name': mshname})
 
 
 def generate_mesh_from_mask_main(maskdir, outdir, **kwargs):

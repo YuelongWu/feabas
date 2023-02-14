@@ -9,6 +9,7 @@ from scipy import sparse
 from scipy.ndimage import gaussian_filter1d
 import scipy.sparse.csgraph as csgraph
 
+import feabas.constant as const
 
 def imread(path, **kwargs):
     flag = kwargs.get('flag', cv2.IMREAD_UNCHANGED)
@@ -437,6 +438,7 @@ def parse_coordinate_files(filename, **kwargs):
     root_dir = kwargs.get('root_dir', None)
     tile_size = kwargs.get('tile_size', None)
     delimiter = kwargs.get('delimiter', '\t') # None for any whitespace
+    resolution = kwargs.get('resolution', const.DEFAULT_RESOLUTION)
     imgpaths = []
     bboxes = []
     with open(filename, 'r') as f:
@@ -459,6 +461,11 @@ def parse_coordinate_files(filename, **kwargs):
                 tile_size = (int(tlist[1]), int(tlist[2]))
             else:
                 continue
+        elif '{RESOLUTION}' in line:
+            start_line += 1
+            tlist = line.strip().split(delimiter)
+            if len(tlist) >= 2:
+                resolution = float(tlist[1])
         else:
             break
     relpath = bool(root_dir)
@@ -485,7 +492,7 @@ def parse_coordinate_files(filename, **kwargs):
             y_max = y_min + tile_size[0]
         imgpaths.append(mpath)
         bboxes.append((x_min, y_min, x_max, y_max))
-    return imgpaths, bboxes, root_dir
+    return imgpaths, bboxes, root_dir, resolution
 
 
 ##--------------------------------- caches -----------------------------------##

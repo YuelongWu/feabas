@@ -581,9 +581,21 @@ class StaticImageLoader(AbstractImageLoader):
 
     @classmethod
     def from_coordinate_file(cls, filename, **kwargs):
-        imgpaths, bboxes, root_dir = common.parse_coordinate_files(filename, **kwargs)
+        imgpaths, bboxes, root_dir, resolution = common.parse_coordinate_files(filename, **kwargs)
         kwargs.setdefault('root_dir', root_dir)
+        kwargs.setdefault('resolution', resolution)
         return cls(filepaths=imgpaths, bboxes=bboxes, **kwargs)
+
+
+    def to_coordinate_file(self, filename, **kwargs):
+        delimiter = kwargs.get('delimiter', '\t')
+        with open(filename, 'w') as f:
+            f.write(f'{{ROOT_DIR}}{delimiter}{self.imgrootdir}\n')
+            f.write(f'{{RESOLUTION}}{delimiter}{self.resolution}\n')
+            for imgpath, bbox in zip(self.imgrelpaths, self._file_bboxes):
+                bbox_str = [str(s) for s in bbox]
+                line = delimiter.join((imgpath, *bbox_str))
+                f.write(line+'\n')
 
 
     def _cache_image(self, fileid, img=None, **kwargs):

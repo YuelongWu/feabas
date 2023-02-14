@@ -64,7 +64,7 @@ class Stitcher:
 
     @classmethod
     def from_coordinate_file(cls, filename, **kwargs):
-        imgpaths, bboxes, root_dir = common.parse_coordinate_files(filename, **kwargs)
+        imgpaths, bboxes, root_dir, _ = common.parse_coordinate_files(filename, **kwargs)
         return cls(imgpaths, bboxes, root_dir=root_dir)
 
 
