@@ -23,8 +23,13 @@ def fit_affine(pts0, pts1, return_rigid=False, weight=None, svd_clip=(1,1)):
     mm1 = pts1.mean(axis=0)
     pts0 = pts0 - mm0
     pts1 = pts1 - mm1
-    pts0_pad = np.insert(pts0, 2, 1, axis=-1)
-    pts1_pad = np.insert(pts1, 2, 1, axis=-1)
+    std0 = np.sum(np.std(pts0, axis=0)**2, axis=None) ** 0.5
+    std1 = np.sum(np.std(pts1, axis=0)**2, axis=None) ** 0.5
+    std_scl = max(std0, std1)
+    if std_scl < 1e-6:
+        std_scl = 1
+    pts0_pad = np.insert(pts0/std_scl, 2, 1, axis=-1)
+    pts1_pad = np.insert(pts1/std_scl, 2, 1, axis=-1)
     if weight is not None:
         weight = weight ** 0.5
         pts0_pad = pts0_pad * weight.reshape(-1, 1)
@@ -41,8 +46,8 @@ def fit_affine(pts0, pts1, return_rigid=False, weight=None, svd_clip=(1,1)):
         pts1_rot90 = pts1[:,::-1] * np.array([1,-1])
         pts0 = np.concatenate((pts0, pts0_rot90), axis=0)
         pts1 = np.concatenate((pts1, pts1_rot90), axis=0)
-        pts0_pad = np.insert(pts0, 2, 1, axis=-1)
-        pts1_pad = np.insert(pts1, 2, 1, axis=-1)
+        pts0_pad = np.insert(pts0/std_scl, 2, 1, axis=-1)
+        pts1_pad = np.insert(pts1/std_scl, 2, 1, axis=-1)
         res = np.linalg.lstsq(pts1_pad, pts0_pad, rcond=None)
         A = res[0]
     if return_rigid:
