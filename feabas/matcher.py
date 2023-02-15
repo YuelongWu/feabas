@@ -368,8 +368,12 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
     continue_on_flip = kwargs.get('continue_on_flip', True)
     if num_workers > 1 and batch_size is not None:
         batch_size = max(1, batch_size / num_workers)
-        loader_dict0 = image_loader0.init_dict()
-        loader_dict1 = image_loader1.init_dict()
+        if isinstance(image_loader0, dal.AbstractImageLoader):
+            loader_dict0 = image_loader0.init_dict()
+            loader_dict1 = image_loader1.init_dict()
+        else:
+            loader_dict0 = image_loader0
+            loader_dict1 = image_loader1
     # if any spacing value smaller than 1, means they are relative to longer side
     spacings = np.array(spacings, copy=False)
     linear_system = mesh0.is_linear and mesh1.is_linear
@@ -421,20 +425,24 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
         if bboxes0 is None:
             return invalid_output
         num_blocks = bboxes0.shape[0]
+        if batch_size is not None:
+            batch_size_s = np.round(batch_size * (np.max(spacings) / sp) ** 2)
+        else:
+            batch_size_s = None
         if num_workers > 1:
-            if batch_size is None:
-                batch_size = max(1, num_blocks/num_workers)
+            if batch_size_s is None:
+                batch_size_s = max(1, num_blocks/num_workers)
             else:
-                batch_size = min(max(1, num_blocks/num_workers), batch_size)
-            num_batchs = int(np.ceil(num_blocks / batch_size))
+                batch_size_s = min(max(1, num_blocks/num_workers), batch_size_s)
+            num_batchs = int(np.ceil(num_blocks / batch_size_s))
             if to_pad is None:
                 pad = not initialized
             else:
                 pad = to_pad
-            if len(num_batchs) == 1:
+            if num_batchs == 1:
                 xy0, xy1, conf = bboxes_mesh_renderer_matcher(mesh0, mesh1,
                     image_loader0, image_loader1, bboxes0,
-                    batch_size=batch_size, pad=pad, **kwargs)
+                    batch_size=batch_size_s, pad=pad, **kwargs)
             else:
                 batch_indices = np.linspace(0, num_blocks, num=num_batchs+1, endpoint=True)
                 batch_indices = np.unique(batch_indices.astype(np.int32))
@@ -467,7 +475,7 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
         else:
             xy0, xy1, conf = bboxes_mesh_renderer_matcher(mesh0, mesh1,
                 image_loader0, image_loader1, bboxes0,
-                batch_size=batch_size, pad=(not initialized), **kwargs)
+                batch_size=batch_size_s, pad=(not initialized), **kwargs)
         if np.all(conf <= conf_thresh):
             if not initialized:
                 return invalid_output
@@ -604,9 +612,14 @@ def bboxes_mesh_renderer_matcher(mesh0, mesh1, image_loader0, image_loader1, bbo
         xy0.append(xy0_b)
         xy1.append(xy1_b)
         conf.append(conf_b)
-    xy0 = np.concatenate(xy0, axis=0)
-    xy1 = np.concatenate(xy1, axis=0)
-    conf = np.concatenate(conf, axis=0)
+    if len(xy0) > 0:
+        xy0 = np.concatenate(xy0, axis=0)
+        xy1 = np.concatenate(xy1, axis=0)
+        conf = np.concatenate(conf, axis=0)
+    else:
+        xy0 = np.empty((0,2))
+        xy0 = np.empty((0,2))
+        conf = np.empty(0)
     return xy0, xy1, conf
 
 

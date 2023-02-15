@@ -612,6 +612,9 @@ class Mesh:
         generate multiple submeshes at the same time to save triangles_rtree overhead.
         """
         tree = self.triangles_rtree(gear=gear)
+        bboxes = np.array(bboxes, copy=True)
+        bboxes[..., 0::2] -= self.offset(gear=gear).ravel()[0]
+        bboxes[..., 1::2] -= self.offset(gear=gear).ravel()[1]
         submeshes = []
         for bbox in bboxes:
             idx = np.unique(list(tree.intersection(bbox, objects=False)))
@@ -1479,14 +1482,17 @@ class Mesh:
         return mask
 
 
-    def shapely_regions(self, gear=None, tri_mask=None):
+    def shapely_regions(self, gear=None, tri_mask=None, offsetting=True):
         """
         return the shapely (Multi)Polygon that cover the region of the triangles.
         """
         if gear is None:
             gear = self._current_gear
         grouped_chains = self._grouped_segment_chains(tri_mask=tri_mask)
-        vertices = self.vertices_w_offset(gear=gear)
+        if offsetting:
+            vertices = self.vertices_w_offset(gear=gear)
+        else:
+            vertices = self.vertices(gear=gear)
         polygons = []
         for chains in grouped_chains:
             P0 = shpgeo.Polygon(vertices[chains[0]]).buffer(0)
@@ -1569,7 +1575,7 @@ class Mesh:
             g_mask = groupings == g
             if not np.any(g_mask):
                 continue
-            geometry_list.append(self.shapely_regions(gear=gear, tri_mask=g_mask))
+            geometry_list.append(self.shapely_regions(gear=gear, tri_mask=g_mask, offsetting=False))
             mpl_tri, v_indx, _ = self.mpl_tri(gear=gear, tri_mask=g_mask)
             mattri_list.append(mpl_tri)
             tindex_list.append(np.nonzero(g_mask)[0])
@@ -2178,7 +2184,13 @@ class Mesh:
         svds = self.triangle_tform_svd(gear=(const.MESH_GEAR_INITIAL, gear), tri_mask=indx_glb)
         deforms = Mesh.svds_to_deform(svds)
         # graph coloring for grouping
-        order = np.argsort(deforms) # start from good ones
+        if asymmetry:
+            order = np.argsort(deforms) # start from good ones
+        else:
+            mindindx = np.argmin(deforms)
+            D = self._triangle_distances(tri_mask=tri_mask)
+            d0 = csgraph.shortest_path(D, directed=False, indices=mindindx)[indx_glb]
+            order = np.argsort(d0)
         deforms_ordered = deforms[order]
         order_nonflip = order[deforms_ordered<1]
         order_flip = order[deforms_ordered>=1]
@@ -2208,7 +2220,7 @@ class Mesh:
         if asymmetry:
             groupings[indx_loc] = colors
         else:
-            D = self._triangle_distances(tri_mask=tri_mask)
+            # D = self._triangle_distances(tri_mask=tri_mask)
             dis = []
             for c in np.unique(colors):
                 start_pos = indx_loc[colors == c]

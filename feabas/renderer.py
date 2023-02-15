@@ -123,7 +123,7 @@ class MeshRenderer:
         """
         xy0 = np.array(xy, copy=False).reshape(-1,2)
         if offsetting:
-            xy0 -= self._offset
+            xy0 = xy0 - self._offset
         if len(self._interpolators) == 1:
             return np.zeros(xy0.shape[0], dtype=np.int32)
         else:
@@ -178,10 +178,10 @@ class MeshRenderer:
         """
         bbox0 = np.array(bbox).reshape(4)
         if len(self._interpolators) == 1:
-            hits = 0
+            hits = [0]
         else:
             if offsetting:
-                bbox0 -= np.tile(self._offset.ravel(), 2)
+                bbox0 = bbox0 - np.tile(self._offset.ravel(), 2)
             rect = shpgeo.box(*bbox0)
             hits = self._region_tree.query(rect, predicate='intersects')
         return np.atleast_1d(hits)
@@ -195,7 +195,7 @@ class MeshRenderer:
             return False
         bbox0 = np.array(bbox).reshape(4)
         if offsetting:
-            bbox0 -= np.tile(self._offset.ravel(), 2)
+            bbox0 = bbox0 - np.tile(self._offset.ravel(), 2)
         rect = shpgeo.box(*bbox0)
         return rect.intersects(self._collision_region)
 
