@@ -604,9 +604,14 @@ def bboxes_mesh_renderer_matcher(mesh0, mesh1, image_loader0, image_loader1, bbo
         xy0.append(xy0_b)
         xy1.append(xy1_b)
         conf.append(conf_b)
-    xy0 = np.concatenate(xy0, axis=0)
-    xy1 = np.concatenate(xy1, axis=0)
-    conf = np.concatenate(conf, axis=0)
+    if len(xy0) > 0:
+        xy0 = np.concatenate(xy0, axis=0)
+        xy1 = np.concatenate(xy1, axis=0)
+        conf = np.concatenate(conf, axis=0)
+    else:
+        xy0 = np.empty((0,2))
+        xy0 = np.empty((0,2))
+        conf = np.empty(0)
     return xy0, xy1, conf
 
 
