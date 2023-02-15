@@ -161,7 +161,8 @@ def stitching_matcher(img0, img1, **kwargs):
     mask1 = kwargs.get('mask1', None)
     conf_mode = kwargs.get('conf_mode', const.FFT_CONF_MIRROR)
     conf_thresh = kwargs.get('conf_thresh', 0.3)
-    err_thresh = kwargs.get('err_thresh', 5)
+    residue_mode = kwargs.get('residue_mode', 'huber')
+    residue_len = kwargs.get('residue_len', 5)
     opt_tol = kwargs.get('opt_tol', None)
     coarse_downsample = kwargs.get('coarse_downsample', 1)
     fine_downsample = kwargs.get('fine_downsample', 1)
@@ -226,7 +227,7 @@ def stitching_matcher(img0, img1, **kwargs):
             img1_f = common.masked_dog_filter(img1_f, sigma*fine_downsample, mask=mask1_f)
     tx0 = tx0 * fine_downsample / coarse_downsample
     ty0 = ty0 * fine_downsample / coarse_downsample
-    err_thresh = err_thresh * fine_downsample
+    residue_len = residue_len * fine_downsample
     img_loader0 = dal.StreamLoader(img0_f, fillval=0)
     img_loader1 = dal.StreamLoader(img1_f, fillval=0)
     if np.any(spacings < 1):
@@ -246,8 +247,8 @@ def stitching_matcher(img0, img1, **kwargs):
     mesh0.apply_translation((tx0, ty0), const.MESH_GEAR_FIXED)
     mesh0.lock()
     xy0, xy1, weight, strain = iterative_xcorr_matcher_w_mesh(mesh0, mesh1, img_loader0, img_loader1,
-        conf_mode=conf_mode, conf_thresh=conf_thresh, err_method='huber',
-        err_thresh=err_thresh, opt_tol=opt_tol, spacings=spacings,
+        conf_mode=conf_mode, conf_thresh=conf_thresh, residue_mode=residue_mode,
+        residue_len=residue_len, opt_tol=opt_tol, spacings=spacings,
         distributor='cartesian_bbox', min_num_blocks=min_num_blocks)
     if (fine_downsample != 1) and (xy0 is not None):
         xy0 = spatial.scale_coordinates(xy0, 1/fine_downsample)
@@ -321,7 +322,7 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
             matching. check feabas.constant for options.
         conf_thresh: the threshold of template matching confidence values below
             which the match will be discarded.
-        err_thresh: the threshold of the residue error distance between matching
+        residue_len: the threshold of the residue error distance between matching
             points after mesh relaxation. Matches larger than this will be cut.
         opt_tol: the stopping tolerance for the mesh relaxation steps.
         spacings(list): the distances between the neighboring sample blocks for
@@ -353,12 +354,12 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
     """
     num_workers = kwargs.get('num_workers', 1)
     conf_thresh = kwargs.get('conf_thresh', 0.3)
-    err_method = kwargs.get('err_method', 'huber')
-    err_thresh = kwargs.get('err_thresh', 0)
+    residue_mode = kwargs.get('residue_mode', 'huber')
+    residue_len = kwargs.get('residue_len', 0)
     opt_tol = kwargs.get('opt_tol', None)
     distributor = kwargs.get('distributor', 'cartesian_bbox')
     min_num_blocks = kwargs.get('min_num_blocks', 2)
-    min_edge_distance = kwargs.get('min_edge_distance', 0)
+    min_boundary_distance = kwargs.get('min_boundary_distance', 0)
     shrink_factor = kwargs.get('shrink_factor', 1)
     allow_dwell = kwargs.get('allow_dwell', 0)
     compute_strain = kwargs.get('compute_strain', True)
@@ -418,7 +419,7 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
                 min_num_blocks=mnb, shrink_factor=shrink_factor, zorder=(num_workers>1))
         elif distributor == 'cartesian_region':
             bboxes0 = distributor_cartesian_region(mesh0, mesh1, sp,
-                min_edge_distance=min_edge_distance, shrink_factor=shrink_factor,
+                min_boundary_distance=min_boundary_distance, shrink_factor=shrink_factor,
                 zorder=(num_workers>1))
         else:
             raise ValueError
@@ -442,7 +443,7 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
             if num_batchs == 1:
                 xy0, xy1, conf = bboxes_mesh_renderer_matcher(mesh0, mesh1,
                     image_loader0, image_loader1, bboxes0,
-                    batch_size=batch_size_s, pad=pad, **kwargs)
+                    batch_size=batch_size, pad=pad, **kwargs)
             else:
                 batch_indices = np.linspace(0, num_blocks, num=num_batchs+1, endpoint=True)
                 batch_indices = np.unique(batch_indices.astype(np.int32))
@@ -475,7 +476,7 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
         else:
             xy0, xy1, conf = bboxes_mesh_renderer_matcher(mesh0, mesh1,
                 image_loader0, image_loader1, bboxes0,
-                batch_size=batch_size_s, pad=(not initialized), **kwargs)
+                batch_size=batch_size, pad=(not initialized), **kwargs)
         if np.all(conf <= conf_thresh):
             if not initialized:
                 return invalid_output
@@ -513,11 +514,11 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
                 opt.optimize_linear(tol=opt_tol_t, batch_num_matches=np.inf, continue_on_flip=continue_on_flip)
             else:
                 opt.optimize_Newton_Raphson(maxepoch=3, tol=opt_tol_t, batch_num_matches=np.inf, continue_on_flip=continue_on_flip)
-            if err_thresh > 0:
-                if err_method == 'huber':
-                    opt.set_link_residue_huber(err_thresh)
-                elif err_method == 'threshold':
-                    opt.set_link_residue_threshold(err_thresh)
+            if residue_len > 0:
+                if residue_mode == 'huber':
+                    opt.set_link_residue_huber(residue_len)
+                elif residue_mode == 'threshold':
+                    opt.set_link_residue_threshold(residue_len)
                 else:
                     raise ValueError
                 weight_modified, _ = opt.adjust_link_weight_by_residue()
@@ -647,7 +648,7 @@ def distributor_cartesian_bbox(mesh0, mesh1, spacing, **kwargs):
 def distributor_cartesian_region(mesh0, mesh1, spacing, **kwargs):
     gear = kwargs.get('gear', const.MESH_GEAR_MOVING)
     shrink_factor = kwargs.get('shrink_factor', 1)
-    min_boundary_distance = kwargs.get('min_edge_distance', 0)
+    min_boundary_distance = kwargs.get('min_boundary_distance', 0)
     zorder = kwargs.get('zorder', False)
     region0 = mesh0.shapely_regions(gear=gear)
     region1 = mesh1.shapely_regions(gear=gear)

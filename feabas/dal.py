@@ -81,18 +81,26 @@ def _tile_divider_block(imght, imgwd, x0=0, y0=0, cache_block_size=0):
 
 ##------------------------------ image loaders -------------------------------##
 
-def get_loader_from_json(json_info):
+def get_loader_from_json(json_info, loader_type=None, **kwargs):
     if isinstance(json_info, str):
         if json_info.endswith('.json'):
             with open(json_info, 'r') as f:
                 json_obj = json.load(f)
+        elif json_info.endswith('.txt'): # could use tab separated txt, not recommend
+            if loader_type == 'StaticImageLoader':
+                loader = StaticImageLoader.from_coordinate_file(json_info)
+            else:
+                loader = MosaicLoader.from_coordinate_file(json_info)
+            json_obj = loader.init_dict()
         else:
             json_obj = json.loads(json_info)
     elif isinstance(json_info, dict):
         json_obj = json_info
     else:
         raise TypeError
-    loader_type = json_obj['ImageLoaderType']
+    json_obj.update(kwargs)
+    if loader_type is None:
+        loader_type = json_obj['ImageLoaderType']
     if loader_type == 'DynamicImageLoader':
         return DynamicImageLoader.from_json(json_obj)
     elif loader_type == 'StaticImageLoader':

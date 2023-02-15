@@ -5,6 +5,7 @@ from scipy import sparse
 
 from feabas import spatial, common
 import feabas.constant as const
+from feabas.mesh import Mesh
 
 
 class Link:
@@ -495,6 +496,8 @@ class SLM:
         with separated/combined meshes are updated.
         """
         modified = False
+        if len(self.links) == 0:
+            return modified
         relevance = np.array([self.link_is_relevant(lnk) for lnk in self.links])
         if np.all(relevance == 1):
             return modified
@@ -776,8 +779,8 @@ class SLM:
             svd_clip (tuple): the limit on the svds of the affine transforms.
                 default to (1,1) as rigid.
         """
-        start_gear = kwargs.get('start_gear', const.MESH_GEAR_MOVING)
         targt_gear = kwargs.get('target_gear', const.MESH_GEAR_MOVING)
+        start_gear = kwargs.get('start_gear', targt_gear)
         svd_clip = kwargs.get('svd_clip', (1, 1))
         Adj = self.linkage_adjacency()
         to_optimize = ~self.lock_flags
@@ -1280,3 +1283,27 @@ class SLM:
             return [elem] * list_len
         else:
             return elem
+
+
+
+def transform_mesh(mesh_mov, mesh_fix, **kwargs):
+    uid_mov = mesh_mov.uid
+    locked_mov = mesh_mov.locked
+    mesh_fix = mesh_fix.copy(override_dict={'locked': True, 'uid': 0})
+    mesh_mov = mesh_fix.copy(override_dict={'locked': False, 'uid': 1})
+    xy_fix = mesh_fix.vertices_w_offset(gear=const.MESH_GEAR_INITIAL)
+    xy_mov = mesh_mov.vertices_w_offset(gear=const.MESH_GEAR_INITIAL)
+    xy0 = np.concatenate((xy_fix, xy_mov), axis=0)
+    opt = SLM([mesh_fix, mesh_mov], stiffness_lambda=0.1)
+    opt.divide_disconnected_submeshes()
+    opt.add_link_from_coordinates(mesh_fix.uid, mesh_mov.uid, xy0, xy0, check_duplicates=False)
+    opt.optimize_affine_cascade()
+    opt.anneal(gear=(const.MESH_GEAR_MOVING, const.MESH_GEAR_FIXED), mode=const.ANNEAL_CONNECTED_RIGID)
+    if mesh_mov.is_linear:
+        opt.optimize_linear(**kwargs)
+    else:
+        opt.optimize_Newton_Raphson(**kwargs)
+    rel_meshes = [m for m in opt.meshes if np.floor(m.uid)==1]
+    mesh_mov = Mesh.combine_mesh(rel_meshes, uid=uid_mov, locked=locked_mov)
+    mesh_mov.locked = locked_mov
+    return mesh_mov
