@@ -403,10 +403,10 @@ class MeshRenderer:
             y_field = spatial.scale_coordinates(y_field, scale)
         imgt = common.render_by_subregions(x_field, y_field, mask, image_loader, **kwargs)
         if (log_sigma > 0) and (imgt is not None):
-            if len(imgt.size) > 2:
+            if len(imgt.shape) > 2:
                 imgt = np.moveaxis(imgt, -1, 0)
             imgt = common.masked_dog_filter(imgt, log_sigma, mask=mask)
-            if len(imgt.size) > 2:
+            if len(imgt.shape) > 2:
                 imgt = np.moveaxis(imgt, 0, -1)
         return imgt
 

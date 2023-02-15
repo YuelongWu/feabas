@@ -489,7 +489,7 @@ class SLM:
         return link_added
 
 
-    def prune_links(self, *kwargs):
+    def prune_links(self, **kwargs):
         """
         prune links so that irrelevant links are removed and links associated
         with separated/combined meshes are updated.
@@ -968,11 +968,11 @@ class SLM:
                 needs more RAM but faster
         """
         maxepoch = kwargs.get('maxepoch', 5)
-        tol = kwargs.get('step_tol', 1e-7)
-        atol = kwargs.get('step_atol', None)
+        tol = kwargs.get('tol', 1e-7)
+        atol = kwargs.get('atol', None)
         maxiter = SLM.expand_to_list(kwargs.get('maxiter', None), maxepoch)
-        step_tol = SLM.expand_to_list(kwargs.get('step_tol', 1e-6), maxepoch)
-        step_atol = SLM.expand_to_list(kwargs.get('step_atol', None), maxepoch)
+        step_tol = SLM.expand_to_list(kwargs.get('step_tol', tol), maxepoch)
+        step_atol = SLM.expand_to_list(kwargs.get('step_atol', atol), maxepoch)
         stiffness_lambda = SLM.expand_to_list(kwargs.get('stiffness_lambda', self._stiffness_lambda), maxepoch)
         crosslink_lambda = SLM.expand_to_list(kwargs.get('crosslink_lambda', self._crosslink_lambda), maxepoch)
         residue_mode = SLM.expand_to_list(kwargs.get('residue_mode', None), maxepoch)
@@ -1255,13 +1255,13 @@ class SLM:
         xy0 = link.xy0(gear=working_gear, use_mask=False, combine=True)
         xy1 = link.xy1(gear=working_gear, use_mask=False, combine=True)
         weight = link._weight
-        if link._name == link.default_name:
+        if link.name == link.default_name:
             name = None
         else:
-            name = link._name
+            name = link.name
         out_links = []
-        for m0 in mesh0_list:
-            for m1 in mesh1_list:
+        for m0 in mesh0_list[0]:
+            for m1 in mesh1_list[0]:
                 lnk, mask = Link.from_coordinates(m0, m1, xy0, xy1, gear=(working_gear, working_gear),
                     weight=weight, name=name, **kwargs)
                 lnk.duplicate_weight_func(link)

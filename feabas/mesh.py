@@ -256,6 +256,8 @@ class Mesh:
         self._resolution = kwargs.get('resolution', const.DEFAULT_RESOLUTION)
         self._epsilon = kwargs.get('epsilon', const.EPSILON0)
         self._name = kwargs.get('name', '')
+        if isinstance(self._name, np.ndarray):
+            self._name = common.numpy_to_str_ascii(self._name)
         self.token = kwargs.get('token', None)
         self._default_cache = kwargs.get('cache', defaultdict(lambda: True))
         if self.token is None:
@@ -1243,6 +1245,20 @@ class Mesh:
     @property
     def material_table(self):
         return self._material_table.id_table
+
+
+    @property
+    def is_linear(self):
+        if not hasattr(self, '_linearity') or self._linearity is None:
+            material_table = self.material_table
+            linearity = True
+            for mid in np.unique(self.material_ids):
+                mat = material_table[mid]
+                if not mat.is_linear:
+                    linearity = False
+                    break
+            self._linearity = linearity
+        return self._linearity
 
 
     def segments(self, tri_mask=None, **kwargs):

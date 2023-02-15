@@ -372,6 +372,7 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
         loader_dict1 = image_loader1.init_dict()
     # if any spacing value smaller than 1, means they are relative to longer side
     spacings = np.array(spacings, copy=False)
+    linear_system = mesh0.is_linear and mesh1.is_linear
     min_block_size_multiplier = 4
     strain = 0.0
     invalid_output = (None, None, 0, strain)
@@ -391,9 +392,12 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
         opt.add_link_from_coordinates(mesh0.uid, mesh1.uid, xy0, xy1,
             gear=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_INITIAL), weight=weight,
             check_duplicates=False)
-        opt.optimize_affine_cascade(start_gear=const.MESH_GEAR_INITIAL, targt_gear=const.MESH_GEAR_FIXED, svd_clip=(1,1))
+        opt.optimize_affine_cascade(start_gear=const.MESH_GEAR_INITIAL, target_gear=const.MESH_GEAR_FIXED, svd_clip=(1,1))
         opt.anneal(gear=(const.MESH_GEAR_FIXED, const.MESH_GEAR_MOVING), mode=const.ANNEAL_COPY_EXACT)
-        opt.optimize_linear(tol=1e-6, batch_num_matches=np.inf, continue_on_flip=continue_on_flip)
+        if linear_system:
+            opt.optimize_linear(tol=1e-5, batch_num_matches=np.inf, continue_on_flip=continue_on_flip)
+        else:
+            opt.optimize_Newton_Raphson(maxepoch=5, tol=1e-4, batch_num_matches=np.inf, continue_on_flip=continue_on_flip)
     spacings = np.sort(spacings)[::-1]
     sp = np.max(spacings)
     sp_indx = 0
@@ -497,7 +501,10 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
                         gear=(const.MESH_GEAR_MOVING, const.MESH_GEAR_MOVING), weight=wt,
                         check_duplicates=False)
         if max_dis > 0.1:
-            opt.optimize_linear(tol=opt_tol_t, batch_num_matches=np.inf, continue_on_flip=continue_on_flip)
+            if linear_system:
+                opt.optimize_linear(tol=opt_tol_t, batch_num_matches=np.inf, continue_on_flip=continue_on_flip)
+            else:
+                opt.optimize_Newton_Raphson(maxepoch=3, tol=opt_tol_t, batch_num_matches=np.inf, continue_on_flip=continue_on_flip)
             if err_thresh > 0:
                 if err_method == 'huber':
                     opt.set_link_residue_huber(err_thresh)
@@ -507,7 +514,10 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
                     raise ValueError
                 weight_modified, _ = opt.adjust_link_weight_by_residue()
                 if weight_modified and (sp_indx < spacings.size):
-                    opt.optimize_linear(tol=opt_tol_t, batch_num_matches=np.inf, continue_on_flip=continue_on_flip)
+                    if linear_system:
+                        opt.optimize_linear(tol=opt_tol_t, batch_num_matches=np.inf, continue_on_flip=continue_on_flip)
+                    else:
+                        opt.optimize_Newton_Raphson(maxepoch=3, tol=opt_tol_t, batch_num_matches=np.inf, continue_on_flip=continue_on_flip)
         initialized = True
         if sp_indx < spacings.size:
             sp = spacings[sp_indx]
