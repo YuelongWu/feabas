@@ -194,7 +194,7 @@ def parse_args(args=None):
     parser = argparse.ArgumentParser(description="Run stitching")
     parser.add_argument("--start", metavar="start", type=int, default=0)
     parser.add_argument("--step", metavar="step", type=int, default=1)
-    parser.add_argument("--stop", metavar="step", type=int, default=0)
+    parser.add_argument("--stop", metavar="stop", type=int, default=0)
     return parser.parse_args(args)
 
 

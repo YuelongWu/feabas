@@ -1,5 +1,6 @@
 from collections import defaultdict
 import gc
+import h5py
 import numpy as np
 from scipy import sparse
 
@@ -62,6 +63,15 @@ class Link:
                 weight = weight[indx1]
             indx0[indx0] = indx1
         return cls(mesh0, mesh1, tid0, tid1, B0, B1, weight=weight, **kwargs), indx0
+
+
+    def save_to_h5(self, fname):
+        with h5py.File(fname, 'w') as f:
+            f.create_dataset('tid0', data=self._tid0, compression="gzip")
+            f.create_dataset('tid1', data=self._tid1, compression="gzip")
+            f.create_dataset('B0', data=self._B0, compression="gzip")
+            f.create_dataset('B1', data=self._B1, compression="gzip")
+            f.create_dataset('weight', data=self._weight, compression="gzip")
 
 
     def combine_link(self, other):

@@ -52,17 +52,20 @@ def match_section_from_initial_matches(match_name, meshes, loaders, out_dir, con
     if isinstance(conf, str) and conf.endswith('.yaml'):
         with open(conf, 'r') as f:
             conf = yaml.safe_load(f)
-        if 'matching' in conf:
-            conf = conf['matching']
+    if 'matching' in conf:
+        conf = conf['matching']
     elif conf is None:
         conf = {}
     elif not isinstance(conf, dict):
         raise TypeError('configuration type not supported.')
     match_name_delimiter = conf.get('match_name_delimiter', '__to__')
-    resolution = conf.get('resoltion', const.DEFAULT_RESOLUTION)
+    resolution = conf.get('working_resolution', const.DEFAULT_RESOLUTION)
     loader_config = conf.get('loader_config', {})
     matcher_config = conf.get('matcher_config', {})
     secnames = os.path.splitext(os.path.basename(match_name))[0].split(match_name_delimiter)
+    if 'cache_size' in loader_config and loader_config['cache_size'] is not None:
+        loader_config = loader_config.copy()
+        loader_config['cache_size'] = loader_config['cache_size'] // (2 * matcher_config.get('num_workers',1))
     if isinstance(meshes, str):
         meshes = (os.path.join(meshes, secnames[0]+'.h5'), os.path.join(meshes, secnames[1]+'.h5'))
     if isinstance(meshes, (tuple, list)):
@@ -113,3 +116,24 @@ def match_section_from_initial_matches(match_name, meshes, loaders, out_dir, con
         f.create_dataset('resolution', data=resolution)
         f.create_dataset('name0', data=str_to_numpy_ascii(secnames[0]))
         f.create_dataset('name1', data=str_to_numpy_ascii(secnames[1]))
+    return len(xy0)
+
+
+
+class Stack:
+    """
+    A stack of sections used for optimization.
+    Args:
+        section_mapper(dict): a dictionary maps the id of a section to its name.
+    Kwargs:
+        mesh_dir(str): path to the folder where the mesh can be cached/retrieved.
+        match_dir(str): path to the folder where the matches can be cached/retrieved.
+    """
+    def __init__(self, section_mapper, **kwargs):
+        pass
+
+
+
+class DiskCache:
+    def __init__(self):
+        pass
