@@ -65,15 +65,6 @@ class Link:
         return cls(mesh0, mesh1, tid0, tid1, B0, B1, weight=weight, **kwargs), indx0
 
 
-    def save_to_h5(self, fname):
-        with h5py.File(fname, 'w') as f:
-            f.create_dataset('tid0', data=self._tid0, compression="gzip")
-            f.create_dataset('tid1', data=self._tid1, compression="gzip")
-            f.create_dataset('B0', data=self._B0, compression="gzip")
-            f.create_dataset('B1', data=self._B1, compression="gzip")
-            f.create_dataset('weight', data=self._weight, compression="gzip")
-
-
     def combine_link(self, other):
         if other is None:
             return
@@ -520,8 +511,8 @@ class SLM:
             if flag == 1:
                 new_links.append(lnk)
             elif flag == -1:
-                m0_list = self.select_mesh_from_uid(lnk.uids[0])
-                m1_list = self.select_mesh_from_uid(lnk.uids[1])
+                m0_list, _ = self.select_mesh_from_uid(lnk.uids[0])
+                m1_list, _ = self.select_mesh_from_uid(lnk.uids[1])
                 dlinks = SLM.distribute_link(m0_list, m1_list, lnk,
                     working_gear=working_gear, exclusive=submesh_exclusive,
                     inner_cache=self._shared_cache)
@@ -1284,19 +1275,32 @@ class SLM:
     def distribute_link(mesh0_list, mesh1_list, link, exclusive=True,
                         working_gear=const.MESH_GEAR_INITIAL, **kwargs):
         """ distribute a single links to accommodate separated meshes. """
-        xy0 = link.xy0(gear=working_gear, use_mask=False, combine=True)
-        xy1 = link.xy1(gear=working_gear, use_mask=False, combine=True)
-        weight = link._weight
-        if link.name == link.default_name:
-            name = None
+        if isinstance(link, Link):
+            link_initialized = True
+        elif isinstance(link, common.Match):
+            link_initialized = False
         else:
-            name = link.name
+            raise TypeError
+        if link_initialized:
+            xy0 = link.xy0(gear=working_gear, use_mask=False, combine=True)
+            xy1 = link.xy1(gear=working_gear, use_mask=False, combine=True)
+            weight = link._weight
+            if link.name == link.default_name:
+                name = None
+            else:
+                name = link.name
+        else:
+            xy0 = link.xy0
+            xy1 = link.xy1
+            weight = link.weight
+            name = None
         out_links = []
-        for m0 in mesh0_list[0]:
-            for m1 in mesh1_list[0]:
+        for m0 in mesh0_list:
+            for m1 in mesh1_list:
                 lnk, mask = Link.from_coordinates(m0, m1, xy0, xy1, gear=(working_gear, working_gear),
                     weight=weight, name=name, **kwargs)
-                lnk.duplicate_weight_func(link)
+                if link_initialized:
+                    lnk.duplicate_weight_func(link)
                 if lnk is not None:
                     out_links.append(lnk)
                 if exclusive:

@@ -1,4 +1,4 @@
-from collections import namedtuple, defaultdict, OrderedDict
+from collections import defaultdict, OrderedDict
 import h5py
 import numpy as np
 import glob
@@ -9,11 +9,10 @@ from feabas.mesh import Mesh
 from feabas import dal
 from feabas.spatial import scale_coordinates
 from feabas.matcher import section_matcher
+from feabas.optimizer import SLM
 import feabas.constant as const
-from feabas.common import str_to_numpy_ascii
+from feabas.common import str_to_numpy_ascii, Match
 
-
-Match = namedtuple('Match', ('xy0', 'xy1', 'weight'))
 
 
 def read_matches_from_h5(match_name, target_resolution=None):
@@ -144,16 +143,22 @@ class Stack:
         self._mesh_cache_size = kwargs.get('mesh_cache_size', None)
         self._link_cache_size = kwargs.get('link_cache_size', None)
         self._match_name_delimiter = kwargs.get('match_name_delimiter', '__to__')
-        self.lock_flags = kwargs.get('lock_flags', defaultdict(lambda: False))
+        lock_flags = kwargs.get('lock_flags', None)
         mesh_cache = kwargs.get('mesh_cache', {})
         link_cache = kwargs.get('link_cache', {})
+        self._resolution = kwargs.get('working_resolution', const.DEFAULT_RESOLUTION)
         self._mesh_cache = OrderedDict()
         self._mesh_cache.update(mesh_cache)
         self._link_cache = OrderedDict()
         self._link_cache.update(link_cache)
+        self._lock_flags = defaultdict(lambda: False)
+        if isinstance(lock_flags, dict):
+            self._lock_flags.update(lock_flags)
+        elif isinstance(lock_flags, (tuple, list, np.ndarray)):
+            self._lock_flags.update({nm: flg for nm, flg in zip(self.section_list, lock_flags)})
         if bool(self._mesh_cache):
-            for meshname, m in self._mesh_cache.items():
-                self.lock_flags[meshname] = m[0].locked
+            self.normalize_mesh_lock_status()
+            self.normalize_mesh_resoltion()
         if match_list is None:
             if self._match_dir is not None:
                 mlist = glob.glob(os.path.join(self._match_dir, '*.h5'))
@@ -167,10 +172,29 @@ class Stack:
         self.match_list = self.filtered_match_list(match_list=match_list)
 
 
+    def normalize_mesh_resoltion(self):
+        for mshes in self._mesh_cache.values():
+            for msh in mshes:
+                msh.change_resolution(self._resolution)
+
+
+    def normalize_mesh_lock_status(self, secnames=None):
+        if secnames is None:
+            secnames = list(self._mesh_cache.keys())
+        for mshname in secnames:
+            if mshname not in self._mesh_cache:
+                continue
+            mshes = self._mesh_cache[mshname]
+            lock_flag = self.lock_flags[mshname]
+            for msh in mshes:
+                msh.locked = lock_flag
+
+
     def get_mesh(self, secname):
         if not isinstance(secname, str):
             secname = self.section_list[int(secname)]   # indexing by id
         if secname in self._mesh_cache:
+            self._mesh_cache.move_to_end(secname, last=True)
             return self._mesh_cache[secname]
         elif self._mesh_dir is None:
             raise RuntimeError('mesh_dir not defined.')
@@ -179,40 +203,104 @@ class Stack:
             if not os.path.isfile(meshpath):
                 raise RuntimeError(f'{meshpath} not found.')
             uid = self.secname_to_id(secname)
-            locked = self.lock_flags[secname]
+            locked = self._lock_flags[secname]
             M = Mesh.from_h5(meshpath, uid=uid, locked=locked, name=secname)
+            M.change_resolution(self._resolution)
             Ms = M.divide_disconnected_mesh(save_material=True)
-            if (self._mesh_cache_size is not None) and self._mesh_cache_size > 0:
+            if (self._mesh_cache_size is None) or (self._mesh_cache_size > 0):
                 self._mesh_cache[secname] = Ms
-            if (self._mesh_cache_size is not None):
+            if self._mesh_cache_size is not None:
                 while len(self._mesh_cache) > self._mesh_cache_size:
-                    cached_name, cached_Ms = self._mesh_cache.popitem(last=False)
-                    if self._mesh_dir is not None:
-                        cached_M = Mesh.combine_mesh(cached_Ms, save_material=True)
-                        outname = os.path.join(self._mesh_dir, cached_name+'.h5')
-                        cached_M.save_to_h5(outname, vertex_flags=const.MESH_GEARS, save_material=True)
+                    self.dump_first_mesh()
             return Ms
 
 
-    def flush(self):
+    def flush_meshes(self):
         while bool(self._mesh_cache):
-            cached_name, cached_Ms = self._mesh_cache.popitem(last=False)
-            if self._mesh_dir is not None:
-                cached_M = Mesh.combine_mesh(cached_Ms, save_material=True)
-                outname = os.path.join(self._mesh_dir, cached_name+'.h5')
-                cached_M.save_to_h5(outname, vertex_flags=const.MESH_GEARS, save_material=True)
+            self.dump_first_mesh()
 
 
-    def filtered_match_list(self, match_list=None, secnames=None):
+    def dump_first_mesh(self):
+        """self._mesh_cache is a FIFO cache"""
+        cached_name, cached_Ms = self._mesh_cache.popitem(last=False)
+        rel_match_names = self.secname_to_matchname_mapper[cached_name]
+        if self._mesh_dir is not None:
+            cached_M = Mesh.combine_mesh(cached_Ms, save_material=True)
+            outname = os.path.join(self._mesh_dir, cached_name+'.h5')
+            cached_M.save_to_h5(outname, vertex_flags=const.MESH_GEARS, save_material=True)
+        for matchname in rel_match_names:
+            self.dump_link(matchname)
+
+
+    def get_link(self, matchname):
+        if matchname in self._link_cache:
+            self._link_cache.move_to_end(matchname, last=True)
+            return self._link_cache[matchname]
+        names = self.matchname_to_secnames(matchname)
+        if (not names[0] in self._mesh_cache) or (not names[1] in self._mesh_cache):
+            return None
+        else:
+            mesh_list0 = self._mesh_cache[names[0]]
+            mesh_list1 = self._mesh_cache[names[1]]
+        if self._match_dir is None:
+            raise RuntimeError('match_dir not defined.')
+        else:
+            matchpath = os.path.join(self._match_dir, matchname+'.h5')
+            if not os.path.isfile(matchpath):
+                raise RuntimeError(f'{matchpath} not found.')
+            mtch = read_matches_from_h5(matchpath, target_resolution=self._resolution)
+            links = SLM.distribute_link(mesh_list0, mesh_list1, mtch)
+            if (self._link_cache_size is None) or (self._link_cache_size > 0):
+                self._link_cache[matchname] = links
+            if self._link_cache_size is not None:
+                while len(self._link_cache) > self._link_cache_size:
+                    self.dump_link()
+            return links
+
+
+    def dump_link(self, matchname=None):
+        if matchname is None:
+            self._link_cache.popitem(last=False)
+        elif matchname in self._link_cache:
+            self._link_cache.pop(matchname)
+
+
+    def initialize_SLM(self, secnames=None, **kwargs):
+        # temporarily increase the mesh cache size to make sure all the meshes
+        # exist in the cache during the time of SLM creation. they are saved in
+        # SLM anyway so no point to free them up now.
+        mesh_cache_size0 = self._mesh_cache_size
+        if secnames is None:
+            secnames = self.section_list
+        if mesh_cache_size0 is not None:
+            self._mesh_cache_size = max(len(secnames), mesh_cache_size0)
+        match_list = self.filtered_match_list(secnames=secnames, check_lock=True)
+        meshes = []
+        for secname in secnames:
+            meshes.append(self.get_mesh(secname))
+        links = []
+        for matchname in match_list:
+            links.append(self.get_link(matchname))
+        optm = SLM(meshes, links, **kwargs)
+        self._mesh_cache_size = mesh_cache_size0
+        return optm
+
+
+    def filtered_match_list(self, match_list=None, secnames=None, check_lock=True):
         if match_list is None:
             match_list = self.match_list
         if secnames is None:
             secnames = self.section_list
+        secnames = set(secnames)
         filtered_match_list = []
         for matchname in self.match_list:
-            names = matchname.split(self._match_name_delimiter)
-            if names[0] in secnames and names[1] in secnames:
-                filtered_match_list.append(matchname)
+            names = self.matchname_to_secnames(matchname)
+            if (names[0] not in secnames) or (names[1] not in secnames):
+                continue
+            if check_lock:
+                if self.lock_flags[names[0]] and self.lock_flags[names[1]]:
+                    continue
+            filtered_match_list.append(matchname)
         return tuple(filtered_match_list)
 
 
@@ -220,6 +308,44 @@ class Stack:
         if not hasattr(self, '_name_id_lut'):
             self._name_id_lut = {name: k for k, name in enumerate(self.section_list)}
         return self._name_id_lut.get(secname, -1)
+
+
+    def matchname_to_secnames(self, matchname):
+        return matchname.split(self._match_name_delimiter)
+
+
+    @property
+    def lock_flags(self):
+        return self._lock_flags
+
+
+    @lock_flags.setter
+    def lock_flags(self, flags):
+        self._lock_flags.update(flags)
+        self.normalize_mesh_lock_status(secnames=list(flags.keys()))
+    
+
+    @property
+    def secname_to_matchname_mapper(self):
+        if not hasattr(self, '_secname_to_matchname_mapper'):
+            self._secname_to_matchname_mapper = defaultdict(set)
+            for matchname in self.match_list:
+                names = self.matchname_to_secnames(matchname)
+                self._secname_to_matchname_mapper[names[0]].add(matchname)
+                self._secname_to_matchname_mapper[names[1]].add(matchname)
+        return self._secname_to_matchname_mapper
+
+
+    @property
+    def matchname_to_secids_mapper(self):
+        if not hasattr(self, '_matchname_to_secids_mapper'):
+            self._matchname_to_secids_mapper  = OrderedDict()
+            for matchname in self.match_list:
+                names = self.matchname_to_secnames(matchname)
+                id0, id1 = self.secname_to_id(names[0]), self.secname_to_id(names[1])
+                if (id0 >= 0) and (id1 >= 0):
+                    self._matchname_to_secids_mapper[matchname] = [id0, id1]
+        return self._matchname_to_secids_mapper
 
 
     @property

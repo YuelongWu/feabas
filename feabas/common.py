@@ -1,3 +1,4 @@
+from collections import namedtuple
 import cv2
 import collections
 import gc
@@ -10,6 +11,10 @@ from scipy.ndimage import gaussian_filter1d
 import scipy.sparse.csgraph as csgraph
 
 import feabas.constant as const
+
+
+Match = namedtuple('Match', ('xy0', 'xy1', 'weight'))
+
 
 def imread(path, **kwargs):
     flag = kwargs.get('flag', cv2.IMREAD_UNCHANGED)
