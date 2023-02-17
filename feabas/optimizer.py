@@ -1070,6 +1070,13 @@ class SLM:
         return cost0, cost
 
 
+    def optimize_elastic(self, **kwargs):
+        if self.is_linear:
+            return self.optimize_linear(**kwargs)
+        else:
+            return self.optimize_Newton_Raphson(**kwargs)
+
+
     def relative_lambda(self, stiffness_lambda, crosslink_lambda):
         if (stiffness_lambda < 0) or (crosslink_lambda < 0):
             if (self._stiffness_matrix is None) or (self._crosslink_terms is None):
@@ -1093,6 +1100,18 @@ class SLM:
         stiffness_lambda, crosslink_lambda = self.relative_lambda(stiffness_lambda, crosslink_lambda)
         Cs_rht, Cs_rht = self._crosslink_terms
         return np.linalg.norm(crosslink_lambda * Cs_rht - stiffness_lambda * stress_v)
+
+
+    @property
+    def is_linear(self):
+        linearity = True
+        for m in self.meshes:
+            if m.locked:
+                continue
+            if not m.is_linear:
+                linearity = False
+                break
+        return linearity
 
 
   ## ----------------------------- cached attr ----------------------------- ##
@@ -1304,15 +1323,12 @@ def transform_mesh(mesh_mov, mesh_fix, **kwargs):
     xy_fix = mesh_fix.vertices_w_offset(gear=const.MESH_GEAR_INITIAL)
     xy_mov = mesh_mov.vertices_w_offset(gear=const.MESH_GEAR_INITIAL)
     xy0 = np.concatenate((xy_fix, xy_mov), axis=0)
-    opt = SLM([mesh_fix, mesh_mov], stiffness_lambda=0.1)
+    opt = SLM([mesh_fix, mesh_mov], stiffness_lambda=0.01)
     opt.divide_disconnected_submeshes()
     opt.add_link_from_coordinates(mesh_fix.uid, mesh_mov.uid, xy0, xy0, check_duplicates=False)
     opt.optimize_affine_cascade()
     opt.anneal(gear=(const.MESH_GEAR_MOVING, const.MESH_GEAR_FIXED), mode=const.ANNEAL_CONNECTED_RIGID)
-    if mesh_mov.is_linear:
-        opt.optimize_linear(**kwargs)
-    else:
-        opt.optimize_Newton_Raphson(**kwargs)
+    opt.optimize_elastic(**kwargs)
     rel_meshes = [m for m in opt.meshes if np.floor(m.uid)==1]
     mesh_mov = Mesh.combine_mesh(rel_meshes, uid=uid_mov, locked=locked_mov)
     mesh_mov.locked = locked_mov

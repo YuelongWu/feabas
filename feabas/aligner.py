@@ -1,6 +1,7 @@
-from collections import namedtuple
+from collections import namedtuple, defaultdict, OrderedDict
 import h5py
 import numpy as np
+import glob
 import os
 import yaml
 
@@ -124,16 +125,103 @@ class Stack:
     """
     A stack of sections used for optimization.
     Args:
-        section_mapper(dict): a dictionary maps the id of a section to its name.
+        section_list(tuple): a list of section names in the order as in the stack.
+        match_list(tuple): a list of all the match names.
+        section_list & match_list should mostly be immutable once created.
     Kwargs:
         mesh_dir(str): path to the folder where the mesh can be cached/retrieved.
         match_dir(str): path to the folder where the matches can be cached/retrieved.
+        mesh_cache(dict): maps mesh name to a list of connected mesh.Mesh object.
+        link_cache(dict): maps link name to their optimizer.Link object.
+        mesh_cache_size, link_cache_size (int): maximum size of the caches.
+        match_name_delimiter: delimiter to split match name into two section names.
     """
-    def __init__(self, section_mapper, **kwargs):
-        pass
+    def __init__(self, section_list, match_list=None, **kwargs):
+        assert len(section_list) == len(set(section_list))
+        self.section_list = tuple(section_list)
+        self._mesh_dir = kwargs.get('mesh_dir', None)
+        self._match_dir = kwargs.get('match_dir', None)
+        self._mesh_cache_size = kwargs.get('mesh_cache_size', None)
+        self._link_cache_size = kwargs.get('link_cache_size', None)
+        self._match_name_delimiter = kwargs.get('match_name_delimiter', '__to__')
+        self.lock_flags = kwargs.get('lock_flags', defaultdict(lambda: False))
+        mesh_cache = kwargs.get('mesh_cache', {})
+        link_cache = kwargs.get('link_cache', {})
+        self._mesh_cache = OrderedDict()
+        self._mesh_cache.update(mesh_cache)
+        self._link_cache = OrderedDict()
+        self._link_cache.update(link_cache)
+        if bool(self._mesh_cache):
+            for meshname, m in self._mesh_cache.items():
+                self.lock_flags[meshname] = m[0].locked
+        if match_list is None:
+            if self._match_dir is not None:
+                mlist = glob.glob(os.path.join(self._match_dir, '*.h5'))
+                if bool(mlist):
+                    match_list = [os.path.basename(m).replace('.h5', '') for m in mlist]
+            if match_list is None:
+                if bool(self._link_cache):
+                    match_list = list(self._link_cache.keys())
+                else:
+                    raise RuntimeError('no match list found.')
+        self.match_list = self.filtered_match_list(match_list=match_list)
 
 
+    def get_mesh(self, secname):
+        if not isinstance(secname, str):
+            secname = self.section_list[int(secname)]   # indexing by id
+        if secname in self._mesh_cache:
+            return self._mesh_cache[secname]
+        elif self._mesh_dir is None:
+            raise RuntimeError('mesh_dir not defined.')
+        else:
+            meshpath = os.path.join(self._mesh_dir, secname+'.h5')
+            if not os.path.isfile(meshpath):
+                raise RuntimeError(f'{meshpath} not found.')
+            uid = self.secname_to_id(secname)
+            locked = self.lock_flags[secname]
+            M = Mesh.from_h5(meshpath, uid=uid, locked=locked, name=secname)
+            Ms = M.divide_disconnected_mesh(save_material=True)
+            if (self._mesh_cache_size is not None) and self._mesh_cache_size > 0:
+                self._mesh_cache[secname] = Ms
+            if (self._mesh_cache_size is not None):
+                while len(self._mesh_cache) > self._mesh_cache_size:
+                    cached_name, cached_Ms = self._mesh_cache.popitem(last=False)
+                    if self._mesh_dir is not None:
+                        cached_M = Mesh.combine_mesh(cached_Ms, save_material=True)
+                        outname = os.path.join(self._mesh_dir, cached_name+'.h5')
+                        cached_M.save_to_h5(outname, vertex_flags=const.MESH_GEARS, save_material=True)
+            return Ms
 
-class DiskCache:
-    def __init__(self):
-        pass
+
+    def flush(self):
+        while bool(self._mesh_cache):
+            cached_name, cached_Ms = self._mesh_cache.popitem(last=False)
+            if self._mesh_dir is not None:
+                cached_M = Mesh.combine_mesh(cached_Ms, save_material=True)
+                outname = os.path.join(self._mesh_dir, cached_name+'.h5')
+                cached_M.save_to_h5(outname, vertex_flags=const.MESH_GEARS, save_material=True)
+
+
+    def filtered_match_list(self, match_list=None, secnames=None):
+        if match_list is None:
+            match_list = self.match_list
+        if secnames is None:
+            secnames = self.section_list
+        filtered_match_list = []
+        for matchname in self.match_list:
+            names = matchname.split(self._match_name_delimiter)
+            if names[0] in secnames and names[1] in secnames:
+                filtered_match_list.append(matchname)
+        return tuple(filtered_match_list)
+
+
+    def secname_to_id(self, secname):
+        if not hasattr(self, '_name_id_lut'):
+            self._name_id_lut = {name: k for k, name in enumerate(self.section_list)}
+        return self._name_id_lut.get(secname, -1)
+
+
+    @property
+    def num_sections(self):
+        return len(self.section_list)
