@@ -829,7 +829,7 @@ class MosaicLoader(StaticImageLoader):
                     blk, indx = super().crop(bbox, fileid, return_empty=return_empty, return_index=True, **kwargs)
                     if blk is not None:
                         out[indx] = blk
-        else:
+        if not initialized:
             if return_empty:
                 out = super().crop(bbox, 0, return_empty=True, return_index=False, **kwargs)
             else:

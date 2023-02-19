@@ -135,27 +135,36 @@ class Stack:
         mesh_cache_size, link_cache_size (int): maximum size of the caches.
         match_name_delimiter: delimiter to split match name into two section names.
     """
-    def __init__(self, section_list, match_list=None, **kwargs):
-        assert len(section_list) == len(set(section_list))
-        self.section_list = tuple(section_list)
+  ## --------------------------- initialization ---------------------------- ##
+    def __init__(self, section_list=None, match_list=None, **kwargs):
         self._mesh_dir = kwargs.get('mesh_dir', None)
         self._match_dir = kwargs.get('match_dir', None)
-        self._mesh_cache_size = kwargs.get('mesh_cache_size', None)
+        if section_list is None:
+            if self._mesh_dir is None:
+                raise RuntimeError('mesh_dir not defined.')
+            slist = glob.glob(os.path.join(self._mesh_dir, '*.h5'))
+            if bool(slist):
+                section_list = sorted([os.path.basename(s).replace('.h5', '') for s in slist])
+            else:
+                raise RuntimeError('no section found.')
+        assert len(section_list) == len(set(section_list))
+        self.section_list = tuple(section_list)
+        self._mesh_cache_size = kwargs.get('mesh_cache_size', self.num_sections)
         self._link_cache_size = kwargs.get('link_cache_size', None)
         self._match_name_delimiter = kwargs.get('match_name_delimiter', '__to__')
         lock_flags = kwargs.get('lock_flags', None)
         mesh_cache = kwargs.get('mesh_cache', {})
         link_cache = kwargs.get('link_cache', {})
-        self._resolution = kwargs.get('working_resolution', const.DEFAULT_RESOLUTION)
+        self._resolution = kwargs.get('resolution', const.DEFAULT_RESOLUTION)
         self._mesh_cache = OrderedDict()
         self._mesh_cache.update(mesh_cache)
         self._link_cache = OrderedDict()
         self._link_cache.update(link_cache)
-        self._lock_flags = defaultdict(lambda: False)
+        self.lock_flags = defaultdict(lambda: False)
         if isinstance(lock_flags, dict):
-            self._lock_flags.update(lock_flags)
+            self.lock_flags.update(lock_flags)
         elif isinstance(lock_flags, (tuple, list, np.ndarray)):
-            self._lock_flags.update({nm: flg for nm, flg in zip(self.section_list, lock_flags)})
+            self.lock_flags.update({nm: flg for nm, flg in zip(self.section_list, lock_flags)})
         if bool(self._mesh_cache):
             self.normalize_mesh_lock_status()
             self.normalize_mesh_resoltion()
@@ -190,6 +199,11 @@ class Stack:
                 msh.locked = lock_flag
 
 
+    def init_dict(self, secnames):
+        init_dict = {}
+
+
+  ## --------------------------- meshes & matches -------------------------- ##
     def get_mesh(self, secname):
         if not isinstance(secname, str):
             secname = self.section_list[int(secname)]   # indexing by id
@@ -203,15 +217,14 @@ class Stack:
             if not os.path.isfile(meshpath):
                 raise RuntimeError(f'{meshpath} not found.')
             uid = self.secname_to_id(secname)
-            locked = self._lock_flags[secname]
+            locked = self.lock_flags[secname]
             M = Mesh.from_h5(meshpath, uid=uid, locked=locked, name=secname)
             M.change_resolution(self._resolution)
             Ms = M.divide_disconnected_mesh(save_material=True)
-            if (self._mesh_cache_size is None) or (self._mesh_cache_size > 0):
+            if self._mesh_cache_size > 0:
                 self._mesh_cache[secname] = Ms
-            if self._mesh_cache_size is not None:
-                while len(self._mesh_cache) > self._mesh_cache_size:
-                    self.dump_first_mesh()
+            while len(self._mesh_cache) > self._mesh_cache_size:
+                self.dump_first_mesh()
             return Ms
 
 
@@ -265,6 +278,39 @@ class Stack:
             self._link_cache.pop(matchname)
 
 
+    def filtered_match_list(self, match_list=None, secnames=None, check_lock=True):
+        if match_list is None:
+            match_list = self.match_list
+        if secnames is None:
+            secnames = self.section_list
+        secnames = set(secnames)
+        filtered_match_list = []
+        for matchname in match_list:
+            names = self.matchname_to_secnames(matchname)
+            if (names[0] not in secnames) or (names[1] not in secnames):
+                continue
+            if check_lock:
+                if self.lock_flags[names[0]] and self.lock_flags[names[1]]:
+                    continue
+            filtered_match_list.append(matchname)
+        return tuple(filtered_match_list)
+
+
+    def filter_section_list_from_matches(self, match_list=None, secnames=None):
+        if match_list is None:
+            match_list = self.match_list
+        if secnames is None:
+            secnames = self.section_list
+        new_section_list = set()
+        for matchname in match_list:
+            names = self.matchname_to_secnames(matchname)
+            new_section_list.update(names)
+        id_sec = sorted([(self.secname_to_id(s), s) for s in new_section_list])
+        filtered_sections = [s[1] for s in id_sec if s[0]>=0]
+        return tuple(filtered_sections)
+
+
+  ## ----------------------------- optimization ---------------------------- ##
     def initialize_SLM(self, secnames=None, **kwargs):
         # temporarily increase the mesh cache size to make sure all the meshes
         # exist in the cache during the time of SLM creation. they are saved in
@@ -286,24 +332,39 @@ class Stack:
         return optm
 
 
-    def filtered_match_list(self, match_list=None, secnames=None, check_lock=True):
-        if match_list is None:
-            match_list = self.match_list
-        if secnames is None:
-            secnames = self.section_list
-        secnames = set(secnames)
-        filtered_match_list = []
-        for matchname in self.match_list:
-            names = self.matchname_to_secnames(matchname)
-            if (names[0] not in secnames) or (names[1] not in secnames):
-                continue
-            if check_lock:
-                if self.lock_flags[names[0]] and self.lock_flags[names[1]]:
-                    continue
-            filtered_match_list.append(matchname)
-        return tuple(filtered_match_list)
+    def optimize_slide_window(self, **kwargs):
+        num_workers = kwargs.pop('num_workers', 1)
+        fixed_section = kwargs.pop('fixed_section', None)
+        optimize_rigid = kwargs.get('optimize_rigid', True)
+        rigid_params = kwargs.get('rigid_params', {})
+        optimize_elastic = kwargs.get('optimize_elastic', True)
+        elastic_params = kwargs.get('elastic_params', {})
+        window_size = kwargs.get('window_size', None)
+        if window_size is None:
+            window_size = self.num_sections
+        if fixed_section is not None:
+            self.unlock_all()
+            if not isinstance(fixed_section, str):
+                fixed_section = self.section_list[int(fixed_section)]   # indexing by id
+            self.update_lock_flags({fixed_section: True})
 
 
+    def update_lock_flags(self, flags):
+        self.lock_flags.update(flags)
+        self.normalize_mesh_lock_status(secnames=list(flags.keys()))
+
+
+    def unlock_all(self):
+        flags = {secname: False for secname in self.section_list}
+        self.update_lock_flags(flags)
+
+
+    @property
+    def locked_array(self):
+        return np.array([self.locked_array[s] for s in self.section_list], copy=False)
+
+
+  ## -------------------------------- queries ------------------------------ ##
     def secname_to_id(self, secname):
         if not hasattr(self, '_name_id_lut'):
             self._name_id_lut = {name: k for k, name in enumerate(self.section_list)}
@@ -313,17 +374,6 @@ class Stack:
     def matchname_to_secnames(self, matchname):
         return matchname.split(self._match_name_delimiter)
 
-
-    @property
-    def lock_flags(self):
-        return self._lock_flags
-
-
-    @lock_flags.setter
-    def lock_flags(self, flags):
-        self._lock_flags.update(flags)
-        self.normalize_mesh_lock_status(secnames=list(flags.keys()))
-    
 
     @property
     def secname_to_matchname_mapper(self):
@@ -351,3 +401,10 @@ class Stack:
     @property
     def num_sections(self):
         return len(self.section_list)
+
+
+    @staticmethod
+    def subprocess_optimize_stack(init_dict, process_name, **kwargs):
+        stack = Stack(**init_dict)
+        func = getattr(stack, process_name)
+        return func(**kwargs)

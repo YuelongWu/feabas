@@ -1299,6 +1299,8 @@ class SLM:
             for m1 in mesh1_list:
                 lnk, mask = Link.from_coordinates(m0, m1, xy0, xy1, gear=(working_gear, working_gear),
                     weight=weight, name=name, **kwargs)
+                if lnk is None:
+                    continue
                 if link_initialized:
                     lnk.duplicate_weight_func(link)
                 if lnk is not None:
