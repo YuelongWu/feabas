@@ -2189,7 +2189,7 @@ class Mesh:
         else:
             mindindx = np.argmin(deforms)
             D = self._triangle_distances(tri_mask=tri_mask)
-            d0 = csgraph.shortest_path(D, directed=False, indices=mindindx)[indx_glb]
+            d0 = csgraph.shortest_path(D, directed=False, indices=mindindx)[indx_loc]
             order = np.argsort(d0)
         deforms_ordered = deforms[order]
         order_nonflip = order[deforms_ordered<1]

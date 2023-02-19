@@ -41,7 +41,7 @@ if __name__ == '__main__':
     os.makedirs(out_dir, exist_ok=True)
     
     tlist = sorted(glob.glob(os.path.join(thumb_dir, '*'+ext)))
-    mlist = sorted(os.path.join(match_dir, '*.h5'))
+    mlist = sorted(glob.glob(os.path.join(match_dir, '*.h5')))
     mlist_pairnames = [os.path.splitext(os.path.basename(m))[0].split(delimiter) for m in mlist]
     prev_lut = defaultdict(list)
     post_lut = defaultdict(list)
@@ -64,7 +64,7 @@ if __name__ == '__main__':
             x = np.round(pts[:,0].clip(0, imgwd-1)).astype(np.int32)
             y = np.round(pts[:,1].clip(0, imght-1)).astype(np.int32)
             mask0[y, x] = 1
-        for mname in prev_lut[tname_noext]:
+        for mname in post_lut[tname_noext]:
             m = parse_h5_match(mname, target_resolution=thumb_res)
             pts = m[tname_noext]
             x = np.round(pts[:,0].clip(0, imgwd-1)).astype(np.int32)

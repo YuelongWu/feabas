@@ -1,4 +1,7 @@
 from collections import defaultdict, OrderedDict
+from concurrent.futures.process import ProcessPoolExecutor
+from concurrent.futures import as_completed
+from multiprocessing import get_context
 import h5py
 import numpy as np
 import glob
@@ -138,6 +141,7 @@ class Stack:
   ## --------------------------- initialization ---------------------------- ##
     def __init__(self, section_list=None, match_list=None, **kwargs):
         self._mesh_dir = kwargs.get('mesh_dir', None)
+        self._mesh_out_dir = kwargs.get('mesh_out_dir', self._mesh_dir)
         self._match_dir = kwargs.get('match_dir', None)
         if section_list is None:
             if self._mesh_dir is None:
@@ -199,8 +203,24 @@ class Stack:
                 msh.locked = lock_flag
 
 
-    def init_dict(self, secnames):
+    def init_dict(self, secnames=None, include_cache=False, check_lock=False, **kwargs):
         init_dict = {}
+        init_dict['mesh_dir'] = self._mesh_dir
+        init_dict['mesh_out_dir'] = self._mesh_out_dir
+        init_dict['match_dir'] = self._match_dir
+        match_list = self.filtered_match_list(secnames=secnames, check_lock=check_lock)
+        section_list = self.filter_section_list_from_matches(match_list)
+        init_dict['section_list'] = section_list
+        init_dict['match_list'] = match_list
+        init_dict['lock_flags'] = {s: self.lock_flags[s] for s in section_list}
+        init_dict['resolution'] = self._resolution
+        init_dict['mesh_cache_size'] = self._mesh_cache_size
+        init_dict['link_cache_size'] = self._link_cache_size
+        if include_cache:
+            init_dict['mesh_cache'] = {s: self._mesh_cache[s] for s in section_list if s in self._mesh_cache}
+            init_dict['link_cache'] = {s: self._link_cache[s] for s in match_list if s in self._link_cache}
+        init_dict.update(kwargs)
+        return init_dict
 
 
   ## --------------------------- meshes & matches -------------------------- ##
@@ -213,7 +233,9 @@ class Stack:
         elif self._mesh_dir is None:
             raise RuntimeError('mesh_dir not defined.')
         else:
-            meshpath = os.path.join(self._mesh_dir, secname+'.h5')
+            meshpath = os.path.join(self._mesh_out_dir, secname+'.h5')
+            if not os.path.isfile(meshpath):
+                meshpath = os.path.join(self._mesh_dir, secname+'.h5')
             if not os.path.isfile(meshpath):
                 raise RuntimeError(f'{meshpath} not found.')
             uid = self.secname_to_id(secname)
@@ -237,9 +259,9 @@ class Stack:
         """self._mesh_cache is a FIFO cache"""
         cached_name, cached_Ms = self._mesh_cache.popitem(last=False)
         rel_match_names = self.secname_to_matchname_mapper[cached_name]
-        if self._mesh_dir is not None:
+        if self._mesh_out_dir is not None:
             cached_M = Mesh.combine_mesh(cached_Ms, save_material=True)
-            outname = os.path.join(self._mesh_dir, cached_name+'.h5')
+            outname = os.path.join(self._mesh_out_dir, cached_name+'.h5')
             cached_M.save_to_h5(outname, vertex_flags=const.MESH_GEARS, save_material=True)
         for matchname in rel_match_names:
             self.dump_link(matchname)
@@ -318,9 +340,10 @@ class Stack:
         mesh_cache_size0 = self._mesh_cache_size
         if secnames is None:
             secnames = self.section_list
+        match_list = self.filtered_match_list(secnames=secnames, check_lock=True)
+        secnames = self.filter_section_list_from_matches(match_list=match_list)
         if mesh_cache_size0 is not None:
             self._mesh_cache_size = max(len(secnames), mesh_cache_size0)
-        match_list = self.filtered_match_list(secnames=secnames, check_lock=True)
         meshes = []
         for secname in secnames:
             meshes.append(self.get_mesh(secname))
@@ -334,19 +357,112 @@ class Stack:
 
     def optimize_slide_window(self, **kwargs):
         num_workers = kwargs.pop('num_workers', 1)
-        fixed_section = kwargs.pop('fixed_section', None)
+        locked_section = kwargs.pop('locked_section', None)
+        start_loc = kwargs.pop('start_loc', 'L') # L or R or M
+        target_gear = kwargs.get('target_gear', const.MESH_GEAR_MOVING)
         optimize_rigid = kwargs.get('optimize_rigid', True)
         rigid_params = kwargs.get('rigid_params', {})
         optimize_elastic = kwargs.get('optimize_elastic', True)
         elastic_params = kwargs.get('elastic_params', {})
         window_size = kwargs.get('window_size', None)
-        if window_size is None:
+        func_name = 'optimize_slide_window'
+        if (window_size is None) or window_size > self.num_sections:
             window_size = self.num_sections
-        if fixed_section is not None:
+            start_loc = 'L'
+        buffer_size = kwargs.get('buffer_size', window_size//4)
+        if locked_section is not None:
             self.unlock_all()
-            if not isinstance(fixed_section, str):
-                fixed_section = self.section_list[int(fixed_section)]   # indexing by id
-            self.update_lock_flags({fixed_section: True})
+            if not isinstance(locked_section, str):
+                locked_section = self.section_list[int(locked_section)]   # indexing by id
+            self.update_lock_flags({locked_section: True})
+            locked_idx = self.secname_to_id(locked_section)
+            init_idx0 = locked_idx - window_size//2
+            if (init_idx0 + window_size) >= self.num_sections:
+                init_idx0 = self.num_sections - window_size
+                start_loc = 'R'
+            elif init_idx0 <= 0:
+                init_idx0 = 0
+                start_loc = 'L'
+            else:
+                start_loc = 'M'
+        elif start_loc == 'L':
+            init_idx0 = 0
+        elif start_loc == 'R':
+            init_idx0 = self.num_sections - window_size
+        elif start_loc == 'M':
+            init_idx0 = (self.num_sections - window_size)//2
+        costs = {}
+        if start_loc == 'L':
+            indices0 = np.arange(init_idx0, self.num_sections, window_size-buffer_size)
+            for idx0 in indices0:
+                seclst = self.section_list[init_idx0:(idx0+window_size)]
+                optm = self.initialize_SLM(seclst)
+                if optimize_rigid:
+                    optm.optimize_affine_cascade(target_gear=target_gear, **rigid_params)
+                    if target_gear != const.MESH_GEAR_FIXED:
+                        optm.anneal(gear=(target_gear, const.MESH_GEAR_FIXED), mode=const.ANNEAL_CONNECTED_RIGID)
+                if optimize_elastic:
+                    cst = optm.optimize_elastic(target_gear=target_gear, **elastic_params)
+                    costs['_'.join((self.section_list[idx0], seclst[-1]))] = cst
+                if idx0 + window_size >= self.num_sections:
+                    self.flush_meshes()
+                    break
+                self.update_lock_flags({s:True for s in seclst[:-buffer_size]})
+        elif start_loc == 'R':
+            indices1 = np.arange(self.num_sections, 0, buffer_size-window_size)
+            for idx1 in indices1:
+                idx0 = max(0, idx1 - window_size)
+                seclst = self.section_list[idx0:]
+                optm = self.initialize_SLM(seclst)
+                if optimize_rigid:
+                    optm.optimize_affine_cascade(target_gear=target_gear, **rigid_params)
+                    if target_gear != const.MESH_GEAR_FIXED:
+                        optm.anneal(gear=(target_gear, const.MESH_GEAR_FIXED), mode=const.ANNEAL_CONNECTED_RIGID)
+                if optimize_elastic:
+                    cst = optm.optimize_elastic(target_gear=target_gear, **elastic_params)
+                    costs['_'.join((self.section_list[idx0], seclst[-1]))] = cst
+                if idx0 == 0:
+                    self.flush_meshes()
+                    break
+                self.update_lock_flags({s:True for s in seclst[buffer_size:]})
+        else:
+            assert window_size > 2 * buffer_size + 1
+            seclst = self.section_list[init_idx0:(init_idx0+window_size)]
+            optm = self.initialize_SLM(seclst)
+            if optimize_rigid:
+                optm.optimize_affine_cascade(target_gear=target_gear, **rigid_params)
+                if target_gear != const.MESH_GEAR_FIXED:
+                    optm.anneal(gear=(target_gear, const.MESH_GEAR_FIXED), mode=const.ANNEAL_CONNECTED_RIGID)
+            if optimize_elastic:
+                cst = optm.optimize_elastic(target_gear=target_gear, **elastic_params)
+                costs['_'.join((self.section_list[idx0], seclst[-1]))] = cst
+            self.flush_meshes()
+            sections_to_lock = seclst[buffer_size:-buffer_size]
+            self.update_lock_flags({s:True for s in sections_to_lock})
+            lock_id0, lock_id1 = self.secname_to_id(sections_to_lock[0]), self.secname_to_id(sections_to_lock[-1])
+            matchlist_l = self.filtered_match_list(self.section_list[lock_id0:], check_lock=True)
+            seclist_l = self.filter_section_list_from_matches(match_list=matchlist_l)
+            kwargs_l = kwargs.copy()
+            init_dict_l = self.init_dict(secnames=seclist_l, check_lock=True)
+            init_dict_r = self.init_dict(secnames=seclist_r, check_lock=True)
+            kwargs_l['start_loc'] = 'L'
+            matchlist_r = self.filtered_match_list(self.section_list[:lock_id1], check_lock=True)
+            seclist_r = self.filter_section_list_from_matches(match_list=matchlist_r)
+            kwargs_r = kwargs.copy()
+            kwargs_r['start_loc'] = 'R'
+            if num_workers > 1:
+                jobs = []
+                with ProcessPoolExecutor(max_workers=2, mp_context=get_context('spawn')) as executor:
+                    jobs.append(executor.submit(Stack.subprocess_optimize_stack, init_dict_l, func_name, **kwargs_l))
+                    jobs.append(executor.submit(Stack.subprocess_optimize_stack, init_dict_r, func_name, **kwargs_r))
+                    for job in as_completed(jobs):
+                        costs.update(job.result())
+            else:
+                cst = Stack.subprocess_optimize_stack(init_dict_l, func_name, **kwargs_l)
+                costs.update(cst)
+                cst = Stack.subprocess_optimize_stack(init_dict_r, func_name, **kwargs_r)
+                costs.update(cst)
+        return costs
 
 
     def update_lock_flags(self, flags):
