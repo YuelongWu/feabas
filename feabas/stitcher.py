@@ -1242,7 +1242,7 @@ class MontageRenderer:
         cols, rows = np.meshgrid(np.arange(Ncol), np.arange(Nrow))
         cols, rows = cols.ravel(), rows.ravel()
         idxz = common.z_order(np.stack((rows, cols), axis=-1))
-        rows, cols = rows[idxz], cols[idxz]
+        cols, rows =  cols[idxz], rows[idxz]
         hits = []
         bboxes = []
         filenames = []

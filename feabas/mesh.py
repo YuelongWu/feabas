@@ -1273,7 +1273,7 @@ class Mesh:
     def stiffness_multiplier(self):
         if self._stiffness_multiplier is None:
             return np.ones(self.num_triangles)
-        elif hasattr(self._stiffness_multiplier, '__len__'):
+        elif not hasattr(self._stiffness_multiplier, '__len__'):
             return np.full(self.num_triangles, self._stiffness_multiplier)
         else:
             return self._stiffness_multiplier
@@ -1470,13 +1470,23 @@ class Mesh:
 
 
     @config_cache(const.MESH_GEAR_INITIAL)
+    def weight_multiplier_for_render(self):
+        multiplier = np.ones(self.num_triangles, dtype=np.float32)
+        for mid in np.unique(self.material_ids):
+            mat = self.material_table[mid]
+            if mat.render_weight != 1:
+                multiplier[self.material_ids == mid] = mat.render_weight
+        return multiplier
+
+
+    @config_cache(const.MESH_GEAR_INITIAL)
     def triangle_mask_for_render(self):
         mid_norender = []
         for _, m in self._material_table:
             if not m.render:
                 mid_norender.append(m.uid)
         if len(mid_norender) > 0:
-            mask = ~np.isin(self._material_ids, mid_norender)
+            mask = ~np.isin(self.material_ids, mid_norender)
         else:
             mask = np.ones(self.num_triangles, dtype=bool)
         return mask

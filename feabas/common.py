@@ -410,6 +410,7 @@ def bbox_intersections(bboxes0, bboxes1):
 
 
 def bbox_union(bboxes):
+    bboxes = np.array(bboxes, copy=False)
     bboxes = bboxes.reshape(-1, 4)
     xy_min = bboxes[:,:2].min(axis=0)
     xy_max = bboxes[:,-2:].max(axis=0)

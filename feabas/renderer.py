@@ -1,12 +1,16 @@
-
+from concurrent.futures.process import ProcessPoolExecutor
+from concurrent.futures import as_completed
+from functools import partial
+from multiprocessing import get_context
 import matplotlib.tri
 import numpy as np
+import os
 import shapely.geometry as shpgeo
 from shapely.ops import unary_union
 
 import feabas.constant as const
 from feabas.mesh import Mesh
-from feabas import common, spatial
+from feabas import common, spatial, dal
 
 
 class MeshRenderer:
@@ -20,7 +24,7 @@ class MeshRenderer:
         self._region_tree = kwargs.get('region_tree', None)
         self._weight_params = kwargs.get('weight_params', const.MESH_TRIFINDER_WHATEVER)
         self.weight_generator = kwargs.get('weight_generator', [None for _ in range(n_region)])
-        self.weight_multiplier = kwargs.get('weight_multiplier', np.ones(n_region, dtype=np.float32))
+        self.weight_multiplier = kwargs.get('weight_multiplier', [None for _ in range(n_region)])
         self._collision_region = kwargs.get('collision_region', None)
         self._image_loader = kwargs.get('image_loader', None)
         self.resolution = kwargs.get('resolution', const.DEFAULT_RESOLUTION)
@@ -33,14 +37,11 @@ class MeshRenderer:
         include_flipped = kwargs.get('include_flipped', False)
         weight_params = kwargs.pop('weight_params', const.MESH_TRIFINDER_INNERMOST)
         local_cache = kwargs.get('cache', False)
-        divide_material = kwargs.get('divide_material', False)
-        if divide_material and np.ptp(srcmesh.material_ids)>0:
-            submeshes = srcmesh.divide_materials(save_material=True)
-            srcmesh = Mesh.combine_mesh(submeshes, save_material=True)
-            material_table = srcmesh.material_table
-            render_weight_lut = {mid: m.render_weight for mid, m in material_table.items()}
+        msh_wt = srcmesh.weight_multiplier_for_render
+        if any(msh_wt != 1):
+            weighted_material = True
         else:
-            divide_material = False
+            weighted_material = False
         render_mask = srcmesh.triangle_mask_for_render()
         collisions = srcmesh.triangle_collisions(gear=gear[0], tri_mask=render_mask)
         if (collisions.size == 0):
@@ -52,7 +53,7 @@ class MeshRenderer:
             asymmetry = False
         else:
             asymmetry = True
-        tri_info = srcmesh.tri_info(gear=gear[0], tri_mask=render_mask, 
+        tri_info = srcmesh.tri_info(gear=gear[0], tri_mask=render_mask,
             include_flipped=include_flipped, cache=local_cache, asymmetry=asymmetry)
         offset0 = srcmesh.offset(gear=gear[0])
         region_tree = tri_info['region_tree']
@@ -69,13 +70,9 @@ class MeshRenderer:
             xinterp = matplotlib.tri.LinearTriInterpolator(mattri, v0[:,0])
             yinterp = matplotlib.tri.LinearTriInterpolator(mattri, v0[:,1])
             interpolators.append((xinterp, yinterp))
-            if divide_material:
-                mid = srcmesh.material_ids[tidx[0]]
-                weight_multiplier.append(render_weight_lut[mid])
-            else:
-                weight_multiplier.append(1.0)
             if weight_params == const.MESH_TRIFINDER_WHATEVER:
                 weight_generator.append(None)
+                weight_multiplier.append(None)
             else:
                 hitidx = np.intersect1d(tidx, collision_tidx)
                 if hitidx.size == 0:
@@ -97,6 +94,11 @@ class MeshRenderer:
                     weight_generator.append((mpl_tri.get_trifinder(), wt))
                 else:
                     raise ValueError
+                if weighted_material:
+                    weight_multiplier.append(None)
+                else:
+                    wt = msh_wt[hitidx]
+                    weight_multiplier.append((mpl_tri.get_trifinder(), wt))
         if len(collision_region) > 0:
             collision_region = unary_union(collision_region)
         else:
@@ -104,7 +106,7 @@ class MeshRenderer:
         resolution = srcmesh.resolution
         return cls(interpolators, offset=offset0, region_tree=region_tree,
             weight_params=weight_params, weight_generator=weight_generator,
-            weight_multiplier=weight_multiplier, 
+            weight_multiplier=weight_multiplier,
             collision_region=collision_region, resolution=resolution,
             **kwargs)
 
@@ -251,9 +253,10 @@ class MeshRenderer:
         y_field = np.nan_to_num(map_y.data, copy=False)
         weight = 1 - mask.astype(np.float32)
         weight_generator = self.weight_generator[region_id]
+        weight_multiplier = self.weight_multiplier[region_id]
         if compute_wt and (weight_generator is not None):
             if self._weight_params == const.MESH_TRIFINDER_INNERMOST:
-                wt = weight_generator(xx, yy) * self.weight_multiplier[region_id]
+                wt = weight_generator(xx, yy)
                 if not np.all(wt.mask, axis=None):
                     wtmx = wt.max()
                     weight = weight * np.nan_to_num(wt.data, copy=False, nan=wtmx)
@@ -265,6 +268,14 @@ class MeshRenderer:
                     wt = wt0[tid]
                     wt[omask] = 1
                     weight = weight * wt
+        if compute_wt and (weight_multiplier is not None):
+            trfd, wt0 = weight_multiplier
+            tid = trfd(xx, yy)
+            omask = tid < 0
+            if not np.all(tid < 0, axis=None):
+                wt = wt0[tid]
+                wt[omask] = 1
+                weight = weight * wt
         return x_field, y_field, weight
 
 
@@ -442,3 +453,110 @@ class MeshRenderer:
             else:
                 self._default_fillval = 0
         return self._default_fillval
+
+
+
+def RenderWholeMesh(mesh, image_loader, prefix, **kwargs):
+    num_workers = kwargs.pop('num_workers', 1)
+    max_tile_per_job = kwargs.pop('max_tile_per_job', None)
+    canvas_bbox = kwargs.pop('canvas_bbox', None)
+    tile_size = kwargs.pop('tile_size', (4096, 4096))
+    pattern = kwargs.pop('pattern', 'tr{ROW_IND}_tc{COL_IND}.png')
+    scale = kwargs.pop('scale', 1)
+    one_based = kwargs.pop('one_based', False)
+    if 'weight_params' in kwargs and isinstance(kwargs['weight_params'], str):
+        kwargs['weight_params'] = const.TRIFINDER_MODE_LIST.index(kwargs['weight_params'])
+    keywords = ['{ROW_IND}', '{COL_IND}', '{X_MIN}', '{Y_MIN}', '{X_MAX}', '{Y_MAX}']
+    resolution = image_loader.resolution
+    mesh.change_resolution(resolution / scale)
+    kwargs.setdefault('target_resolution', resolution / scale)
+    tileht, tilewd = tile_size
+    if canvas_bbox is None:
+        gx_min, gy_min, gx_max, gy_max = mesh.bbox(gear=const.MESH_GEAR_MOVING)
+    else:
+        gx_min, gy_min, gx_max, gy_max = canvas_bbox
+    tx_max = int(np.ceil(gx_max  / tilewd))
+    ty_max = int(np.ceil(gy_max  / tileht))
+    tx_min = int(np.floor(gx_min  / tilewd))
+    ty_min = int(np.floor(gy_min  / tileht))
+    cols, rows = np.meshgrid(np.arange(tx_min, tx_max), np.arange(ty_min, ty_max))
+    cols, rows = cols.ravel(), rows.ravel()
+    idxz = common.z_order(np.stack((rows, cols), axis=-1))
+    cols, rows = cols[idxz], rows[idxz]
+    filenames = []
+    bboxes = []
+    region = mesh.shapely_regions(gear=const.MESH_GEAR_MOVING, offsetting=True)
+    for r, c in zip(rows, cols):
+        bbox = (c*tilewd, r*tileht, (c+1)*tilewd, (r+1)*tileht)
+        if not region.intersects(shpgeo.box(*bbox)):
+            continue
+        bboxes.append(bbox)
+        xmin, ymin, xmax, ymax = bbox
+        keyword_replaces = [str(r+one_based), str(c+one_based), str(xmin), str(ymin), str(xmax), str(ymax)]
+        fname = pattern
+        for kw, kwr in zip(keywords, keyword_replaces):
+            fname = fname.replace(kw, kwr)
+        filenames.append(prefix + fname)
+    rendered = {}
+    num_tiles = len(filenames)
+    if num_tiles == 0:
+        pass
+    elif (num_workers > 1) or (num_tiles == 1):
+        num_tile_per_job = max(1, num_tiles // num_workers)
+        if max_tile_per_job is not None:
+            num_tile_per_job = min(num_tile_per_job, max_tile_per_job)
+        N_jobs = round(num_tiles / num_tile_per_job)
+        indices = np.round(np.linspace(0, num_tiles, num=N_jobs+1, endpoint=True))
+        indices = np.unique(indices).astype(np.uint32)
+        bboxes_list = []
+        filenames_list = []
+        bbox_unions = []
+        for idx0, idx1 in zip(indices[:-1], indices[1:]):
+            idx0, idx1 = int(idx0), int(idx1)
+            bbox_t = bboxes[idx0:idx1]
+            bboxes_list.append(bbox_t)
+            filenames_list.append(filenames[idx0:idx1])
+            bbox_unions.append(common.bbox_union(bbox_t))
+        submeshes = mesh.submeshes_from_bboxes(bbox_unions, save_material=True)
+        if isinstance(image_loader, dal.AbstractImageLoader):
+            image_loader = image_loader.init_dict()
+        target_func = partial(subprocess_render_mesh_tiles, image_loader, **kwargs)
+        jobs = []
+        with ProcessPoolExecutor(max_workers=num_workers, mp_context=get_context('spawn')) as executor:
+            for msh, bbox, fnames in zip(submeshes, bboxes_list, filenames_list):
+                msh_dict = msh.get_init_dict(save_material=True, vertex_flags=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING))
+                job = executor.submit(msh_dict, bbox, fnames)
+                jobs.append(job)
+            for job in as_completed(jobs):
+                rendered.update(job.result())
+    else:
+        renderer = MeshRenderer.from_mesh(mesh, **kwargs)
+        renderer.link_image_loader(image_loader)
+        for fname, bbox in zip(filenames, bboxes):
+            imgt = renderer.crop(bbox)
+            if imgt is not None:
+                common.imwrite(fname, imgt)
+                rendered[os.path.basename(fname)] = bbox
+    return rendered
+
+
+def subprocess_render_mesh_tiles(imgloader, mesh, bboxes, outnames, **kwargs):
+    target_resolution = kwargs.pop('target_resolution')
+    if isinstance(imgloader, (str, dict)):
+        image_loader = dal.get_loader_from_json(imgloader)
+    if isinstance(mesh, str):
+        M = Mesh.from_h5(mesh)
+    elif isinstance(mesh, dict):
+        M = Mesh(**mesh)
+    else:
+        M = mesh
+    M.change_resolution(target_resolution)
+    renderer = MeshRenderer.from_mesh(M, **kwargs)
+    renderer.link_image_loader(image_loader)
+    rendered = {}
+    for fname, bbox in zip(outnames, bboxes):
+        imgt = renderer.crop(bbox)
+        if imgt is not None:
+            common.imwrite(fname, imgt)
+            rendered[os.path.basename(fname)] = bbox
+    return rendered

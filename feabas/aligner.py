@@ -7,6 +7,7 @@ import numpy as np
 import glob
 import os
 import yaml
+import time
 
 from feabas.mesh import Mesh
 from feabas import dal
@@ -346,10 +347,10 @@ class Stack:
             self._mesh_cache_size = max(len(secnames), mesh_cache_size0)
         meshes = []
         for secname in secnames:
-            meshes.append(self.get_mesh(secname))
+            meshes.extend(self.get_mesh(secname))
         links = []
         for matchname in match_list:
-            links.append(self.get_link(matchname))
+            links.extend(self.get_link(matchname))
         optm = SLM(meshes, links, **kwargs)
         self._mesh_cache_size = mesh_cache_size0
         return optm
@@ -359,11 +360,6 @@ class Stack:
         num_workers = kwargs.pop('num_workers', 1)
         locked_section = kwargs.pop('locked_section', None)
         start_loc = kwargs.pop('start_loc', 'L') # L or R or M
-        target_gear = kwargs.get('target_gear', const.MESH_GEAR_MOVING)
-        optimize_rigid = kwargs.get('optimize_rigid', True)
-        rigid_params = kwargs.get('rigid_params', {})
-        optimize_elastic = kwargs.get('optimize_elastic', True)
-        elastic_params = kwargs.get('elastic_params', {})
         window_size = kwargs.get('window_size', None)
         func_name = 'optimize_slide_window'
         if (window_size is None) or window_size > self.num_sections:
@@ -396,13 +392,8 @@ class Stack:
             indices0 = np.arange(init_idx0, self.num_sections, window_size-buffer_size)
             for idx0 in indices0:
                 seclst = self.section_list[init_idx0:(idx0+window_size)]
-                optm = self.initialize_SLM(seclst)
-                if optimize_rigid:
-                    optm.optimize_affine_cascade(target_gear=target_gear, **rigid_params)
-                    if target_gear != const.MESH_GEAR_FIXED:
-                        optm.anneal(gear=(target_gear, const.MESH_GEAR_FIXED), mode=const.ANNEAL_CONNECTED_RIGID)
-                if optimize_elastic:
-                    cst = optm.optimize_elastic(target_gear=target_gear, **elastic_params)
+                cst = self.optimize_section_list(seclst, **kwargs)
+                if cst is not None:
                     costs['_'.join((self.section_list[idx0], seclst[-1]))] = cst
                 if idx0 + window_size >= self.num_sections:
                     self.flush_meshes()
@@ -413,13 +404,8 @@ class Stack:
             for idx1 in indices1:
                 idx0 = max(0, idx1 - window_size)
                 seclst = self.section_list[idx0:]
-                optm = self.initialize_SLM(seclst)
-                if optimize_rigid:
-                    optm.optimize_affine_cascade(target_gear=target_gear, **rigid_params)
-                    if target_gear != const.MESH_GEAR_FIXED:
-                        optm.anneal(gear=(target_gear, const.MESH_GEAR_FIXED), mode=const.ANNEAL_CONNECTED_RIGID)
-                if optimize_elastic:
-                    cst = optm.optimize_elastic(target_gear=target_gear, **elastic_params)
+                cst = self.optimize_section_list(seclst, **kwargs)
+                if cst is not None:
                     costs['_'.join((self.section_list[idx0], seclst[-1]))] = cst
                 if idx0 == 0:
                     self.flush_meshes()
@@ -428,26 +414,21 @@ class Stack:
         else:
             assert window_size > 2 * buffer_size + 1
             seclst = self.section_list[init_idx0:(init_idx0+window_size)]
-            optm = self.initialize_SLM(seclst)
-            if optimize_rigid:
-                optm.optimize_affine_cascade(target_gear=target_gear, **rigid_params)
-                if target_gear != const.MESH_GEAR_FIXED:
-                    optm.anneal(gear=(target_gear, const.MESH_GEAR_FIXED), mode=const.ANNEAL_CONNECTED_RIGID)
-            if optimize_elastic:
-                cst = optm.optimize_elastic(target_gear=target_gear, **elastic_params)
-                costs['_'.join((self.section_list[idx0], seclst[-1]))] = cst
+            cst = self.optimize_section_list(seclst, **kwargs)
+            if cst is not None:
+                costs['_'.join((seclst[0], seclst[-1]))] = cst
             self.flush_meshes()
             sections_to_lock = seclst[buffer_size:-buffer_size]
             self.update_lock_flags({s:True for s in sections_to_lock})
             lock_id0, lock_id1 = self.secname_to_id(sections_to_lock[0]), self.secname_to_id(sections_to_lock[-1])
-            matchlist_l = self.filtered_match_list(self.section_list[lock_id0:], check_lock=True)
+            matchlist_l = self.filtered_match_list(secnames=self.section_list[lock_id0:], check_lock=True)
             seclist_l = self.filter_section_list_from_matches(match_list=matchlist_l)
             kwargs_l = kwargs.copy()
             init_dict_l = self.init_dict(secnames=seclist_l, check_lock=True)
-            init_dict_r = self.init_dict(secnames=seclist_r, check_lock=True)
             kwargs_l['start_loc'] = 'L'
-            matchlist_r = self.filtered_match_list(self.section_list[:lock_id1], check_lock=True)
+            matchlist_r = self.filtered_match_list(secnames=self.section_list[:lock_id1], check_lock=True)
             seclist_r = self.filter_section_list_from_matches(match_list=matchlist_r)
+            init_dict_r = self.init_dict(secnames=seclist_r, check_lock=True)
             kwargs_r = kwargs.copy()
             kwargs_r['start_loc'] = 'R'
             if num_workers > 1:
@@ -463,6 +444,36 @@ class Stack:
                 cst = Stack.subprocess_optimize_stack(init_dict_r, func_name, **kwargs_r)
                 costs.update(cst)
         return costs
+
+
+    def optimize_section_list(self, section_list, **kwargs):
+        target_gear = kwargs.get('target_gear', const.MESH_GEAR_MOVING)
+        optimize_rigid = kwargs.get('optimize_rigid', True)
+        rigid_params = kwargs.get('rigid_params', {})
+        optimize_elastic = kwargs.get('optimize_elastic', True)
+        elastic_params = kwargs.get('elastic_params', {})
+        residue_len = kwargs.get('residue_len', 0)
+        residue_mode = kwargs.get('residue_mode', None)
+        optm = self.initialize_SLM(section_list)
+        cost = None
+        t0 = time.time()
+        if optimize_rigid:
+            optm.optimize_affine_cascade(target_gear=target_gear, **rigid_params)
+            if target_gear != const.MESH_GEAR_FIXED:
+                optm.anneal(gear=(target_gear, const.MESH_GEAR_FIXED), mode=const.ANNEAL_CONNECTED_RIGID)
+        if optimize_elastic:
+            cost = optm.optimize_elastic(target_gear=target_gear, **elastic_params)
+        if (residue_mode is not None) and (residue_len > 0):
+            if residue_mode == 'huber':
+                optm.set_link_residue_huber(residue_len)
+            else:
+                optm.set_link_residue_threshold(residue_len)
+            weight_modified, _ = optm.adjust_link_weight_by_residue(gear=(target_gear, target_gear))
+            if weight_modified:
+                cost1 = optm.optimize_elastic(target_gear=target_gear, **elastic_params)
+                cost = (cost[0], cost1[-1])
+        print(f'{optm.meshes[0].name} -> {optm.meshes[-1].name}: cost {cost} | {time.time()-t0} sec')
+        return cost
 
 
     def update_lock_flags(self, flags):

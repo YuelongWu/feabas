@@ -1,4 +1,3 @@
-from collections import namedtuple
 import cv2
 from concurrent.futures.process import ProcessPoolExecutor
 from concurrent.futures import as_completed

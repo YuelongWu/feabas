@@ -1309,6 +1309,8 @@ class SLM:
                     xy0 = xy0[~mask]
                     xy1 = xy1[~mask]
                     weight = weight[~mask]
+                    if xy0.size == 0:
+                        break
         return out_links
 
 
@@ -1321,21 +1323,23 @@ class SLM:
 
 
 
-def transform_mesh(mesh_mov, mesh_fix, **kwargs):
-    uid_mov = mesh_mov.uid
-    locked_mov = mesh_mov.locked
-    mesh_fix = mesh_fix.copy(override_dict={'locked': True, 'uid': 0})
-    mesh_mov = mesh_fix.copy(override_dict={'locked': False, 'uid': 1})
-    xy_fix = mesh_fix.vertices_w_offset(gear=const.MESH_GEAR_INITIAL)
-    xy_mov = mesh_mov.vertices_w_offset(gear=const.MESH_GEAR_INITIAL)
+def transform_mesh(mesh_unlocked, mesh_locked, **kwargs):
+    uid_mov = mesh_unlocked.uid
+    locked_mov = mesh_unlocked.locked
+    mesh_locked = mesh_locked.copy(override_dict={'locked': True, 'uid': 0})
+    mesh_unlocked = mesh_locked.copy(override_dict={'locked': False, 'uid': 1})
+    mesh_unlocked.change_resolution(mesh_locked.resolution)
+    xy_fix = mesh_locked.vertices_w_offset(gear=const.MESH_GEAR_INITIAL)
+    xy_mov = mesh_unlocked.vertices_w_offset(gear=const.MESH_GEAR_INITIAL)
     xy0 = np.concatenate((xy_fix, xy_mov), axis=0)
-    opt = SLM([mesh_fix, mesh_mov], stiffness_lambda=0.01)
+    opt = SLM([mesh_locked, mesh_unlocked], stiffness_lambda=0.01)
     opt.divide_disconnected_submeshes()
-    opt.add_link_from_coordinates(mesh_fix.uid, mesh_mov.uid, xy0, xy0, check_duplicates=False)
+    opt.add_link_from_coordinates(mesh_locked.uid, mesh_unlocked.uid, xy0, xy0, check_duplicates=False)
     opt.optimize_affine_cascade()
     opt.anneal(gear=(const.MESH_GEAR_MOVING, const.MESH_GEAR_FIXED), mode=const.ANNEAL_CONNECTED_RIGID)
     opt.optimize_elastic(**kwargs)
     rel_meshes = [m for m in opt.meshes if np.floor(m.uid)==1]
-    mesh_mov = Mesh.combine_mesh(rel_meshes, uid=uid_mov, locked=locked_mov)
-    mesh_mov.locked = locked_mov
-    return mesh_mov
+    mesh_unlocked = Mesh.combine_mesh(rel_meshes, uid=uid_mov, locked=locked_mov)
+    mesh_unlocked.locked = locked_mov
+    return mesh_unlocked
+
