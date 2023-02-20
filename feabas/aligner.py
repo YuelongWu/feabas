@@ -463,15 +463,15 @@ class Stack:
                 optm.anneal(gear=(target_gear, const.MESH_GEAR_FIXED), mode=const.ANNEAL_CONNECTED_RIGID)
         if optimize_elastic:
             cost = optm.optimize_elastic(target_gear=target_gear, **elastic_params)
-        if (residue_mode is not None) and (residue_len > 0):
-            if residue_mode == 'huber':
-                optm.set_link_residue_huber(residue_len)
-            else:
-                optm.set_link_residue_threshold(residue_len)
-            weight_modified, _ = optm.adjust_link_weight_by_residue(gear=(target_gear, target_gear))
-            if weight_modified:
-                cost1 = optm.optimize_elastic(target_gear=target_gear, **elastic_params)
-                cost = (cost[0], cost1[-1])
+            if (residue_mode is not None) and (residue_len > 0):
+                if residue_mode == 'huber':
+                    optm.set_link_residue_huber(residue_len)
+                else:
+                    optm.set_link_residue_threshold(residue_len)
+                weight_modified, _ = optm.adjust_link_weight_by_residue(gear=(target_gear, target_gear))
+                if weight_modified:
+                    cost1 = optm.optimize_elastic(target_gear=target_gear, **elastic_params)
+                    cost = (cost[0], cost1[-1])
         print(f'{optm.meshes[0].name} -> {optm.meshes[-1].name}: cost {cost} | {time.time()-t0} sec')
         return cost
 
@@ -483,6 +483,11 @@ class Stack:
 
     def unlock_all(self):
         flags = {secname: False for secname in self.section_list}
+        self.update_lock_flags(flags)
+
+
+    def lock_all(self):
+        flags = {secname: True for secname in self.section_list}
         self.update_lock_flags(flags)
 
 

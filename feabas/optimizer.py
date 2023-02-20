@@ -806,12 +806,14 @@ class SLM:
             weight_list = []
             for lidx in link_filter:
                 lnk = self.links[lidx]
-                if lnk.uids[0] == idx0:
+                if lnk.uids[0] == self.mesh_uids[idx0]:
                     xy0_list.append(lnk.xy0(gear=start_gear, use_mask=True, combine=True))
                     xy1_list.append(lnk.xy1(gear=targt_gear, use_mask=True, combine=True))
-                else:
+                elif lnk.uids[1] == self.mesh_uids[idx0]:
                     xy0_list.append(lnk.xy1(gear=targt_gear, use_mask=True, combine=True))
                     xy1_list.append(lnk.xy0(gear=start_gear, use_mask=True, combine=True))
+                else:
+                    raise RuntimeError('This should never happen...')
                 weight_list.append(lnk.weight(use_mask=True))
             xy0 = np.concatenate(xy0_list, axis=0)
             if xy0.size == 0:
@@ -1327,7 +1329,7 @@ def transform_mesh(mesh_unlocked, mesh_locked, **kwargs):
     uid_mov = mesh_unlocked.uid
     locked_mov = mesh_unlocked.locked
     mesh_locked = mesh_locked.copy(override_dict={'locked': True, 'uid': 0})
-    mesh_unlocked = mesh_locked.copy(override_dict={'locked': False, 'uid': 1})
+    mesh_unlocked = mesh_unlocked.copy(override_dict={'locked': False, 'uid': 1})
     mesh_unlocked.change_resolution(mesh_locked.resolution)
     xy_fix = mesh_locked.vertices_w_offset(gear=const.MESH_GEAR_INITIAL)
     xy_mov = mesh_unlocked.vertices_w_offset(gear=const.MESH_GEAR_INITIAL)

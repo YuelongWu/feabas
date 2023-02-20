@@ -612,7 +612,7 @@ class Mesh:
         generate multiple submeshes at the same time to save triangles_rtree overhead.
         """
         tree = self.triangles_rtree(gear=gear)
-        bboxes = np.array(bboxes, copy=True)
+        bboxes = np.array(bboxes, copy=True).astype(np.float64)
         bboxes[..., 0::2] -= self.offset(gear=gear).ravel()[0]
         bboxes[..., 1::2] -= self.offset(gear=gear).ravel()[1]
         submeshes = []
@@ -2232,11 +2232,12 @@ class Mesh:
         else:
             # D = self._triangle_distances(tri_mask=tri_mask)
             dis = []
-            for c in np.unique(colors):
+            for c in np.unique(colors[colors >= 0]):
                 start_pos = indx_loc[colors == c]
                 d0 = csgraph.shortest_path(D, directed=False, indices=start_pos)
                 dis.append(d0.min(axis=0))
             groupings = np.argmin(dis, axis=0)
+            groupings[indx_loc[colors < 0]] = -1
         return groupings
 
 

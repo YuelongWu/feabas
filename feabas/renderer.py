@@ -38,7 +38,7 @@ class MeshRenderer:
         weight_params = kwargs.pop('weight_params', const.MESH_TRIFINDER_INNERMOST)
         local_cache = kwargs.get('cache', False)
         msh_wt = srcmesh.weight_multiplier_for_render
-        if any(msh_wt != 1):
+        if np.any(msh_wt != 1):
             weighted_material = True
         else:
             weighted_material = False
@@ -77,6 +77,7 @@ class MeshRenderer:
                 hitidx = np.intersect1d(tidx, collision_tidx)
                 if hitidx.size == 0:
                     weight_generator.append(None)
+                    weight_multiplier.append(None)
                     continue
                 mpl_tri, _, _ = srcmesh.mpl_tri(gear=gear[0], tri_mask=hitidx)
                 collision_region.append(srcmesh.shapely_regions(gear=gear[0], tri_mask=hitidx))
@@ -456,7 +457,7 @@ class MeshRenderer:
 
 
 
-def RenderWholeMesh(mesh, image_loader, prefix, **kwargs):
+def render_whole_mesh(mesh, image_loader, prefix, **kwargs):
     num_workers = kwargs.pop('num_workers', 1)
     max_tile_per_job = kwargs.pop('max_tile_per_job', None)
     canvas_bbox = kwargs.pop('canvas_bbox', None)
@@ -525,7 +526,7 @@ def RenderWholeMesh(mesh, image_loader, prefix, **kwargs):
         with ProcessPoolExecutor(max_workers=num_workers, mp_context=get_context('spawn')) as executor:
             for msh, bbox, fnames in zip(submeshes, bboxes_list, filenames_list):
                 msh_dict = msh.get_init_dict(save_material=True, vertex_flags=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING))
-                job = executor.submit(msh_dict, bbox, fnames)
+                job = executor.submit(target_func, msh_dict, bbox, fnames)
                 jobs.append(job)
             for job in as_completed(jobs):
                 rendered.update(job.result())

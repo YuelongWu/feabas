@@ -15,14 +15,29 @@ matching:
         min_boundary_distance: 20   # minimum distance allowed from a matching point to the boundary of the meshes
 
 optimization:
-    resolution: 4
+    stack_config:
+        resolution: 4
+        mesh_cache_size: 90
     slide_window:
         num_workers: 2
         start_loc: M
         window_size: 64
         buffer_size: 16
         residue_mode: huber
-        residue_len: 10
+        residue_len: 20
         elastic_params:
             tol: 1.0e-7
+            atol: 0.001
             continue_on_flip: true
+
+render:
+    num_workers: 10
+    cache_size: 50
+    pattern: _tr{ROW_IND}-tc{COL_IND}.png
+    one_based: true # zero-based or one-based row/colume indexing
+    fillval: 0
+    apply_CLAHE: false
+    max_tile_per_job: 20
+    scale: 1
+    canvas_bbox: null
+    tile_size: [4096, 4096]
