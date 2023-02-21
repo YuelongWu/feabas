@@ -1334,13 +1334,14 @@ def transform_mesh(mesh_unlocked, mesh_locked, **kwargs):
     xy_fix = mesh_locked.vertices_w_offset(gear=const.MESH_GEAR_INITIAL)
     xy_mov = mesh_unlocked.vertices_w_offset(gear=const.MESH_GEAR_INITIAL)
     xy0 = np.concatenate((xy_fix, xy_mov), axis=0)
-    opt = SLM([mesh_locked, mesh_unlocked], stiffness_lambda=0.01)
+    opt = SLM([mesh_locked, mesh_unlocked], stiffness_lambda=0.001)
     opt.divide_disconnected_submeshes()
     opt.add_link_from_coordinates(mesh_locked.uid, mesh_unlocked.uid, xy0, xy0, check_duplicates=False)
     opt.optimize_affine_cascade()
     opt.anneal(gear=(const.MESH_GEAR_MOVING, const.MESH_GEAR_FIXED), mode=const.ANNEAL_CONNECTED_RIGID)
     opt.optimize_elastic(**kwargs)
     rel_meshes = [m for m in opt.meshes if np.floor(m.uid)==1]
+    print([np.max(np.abs(lnk.dxy(gear=1))) for lnk in opt.links])
     mesh_unlocked = Mesh.combine_mesh(rel_meshes, uid=uid_mov, locked=locked_mov)
     mesh_unlocked.locked = locked_mov
     return mesh_unlocked

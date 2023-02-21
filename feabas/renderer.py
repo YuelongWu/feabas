@@ -517,7 +517,7 @@ def render_whole_mesh(mesh, image_loader, prefix, **kwargs):
             bbox_t = bboxes[idx0:idx1]
             bboxes_list.append(bbox_t)
             filenames_list.append(filenames[idx0:idx1])
-            bbox_unions.append(common.bbox_union(bbox_t))
+            bbox_unions.append(common.bbox_enlarge(common.bbox_union(bbox_t), tile_size[0]//2))
         submeshes = mesh.submeshes_from_bboxes(bbox_unions, save_material=True)
         if isinstance(image_loader, dal.AbstractImageLoader):
             image_loader = image_loader.init_dict()
@@ -556,6 +556,9 @@ def subprocess_render_mesh_tiles(imgloader, mesh, bboxes, outnames, **kwargs):
     renderer.link_image_loader(image_loader)
     rendered = {}
     for fname, bbox in zip(outnames, bboxes):
+        if os.path.isfile(fname):
+            rendered[os.path.basename(fname)] = bbox
+            continue
         imgt = renderer.crop(bbox)
         if imgt is not None:
             common.imwrite(fname, imgt)

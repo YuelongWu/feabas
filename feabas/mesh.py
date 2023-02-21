@@ -1997,6 +1997,10 @@ class Mesh:
         matplt_tri = matplotlib.tri.Triangulation(vertices[:,0], vertices[:,1], triangles=T)
         try:
             matplt_tri.get_trifinder()
+            # not sure why this works but matplotlib.tri has false negative bug
+            idxt = np.zeros(len(T), dtype=bool)
+            idxt[0] = True
+            matplt_tri.set_mask(idxt)
             return True
         except RuntimeError:
             return False
@@ -2140,7 +2144,7 @@ class Mesh:
         if collided_segs.size > 0:
             seg_lines = self.vertices(gear=gear)[collided_segs]
             P_segs = list(polygonize(unary_union(shpgeo.MultiLineString([s for s in seg_lines]))))
-            seg_bboxes = np.array([p.bounds for p in P_segs])
+            seg_bboxes = np.array([p.bounds for p in P_segs]).reshape(-1, 4)
         else:
             seg_bboxes = np.empty((0,4))
         flip_tids = self.locate_flipped_triangles(gear=gear, tri_mask=tri_mask)
