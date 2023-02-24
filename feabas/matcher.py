@@ -200,7 +200,7 @@ def stitching_matcher(img0, img1, **kwargs):
     tx0, ty0, conf0 = global_translation_matcher(img0_g, img1_g, conf_mode=conf_mode,
         conf_thresh=conf_thresh)
     if conf0 < conf_thresh:
-        return conf_thresh, None, None, None
+        return None, None, conf_thresh, None
     if fine_downsample == coarse_downsample:
         img0_f = img0_g
         img1_f = img1_g
