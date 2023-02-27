@@ -136,6 +136,7 @@ def render_one_section(tform_name, out_prefix, meta_name=None, **kwargs):
     render_settings = kwargs.get('render_settings', {})
     filename_settings = kwargs.get('filename_settings', {})
     if loader_settings.get('cache_size', None) is not None:
+        loader_settings = loader_settings.copy()
         loader_settings['cache_size'] = loader_settings['cache_size'] // num_workers
     render_settings['scale'] = scale
     if meta_name is not None and os.path.isfile(meta_name):

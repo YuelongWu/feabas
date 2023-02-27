@@ -10,7 +10,7 @@ import numpy as np
 import os
 from rtree import index
 from scipy.interpolate import interp1d
-from scipy.ndimage import gaussian_filter
+from scipy.ndimage import gaussian_filter, binary_dilation
 from scipy import sparse
 import scipy.sparse.csgraph as csgraph
 
@@ -383,6 +383,7 @@ class Stitcher:
         """
         root_dir = kwargs.get('root_dir', None)
         min_width = kwargs.get('min_width', 0)
+        maskout_val = kwargs.get('maskout_val', None)
         index_mapper = kwargs.get('index_mapper', None)
         margin = kwargs.get('margin', 1.0)
         image_to_mask_path = kwargs.get('image_to_mask_path', None)
@@ -402,13 +403,20 @@ class Stitcher:
                 loader_config['cache_border_margin'] = int(overlap_wd0 + margin)
         image_loader = StaticImageLoader(imgpaths, bboxes, root_dir=root_dir, **loader_config)
         if image_to_mask_path is not None:
-            mask_paths = [s.replace(image_to_mask_path[0], image_to_mask_path[1])
-                for s in image_loader.filepaths_generator]
+            if isinstance(image_to_mask_path[0], str):
+                mask_paths = [s.replace(image_to_mask_path[0], image_to_mask_path[1])
+                    for s in image_loader.filepaths_generator]
+            else:
+                mask_paths = [s for s in image_loader.filepaths_generator]
+                for sub0, sub1 in zip(image_to_mask_path[0], image_to_mask_path[1]):
+                    mask_paths = [s.replace(sub0, sub1) for s in mask_paths]
             mask_exist = np.array([os.path.isfile(s) for s in mask_paths])
+            loader_config = loader_config.copy()
             loader_config.update({'apply_CLAHE': False,
                                   'inverse': False,
                                   'number_of_channels': None,
-                                  'preprocess': None})
+                                  'preprocess': None,
+                                  'fillval': 1})
             mask_loader = StaticImageLoader(mask_paths, bboxes, root_dir=None, **loader_config)
         else:
             mask_exist = np.zeros(len(imgpaths), dtype=bool)
@@ -431,11 +439,23 @@ class Stitcher:
                 img0 = image_loader.crop(bbox_ov0, idx0, return_index=False)
                 img1 = image_loader.crop(bbox_ov1, idx1, return_index=False)
                 if mask_exist[idx0]:
-                    mask0 = mask_loader.crop(bbox_ov0, idx0, return_index=False)
+                    mask0 = mask_loader.crop(bbox_ov0, idx0, return_index=False) > 0
+                elif maskout_val is not None:
+                    mask0t = img0 == maskout_val
+                    if np.any(mask0t):
+                        mask0 = ~binary_dilation(mask0t, iterations=2)
+                    else:
+                        mask0 = None
                 else:
                     mask0 = None
                 if mask_exist[idx1]:
-                    mask1 = mask_loader.crop(bbox_ov1, idx1, return_index=False)
+                    mask1 = mask_loader.crop(bbox_ov1, idx1, return_index=False) > 0
+                elif maskout_val is not None:
+                    mask1t = img1 == maskout_val
+                    if np.any(mask1t):
+                        mask1 = ~binary_dilation(mask1t, iterations=2)
+                    else:
+                        mask1 = None
                 else:
                     mask1 = None
                 xy0, xy1, weight, strain = stitching_matcher(img0, img1, mask0=mask0, mask1=mask1, **matcher_config)
