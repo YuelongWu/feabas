@@ -332,6 +332,8 @@ class MeshRenderer:
                         np.zeros((outht, outwd), dtype=bool))
         if offsetting:
             bbox0 = bbox0 - np.tile(self._offset.ravel(), 2)
+        if (mode == const.RENDER_CONTIGEOUS) and (not self.bbox_hit_collision(bbox0, offsetting=False)):
+            mode = const.RENDER_FULL
         if mode in (const.RENDER_LOCAL_RIGID, const.RENDER_LOCAL_AFFINE):
             bcntr = ((bbox0[0] + bbox0[2] - 1)/2, (bbox0[1] + bbox0[3] - 1)/2)
             if mode == const.RENDER_LOCAL_RIGID:
