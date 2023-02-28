@@ -265,24 +265,18 @@ class Stitcher:
         """
         run matching between overlapping tiles.
         """
-        overwrite = kwargs.get('overwrite', False)
-        num_workers = kwargs.get('num_workers', 1)
-        min_width = kwargs.get('min_width', 0)
-        margin = kwargs.get('margin', 1.0)
-        image_to_mask_path = kwargs.get('image_to_mask_path', None)
-        matcher_config = kwargs.get('matcher_config', {})
-        loader_config = kwargs.get('loader_config', {})
-        verbose = kwargs.get('verbose', False)
+        overwrite = kwargs.pop('overwrite', False)
+        num_workers = kwargs.pop('num_workers', 1)
+        verbose = kwargs.pop('verbose', False)
+        num_overlaps_per_job = kwargs.get('num_overlaps_per_job', 180) # 180 roughly number of overlaps in an MultiSEM mFoV
+        loader_config = kwargs.pop('loader_config', {})
         if bool(loader_config.get('cache_size', None)) and (num_workers > 1):
+            loader_config = loader_config.copy()
             loader_config['cache_size'] = int(np.ceil(loader_config['cache_size'] / num_workers))
         loader_config['number_of_channels'] = 1 # only gray-scale matching are supported
         target_func = partial(Stitcher.subprocess_match_list_of_overlaps,
-                              root_dir=self.imgrootdir,
-                              min_width=min_width,
-                              margin=margin,
-                              image_to_mask_path=image_to_mask_path,
-                              loader_config=loader_config,
-                              matcher_config=matcher_config)
+                              root_dir=self.imgrootdir, loader_config=loader_config,
+                              **kwargs)
         if overwrite:
             self.matches = {}
             self.match_strains = {}
@@ -296,8 +290,7 @@ class Stitcher:
             self.match_strains.update(match_strains)
             return len(new_matches), err_raised
         num_workers = min(num_workers, num_overlaps)
-        # 180 roughly number of overlaps in an MultiSEM mFoV
-        num_overlaps_per_job = min(num_overlaps//num_workers, 180)
+        num_overlaps_per_job = min(num_overlaps//num_workers, num_overlaps_per_job)
         N_jobs = round(num_overlaps / num_overlaps_per_job)
         indx_j = np.linspace(0, num_overlaps, num=N_jobs+1, endpoint=True)
         indx_j = np.unique(np.round(indx_j).astype(np.int32))
@@ -359,8 +352,8 @@ class Stitcher:
         Kwargs:
             root_dir(str): if provided, the paths in imgpaths are relative paths to
                 this root directory.
-            min_width: minimum amount of overlapping width (in pixels) to use.
-                overlaps below this threshold will be skipped.
+            min_overlap_width: minimum amount of overlapping width (in pixels)
+                to use. overlaps below this threshold will be skipped.
             index_mapper(N ndarray): the mapper to map the local image indices to
                 the global ones, in case the imgpaths fed to this function is only
                 a subset of all the images from the dispatcher.
@@ -382,7 +375,7 @@ class Stitcher:
             match_strains(dict): D[(global_index0, global_index1)] = strain.
         """
         root_dir = kwargs.get('root_dir', None)
-        min_width = kwargs.get('min_width', 0)
+        min_width = kwargs.get('min_overlap_width', 0)
         maskout_val = kwargs.get('maskout_val', None)
         index_mapper = kwargs.get('index_mapper', None)
         margin = kwargs.get('margin', 1.0)
@@ -396,6 +389,7 @@ class Stitcher:
             return {}, {}, err_raised
         bboxes_overlap, wds = common.bbox_intersections(bboxes[overlaps[:,0]], bboxes[overlaps[:,1]])
         if 'cache_border_margin' not in loader_config:
+            loader_config = loader_config.copy()
             overlap_wd0 = 6 * np.median(np.abs(wds - np.median(wds))) + np.median(wds) + 1
             if margin < margin_ratio_switch:
                 loader_config['cache_border_margin'] = int(overlap_wd0 * (1 + margin))
@@ -784,9 +778,10 @@ class Stitcher:
                 self._optimizer.set_link_residue_huber(residue_len)
             else:
                 self._optimizer.set_link_residue_threshold(residue_len)
-            self._optimizer.adjust_link_weight_by_residue(gear=(target_gear, target_gear))
-            cost1 = self._optimizer.optimize_linear(groupings=groupings, **kwargs)
-            cost = [cost[0], cost1[-1]]
+            weight_modified, _ = self._optimizer.adjust_link_weight_by_residue(gear=(target_gear, target_gear))
+            if weight_modified:
+                cost1 = self._optimizer.optimize_linear(groupings=groupings, **kwargs)
+                cost = (cost[0], cost1[-1])
         return cost
 
 
@@ -997,6 +992,7 @@ class MontageRenderer:
     """
     def __init__(self, imgpaths, mesh_info, tile_sizes, **kwargs):
         self._loader_settings = kwargs.get('loader_settings', {})
+        self._connected_subsystem = kwargs.get('connected_subsystem', None)
         if bool(kwargs.get('root_dir', None)):
             self.imgrootdir = kwargs['root_dir']
             self.imgrelpaths = imgpaths
@@ -1018,6 +1014,7 @@ class MontageRenderer:
         root_dir = stitcher.imgrootdir
         imgpaths = stitcher.imgrelpaths
         tile_sizes = stitcher.tile_sizes
+        connected_subsystem = stitcher.connected_subsystem
         mesh_info = []
         for M in stitcher.meshes:
             v0 = M.vertices_w_offset(gear=gear[0])
@@ -1025,7 +1022,8 @@ class MontageRenderer:
             offset = M.offset(gear=gear[1])
             T = M.triangles
             mesh_info.append(Mesh_Info(v1, offset, T, v0))
-        return cls(imgpaths, mesh_info, tile_sizes, root_dir=root_dir, **kwargs)
+        return cls(imgpaths, mesh_info, tile_sizes, root_dir=root_dir,
+                   connected_subsystem=connected_subsystem, **kwargs)
 
 
     @classmethod
@@ -1314,7 +1312,7 @@ class MontageRenderer:
             return self._tile_sizes[indx]
 
 
-    def generate_roi_mask(self, scale):
+    def generate_roi_mask(self, scale, show_conn=False):
         """
         generate low resolution roi mask that can fit in a single image.
         """
@@ -1326,8 +1324,13 @@ class MontageRenderer:
         bboxes = np.round(bboxes).astype(np.int32)
         imgwd, imght = np.max(bboxes[:,-2:], axis=0) + 2
         imgout = np.zeros((imght, imgwd), dtype=np.uint8)
-        for xmin, ymin, xmax, ymax in bboxes:
-            imgout[ymin:ymax, xmin:xmax] = 255
+        if show_conn and self._connected_subsystem is not None:
+            lbls = np.maximum(1, 255 - self._connected_subsystem).astype(np.uint8)
+        else:
+            lbls = np.full(len(bboxes), 255, dtype=np.uint8)
+        for bbox, lb in zip(bboxes, lbls):
+            xmin, ymin, xmax, ymax = bbox
+            imgout[ymin:ymax, xmin:xmax] = lb
         return imgout
 
 

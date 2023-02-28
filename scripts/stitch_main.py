@@ -14,18 +14,11 @@ from feabas.stitcher import Stitcher, MontageRenderer
 
 
 def match_one_section(coordname, outname, **kwargs):
-    num_workers = kwargs.get('num_workers', 1)
-    min_width = kwargs.get('min_overlap_width', 25)
-    margin = kwargs.get('margin', 200)
-    loader_config = kwargs.get('loader_config', {})
-    matcher_config = kwargs.get('matcher_config', {})
     stitcher = Stitcher.from_coordinate_file(coordname)
     if os.path.isfile(outname + '_err'):
         print(f'loading previous results for {os.path.basename(coordname)}')
         stitcher.load_matches_from_h5(outname + '_err', check_order=True)
-    _, err = stitcher.dispatch_matchers(num_workers=num_workers, min_width=min_width,
-        margin=margin, matcher_config=matcher_config, loader_config=loader_config,
-        verbose=False)
+    _, err = stitcher.dispatch_matchers(verbose=False, **kwargs)
     if err:
         outname = outname + '_err'
     stitcher.save_to_h5(outname, save_matches=True, save_meshes=False)

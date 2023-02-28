@@ -182,11 +182,11 @@ def stitching_matcher(img0, img1, **kwargs):
         img0_g = cv2.resize(img0, None, fx=coarse_downsample, fy=coarse_downsample, interpolation=cv2.INTER_AREA)
         img1_g = cv2.resize(img1, None, fx=coarse_downsample, fy=coarse_downsample, interpolation=cv2.INTER_AREA)
         if mask0 is not None:
-            mask0_g = cv2.resize(mask0, None, fx=coarse_downsample, fy=coarse_downsample, interpolation=cv2.INTER_NEAREST)
+            mask0_g = cv2.resize(mask0.astype(np.uint8), None, fx=coarse_downsample, fy=coarse_downsample, interpolation=cv2.INTER_NEAREST).astype(bool)
         else:
             mask0_g = None
         if mask1 is not None:
-            mask1_g = cv2.resize(mask1, None, fx=coarse_downsample, fy=coarse_downsample, interpolation=cv2.INTER_NEAREST)
+            mask1_g = cv2.resize(mask1.astype(np.uint8), None, fx=coarse_downsample, fy=coarse_downsample, interpolation=cv2.INTER_NEAREST).astype(bool)
         else:
             mask1_g = None
     else:
@@ -209,11 +209,11 @@ def stitching_matcher(img0, img1, **kwargs):
             img0_f = cv2.resize(img0, None, fx=fine_downsample, fy=fine_downsample, interpolation=cv2.INTER_AREA)
             img1_f = cv2.resize(img1, None, fx=fine_downsample, fy=fine_downsample, interpolation=cv2.INTER_AREA)
             if mask0 is not None:
-                mask0_f = cv2.resize(mask0, None, fx=fine_downsample, fy=fine_downsample, interpolation=cv2.INTER_NEAREST)
+                mask0_f = cv2.resize(mask0.astype(np.uint8), None, fx=fine_downsample, fy=fine_downsample, interpolation=cv2.INTER_NEAREST).astype(bool)
             else:
                 mask0_f = None
             if mask1 is not None:
-                mask1_f = cv2.resize(mask1, None, fx=fine_downsample, fy=fine_downsample, interpolation=cv2.INTER_NEAREST)
+                mask1_f = cv2.resize(mask1.astype(np.uint8), None, fx=fine_downsample, fy=fine_downsample, interpolation=cv2.INTER_NEAREST).astype(bool)
             else:
                 mask1_f = None
         else:
