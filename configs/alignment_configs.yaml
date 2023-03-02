@@ -6,14 +6,14 @@ matching:
     matcher_config:
         num_workers: 12
         batch_size: 100 # number of cropped regions to do fft at the same time
-        conf_thresh: 0.3333    # cross-correlations with confidence value smaller than this will be rejected
-        sigma: 1.5  # sigma of DoG filter applied to the images before matching
+        conf_thresh: 0.35    # cross-correlations with confidence value smaller than this will be rejected
+        # distributor: intersect_triangulation
         spacings: [400, 100]    # distance between grid points at each coarse-to-fine level
         shrink_factor: 0.7  # the size of the cropped fft tiles compared to the spacings
         residue_mode: huber # huber or threshold or None, deciding how to damp matches with large residue errors after optimization
         residue_len: 3  # characteristic residue distance used for damping. use 0 to skip
         min_boundary_distance: 20   # minimum distance allowed from a matching point to the boundary of the meshes
-
+        boundary_tolerance: 20  # maximum distance between grid points when distributor=='oneway_triangulation'
 optimization:
     stack_config:
         resolution: 4

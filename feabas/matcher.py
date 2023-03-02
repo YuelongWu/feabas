@@ -266,10 +266,11 @@ def section_matcher(mesh0, mesh1, image_loader0, image_loader1, **kwargs):
     kwargs.setdefault('sigma', 2.5)
     kwargs.setdefault('batch_size', 100)
     kwargs.setdefault('continue_on_flip', True)
+    kwargs.setdefault('distributor', 'cartesian_region')
     if (initial_matches is None) or (mesh0.connected_triangles()[0] == 1 and mesh1.connected_triangles()[0] == 1):
         xy0, xy1, weight, _ = iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1,
             spacings=spacings, initial_matches=initial_matches, compute_strain=False,
-            distributor='cartesian_region', **kwargs)
+            **kwargs)
     else:
         opt = optimizer.SLM([mesh0, mesh1])
         xy0, xy1, weight = initial_matches
@@ -288,7 +289,7 @@ def section_matcher(mesh0, mesh1, image_loader0, image_loader1, **kwargs):
             ini_mtch_t = (ini_xy0_t, ini_xy1_t, ini_wt_t)
             xy0_t, xy1_t, wt_t, _ = iterative_xcorr_matcher_w_mesh(msh0_t, msh1_t,
                 image_loader0, image_loader1, spacings=spacings, compute_strain=False,
-                initial_matches=ini_mtch_t,  distributor='cartesian_region', **kwargs)
+                initial_matches=ini_mtch_t, **kwargs)
             if xy0_t is not None:
                 if (msh0_t.uid - msh1_t.uid) * (mesh0.uid - mesh1.uid) > 0:
                     xy0.append(xy0_t)
@@ -359,6 +360,7 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
     distributor = kwargs.get('distributor', 'cartesian_bbox')
     min_num_blocks = kwargs.get('min_num_blocks', 2)
     min_boundary_distance = kwargs.get('min_boundary_distance', 0)
+    boundary_tolerance = kwargs.get('boundary_tolerance', None)
     shrink_factor = kwargs.get('shrink_factor', 1)
     allow_dwell = kwargs.get('allow_dwell', 0)
     compute_strain = kwargs.get('compute_strain', True)
@@ -426,14 +428,15 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
                 zorder=True)
         elif distributor == 'oneway_triangulation':
             bboxes0, bboxes1 = distributor_oneway_triangulation(mesh0, mesh1, sp,
-                shrink_factor=shrink_factor, zorder=True)
+                boundary_tolerance=boundary_tolerance, shrink_factor=shrink_factor,
+                zorder=True)
         else:
             raise ValueError
         if bboxes0 is None:
             return invalid_output
         num_blocks = bboxes0.shape[0]
         if batch_size is not None:
-            batch_size_s = np.round(batch_size * (np.max(spacings) / sp) ** 2)
+            batch_size_s = max(1, np.round(batch_size * (np.max(spacings) / sp) ** 2))
         else:
             batch_size_s = None
         if num_workers > 1:
@@ -666,7 +669,7 @@ def distributor_cartesian_region(mesh0, mesh1, spacing, **kwargs):
     if not hasattr(shrink_factor, '__len__'):
         shrink_factor = (shrink_factor, shrink_factor)
     else:
-        if region0.area > region1.area:
+        if (region0.area / mesh0.num_triangles) > (region1.area / mesh1.num_triangles):
             shrink_factor = (max(shrink_factor), min(shrink_factor))
         else:
             shrink_factor = (min(shrink_factor), max(shrink_factor))
@@ -721,15 +724,15 @@ def distributor_intersect_triangulation(mesh0, mesh1, spacing, **kwargs):
         reg_crx = reg_crx.buffer(-min_boundary_distance)
     if reg_crx.area == 0:
         return None, None
-    roi = shpgeo.box(*reg_crx.bounds)
+    roi = reg_crx
     G = spatial.Geometry(roi=roi, regions={'default': reg_crx})
-    mshsz = spacing ** 2 / 2
+    mshsz = spacing
     M = Mesh.from_PSLG(**G.PSLG(), mesh_size=mshsz, min_mesh_angle=20)
     bcnters = M.triangle_centers(cache=False)
     if not hasattr(shrink_factor, '__len__'):
         shrink_factor = (shrink_factor, shrink_factor)
     else:
-        if region0.area > region1.area:
+        if (region0.area / mesh0.num_triangles) > (region1.area / mesh1.num_triangles):
             shrink_factor = (max(shrink_factor), min(shrink_factor))
         else:
             shrink_factor = (min(shrink_factor), max(shrink_factor))
@@ -750,10 +753,11 @@ def distributor_intersect_triangulation(mesh0, mesh1, spacing, **kwargs):
 def distributor_oneway_triangulation(mesh0, mesh1, spacing, **kwargs):
     gear = kwargs.get('gear', const.MESH_GEAR_MOVING)
     shrink_factor = kwargs.get('shrink_factor', 1)
+    boundary_tolerance = kwargs.get('boundary_tolerance', None)
     zorder = kwargs.get('zorder', False)
     region0 = mesh0.shapely_regions(gear=gear)
     region1 = mesh1.shapely_regions(gear=gear)
-    if region0.area > region1.area:
+    if (region0.area / mesh0.num_triangles) > (region1.area / mesh1.num_triangles):
         region_r = region1
         mesh_e = mesh0
         flipped = True
@@ -761,17 +765,26 @@ def distributor_oneway_triangulation(mesh0, mesh1, spacing, **kwargs):
         region_r = region0
         mesh_e = mesh1
         flipped = False
-    roi = shpgeo.box(*region_r.bounds)
+    roi = region_r
     G = spatial.Geometry(roi=roi, regions={'default': region_r})
-    mshsz = spacing ** 2 / 2
+    mshsz = spacing
     M = Mesh.from_PSLG(**G.PSLG(), mesh_size=mshsz, min_mesh_angle=20)
     bcnters0 = M.triangle_centers(cache=False)
     tid, B = mesh_e.cart2bary(bcnters0, gear, tid=None, extrapolate=True)
-    out_side = np.any(B < 0, axis=-1)
-    Bt = B[out_side].clip(0.01)
-    Bt = B / np.sum(B, axis=-1, keepdims=True)
-    B[out_side] = Bt
-    bcnters1 =mesh_e.bary2cart(tid, B, gear=gear, offsetting=True)
+    if boundary_tolerance is None:
+        out_side = np.any(B < 0, axis=-1)
+        bcnters0 = bcnters0[~out_side]
+        bcnters1 = bcnters0
+    else:
+        out_side = np.any(B < 0, axis=-1)
+        Bt = B[out_side].clip(0.01)
+        Bt = Bt / np.sum(Bt, axis=-1, keepdims=True)
+        B[out_side] = Bt
+        bcnters1 =mesh_e.bary2cart(tid, B, gear=gear, offsetting=True)
+        dis = np.sum((bcnters0 - bcnters1) ** 2, axis=-1)
+        tokeep = dis <= boundary_tolerance ** 2
+        bcnters0 = bcnters0[tokeep]
+        bcnters1 = bcnters1[tokeep]
     if not hasattr(shrink_factor, '__len__'):
         shrink_factor = (shrink_factor, shrink_factor)
     blk_hfsz0 = np.ceil(spacing * min(shrink_factor) / 2)
