@@ -630,6 +630,27 @@ class Stitcher:
         self.mesh_sharing = mesh_indx_nm
 
 
+    def filter_match_by_weight(self, minweight):
+        rejected = 0
+        if minweight is not None:
+            to_pop = []
+            for uids, mtch in self.matches.items():
+                xy0, xy1, weight = mtch
+                sel = weight >= minweight
+                if not np.any(sel):
+                    to_pop.append(uids)
+                elif not np.all(sel):
+                    xy0 = xy0[sel]
+                    xy1 = xy1[sel]
+                    weight = weight[sel]
+                    rejected += np.sum(~sel)
+                    self.matches[uids] = (xy0, xy1, weight)
+            for uids in to_pop:
+                self.matches.pop(uids)
+                self.match_strains.pop(uids)
+        return rejected                    
+
+
     def initialize_optimizer(self, **kwargs):
         if (not kwargs.get('force_update', False)) and (self._optimizer is not None):
             return False
@@ -780,6 +801,10 @@ class Stitcher:
                 self._optimizer.set_link_residue_threshold(residue_len)
             weight_modified, _ = self._optimizer.adjust_link_weight_by_residue(gear=(target_gear, target_gear))
             if weight_modified:
+                if kwargs.get('tol', None) is not None:
+                    kwargs['tol'] = max(1.0e-3, kwargs['tol'])
+                if kwargs.get('atol', None) is not None:
+                    kwargs['atol'] = 0.1 * kwargs['atol']
                 cost1 = self._optimizer.optimize_linear(groupings=groupings, **kwargs)
                 cost = (cost[0], cost1[-1])
         return cost
@@ -1386,7 +1411,7 @@ class MontageRenderer:
     def bounds(self):
         return self.mesh_tree.bounds
 
-    
+
     @property
     def number_of_channels(self):
         return self.image_loader.number_of_channels

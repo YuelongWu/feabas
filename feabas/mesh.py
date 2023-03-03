@@ -825,10 +825,13 @@ class Mesh:
         if resolution == self._resolution:
             return
         scale = self._resolution / resolution
+        locked = self.locked
+        self.locked = False
         for gear in const.MESH_GEARS:
             if self._vertices[gear] is not None:
                 self.set_vertices(spatial.scale_coordinates(self.vertices(gear=gear), scale), gear=gear)
                 self._offsets[gear] = scale * self._offsets[gear]
+        self.locked = locked
         self._resolution = resolution
         self._epsilon = self._epsilon * scale
 

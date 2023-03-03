@@ -51,9 +51,14 @@ def optimize_one_section(matchname, outname, **kwargs):
     group_elastic_settings = kwargs.get('group_elastic', {})
     elastic_settings = kwargs.get('final_elastic', {})
     normalize_setting = kwargs.get('normalize', {})
+    minweight = kwargs.get('minweight', None)
     bname = os.path.basename(matchname).replace('.h5', '')
     t0 = time.time()
     stitcher = Stitcher.from_h5(matchname, load_matches=True, load_meshes=False)
+    if minweight is not None:
+        rejected = stitcher.filter_match_by_weight(minweight)
+        if rejected > 0:
+            print(f'\t{bname}: filtered out {rejected} low-conf matches')
     if use_group:
         if msem:
             groupings = [int(s.split('/')[0]) for s in stitcher.imgrelpaths]
