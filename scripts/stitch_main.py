@@ -52,6 +52,8 @@ def optimize_one_section(matchname, outname, **kwargs):
     elastic_settings = kwargs.get('final_elastic', {})
     normalize_setting = kwargs.get('normalize', {})
     minweight = kwargs.get('minweight', None)
+    group_elastic_settings.setdefault('continue_on_flip', True)
+    elastic_settings.setdefault('continue_on_flip', True)
     bname = os.path.basename(matchname).replace('.h5', '')
     t0 = time.time()
     stitcher = Stitcher.from_h5(matchname, load_matches=True, load_meshes=False)
@@ -84,7 +86,7 @@ def optimize_one_section(matchname, outname, **kwargs):
     if N_conn > 1:
         rot_1, _ = stitcher.normalize_coordinates(**normalize_setting)
         rot = max(rot, rot_1)
-    if cost[0] < cost[1]:
+    if cost[0] is None or cost[1] is None or cost[0] < cost[1]:
         stitcher.save_to_h5(outname.replace('.h5', '.h5_err'), save_matches=False, save_meshes=True)
     else:
         stitcher.save_to_h5(outname, save_matches=False, save_meshes=True)
