@@ -81,6 +81,10 @@ class MeshRenderer:
                     continue
                 mpl_tri, _, _ = srcmesh.mpl_tri(gear=gear[0], tri_mask=hitidx)
                 collision_region.append(srcmesh.shapely_regions(gear=gear[0], tri_mask=hitidx))
+                try:
+                    mpl_tri.get_trifinder()
+                except RuntimeError:
+                    mpl_tri = mattri
                 if weight_params == const.MESH_TRIFINDER_INNERMOST:
                     cx = mpl_tri.x
                     cy = mpl_tri.y
