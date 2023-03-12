@@ -89,7 +89,7 @@ class MeshRenderer:
                     cx = mpl_tri.x
                     cy = mpl_tri.y
                     mpts = list(shpgeo.MultiPoint(np.stack((cx, cy), axis=-1)).geoms)
-                    dis0 = region.boundary.distance(mpts) + const.EPSILON0
+                    dis0 = region.boundary.distance(mpts) + 1
                     inside = region.intersects(mpts)
                     dis0[~inside] *= -1
                     weight_generator.append(matplotlib.tri.LinearTriInterpolator(mpl_tri, dis0))

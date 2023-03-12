@@ -1472,6 +1472,10 @@ class Mesh:
         return grouped_chains
 
 
+    def grouped_segment_chains(self, tri_mask=None):
+        return self._grouped_segment_chains(tri_mask=tri_mask, cache=False)
+
+
     @config_cache(const.MESH_GEAR_INITIAL)
     def weight_multiplier_for_render(self):
         multiplier = np.ones(self.num_triangles, dtype=np.float32)
@@ -2243,7 +2247,8 @@ class Mesh:
                 start_pos = indx_loc[colors == c]
                 d0 = csgraph.shortest_path(D, directed=False, indices=start_pos)
                 dis.append(d0.min(axis=0))
-            groupings = np.argmin(dis, axis=0)
+            if len(dis) > 0:
+                groupings = np.argmin(dis, axis=0)
             groupings[indx_loc[colors < 0]] = -1
         return groupings
 

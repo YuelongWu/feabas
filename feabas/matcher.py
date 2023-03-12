@@ -287,7 +287,7 @@ def section_matcher(mesh0, mesh1, image_loader0, image_loader1, **kwargs):
             ini_xy1_t = lnk.xy1(gear=const.MESH_GEAR_INITIAL, use_mask=False, combine=True)
             ini_wt_t = lnk.weight(use_mask=False)
             ini_mtch_t = (ini_xy0_t, ini_xy1_t, ini_wt_t)
-            xy0_t, xy1_t, wt_t, _ = iterative_xcorr_matcher_w_mesh(msh0_t, msh1_t,
+            xy0_t, xy1_t, wt_t, _ = iterative_xcorr_matcher_w_mesh(msh0_t.copy(), msh1_t.copy(),
                 image_loader0, image_loader1, spacings=spacings, compute_strain=False,
                 initial_matches=ini_mtch_t, **kwargs)
             if xy0_t is not None:
@@ -298,6 +298,8 @@ def section_matcher(mesh0, mesh1, image_loader0, image_loader1, **kwargs):
                     xy0.append(xy1_t)
                     xy1.append(xy0_t)
                 weight.append(wt_t)
+        if len(xy0) == 0:
+            return None, None, 0
         xy0 = np.concatenate(xy0, axis=0)
         xy1 = np.concatenate(xy1, axis=0)
         weight = np.concatenate(weight, axis=0)
@@ -401,7 +403,7 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
         opt.optimize_affine_cascade(start_gear=const.MESH_GEAR_INITIAL, target_gear=const.MESH_GEAR_FIXED, svd_clip=(1,1))
         opt.anneal(gear=(const.MESH_GEAR_FIXED, const.MESH_GEAR_MOVING), mode=const.ANNEAL_COPY_EXACT)
         if linear_system:
-            opt.optimize_linear(tol=1e-5, batch_num_matches=np.inf, continue_on_flip=continue_on_flip)
+            opt.optimize_linear(tol=1e-6, batch_num_matches=np.inf, continue_on_flip=continue_on_flip)
         else:
             opt.optimize_Newton_Raphson(maxepoch=5, tol=1e-4, batch_num_matches=np.inf, continue_on_flip=continue_on_flip)
     spacings = np.sort(spacings)[::-1]
@@ -483,6 +485,8 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
                         xy0.append(pt0)
                         xy1.append(pt1)
                         conf.append(cnf)
+                if len(xy0) == 0:
+                    return invalid_output
                 xy0 = np.concatenate(xy0, axis=0)
                 xy1 = np.concatenate(xy1, axis=0)
                 conf = np.concatenate(conf, axis=0)

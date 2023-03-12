@@ -14,7 +14,7 @@ import feabas.constant as const
 JOIN_STYLE = shpgeo.JOIN_STYLE.mitre
 
 
-def fit_affine(pts0, pts1, return_rigid=False, weight=None, svd_clip=(1,1)):
+def fit_affine(pts0, pts1, return_rigid=False, weight=None, svd_clip=(1,1), avoid_flip=True):
     # pts0 = pts1 @ A
     pts0 = pts0.reshape(-1,2)
     pts1 = pts1.reshape(-1,2)
@@ -38,6 +38,8 @@ def fit_affine(pts0, pts1, return_rigid=False, weight=None, svd_clip=(1,1)):
     r1 = np.linalg.matrix_rank(pts0_pad)
     A = res[0]
     r = min(res[2], r1)
+    if avoid_flip and np.linalg.det(A) < 0:
+        r = 2
     if r == 1:
         A = np.eye(3)
         A[-1,:2] = mm0 - mm1

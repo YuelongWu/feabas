@@ -810,8 +810,8 @@ class SLM:
                     xy0_list.append(lnk.xy0(gear=start_gear, use_mask=True, combine=True))
                     xy1_list.append(lnk.xy1(gear=targt_gear, use_mask=True, combine=True))
                 elif lnk.uids[1] == self.mesh_uids[idx0]:
-                    xy0_list.append(lnk.xy1(gear=targt_gear, use_mask=True, combine=True))
-                    xy1_list.append(lnk.xy0(gear=start_gear, use_mask=True, combine=True))
+                    xy0_list.append(lnk.xy1(gear=start_gear, use_mask=True, combine=True))
+                    xy1_list.append(lnk.xy0(gear=targt_gear, use_mask=True, combine=True))
                 else:
                     raise RuntimeError('This should never happen...')
                 weight_list.append(lnk.weight(use_mask=True))
@@ -821,7 +821,7 @@ class SLM:
                 continue
             xy1 = np.concatenate(xy1_list, axis=0)
             weight = np.concatenate(weight_list, axis=None)
-            _, A = spatial.fit_affine(xy1, xy0, return_rigid=True, weight=weight, svd_clip=svd_clip)
+            _, A = spatial.fit_affine(xy1, xy0, return_rigid=True, weight=weight, svd_clip=svd_clip, avoid_flip=True)
             if (not modified) and np.any(xy0!=xy1, axis=None):
                 modified = True
             self.meshes[idx0].set_affine(A, gear=(start_gear, targt_gear))

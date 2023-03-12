@@ -6,6 +6,8 @@ import h5py
 import numpy as np
 import glob
 import os
+from scipy import sparse
+import scipy.sparse.csgraph as csgraph
 import yaml
 import time
 
@@ -113,14 +115,17 @@ def match_section_from_initial_matches(match_name, meshes, loaders, out_dir, con
     initial_matches = read_matches_from_h5(match_name, target_resolution=resolution)
     xy0, xy1, weight = section_matcher(mesh0, mesh1, loader0, loader1,
         initial_matches=initial_matches, **matcher_config)
-    with h5py.File(outname, 'w') as f:
-        f.create_dataset('xy0', data=xy0, compression="gzip")
-        f.create_dataset('xy1', data=xy1, compression="gzip")
-        f.create_dataset('weight', data=weight, compression="gzip")
-        f.create_dataset('resolution', data=resolution)
-        f.create_dataset('name0', data=str_to_numpy_ascii(secnames[0]))
-        f.create_dataset('name1', data=str_to_numpy_ascii(secnames[1]))
-    return len(xy0)
+    if xy0 is None:
+        return 0
+    else:
+        with h5py.File(outname, 'w') as f:
+            f.create_dataset('xy0', data=xy0, compression="gzip")
+            f.create_dataset('xy1', data=xy1, compression="gzip")
+            f.create_dataset('weight', data=weight, compression="gzip")
+            f.create_dataset('resolution', data=resolution)
+            f.create_dataset('name0', data=str_to_numpy_ascii(secnames[0]))
+            f.create_dataset('name1', data=str_to_numpy_ascii(secnames[1]))
+        return len(xy0)
 
 
 
@@ -358,6 +363,27 @@ class Stack:
 
     def optimize_slide_window(self, **kwargs):
         num_workers = kwargs.pop('num_workers', 1)
+        window_size = kwargs.get('window_size', None)
+        if (window_size is None) or (window_size > self.num_sections):
+            window_size = self.num_sections
+        buffer_size = kwargs.get('buffer_size', window_size//4)
+        func_name = 'optimize_slide_window'
+        cost = {}
+        if not np.any(self.locked_array):
+            # start from middle
+            # recurse
+            pass
+        section_blocks_to_align = self.connected_sections(section_filter=~self.locked_array)
+        if len(section_blocks_to_align) == 1:
+            pass
+        elif len(section_blocks_to_align) > 1:
+            pass
+        return cost
+
+
+
+    def optimize_slide_window_legacy(self, **kwargs):
+        num_workers = kwargs.pop('num_workers', 1)
         locked_section = kwargs.pop('locked_section', None)
         start_loc = kwargs.pop('start_loc', 'L') # L or R or M
         window_size = kwargs.get('window_size', None)
@@ -392,25 +418,27 @@ class Stack:
             indices0 = np.arange(init_idx0, self.num_sections, window_size-buffer_size)
             for idx0 in indices0:
                 seclst = self.section_list[init_idx0:(idx0+window_size)]
+                if np.all([self.lock_flags[s] for s in seclst]):
+                    continue
                 cst = self.optimize_section_list(seclst, **kwargs)
                 if cst is not None:
                     costs['_'.join((self.section_list[idx0], seclst[-1]))] = cst
-                if idx0 + window_size >= self.num_sections:
-                    self.flush_meshes()
-                    break
                 self.update_lock_flags({s:True for s in seclst[:-buffer_size]})
+            else:
+                self.flush_meshes()
         elif start_loc == 'R':
             indices1 = np.arange(self.num_sections, 0, buffer_size-window_size)
             for idx1 in indices1:
                 idx0 = max(0, idx1 - window_size)
                 seclst = self.section_list[idx0:]
+                if np.all([self.lock_flags[s] for s in seclst]):
+                    continue
                 cst = self.optimize_section_list(seclst, **kwargs)
                 if cst is not None:
                     costs['_'.join((self.section_list[idx0], seclst[-1]))] = cst
-                if idx0 == 0:
-                    self.flush_meshes()
-                    break
                 self.update_lock_flags({s:True for s in seclst[buffer_size:]})
+            else:
+                self.flush_meshes()
         else:
             assert window_size > 2 * buffer_size + 1
             seclst = self.section_list[init_idx0:(init_idx0+window_size)]
@@ -493,7 +521,7 @@ class Stack:
 
     @property
     def locked_array(self):
-        return np.array([self.locked_array[s] for s in self.section_list], copy=False)
+        return np.array([self.lock_flags[s] for s in self.section_list], copy=False)
 
 
   ## -------------------------------- queries ------------------------------ ##
@@ -505,6 +533,52 @@ class Stack:
 
     def matchname_to_secnames(self, matchname):
         return matchname.split(self._match_name_delimiter)
+
+
+    @property
+    def section_connection_matrix(self):
+        if not hasattr(self, '_section_connection_matrix'):
+            edges = np.array([s for s in self.matchname_to_secids_mapper.values()])
+            idx0 = edges[:,0]
+            idx1 = edges[:,1]
+            V = np.ones_like(idx0, dtype=bool)
+            Nsec = self.num_sections
+            A = sparse.csr_matrix((V, (idx0, idx1)), shape=(Nsec, Nsec))
+            A = (A + A.T) > 0
+            A.eliminate_zeros()
+            self._section_connection_matrix = A
+        return self._section_connection_matrix
+
+
+    def connected_sections(self, section_filter=None):
+        if section_filter is None:
+            section_ids = np.arange(self.num_sections)
+        elif isinstance(section_filter, np.ndarray):
+            if section_filter.dtype == bool:
+                section_ids = np.nonzero(section_filter)[0]
+            else:
+                section_ids = np.array(section_filter, dtype=np.int32)
+        elif isinstance(section_filter[0], str):
+            section_ids = np.array([k for k, s in enumerate(self.section_list) if s in section_filter])
+        else:
+            raise TypeError
+        A = self.section_connection_matrix[section_ids][:, section_ids]
+        ngrps, lbls = csgraph.connected_components(A, directed=False, return_labels=True)
+        conn_sections = []
+        for lbl in range(ngrps):
+            sel = section_ids[lbls == lbl]
+            conn_sections.append([self.section_list[k] for k in sel])
+        return conn_sections
+
+
+    def pad_section_list_w_refs(self, section_list):
+        sel_flag = np.array([(s in section_list) for s in self.section_list])
+        A = self.section_connection_matrix
+        ref_flag = A.dot(sel_flag) & (~sel_flag) & self.locked_array
+        combined_flag = sel_flag | ref_flag
+        return [s for flg, s in zip(combined_flag, self.section_list) if flg]
+        
+
 
 
     @property

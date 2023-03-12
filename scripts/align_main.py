@@ -13,7 +13,7 @@ from feabas.mesh import Mesh
 from feabas.renderer import render_whole_mesh
 
 
-def match_main(match_dir, mesh_dir, loader_dir, out_dir, conf_dir, stt=0, step=1, stop=None):
+def match_main(match_dir, mesh_dir, loader_dir, out_dir, conf_dir, stt=0, step=1, stop=None, reverse=False):
     match_list = sorted(glob.glob(os.path.join(match_dir, '*.h5')))
     if stop == -1:
         stop = None
@@ -35,6 +35,9 @@ def optimize_main(section_list, match_dir, mesh_dir, mesh_out_dir, **conf):
     stack_config = conf.get('stack_config', {})
     slide_window = conf.get('slide_window', {})
     stk = Stack(section_list=section_list, mesh_dir=mesh_dir, match_dir=match_dir, mesh_out_dir=mesh_out_dir, **stack_config)
+    stk.update_lock_flags({s: os.path.isfile(os.path.join(mesh_out_dir, s + '.h5')) for s in section_list})  ##############dd###############
+    locked_flags = stk.locked_array
+    print(f'{locked_flags.size} images| {np.sum(locked_flags)} references')
     cost = stk.optimize_slide_window(optimize_rigid=True, optimize_elastic=True,
         target_gear=const.MESH_GEAR_MOVING, **slide_window)
     # cost = {}
@@ -75,7 +78,7 @@ def render_one_section(h5name, loadername, outdir, meta_name=None,  **conf):
     return len(rendered)
 
 
-def render_main(mesh_dir, loader_dir, out_dir, out_meta_dir=None, stt=0, step=1, stop=None, **conf):
+def render_main(mesh_dir, loader_dir, out_dir, out_meta_dir=None, stt=0, step=1, stop=None, reverse=False, **conf):
     num_workers = conf.get('num_workers', 1)
     cache_size = conf.get('cache_size', 0)
     if cache_size is not None:
@@ -84,6 +87,8 @@ def render_main(mesh_dir, loader_dir, out_dir, out_meta_dir=None, stt=0, step=1,
     if stop == -1:
         stop = None
     h5list = h5list[slice(stt, stop, step)]
+    if reverse:
+        h5list = h5list[::-1]
     loaderlist = [os.path.join(loader_dir, os.path.basename(s).replace('.h5', '.json')) for s in h5list]
     if out_meta_dir is None:
         metalist = [None]*len(h5list)
@@ -98,13 +103,14 @@ def parse_args(args=None):
     parser.add_argument("--start", metavar="start", type=int, default=0)
     parser.add_argument("--step", metavar="step", type=int, default=1)
     parser.add_argument("--stop", metavar="stop", type=int, default=-1)
+    parser.add_argument("--reverse",  action='store_true')
     return parser.parse_args(args)
 
 
 if __name__ == '__main__':
     args = parse_args()
-    root_dir = '/n/boslfs02/LABS/lichtman_lab/yuelong/dce/data/Fish2/alignment'
-    mode = 'render'
+    root_dir = 'F:/Fish2/alignment/test'
+    mode = 'matching'
     conf_files = os.path.join('configs', 'alignment_configs.yaml')
     with open(conf_files, 'r') as f:
         conf = yaml.safe_load(f)
@@ -114,7 +120,7 @@ if __name__ == '__main__':
         match_meshdir = os.path.join(root_dir, 'matching_meshes')
         match_loaderdir = os.path.join(root_dir, 'image_loaders_mip2')
         out_dir = os.path.join(root_dir, 'match_h5')
-        match_main(init_matchdir, match_meshdir, match_loaderdir, out_dir, conf, stt=args.start, step=args.step, stop=args.stop)
+        match_main(init_matchdir, match_meshdir, match_loaderdir, out_dir, conf, stt=args.start, step=args.step, stop=args.stop, reverse=args.reverse)
     elif mode == 'optimize':
         mesh_dir = os.path.join(root_dir, 'opt_meshes')
         mesh_out_dir = os.path.join(root_dir, 'tforms')
@@ -131,4 +137,4 @@ if __name__ == '__main__':
         loader_dir = os.path.join(render_root_dir, 'image_loaders')
         meta_dir = os.path.join(render_root_dir, 'metadata')
         out_dir = '/n/boslfs02/LABS/lichtman_lab/Lab/ALIGNED_STACKS/Fish2_0422_03/mip0'
-        render_main(mesh_dir, loader_dir, out_dir, meta_dir,  stt=args.start, step=args.step, stop=args.stop, **conf_render)
+        render_main(mesh_dir, loader_dir, out_dir, meta_dir,  stt=args.start, step=args.step, stop=args.stop, reverse=args.reverse, **conf_render)
