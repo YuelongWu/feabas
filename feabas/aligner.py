@@ -363,27 +363,6 @@ class Stack:
 
     def optimize_slide_window(self, **kwargs):
         num_workers = kwargs.pop('num_workers', 1)
-        window_size = kwargs.get('window_size', None)
-        if (window_size is None) or (window_size > self.num_sections):
-            window_size = self.num_sections
-        buffer_size = kwargs.get('buffer_size', window_size//4)
-        func_name = 'optimize_slide_window'
-        cost = {}
-        if not np.any(self.locked_array):
-            # start from middle
-            # recurse
-            pass
-        section_blocks_to_align = self.connected_sections(section_filter=~self.locked_array)
-        if len(section_blocks_to_align) == 1:
-            pass
-        elif len(section_blocks_to_align) > 1:
-            pass
-        return cost
-
-
-
-    def optimize_slide_window_legacy(self, **kwargs):
-        num_workers = kwargs.pop('num_workers', 1)
         locked_section = kwargs.pop('locked_section', None)
         start_loc = kwargs.pop('start_loc', 'L') # L or R or M
         window_size = kwargs.get('window_size', None)

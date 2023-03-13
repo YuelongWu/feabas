@@ -59,7 +59,7 @@
     "type": "MATERIAL_MODEL_ENG",
     "stiffness_multiplier": 0.05,
     "poisson_ratio": 0.0,
-    "uid": 2,
+    "uid": 3,
     "mask_label": 50,
     "stiffness_func_factory": null,
     "stiffness_func_params": {}
