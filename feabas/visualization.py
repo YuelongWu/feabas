@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 import matplotlib.tri
 import numpy as np
 import shapely.geometry as shpgeo
-from feabas.constant import *
+import feabas.constant as const
 
 def rgb2hex(r,g,b):
     r = min(max(r, 0), 255)
@@ -47,25 +47,20 @@ def dynamic_typing_decorator(func):
     return wrapped
 
 
-def plot_mesh(M, show_mat=False, show_conn=False, gear=MESH_GEAR_MOVING, show=False, colors=('b', 'k')):
+def plot_mesh(M, show_mat=False, show_conn=False, show_group=False, gear=const.MESH_GEAR_MOVING, show=False, colors=('b', 'k')):
     if isinstance(M, (list, tuple)):
         for m in M:
-            plot_mesh(m, show_mat=show_mat, show_conn=show_conn, gear=gear, show=False)
+            plot_mesh(m, show_mat=show_mat, show_conn=show_conn, show_group=show_group, gear=gear, show=False)
     else:
-        if show_mat:
-            mat_ids = M._material_ids
+        if show_mat or show_conn or show_group:
+            if show_mat:
+                mat_ids = M._material_ids
+            elif show_conn:
+                _, mat_ids = M.connected_triangles()
+            elif show_group:
+                mat_ids = M.nonoverlap_triangle_groups(gear=gear)
             for mid in np.unique(mat_ids):
                 indx = mat_ids == mid
-                R, G = np.random.randint(256, size=2)
-                B = 255 * 2 - R - G
-                color = rgb2hex(R, G, B)
-                T = matplotlib.tri.Triangulation(M.vertices_w_offset(gear=gear)[:,0],
-                    M.vertices_w_offset(gear=gear)[:,1], M.triangles[indx])
-                plt.triplot(T, color=color, alpha=0.5, linewidth=0.5)
-        elif show_conn:
-            _, t_conn = M.connected_triangles()
-            for lbl in np.unique(t_conn):
-                indx = t_conn == lbl
                 R, G = np.random.randint(256, size=2)
                 B = 255 * 2 - R - G
                 color = rgb2hex(R, G, B)
@@ -96,9 +91,9 @@ def plot_montage(M, bbox_only=False):
         for idx in mindx:
             m = M.meshes[idx]
             if bbox_only:
-                tile = shpgeo.box(*m.bbox(gear=MESH_GEAR_MOVING, offsetting=True))
+                tile = shpgeo.box(*m.bbox(gear=const.MESH_GEAR_MOVING, offsetting=True))
             else:
-                tile = m.shapely_regions(gear=MESH_GEAR_MOVING)
+                tile = m.shapely_regions(gear=const.MESH_GEAR_MOVING)
             outlines.append(tile)
         plot_geometries(outlines, color=color)
 

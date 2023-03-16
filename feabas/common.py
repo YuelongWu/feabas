@@ -1,3 +1,4 @@
+from collections import namedtuple
 import cv2
 import collections
 import gc
@@ -8,6 +9,11 @@ import numpy as np
 from scipy import sparse
 from scipy.ndimage import gaussian_filter1d
 import scipy.sparse.csgraph as csgraph
+
+import feabas.constant as const
+
+
+Match = namedtuple('Match', ('xy0', 'xy1', 'weight'))
 
 
 def imread(path, **kwargs):
@@ -54,7 +60,7 @@ def z_order(indices, base=2):
         indices = np.floor(indices / base)
         pw += 1
     z_order_score = np.sum(indices_casted * (base ** np.arange(ndim)), axis=-1)
-    return np.argsort(z_order_score)
+    return np.argsort(z_order_score, kind='stable')
 
 
 def render_by_subregions(map_x, map_y, mask, img_loader, fileid=None,  **kwargs):
@@ -403,6 +409,14 @@ def bbox_intersections(bboxes0, bboxes1):
     return bbox_int, width
 
 
+def bbox_union(bboxes):
+    bboxes = np.array(bboxes, copy=False)
+    bboxes = bboxes.reshape(-1, 4)
+    xy_min = bboxes[:,:2].min(axis=0)
+    xy_max = bboxes[:,-2:].max(axis=0)
+    return np.concatenate((xy_min, xy_max), axis=None)
+
+
 def bbox_enlarge(bboxes, margin=0):
     return np.array(bboxes, copy=False) + np.array([-margin, -margin, margin, margin])
 
@@ -430,6 +444,7 @@ def parse_coordinate_files(filename, **kwargs):
     root_dir = kwargs.get('root_dir', None)
     tile_size = kwargs.get('tile_size', None)
     delimiter = kwargs.get('delimiter', '\t') # None for any whitespace
+    resolution = kwargs.get('resolution', const.DEFAULT_RESOLUTION)
     imgpaths = []
     bboxes = []
     with open(filename, 'r') as f:
@@ -452,6 +467,11 @@ def parse_coordinate_files(filename, **kwargs):
                 tile_size = (int(tlist[1]), int(tlist[2]))
             else:
                 continue
+        elif '{RESOLUTION}' in line:
+            start_line += 1
+            tlist = line.strip().split(delimiter)
+            if len(tlist) >= 2:
+                resolution = float(tlist[1])
         else:
             break
     relpath = bool(root_dir)
@@ -478,7 +498,7 @@ def parse_coordinate_files(filename, **kwargs):
             y_max = y_min + tile_size[0]
         imgpaths.append(mpath)
         bboxes.append((x_min, y_min, x_max, y_max))
-    return imgpaths, bboxes, root_dir
+    return imgpaths, bboxes, root_dir, resolution
 
 
 ##--------------------------------- caches -----------------------------------##

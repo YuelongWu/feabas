@@ -1,0 +1,67 @@
+{
+  "default": {
+    "enable_mesh": true,
+    "area_constraint": 1,
+    "render": true,
+    "render_weight": 1.0,
+    "type": "MATERIAL_MODEL_ENG",
+    "stiffness_multiplier": 1.0,
+    "poisson_ratio": 0.0,
+    "uid": -1,
+    "mask_label": 0,
+    "stiffness_func_factory": null,
+    "stiffness_func_params": {}
+  },
+  "hole": {
+    "enable_mesh": false,
+    "area_constraint": 0,
+    "render": true,
+    "render_weight": 1.0,
+    "type": "MATERIAL_MODEL_ENG",
+    "stiffness_multiplier": 1.0,
+    "poisson_ratio": 0.0,
+    "uid": 0,
+    "mask_label": 255,
+    "stiffness_func_factory": null,
+    "stiffness_func_params": {}
+  },
+  "tape": {
+    "enable_mesh": false,
+    "area_constraint": 0,
+    "render": true,
+    "render_weight": 0,
+    "type": "MATERIAL_MODEL_ENG",
+    "stiffness_multiplier": 0,
+    "poisson_ratio": 0.0,
+    "uid": 1,
+    "mask_label": 200,
+    "stiffness_func_factory": null,
+    "stiffness_func_params": {}
+  },
+  "resin": {
+    "enable_mesh": true,
+    "area_constraint": 5,
+    "render": true,
+    "render_weight": 1.0e-6,
+    "type": "MATERIAL_MODEL_ENG",
+    "stiffness_multiplier": 1.0e-6,
+    "poisson_ratio": 0.0,
+    "uid": 2,
+    "mask_label": 100,
+    "stiffness_func_factory": null,
+    "stiffness_func_params": {}
+  },
+  "soft": {
+    "enable_mesh": true,
+    "area_constraint": 1,
+    "render": true,
+    "render_weight": 1.0e-3,
+    "type": "MATERIAL_MODEL_ENG",
+    "stiffness_multiplier": 0.05,
+    "poisson_ratio": 0.0,
+    "uid": 3,
+    "mask_label": 50,
+    "stiffness_func_factory": null,
+    "stiffness_func_params": {}
+  }
+}

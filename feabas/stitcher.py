@@ -1,7 +1,6 @@
 from collections import defaultdict, namedtuple
 from concurrent.futures.process import ProcessPoolExecutor
 from concurrent.futures import as_completed
-import cv2
 from functools import partial
 import gc
 import h5py
@@ -11,7 +10,7 @@ import numpy as np
 import os
 from rtree import index
 from scipy.interpolate import interp1d
-from scipy.ndimage import gaussian_filter
+from scipy.ndimage import gaussian_filter, binary_dilation
 from scipy import sparse
 import scipy.sparse.csgraph as csgraph
 
@@ -21,7 +20,7 @@ from feabas.mesh import Mesh
 from feabas.optimizer import SLM
 from feabas import common
 from feabas.spatial import scale_coordinates
-from feabas.constant import *
+import feabas.constant as const
 
 
 class Stitcher:
@@ -65,7 +64,7 @@ class Stitcher:
 
     @classmethod
     def from_coordinate_file(cls, filename, **kwargs):
-        imgpaths, bboxes, root_dir = common.parse_coordinate_files(filename, **kwargs)
+        imgpaths, bboxes, root_dir, _ = common.parse_coordinate_files(filename, **kwargs)
         return cls(imgpaths, bboxes, root_dir=root_dir)
 
 
@@ -136,15 +135,15 @@ class Stitcher:
                 for indx_u, indx_m in zip(mesh_share_u, mesh_share_sample):
                     M0 = self.meshes[indx_m]
                     prefix = 'master_meshes/' + str(int(indx_u))
-                    M0.save_to_h5(f, vertex_flags=(MESH_GEAR_INITIAL,), prefix=prefix,
+                    M0.save_to_h5(f, vertex_flags=(const.MESH_GEAR_INITIAL,), prefix=prefix,
                         save_material=False, compression=compression)
-                moving_offsets = np.array([m.offset(gear=MESH_GEAR_MOVING) for m in self.meshes])
+                moving_offsets = np.array([m.offset(gear=const.MESH_GEAR_MOVING) for m in self.meshes])
                 create_dataset('moving_offsets', data=moving_offsets)
                 f.create_group('moving_vertices')
                 for k, m in enumerate(self.meshes):
-                    if m.vertices_initialized(gear=MESH_GEAR_MOVING):
+                    if m.vertices_initialized(gear=const.MESH_GEAR_MOVING):
                         prefix = 'moving_vertices/' + str(k)
-                        v = m.vertices(gear=MESH_GEAR_MOVING)
+                        v = m.vertices(gear=const.MESH_GEAR_MOVING)
                         create_dataset(prefix, data=v)
 
 
@@ -225,8 +224,8 @@ class Stitcher:
                 if str(uid_src) in f['moving_vertices']:
                     prefix = 'moving_vertices/' + str(uid_src)
                     v = f[prefix][()]
-                    M.set_vertices(v, MESH_GEAR_MOVING)
-                    M.set_offset(moving_offsets[uid_src], MESH_GEAR_MOVING)
+                    M.set_vertices(v, const.MESH_GEAR_MOVING)
+                    M.set_offset(moving_offsets[uid_src], const.MESH_GEAR_MOVING)
                 self.meshes.append(M)
             self.mesh_sharing = mesh_sharing
             mesh_loaded = True
@@ -266,24 +265,18 @@ class Stitcher:
         """
         run matching between overlapping tiles.
         """
-        overwrite = kwargs.get('overwrite', False)
-        num_workers = kwargs.get('num_workers', 1)
-        min_width = kwargs.get('min_width', 0)
-        margin = kwargs.get('margin', 1.0)
-        image_to_mask_path = kwargs.get('image_to_mask_path', None)
-        matcher_config = kwargs.get('matcher_config', {})
-        loader_config = kwargs.get('loader_config', {})
-        verbose = kwargs.get('verbose', False)
+        overwrite = kwargs.pop('overwrite', False)
+        num_workers = kwargs.pop('num_workers', 1)
+        verbose = kwargs.pop('verbose', False)
+        num_overlaps_per_job = kwargs.get('num_overlaps_per_job', 180) # 180 roughly number of overlaps in an MultiSEM mFoV
+        loader_config = kwargs.pop('loader_config', {})
         if bool(loader_config.get('cache_size', None)) and (num_workers > 1):
+            loader_config = loader_config.copy()
             loader_config['cache_size'] = int(np.ceil(loader_config['cache_size'] / num_workers))
         loader_config['number_of_channels'] = 1 # only gray-scale matching are supported
         target_func = partial(Stitcher.subprocess_match_list_of_overlaps,
-                              root_dir=self.imgrootdir,
-                              min_width=min_width,
-                              margin=margin,
-                              image_to_mask_path=image_to_mask_path,
-                              loader_config=loader_config,
-                              matcher_config=matcher_config)
+                              root_dir=self.imgrootdir, loader_config=loader_config,
+                              **kwargs)
         if overwrite:
             self.matches = {}
             self.match_strains = {}
@@ -297,8 +290,7 @@ class Stitcher:
             self.match_strains.update(match_strains)
             return len(new_matches), err_raised
         num_workers = min(num_workers, num_overlaps)
-        # 180 roughly number of overlaps in an MultiSEM mFoV
-        num_overlaps_per_job = min(num_overlaps//num_workers, 180)
+        num_overlaps_per_job = min(num_overlaps//num_workers, num_overlaps_per_job)
         N_jobs = round(num_overlaps / num_overlaps_per_job)
         indx_j = np.linspace(0, num_overlaps, num=N_jobs+1, endpoint=True)
         indx_j = np.unique(np.round(indx_j).astype(np.int32))
@@ -360,8 +352,8 @@ class Stitcher:
         Kwargs:
             root_dir(str): if provided, the paths in imgpaths are relative paths to
                 this root directory.
-            min_width: minimum amount of overlapping width (in pixels) to use.
-                overlaps below this threshold will be skipped.
+            min_overlap_width: minimum amount of overlapping width (in pixels)
+                to use. overlaps below this threshold will be skipped.
             index_mapper(N ndarray): the mapper to map the local image indices to
                 the global ones, in case the imgpaths fed to this function is only
                 a subset of all the images from the dispatcher.
@@ -383,7 +375,8 @@ class Stitcher:
             match_strains(dict): D[(global_index0, global_index1)] = strain.
         """
         root_dir = kwargs.get('root_dir', None)
-        min_width = kwargs.get('min_width', 0)
+        min_width = kwargs.get('min_overlap_width', 0)
+        maskout_val = kwargs.get('maskout_val', None)
         index_mapper = kwargs.get('index_mapper', None)
         margin = kwargs.get('margin', 1.0)
         image_to_mask_path = kwargs.get('image_to_mask_path', None)
@@ -396,6 +389,7 @@ class Stitcher:
             return {}, {}, err_raised
         bboxes_overlap, wds = common.bbox_intersections(bboxes[overlaps[:,0]], bboxes[overlaps[:,1]])
         if 'cache_border_margin' not in loader_config:
+            loader_config = loader_config.copy()
             overlap_wd0 = 6 * np.median(np.abs(wds - np.median(wds))) + np.median(wds) + 1
             if margin < margin_ratio_switch:
                 loader_config['cache_border_margin'] = int(overlap_wd0 * (1 + margin))
@@ -403,13 +397,20 @@ class Stitcher:
                 loader_config['cache_border_margin'] = int(overlap_wd0 + margin)
         image_loader = StaticImageLoader(imgpaths, bboxes, root_dir=root_dir, **loader_config)
         if image_to_mask_path is not None:
-            mask_paths = [s.replace(image_to_mask_path[0], image_to_mask_path[1])
-                for s in image_loader.filepaths_generator]
+            if isinstance(image_to_mask_path[0], str):
+                mask_paths = [s.replace(image_to_mask_path[0], image_to_mask_path[1])
+                    for s in image_loader.filepaths_generator]
+            else:
+                mask_paths = [s for s in image_loader.filepaths_generator]
+                for sub0, sub1 in zip(image_to_mask_path[0], image_to_mask_path[1]):
+                    mask_paths = [s.replace(sub0, sub1) for s in mask_paths]
             mask_exist = np.array([os.path.isfile(s) for s in mask_paths])
+            loader_config = loader_config.copy()
             loader_config.update({'apply_CLAHE': False,
                                   'inverse': False,
                                   'number_of_channels': None,
-                                  'preprocess': None})
+                                  'preprocess': None,
+                                  'fillval': 1})
             mask_loader = StaticImageLoader(mask_paths, bboxes, root_dir=None, **loader_config)
         else:
             mask_exist = np.zeros(len(imgpaths), dtype=bool)
@@ -432,14 +433,26 @@ class Stitcher:
                 img0 = image_loader.crop(bbox_ov0, idx0, return_index=False)
                 img1 = image_loader.crop(bbox_ov1, idx1, return_index=False)
                 if mask_exist[idx0]:
-                    mask0 = mask_loader.crop(bbox_ov0, idx0, return_index=False)
+                    mask0 = mask_loader.crop(bbox_ov0, idx0, return_index=False) > 0
+                elif maskout_val is not None:
+                    mask0t = img0 == maskout_val
+                    if np.any(mask0t):
+                        mask0 = ~binary_dilation(mask0t, iterations=2)
+                    else:
+                        mask0 = None
                 else:
                     mask0 = None
                 if mask_exist[idx1]:
-                    mask1 = mask_loader.crop(bbox_ov1, idx1, return_index=False)
+                    mask1 = mask_loader.crop(bbox_ov1, idx1, return_index=False) > 0
+                elif maskout_val is not None:
+                    mask1t = img1 == maskout_val
+                    if np.any(mask1t):
+                        mask1 = ~binary_dilation(mask1t, iterations=2)
+                    else:
+                        mask1 = None
                 else:
                     mask1 = None
-                weight, xy0, xy1, strain = stitching_matcher(img0, img1, mask0=mask0, mask1=mask1, **matcher_config)
+                xy0, xy1, weight, strain = stitching_matcher(img0, img1, mask0=mask0, mask1=mask1, **matcher_config)
                 if xy0 is None:
                     continue
                 offset0 = bbox_ov0[:2] - bbox0[:2]
@@ -584,7 +597,7 @@ class Stitcher:
         mesh_params_ptr = {} # map the parameters of the mesh to
         if self._default_mesh_cache is None:
             default_caches = {}
-            for gear in MESH_GEARS:
+            for gear in const.MESH_GEARS:
                 default_caches[gear] = defaultdict(lambda: common.CacheFIFO(maxlen=cache_size))
             self._default_mesh_cache = default_caches
         else:
@@ -604,17 +617,38 @@ class Stitcher:
                     mesh_growth=interior_growth, mesh_size=tmsz, uid=k,
                     soft_factor=tsf)
                 M0.set_stiffness_multiplier_from_interp(xinterp=stf_x, yinterp=stf_y)
-                M0.center_meshes_w_offsets(gear=MESH_GEAR_FIXED)
+                M0.center_meshes_w_offsets(gear=const.MESH_GEAR_FIXED)
                 mesh_params_ptr[key] = k
                 mesh_indx[k] = k
-            for gear in MESH_GEARS:
+            for gear in const.MESH_GEARS:
                 M0.set_default_cache(cache=default_caches[gear], gear=gear)
             meshes.append(M0)
         for M, offset in zip(meshes, self._init_offset):
-            M.apply_translation(offset, gear=MESH_GEAR_FIXED)
+            M.apply_translation(offset, gear=const.MESH_GEAR_FIXED)
         self.meshes = meshes
         _, mesh_indx_nm = np.unique(mesh_indx, return_inverse=True)
         self.mesh_sharing = mesh_indx_nm
+
+
+    def filter_match_by_weight(self, minweight):
+        rejected = 0
+        if minweight is not None:
+            to_pop = []
+            for uids, mtch in self.matches.items():
+                xy0, xy1, weight = mtch
+                sel = weight >= minweight
+                if not np.any(sel):
+                    to_pop.append(uids)
+                elif not np.all(sel):
+                    xy0 = xy0[sel]
+                    xy1 = xy1[sel]
+                    weight = weight[sel]
+                    rejected += np.sum(~sel)
+                    self.matches[uids] = (xy0, xy1, weight)
+            for uids in to_pop:
+                self.matches.pop(uids)
+                self.match_strains.pop(uids)
+        return rejected                    
 
 
     def initialize_optimizer(self, **kwargs):
@@ -649,7 +683,7 @@ class Stitcher:
         """
         maxiter = kwargs.get('maxiter', None)
         tol = kwargs.get('tol', 1e-07)
-        target_gear = kwargs.get('target_gear', MESH_GEAR_FIXED)
+        target_gear = kwargs.get('target_gear', const.MESH_GEAR_FIXED)
         start_gear = kwargs.get('start_gear', target_gear)
         residue_threshold = kwargs.get('residue_threshold', None)
         if self._optimizer is None:
@@ -694,7 +728,7 @@ class Stitcher:
         Kwargs: refer to the input of feabas.optimizer.SLM.optimize_linear.
         """
         cache_size = kwargs.get('cache_size', None)
-        target_gear = kwargs.setdefault('target_gear', MESH_GEAR_FIXED)
+        target_gear = kwargs.setdefault('target_gear', const.MESH_GEAR_FIXED)
         if not self.has_groupings:
             return 0, 0
         groupings = self.groupings(normalize=True)
@@ -710,13 +744,13 @@ class Stitcher:
         sel_meshes = [self.meshes[s].copy(override_dict={'uid':k}) for k,s in enumerate(sel_uids)]
         if self._default_mesh_cache is None:
             default_caches = {}
-            for gear in MESH_GEARS:
+            for gear in const.MESH_GEARS:
                 default_caches[gear] = defaultdict(lambda: common.CacheFIFO(maxlen=cache_size))
             self._default_mesh_cache = default_caches
         else:
             default_caches = self._default_mesh_cache
         for M0 in sel_meshes:
-            for gear in MESH_GEARS:
+            for gear in const.MESH_GEARS:
                 M0.set_default_cache(cache=default_caches[gear], gear=gear)
         opt = SLM(sel_meshes)
         for uids0, uids1 in zip(match_uids, sel_match_uids):
@@ -752,7 +786,7 @@ class Stitcher:
         use_groupings = kwargs.get('use_groupings', False) and self.has_groupings
         residue_len = kwargs.get('residue_len', 0)
         residue_mode = kwargs.get('residue_mode', None)
-        target_gear = kwargs.setdefault('target_gear', MESH_GEAR_MOVING)
+        target_gear = kwargs.setdefault('target_gear', const.MESH_GEAR_MOVING)
         if use_groupings:
             groupings = self.groupings(normalize=True)
         else:
@@ -765,9 +799,14 @@ class Stitcher:
                 self._optimizer.set_link_residue_huber(residue_len)
             else:
                 self._optimizer.set_link_residue_threshold(residue_len)
-            self._optimizer.adjust_link_weight_by_residue(gear=(target_gear, target_gear))
-            cost1 = self._optimizer.optimize_linear(groupings=groupings, **kwargs)
-            cost = [cost[0], cost1[-1]]
+            weight_modified, _ = self._optimizer.adjust_link_weight_by_residue(gear=(target_gear, target_gear))
+            if weight_modified:
+                if kwargs.get('tol', None) is not None:
+                    kwargs['tol'] = max(1.0e-3, kwargs['tol'])
+                if kwargs.get('atol', None) is not None:
+                    kwargs['atol'] = 0.1 * kwargs['atol']
+                cost1 = self._optimizer.optimize_linear(groupings=groupings, **kwargs)
+                cost = (cost[0], cost1[-1])
         return cost
 
 
@@ -776,7 +815,7 @@ class Stitcher:
         translate blocks of tiles that are connected by links as a whole so that
         disconnected blocks roughly maintain the initial relative positions.
         """
-        gear = (MESH_GEAR_INITIAL, MESH_GEAR_MOVING)
+        gear = (const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING)
         maxiter = kwargs.get('maxiter', None)
         tol = kwargs.get('tol', 1e-07)
         if self._optimizer is None:
@@ -837,7 +876,7 @@ class Stitcher:
         less than rotation_threshold and the upper-left corner is aligned to
         the offset.
         """
-        gear = (MESH_GEAR_INITIAL, MESH_GEAR_MOVING)
+        gear = (const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING)
         rotation_threshold = kwargs.get('rotation_threshold', None)
         offset = kwargs.get('offset', None)
         theta0 = 0
@@ -880,7 +919,7 @@ class Stitcher:
     def clear_mesh_cache(self, gear=None, instant_gc=True):
         if self._default_mesh_cache is not None:
             if gear is None:
-                for g in MESH_GEARS:
+                for g in const.MESH_GEARS:
                     self.clear_mesh_cache(gear=g)
             else:
                 cache = self._default_mesh_cache[gear]
@@ -952,7 +991,7 @@ class Stitcher:
 
 
     def match_residues(self, quantile=1):
-        return self._optimizer.match_residues(gear=MESH_GEAR_MOVING, use_mask=True, quantile=quantile)
+        return self._optimizer.match_residues(gear=const.MESH_GEAR_MOVING, use_mask=True, quantile=quantile)
 
 
 
@@ -962,7 +1001,7 @@ Mesh_Info = namedtuple('Mesh_Info', ['moving_vertices', 'moving_offsets', 'trian
 class MontageRenderer:
     """
     A class to render Montage with overlapping tiles.
-    Here I won't consider flipped triangle cases as in feabas.mesh.MeshRenderer,
+    Here I won't consider flipped triangle cases as in feabas.renderer.MeshRenderer,
     it would be too messed up for a stitching problem and need human intervention
     anyway.
     Args:
@@ -978,6 +1017,7 @@ class MontageRenderer:
     """
     def __init__(self, imgpaths, mesh_info, tile_sizes, **kwargs):
         self._loader_settings = kwargs.get('loader_settings', {})
+        self._connected_subsystem = kwargs.get('connected_subsystem', None)
         if bool(kwargs.get('root_dir', None)):
             self.imgrootdir = kwargs['root_dir']
             self.imgrelpaths = imgpaths
@@ -993,12 +1033,13 @@ class MontageRenderer:
 
 
     @classmethod
-    def from_stitcher(cls, stitcher, gear=(MESH_GEAR_INITIAL, MESH_GEAR_MOVING), **kwargs):
+    def from_stitcher(cls, stitcher, gear=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING), **kwargs):
         if stitcher.meshes is None:
             raise RuntimeError('stitcher meshes not initializad.')
         root_dir = stitcher.imgrootdir
         imgpaths = stitcher.imgrelpaths
         tile_sizes = stitcher.tile_sizes
+        connected_subsystem = stitcher.connected_subsystem
         mesh_info = []
         for M in stitcher.meshes:
             v0 = M.vertices_w_offset(gear=gear[0])
@@ -1006,11 +1047,12 @@ class MontageRenderer:
             offset = M.offset(gear=gear[1])
             T = M.triangles
             mesh_info.append(Mesh_Info(v1, offset, T, v0))
-        return cls(imgpaths, mesh_info, tile_sizes, root_dir=root_dir, **kwargs)
+        return cls(imgpaths, mesh_info, tile_sizes, root_dir=root_dir,
+                   connected_subsystem=connected_subsystem, **kwargs)
 
 
     @classmethod
-    def from_h5(cls, fname, selected=None, gear=(MESH_GEAR_INITIAL, MESH_GEAR_MOVING), **kwargs):
+    def from_h5(cls, fname, selected=None, gear=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING), **kwargs):
         stitcher = Stitcher.from_h5(fname, load_matches=False, load_meshes=True, selected=selected)
         return cls.from_stitcher(stitcher, gear=gear, **kwargs)
 
@@ -1243,7 +1285,7 @@ class MontageRenderer:
         cols, rows = np.meshgrid(np.arange(Ncol), np.arange(Nrow))
         cols, rows = cols.ravel(), rows.ravel()
         idxz = common.z_order(np.stack((rows, cols), axis=-1))
-        rows, cols = rows[idxz], cols[idxz]
+        cols, rows =  cols[idxz], rows[idxz]
         hits = []
         bboxes = []
         filenames = []
@@ -1293,6 +1335,28 @@ class MontageRenderer:
             return self._tile_sizes[0]
         else:
             return self._tile_sizes[indx]
+
+
+    def generate_roi_mask(self, scale, show_conn=False):
+        """
+        generate low resolution roi mask that can fit in a single image.
+        """
+        bboxes0 = []
+        for msh in self._mesh_rtree_generator():
+            _, bbox, _ = msh
+            bboxes0.append(bbox)
+        bboxes = scale_coordinates(np.array(bboxes0), scale).clip(0, None)
+        bboxes = np.round(bboxes).astype(np.int32)
+        imgwd, imght = np.max(bboxes[:,-2:], axis=0) + 2
+        imgout = np.zeros((imght, imgwd), dtype=np.uint8)
+        if show_conn and self._connected_subsystem is not None:
+            lbls = np.maximum(1, 255 - self._connected_subsystem).astype(np.uint8)
+        else:
+            lbls = np.full(len(bboxes), 255, dtype=np.uint8)
+        for bbox, lb in zip(bboxes, lbls):
+            xmin, ymin, xmax, ymax = bbox
+            imgout[ymin:ymax, xmin:xmax] = lb
+        return imgout
 
 
     def _mesh_rtree_generator(self):
@@ -1347,7 +1411,7 @@ class MontageRenderer:
     def bounds(self):
         return self.mesh_tree.bounds
 
-    
+
     @property
     def number_of_channels(self):
         return self.image_loader.number_of_channels

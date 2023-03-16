@@ -1,4 +1,4 @@
-from abc import ABC, abstractmethod
+from abc import ABC
 from collections import OrderedDict
 from functools import partial
 import gc
@@ -12,7 +12,7 @@ import numpy as np
 from rtree import index
 
 from feabas import common
-from feabas.constant import *
+import feabas.constant as const
 
 
 # bbox :int: [xmin, ymin, xmax, ymax]
@@ -81,6 +81,38 @@ def _tile_divider_block(imght, imgwd, x0=0, y0=0, cache_block_size=0):
 
 ##------------------------------ image loaders -------------------------------##
 
+def get_loader_from_json(json_info, loader_type=None, **kwargs):
+    if isinstance(json_info, str):
+        if json_info.endswith('.json'):
+            with open(json_info, 'r') as f:
+                json_obj = json.load(f)
+        elif json_info.endswith('.txt'): # could use tab separated txt, not recommend
+            if loader_type == 'StaticImageLoader':
+                loader = StaticImageLoader.from_coordinate_file(json_info)
+            else:
+                loader = MosaicLoader.from_coordinate_file(json_info)
+            json_obj = loader.init_dict()
+        else:
+            json_obj = json.loads(json_info)
+    elif isinstance(json_info, dict):
+        json_obj = json_info
+    else:
+        raise TypeError
+    json_obj.update(kwargs)
+    if loader_type is None:
+        loader_type = json_obj['ImageLoaderType']
+    if loader_type == 'DynamicImageLoader':
+        return DynamicImageLoader.from_json(json_obj)
+    elif loader_type == 'StaticImageLoader':
+        return StaticImageLoader.from_json(json_obj)
+    elif loader_type == 'MosaicLoader':
+        return MosaicLoader.from_json(json_obj)
+    elif loader_type == 'StreamLoader':
+        return StreamLoader.from_init_dict(json_obj)
+    else:
+        raise ValueError
+
+
 class AbstractImageLoader(ABC):
     """
     Abstract class for image loader.
@@ -111,7 +143,7 @@ class AbstractImageLoader(ABC):
         self._cache_type = kwargs.get('cache_type', 'mfu')
         self._cache = common.generate_cache(self._cache_type, maxlen=self._cache_size)
         self._preprocess = kwargs.get('preprocess', None)
-        self.resolution = kwargs.get('resolution', DEFAULT_RESOLUTION)
+        self.resolution = kwargs.get('resolution', const.DEFAULT_RESOLUTION)
         self._read_counter = 0
 
 
@@ -144,11 +176,19 @@ class AbstractImageLoader(ABC):
             self._inverse = True
 
 
-    def save_to_json(self, jsonname, **kwargs):
+    def init_dict(self, **kwargs):
         out = {'ImageLoaderType': self.__class__.__name__}
         out.update(self._export_dict(**kwargs))
-        with open(jsonname, 'w') as f:
-            json.dump(out, f, indent=2)
+        return out
+
+
+    def save_to_json(self, jsonname=None, **kwargs):
+        out = self.init_dict(**kwargs)
+        if jsonname is None:
+            return json.dumps(out, indent=2)
+        else:
+            with open(jsonname, 'w') as f:
+                json.dump(out, f, indent=2)
 
 
     def _cached_block_rtree_generator(self, bbox):
@@ -282,8 +322,16 @@ class AbstractImageLoader(ABC):
 
     @staticmethod
     def _load_settings_from_json(jsonname):
-        with open(jsonname, 'r') as f:
-            json_obj = json.load(f)
+        if isinstance(jsonname, str):
+            if jsonname.endswith('.json'):
+                with open(jsonname, 'r') as f:
+                    json_obj = json.load(f)
+            else:
+                json_obj = json.loads(jsonname)
+        elif isinstance(jsonname, dict):
+            json_obj = jsonname
+        else:
+            raise TypeError
         settings = {}
         if 'resolution' in json_obj:
             settings['resolution'] = json_obj['resolution']
@@ -544,9 +592,21 @@ class StaticImageLoader(AbstractImageLoader):
 
     @classmethod
     def from_coordinate_file(cls, filename, **kwargs):
-        imgpaths, bboxes, root_dir = common.parse_coordinate_files(filename, **kwargs)
+        imgpaths, bboxes, root_dir, resolution = common.parse_coordinate_files(filename, **kwargs)
         kwargs.setdefault('root_dir', root_dir)
+        kwargs.setdefault('resolution', resolution)
         return cls(filepaths=imgpaths, bboxes=bboxes, **kwargs)
+
+
+    def to_coordinate_file(self, filename, **kwargs):
+        delimiter = kwargs.get('delimiter', '\t')
+        with open(filename, 'w') as f:
+            f.write(f'{{ROOT_DIR}}{delimiter}{self.imgrootdir}\n')
+            f.write(f'{{RESOLUTION}}{delimiter}{self.resolution}\n')
+            for imgpath, bbox in zip(self.imgrelpaths, self._file_bboxes):
+                bbox_str = [str(s) for s in bbox]
+                line = delimiter.join((imgpath, *bbox_str))
+                f.write(line+'\n')
 
 
     def _cache_image(self, fileid, img=None, **kwargs):
@@ -578,7 +638,7 @@ class StaticImageLoader(AbstractImageLoader):
         out = super()._settings_dict(output_controls=output_controls, cache_settings=cache_settings)
         out['root_dir'] = self.imgrootdir
         if image_list:
-            out['images'] = [{'filepath':p, 'bbox':b} for p, b in zip(self.imgrelpaths, self._file_bboxes)]
+            out['images'] = [{'filepath':p, 'bbox':b.tolist()} for p, b in zip(self.imgrelpaths, self._file_bboxes)]
         return out
 
 
@@ -769,7 +829,7 @@ class MosaicLoader(StaticImageLoader):
                     blk, indx = super().crop(bbox, fileid, return_empty=return_empty, return_index=True, **kwargs)
                     if blk is not None:
                         out[indx] = blk
-        else:
+        if not initialized:
             if return_empty:
                 out = super().crop(bbox, 0, return_empty=True, return_index=False, **kwargs)
             else:
@@ -871,7 +931,7 @@ class StreamLoader(AbstractImageLoader):
         self._preprocess = kwargs.get('preprocess', None)
         self._inverse = kwargs.get('inverse', False)
         self._default_fillval = kwargs.get('fillval', 0)
-        self.resolution = kwargs.get('resolution', DEFAULT_RESOLUTION)
+        self.resolution = kwargs.get('resolution', const.DEFAULT_RESOLUTION)
         self.x0 = kwargs.get('x0', 0)
         self.y0 = kwargs.get('y0', 0)
 
@@ -880,6 +940,12 @@ class StreamLoader(AbstractImageLoader):
     def from_filepath(cls, imgpath, **kwargs):
         img = common.imread(imgpath, flag=cv2.IMREAD_UNCHANGED)
         return cls(img, **kwargs)
+
+
+    @classmethod
+    def from_init_dict(cls, init_dict):
+        img = init_dict.pop('img')
+        return cls(img, **init_dict)
 
 
     def crop(self, bbox, return_empty=False, **kwargs):
@@ -928,8 +994,20 @@ class StreamLoader(AbstractImageLoader):
             gc.collect()
 
 
+    def init_dict(self, **kwargs):
+        return super().init_dict(**kwargs)
+
+
     def save_to_json(self, jsonname, **kwargs):
         raise NotImplementedError
+
+
+    def _export_dict(self):
+        out = super()._export_dict(output_controls=True, cache_settings=False)
+        out['img'] = self._img
+        out['x0'] = self.x0
+        out['y0'] = self.y0
+        return out
 
 
     def file_bboxes(self, margin=0):

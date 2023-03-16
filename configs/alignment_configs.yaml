@@ -1,0 +1,43 @@
+matching:
+    working_resolution: 16  # resolution at which to do the matching
+    match_name_delimiter: __to__    # so that the match file follows the patern sec0{delimieter}sec2.h5
+    loader_config:
+        cache_size: 64  # total number of source images allowed to cache in RAM
+    matcher_config:
+        num_workers: 12
+        batch_size: 100 # number of cropped regions to do fft at the same time
+        conf_thresh: 0.35    # cross-correlations with confidence value smaller than this will be rejected
+        # distributor: intersect_triangulation
+        spacings: [400, 100]    # distance between grid points at each coarse-to-fine level
+        shrink_factor: 0.7  # the size of the cropped fft tiles compared to the spacings
+        residue_mode: huber # huber or threshold or None, deciding how to damp matches with large residue errors after optimization
+        residue_len: 3  # characteristic residue distance used for damping. use 0 to skip
+        min_boundary_distance: 20   # minimum distance allowed from a matching point to the boundary of the meshes
+        boundary_tolerance: 20  # maximum distance between grid points when distributor=='oneway_triangulation'
+optimization:
+    stack_config:
+        resolution: 4
+        mesh_cache_size: 90
+    slide_window:
+        num_workers: 2
+        start_loc: M
+        window_size: 64
+        buffer_size: 16
+        residue_mode: huber
+        residue_len: 20
+        elastic_params:
+            tol: 1.0e-7
+            atol: 0.001
+            continue_on_flip: true
+
+render:
+    num_workers: 10
+    cache_size: 50
+    pattern: _tr{ROW_IND}-tc{COL_IND}.png
+    one_based: true # zero-based or one-based row/colume indexing
+    fillval: 0
+    apply_CLAHE: false
+    max_tile_per_job: 20
+    scale: 1
+    canvas_bbox: null
+    tile_size: [4096, 4096]

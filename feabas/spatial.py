@@ -8,13 +8,13 @@ from shapely.ops import unary_union, linemerge, polygonize
 from shapely import wkb
 
 from feabas import dal, common, material
-from feabas.constant import *
+import feabas.constant as const
 
 
 JOIN_STYLE = shpgeo.JOIN_STYLE.mitre
 
 
-def fit_affine(pts0, pts1, return_rigid=False, weight=None, svd_clip=(1,1)):
+def fit_affine(pts0, pts1, return_rigid=False, weight=None, svd_clip=(1,1), avoid_flip=True):
     # pts0 = pts1 @ A
     pts0 = pts0.reshape(-1,2)
     pts1 = pts1.reshape(-1,2)
@@ -23,8 +23,13 @@ def fit_affine(pts0, pts1, return_rigid=False, weight=None, svd_clip=(1,1)):
     mm1 = pts1.mean(axis=0)
     pts0 = pts0 - mm0
     pts1 = pts1 - mm1
-    pts0_pad = np.insert(pts0, 2, 1, axis=-1)
-    pts1_pad = np.insert(pts1, 2, 1, axis=-1)
+    std0 = np.sum(np.std(pts0, axis=0)**2, axis=None) ** 0.5
+    std1 = np.sum(np.std(pts1, axis=0)**2, axis=None) ** 0.5
+    std_scl = max(std0, std1)
+    if std_scl < 1e-6:
+        std_scl = 1
+    pts0_pad = np.insert(pts0/std_scl, 2, 1, axis=-1)
+    pts1_pad = np.insert(pts1/std_scl, 2, 1, axis=-1)
     if weight is not None:
         weight = weight ** 0.5
         pts0_pad = pts0_pad * weight.reshape(-1, 1)
@@ -33,6 +38,8 @@ def fit_affine(pts0, pts1, return_rigid=False, weight=None, svd_clip=(1,1)):
     r1 = np.linalg.matrix_rank(pts0_pad)
     A = res[0]
     r = min(res[2], r1)
+    if avoid_flip and np.linalg.det(A) < 0:
+        r = 2
     if r == 1:
         A = np.eye(3)
         A[-1,:2] = mm0 - mm1
@@ -41,8 +48,8 @@ def fit_affine(pts0, pts1, return_rigid=False, weight=None, svd_clip=(1,1)):
         pts1_rot90 = pts1[:,::-1] * np.array([1,-1])
         pts0 = np.concatenate((pts0, pts0_rot90), axis=0)
         pts1 = np.concatenate((pts1, pts1_rot90), axis=0)
-        pts0_pad = np.insert(pts0, 2, 1, axis=-1)
-        pts1_pad = np.insert(pts1, 2, 1, axis=-1)
+        pts0_pad = np.insert(pts0/std_scl, 2, 1, axis=-1)
+        pts1_pad = np.insert(pts1/std_scl, 2, 1, axis=-1)
         res = np.linalg.lstsq(pts1_pad, pts0_pad, rcond=None)
         A = res[0]
     if return_rigid:
@@ -167,7 +174,7 @@ def images_to_polygons(imgs, labels, offset=(0, 0), scale=1.0, upsample=2):
                     mask = (tile == lbl)
                 if upsample != 1:
                     mask = cv2.resize(mask.astype(np.uint8), None, fx=upsample, fy=upsample, interpolation=cv2.INTER_NEAREST)
-                ct, h = find_contours(mask)
+                ct, h = find_contours(mask.astype(np.uint8))
                 pp = countours_to_polygon(ct, h, offset=xy0, scale=scale, upsample=upsample)
                 if pp is not None:
                     regions_staging[name].append(pp)
@@ -196,7 +203,7 @@ def images_to_polygons(imgs, labels, offset=(0, 0), scale=1.0, upsample=2):
             else:
                 mask = (tile == lbl)
             if upsample != 1:
-                mask = cv2.resize(mask.astype(np.uint8), None, fx=upsample, fy=upsample, interpolation=cv2.INTER_NEAREST)
+                mask = (cv2.resize(255*mask.astype(np.uint8), None, fx=upsample, fy=upsample, interpolation=cv2.INTER_LINEAR)) > 127
             ct, h = find_contours(mask)
             p_lbl = countours_to_polygon(ct, h, offset=np.array(offset), scale=scale, upsample=upsample)
             if p_lbl is not None:
@@ -423,10 +430,10 @@ class Geometry:
         self._roi = roi
         self._default_region = None
         self._regions = regions
-        self._resolution = kwargs.get('resolution', DEFAULT_RESOLUTION)
+        self._resolution = kwargs.get('resolution', const.DEFAULT_RESOLUTION)
         self._zorder = kwargs.get('zorder', list(self._regions.keys()))
         self._committed = False
-        self._epsilon = kwargs.get('epsilon', EPSILON0) # small value used for buffer
+        self._epsilon = kwargs.get('epsilon', const.EPSILON0) # small value used for buffer
 
 
     @classmethod
@@ -447,7 +454,7 @@ class Geometry:
             scale(float): if image_loader is not a MosaicLoader, use this to
                 define scaling factor.
         """
-        resolution = kwargs.get('resolution', DEFAULT_RESOLUTION)
+        resolution = kwargs.get('resolution', const.DEFAULT_RESOLUTION)
         oor_label = kwargs.get('oor_label', None)
         roi_erosion = kwargs.get('roi_erosion', 0.5)
         dilate = kwargs.get('dilate', 0.1)
@@ -457,7 +464,7 @@ class Geometry:
             name2label = material_table.name_to_label_mapping
         if region_names is not None:
             name2label.update(region_names)
-        if isinstance(image_loader, dal.MosaicLoader):
+        if isinstance(image_loader, dal.AbstractImageLoader):
             if 'scale' in kwargs and 'resolution' not in kwargs:
                 resolution = image_loader.resolution / scale
             else:
@@ -480,7 +487,7 @@ class Geometry:
             for lbl, pp in regions.items():
                 regions[lbl] = pp.buffer(dilate, join_style=JOIN_STYLE)
         return cls(roi=roi, regions=regions, resolution=resolution,
-            zorder=list(name2label.keys()), epsilon=EPSILON0*scale)
+            zorder=list(name2label.keys()), epsilon=const.EPSILON0*scale)
 
 
     @classmethod
@@ -540,7 +547,7 @@ class Geometry:
 
 
     def add_regions_from_image(self, image, material_table=None, region_names=None, **kwargs):
-        resolution = kwargs.get('resolution', DEFAULT_RESOLUTION)
+        resolution = kwargs.get('resolution', const.DEFAULT_RESOLUTION)
         dilate = kwargs.get('dilate', 0.1)
         scale = kwargs.get('scale', 1.0)
         mode = kwargs.get('mode', 'u')
@@ -557,7 +564,7 @@ class Geometry:
         if dilate > 0:
             for lbl, pp in regions.items():
                 regions[lbl] = pp.buffer(dilate, join_style=JOIN_STYLE)
-        epsilon1 = EPSILON0 * scale
+        epsilon1 = const.EPSILON0 * scale
         if epsilon1 < self._epsilon:
             self._epsilon = epsilon1
         self.add_regions(regions, mode=mode, pos=pos)
@@ -581,7 +588,7 @@ class Geometry:
 
 
     def modify_roi_from_image(self, image, roi_label=0, **kwargs):
-        resolution = kwargs.get('resolution', DEFAULT_RESOLUTION)
+        resolution = kwargs.get('resolution', const.DEFAULT_RESOLUTION)
         roi_erosion = kwargs.get('roi_erosion', 0)
         scale = kwargs.get('scale', 1.0)
         mode = kwargs.get('mode', 'r')
@@ -595,7 +602,7 @@ class Geometry:
             roi = extent
         if roi_erosion > 0:
             roi = roi.buffer(-roi_erosion, join_style=JOIN_STYLE)
-        epsilon1 = EPSILON0 * scale
+        epsilon1 = const.EPSILON0 * scale
         if epsilon1 < self._epsilon:
             self._epsilon = epsilon1
         self.modify_roi(roi, mode=mode)
@@ -701,7 +708,7 @@ class Geometry:
 
 
 
-    def simplify(self, region_tol=1.5, roi_tol=1.5, inplace=True, scale=1.0, method=SPATIAL_SIMPLIFY_GROUP, area_thresh=0):
+    def simplify(self, region_tol=1.5, roi_tol=1.5, inplace=True, scale=1.0, method=const.SPATIAL_SIMPLIFY_GROUP, area_thresh=0):
         """
         simplify regions and roi so they have fewer line segments.
         Kwargs:
@@ -721,10 +728,10 @@ class Geometry:
             region_tols = defaultdict(lambda: region_tol)
         else:
             region_tols = region_tol
-        if method == SPATIAL_SIMPLIFY_SEGMENT:
+        if method == const.SPATIAL_SIMPLIFY_SEGMENT:
             G = self.simplify_by_segments(region_tols, roi_tol=roi_tol,
                 inplace=inplace, scale=scale, area_thresh=area_thresh)
-        elif method == SPATIAL_SIMPLIFY_REGION:
+        elif method == const.SPATIAL_SIMPLIFY_REGION:
             G = self.simplify_by_regions(region_tols, roi_tol=roi_tol,
                 inplace=inplace, scale=scale, area_thresh=area_thresh)
         else:
@@ -746,7 +753,7 @@ class Geometry:
                 self._roi = roi
         else:
             roi = self._roi
-        epsilon1 = EPSILON0 * scale
+        epsilon1 = const.EPSILON0 * scale
         if epsilon1 < self._epsilon:
             self._epsilon = epsilon1
         covered = None
@@ -865,7 +872,7 @@ class Geometry:
                 self._roi = roi
         else:
             roi = self._roi
-        epsilon1 = EPSILON0 * scale
+        epsilon1 = const.EPSILON0 * scale
         if epsilon1 < self._epsilon:
             self._epsilon = epsilon1
         covered = None
@@ -979,7 +986,7 @@ class Geometry:
             roi = self._roi.simplify(roi_tol*scale, preserve_topology=True)
             if inplace:
                 self._roi = roi
-        epsilon1 = EPSILON0 * scale
+        epsilon1 = const.EPSILON0 * scale
         if epsilon1 < self._epsilon:
             self._epsilon = epsilon1
         regions_new = {}
@@ -1018,7 +1025,7 @@ class Geometry:
         """
         region_tol = kwargs.get('region_tol', 0)
         roi_tol = kwargs.get('roi_tol', 0)
-        method = kwargs.get('method', SPATIAL_SIMPLIFY_GROUP)
+        method = kwargs.get('method', const.SPATIAL_SIMPLIFY_GROUP)
         area_thresh = kwargs.get('area_thresh', 0)
         snap_decimal = kwargs.get('snap_decimal', None)
         scale = kwargs.get('scale', 1.0)

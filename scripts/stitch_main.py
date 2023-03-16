@@ -14,18 +14,11 @@ from feabas.stitcher import Stitcher, MontageRenderer
 
 
 def match_one_section(coordname, outname, **kwargs):
-    num_workers = kwargs.get('num_workers', 1)
-    min_width = kwargs.get('min_overlap_width', 25)
-    margin = kwargs.get('margin', 200)
-    loader_config = kwargs.get('loader_config', {})
-    matcher_config = kwargs.get('matcher_config', {})
     stitcher = Stitcher.from_coordinate_file(coordname)
     if os.path.isfile(outname + '_err'):
         print(f'loading previous results for {os.path.basename(coordname)}')
         stitcher.load_matches_from_h5(outname + '_err', check_order=True)
-    _, err = stitcher.dispatch_matchers(num_workers=num_workers, min_width=min_width,
-        margin=margin, matcher_config=matcher_config, loader_config=loader_config,
-        verbose=False)
+    _, err = stitcher.dispatch_matchers(verbose=False, **kwargs)
     if err:
         outname = outname + '_err'
     stitcher.save_to_h5(outname, save_matches=True, save_meshes=False)
@@ -33,7 +26,7 @@ def match_one_section(coordname, outname, **kwargs):
 
 
 def match_main(coord_dir, out_dir, stt=0, step=1, stop=None, **conf):
-    if stop == -1:
+    if stop == 0:
         stop = None
     coord_list = sorted(glob.glob(os.path.join(coord_dir, '*.txt')))
     coord_list = coord_list[slice(stt, stop, step)]
@@ -58,9 +51,16 @@ def optimize_one_section(matchname, outname, **kwargs):
     group_elastic_settings = kwargs.get('group_elastic', {})
     elastic_settings = kwargs.get('final_elastic', {})
     normalize_setting = kwargs.get('normalize', {})
+    minweight = kwargs.get('minweight', None)
+    group_elastic_settings.setdefault('continue_on_flip', True)
+    elastic_settings.setdefault('continue_on_flip', True)
     bname = os.path.basename(matchname).replace('.h5', '')
     t0 = time.time()
     stitcher = Stitcher.from_h5(matchname, load_matches=True, load_meshes=False)
+    if minweight is not None:
+        rejected = stitcher.filter_match_by_weight(minweight)
+        if rejected > 0:
+            print(f'\t{bname}: filtered out {rejected} low-conf matches')
     if use_group:
         if msem:
             groupings = [int(s.split('/')[0]) for s in stitcher.imgrelpaths]
@@ -86,7 +86,7 @@ def optimize_one_section(matchname, outname, **kwargs):
     if N_conn > 1:
         rot_1, _ = stitcher.normalize_coordinates(**normalize_setting)
         rot = max(rot, rot_1)
-    if cost[0] < cost[1]:
+    if cost[0] is None or cost[1] is None or cost[0] < cost[1]:
         stitcher.save_to_h5(outname.replace('.h5', '.h5_err'), save_matches=False, save_meshes=True)
     else:
         stitcher.save_to_h5(outname, save_matches=False, save_meshes=True)
@@ -103,7 +103,7 @@ def optimize_one_section(matchname, outname, **kwargs):
 
 def optmization_main(match_dir, out_dir, stt=0, step=1, stop=None, **conf):
     num_workers = conf.pop('num_workers', 1)
-    if stop == -1:
+    if stop == 0:
         stop = None
     match_list = sorted(glob.glob(os.path.join(match_dir, '*.h5')))
     match_list = match_list[slice(stt, stop, step)]
@@ -136,6 +136,7 @@ def render_one_section(tform_name, out_prefix, meta_name=None, **kwargs):
     render_settings = kwargs.get('render_settings', {})
     filename_settings = kwargs.get('filename_settings', {})
     if loader_settings.get('cache_size', None) is not None:
+        loader_settings = loader_settings.copy()
         loader_settings['cache_size'] = loader_settings['cache_size'] // num_workers
     render_settings['scale'] = scale
     if meta_name is not None and os.path.isfile(meta_name):
@@ -173,6 +174,8 @@ def render_one_section(tform_name, out_prefix, meta_name=None, **kwargs):
 
 def render_main(tform_dir, out_dir, meta_dir, stt=0, step=1, stop=None, **conf):
     tform_list = sorted(glob.glob(os.path.join(tform_dir, '*.h5')))
+    if stop == 0:
+        stop = None
     tform_list = tform_list[slice(stt, stop, step)]
     os.makedirs(meta_dir, exist_ok=True)
     os.makedirs(out_dir, exist_ok=True)
@@ -185,13 +188,14 @@ def render_main(tform_dir, out_dir, meta_dir, stt=0, step=1, stop=None, **conf):
         meta_name = os.path.join(meta_dir, sec_name+'.txt')
         num_rendered = render_one_section(tname, out_prefix, meta_name=meta_name, **conf)
         print(f'{sec_name}: {num_rendered} tiles | {(time.time()-t0)/60} min')
+    print('finished.')
 
 
 def parse_args(args=None):
     parser = argparse.ArgumentParser(description="Run stitching")
     parser.add_argument("--start", metavar="start", type=int, default=0)
     parser.add_argument("--step", metavar="step", type=int, default=1)
-    parser.add_argument("--stop", metavar="step", type=int, default=-1)
+    parser.add_argument("--stop", metavar="stop", type=int, default=0)
     return parser.parse_args(args)
 
 

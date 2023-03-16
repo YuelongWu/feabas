@@ -12,6 +12,7 @@ MESH_GEARS = (MESH_GEAR_INITIAL, MESH_GEAR_FIXED, MESH_GEAR_MOVING, MESH_GEAR_ST
 MESH_TRIFINDER_WHATEVER = 0         # whichever triangle
 MESH_TRIFINDER_LEAST_DEFORM = 1     # the least deformed triangle
 MESH_TRIFINDER_INNERMOST = 2  # the triangle furthest away from boudaries
+TRIFINDER_MODE_LIST = ('WHATEVER', 'LEAST_DEFORM', 'INNERMOST')
 
 RENDER_LOCAL_RIGID = 0
 RENDER_LOCAL_AFFINE = 1
@@ -32,12 +33,11 @@ ANNEAL_COPY_EXACT = 4
 MATERIAL_MODEL_ENG = 0    # Engineering strain & stress
 MATERIAL_MODEL_SVK = 1    # St. Venant-Kirchhoff model
 MATERIAL_MODEL_NHK = 2    # Neo-Hookean model
+MATERIAL_MODEL_LIST =('MATERIAL_MODEL_ENG', 'MATERIAL_MODEL_SVK', 'MATERIAL_MODEL_NHK')
 
 FFT_CONF_NONE = 0       # confidence values set to constant 1
 FFT_CONF_STD = 1        # confidence value derived from the standard deviation
 FFT_CONF_MIRROR = 2     # confidence value derived from the convolution
-
-BLOCKDIST_CART_BBOX = 0
 
 DEFAULT_RESOLUTION = 4.0
 EPSILON0 = 1e-5
