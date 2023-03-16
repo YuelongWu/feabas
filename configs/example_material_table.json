@@ -40,7 +40,7 @@
   },
   "resin": {
     "enable_mesh": true,
-    "area_constraint": 5,
+    "area_constraint": 0,
     "render": true,
     "render_weight": 1.0e-6,
     "type": "MATERIAL_MODEL_ENG",

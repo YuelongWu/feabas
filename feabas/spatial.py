@@ -5,7 +5,7 @@ import h5py
 import numpy as np
 import shapely.geometry as shpgeo
 from shapely.ops import unary_union, linemerge, polygonize
-from shapely import wkb
+from shapely import wkb, get_coordinates
 
 from feabas import dal, common, material
 import feabas.constant as const
@@ -110,7 +110,7 @@ def countours_to_polygon(contours, hierarchy, offset, scale, upsample):
     """
     polygons_staging = {}
     holes = {}
-    buffer_r = 0.5 * scale / upsample # expand by half pixel
+    buffer_r = 0.51 * scale / upsample # expand by half pixel
     for indx, ct in enumerate(contours):
         number_of_points = ct.shape[0]
         if number_of_points < 3:
@@ -118,6 +118,7 @@ def countours_to_polygon(contours, hierarchy, offset, scale, upsample):
         xy = scale_coordinates(ct.reshape(number_of_points, -1), scale=1/upsample)
         xy = scale_coordinates(xy + np.asarray(offset), scale=scale)
         lr = shpgeo.polygon.LinearRing(xy)
+        lr = smooth_zigzag(lr, scale=scale)
         pp = shpgeo.Polygon(lr)
         if lr.is_ccw:
             holes[indx] = pp
@@ -280,6 +281,54 @@ def polygon_area_filter(poly, area_thresh=0):
     else:
         raise TypeError
 
+
+def smooth_zigzag(boundary, scale=1.0, tol=0.5):
+    """
+    smooth the zigzag border of a polygon defined by bit-map images.
+    boundary (shapely.geometry.LineString): boundary of the polygon
+    """
+    tol = tol * scale
+    boundary = boundary.simplify(1.0e-3 * tol, preserve_topology=False)
+    if hasattr(boundary, 'geoms'):
+        boundaries = list(l for l in boundary.geoms)
+    else:
+        boundaries = [boundary]
+    smoothened = []
+    for lr in boundaries:
+        if lr.length == 0:
+            continue
+        vertices = get_coordinates(lr)
+        if np.all(vertices[0] == vertices[-1]):
+            is_closed = True
+        else:
+            is_closed = False
+        vpts = [pt for pt in shpgeo.MultiPoint(vertices).geoms]
+        mid_points = (vertices[:-1] + vertices[1:]) / 2
+        if is_closed:
+            ml = shpgeo.LinearRing(mid_points)
+        else:
+            ml = shpgeo.LineString(mid_points)
+        dis = ml.distance(vpts)
+        to_keep = dis >= tol
+        if not is_closed:
+            to_keep[0] = True
+            to_keep[-1] = True
+        vindx = 2 * (np.nonzero(to_keep)[0])
+        mindx = 2 * np.arange(mid_points.shape[0]) + 1
+        vertices_new = np.concatenate((vertices[to_keep], mid_points), axis=0)
+        sindx = np.argsort(np.concatenate((vindx, mindx)))
+        vertices_new = vertices_new[sindx]
+        if is_closed:
+            lr_new = shpgeo.LinearRing(vertices_new)
+        else:
+            lr_new = shpgeo.LineString(vertices_new)
+        lr_new = lr_new.simplify(1.0e-3 * tol, preserve_topology=False)
+        smoothened.append(lr_new)
+    if len(smoothened) == 1:
+        smoothened = smoothened[0]
+    else:
+        smoothened = unary_union(smoothened)
+    return smoothened
 
 
 def clean_up_small_regions(regions, roi=None, area_thresh=4, buffer=1e-3):
@@ -824,12 +873,18 @@ class Geometry:
             simplify_order.extend(slist)
             simplify_tol.extend([tol]*len(slist))
         for sidx, tol in zip(simplify_order, simplify_tol):
+            seg_target = unary_union([s for k, s in enumerate(bag_of_segs) if (k==sidx)])
             segs_except_target = unary_union([s for k, s in enumerate(bag_of_segs) if (k!=sidx)])
             segs_all = unary_union(bag_of_segs)
             # fix segments other than the one to be simplified by duplicating them
             segs_combined = unary_union([segs_except_target, segs_all])
             segs_simplified = segs_combined.simplify(tol*scale, preserve_topology=True)
             seg_new = segs_simplified.difference(segs_except_target)
+            tol_g = tol*scale
+            while not seg_target.boundary.difference(seg_new.boundary).is_empty:
+                tol_g /= 1.414
+                segs_simplified = segs_combined.simplify(tol_g, preserve_topology=True)
+                seg_new = segs_simplified.difference(segs_except_target)
             if hasattr(seg_new, 'geoms'):
                 seg_new = linemerge(seg_new)
             if seg_new.length > 0:
@@ -941,12 +996,18 @@ class Geometry:
         group_indices = sorted(seg_groups.keys())
         group_tols = [region_tols[region_names[lbl[0]]] for lbl in group_indices]
         for gidx, tol in zip(group_indices, group_tols):
+            seg_target = unary_union([s for k, s in seg_groups.items() if (k==gidx)])
             segs_except_target = unary_union([s for k, s in seg_groups.items() if (k!=gidx)])
             segs_all = unary_union(list(seg_groups.values()))
             # fix segments other than the one to be simplified by duplicating them
             segs_combined = unary_union([segs_except_target, segs_all])
             segs_simplified = segs_combined.simplify(tol*scale, preserve_topology=True)
             seg_new = segs_simplified.difference(segs_except_target)
+            tol_g = tol*scale
+            while not seg_target.boundary.difference(seg_new.boundary).is_empty:
+                tol_g /= 1.414
+                segs_simplified = segs_combined.simplify(tol_g, preserve_topology=True)
+                seg_new = segs_simplified.difference(segs_except_target)
             if hasattr(seg_new, 'geoms'):
                 seg_new = linemerge(seg_new)
             seg_groups[gidx] = seg_new
