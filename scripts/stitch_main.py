@@ -73,13 +73,13 @@ def optimize_one_section(matchname, outname, **kwargs):
     stitcher.initialize_meshes(mesh_sizes, **mesh_settings)
     discrd =stitcher.optimize_translation(target_gear=feabas.MESH_GEAR_FIXED, **translation_settings)
     dis = stitcher.match_residues()
-    print(f'\t{bname}: residue after translation {np.mean(dis)} | discarded {discrd}')
+    print(f'\t{bname}: residue after translation {np.nanmean(dis)} | discarded {discrd}')
     if use_group:
         stitcher.optimize_group_intersection(target_gear=feabas.MESH_GEAR_FIXED, **group_elastic_settings)
         stitcher.optimize_translation(target_gear=feabas.MESH_GEAR_FIXED, **translation_settings)
         cost = stitcher.optimize_elastic(use_groupings=True, target_gear=feabas.MESH_GEAR_FIXED, **group_elastic_settings)
         dis = stitcher.match_residues()
-        print(f'\t{bname}: residue after grouped relaxation {np.mean(dis)} | cost {cost}')
+        print(f'\t{bname}: residue after grouped relaxation {np.nanmean(dis)} | cost {cost}')
     cost = stitcher.optimize_elastic(target_gear=feabas.MESH_GEAR_MOVING, **elastic_settings)
     rot, _ = stitcher.normalize_coordinates(**normalize_setting)
     N_conn = stitcher.connect_isolated_subsystem()
@@ -95,7 +95,7 @@ def optimize_one_section(matchname, outname, **kwargs):
     ncomp = cnt.size
     ncomp1 = np.sum(cnt>1)
     dis = stitcher.match_residues()
-    finish_str = f'\t{bname}: {cost} finished {time.time() - t0} sec | residue: {np.mean(dis)} | rotation: {round(rot)}'
+    finish_str = f'\t{bname}: {cost} finished {time.time() - t0} sec | residue: {np.nanmean(dis)} | rotation: {round(rot)}'
     if ncomp > 1:
         finish_str = finish_str + f' | {ncomp1}/{ncomp} components'
     print(finish_str)
