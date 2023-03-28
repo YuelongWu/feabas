@@ -20,6 +20,7 @@ setup(
         'h5py',
         'matplotlib',
         'opencv-python',
+        'scikit-image',
         'pyyaml',
         'rtree',
         'scipy',
