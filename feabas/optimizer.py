@@ -3,6 +3,7 @@ import gc
 import h5py
 import numpy as np
 from scipy import sparse
+import time
 
 from feabas import spatial, common
 import feabas.constant as const
@@ -863,6 +864,7 @@ class SLM:
         maxiter = kwargs.get('maxiter', None)
         tol = kwargs.get('tol', 1e-7)
         atol = kwargs.get('atol', None)
+        callback_settings = kwargs.get('callback_settings', {})
         shape_gear = kwargs.get('shape_gear', const.MESH_GEAR_FIXED)
         targt_gear = kwargs.get('target_gear', const.MESH_GEAR_MOVING)
         start_gear = kwargs.get('start_gear', targt_gear)
@@ -916,7 +918,7 @@ class SLM:
                     crnt_offet += stf_sz
                 indx0 = np.concatenate(indx0, axis=None)
                 indx1 = np.concatenate(indx1, axis=None)
-                T_m = sparse.csr_matrix((np.ones_like(indx0, dtype=np.float32), 
+                T_m = sparse.csr_matrix((np.ones_like(indx0, dtype=np.float32),
                                         (indx1, indx0)), shape=(grouped_dof, A.shape[0]))
                 A = T_m @ A @ T_m.transpose() / np.mean(g_cnt)
                 b = T_m @ b / np.mean(g_cnt)
@@ -924,7 +926,8 @@ class SLM:
                 groupings = None
         A_diag = A.diagonal()
         M = sparse.diags(1/(A_diag.clip(min(1.0, A_diag.max()/1000),None))) # Jacobi precondition
-        dd, _ = sparse.linalg.bicgstab(A, b, tol=tol, maxiter=maxiter, atol=atol, M=M)
+        # dd, _ = sparse.linalg.bicgstab(A, b, tol=tol, maxiter=maxiter, atol=atol, M=M)
+        dd = bicgstab(A, b, tol=tol, maxiter=maxiter, atol=atol, M=M, **callback_settings)
         cost = (np.linalg.norm(b), np.linalg.norm(A.dot(dd) - b))
         if cost[1] < cost[0]:
             index_offsets = self.index_offsets
@@ -990,6 +993,7 @@ class SLM:
         shrink_trial = kwargs.get('shrink_trial', 3)
         groupings = kwargs.get('groupings', None)
         batch_num_matches = kwargs.get('batch_num_matches', None)
+        callback_settings = kwargs.get('callback_settings', {})
         shape_gear = const.MESH_GEAR_FIXED
         start_gear = const.MESH_GEAR_MOVING
         if cont_on_flip:
@@ -1025,8 +1029,8 @@ class SLM:
                 stiffness_lambda=stiffness_lambda[ke],
                 crosslink_lambda=crosslink_lambda[ke]*cshrink,
                 inner_cache=inner_cache, continue_on_flip=cont_on_flip,
-                batch_num_matches=batch_num_matches, groupings=groupings, 
-                auto_clear=False)
+                batch_num_matches=batch_num_matches, groupings=groupings,
+                auto_clear=False, callback_settings=callback_settings)
             if (step_cost[0] is None) or (step_cost[0] < step_cost[1]):
                 break
             if anneal_mode[ke] is not None:
@@ -1325,6 +1329,85 @@ class SLM:
             return [elem] * list_len
         else:
             return elem
+
+
+class EarlyStopFlag(Exception):
+    pass
+
+
+class SLM_Callback:
+    """
+    call back function class fed to bicgstab optimizer.
+    Args:
+        A, b: equation terms to solve x: Ax = b.
+    Kwargs:
+        timeout: timeout time for the optimizer (in seconds);
+        early_stop_thresh: the threshold for the differences between two
+            consecutive solutions below which it is considered small update;
+        eval_step: skip step to evaluate the callback function;
+        chances: if the number of consecutive iterations with enlarged cost or
+            small updates is larger than this number, envoke early stopping.
+    """
+    def __init__(self, A, b, timeout=None, early_stop_thresh=None, chances=5, eval_step=10):
+        self._A = A
+        self._b = b
+        self._timout = timeout
+        self._early_stop_thresh = early_stop_thresh
+        self._eval_step = eval_step
+        self._t0 = time.time()
+        self._last_x = 0
+        self._last_cost = np.inf
+        self.min_cost = np.inf
+        self.solution = None
+        self._count = 0
+        self._chances = chances
+        self._exit_count = 0
+
+
+    def callback(self, x):
+        if self._count % self._eval_step == 0:
+            cost = np.linalg.norm(self._A.dot(x) - self._b)
+            if cost < self.min_cost:
+                self.min_cost = cost
+                self.solution = x
+            if self._timout is not None:
+                t = time.time() - self._t0
+                if t > self._timout:
+                    raise EarlyStopFlag
+            if self._chances is not None:
+                if cost > self._last_cost:
+                    self._exit_count += 1
+                elif self._early_stop_thresh is not None:
+                    dis = np.max(np.abs(x - self._last_x))
+                    if dis <= self._early_stop_thresh:
+                        self._exit_count += 1
+                    else:
+                        self._exit_count = 0
+                else:
+                    self._exit_count = 0
+                if self._exit_count > self._chances:
+                    raise EarlyStopFlag
+                self._last_x = x.copy()
+                self._last_cost = cost
+        self._count += 1
+        return False
+
+
+def bicgstab(A, b, tol=1e-07, atol=None, maxiter=None, M=None, **kwargs):
+    timeout = kwargs.get('timeout', None)
+    early_stop_thresh = kwargs.get('early_stop_thresh', None)
+    chances = kwargs.get('chances', None)
+    eval_step = kwargs.get('eval_step', 10)
+    cb = SLM_Callback(A, b, timeout=timeout, early_stop_thresh=early_stop_thresh, chances=chances, eval_step=eval_step)
+    callback = cb.callback
+    try:
+        x, _ = sparse.linalg.bicgstab(A, b, tol=tol, maxiter=maxiter, atol=atol, M=M, callback=callback)
+        cost0 = np.linalg.norm(A.dot(x) - b)
+        if cost0 > cb.min_cost:
+            x = cb.solution
+    except EarlyStopFlag:
+        x = cb.solution
+    return x
 
 
 

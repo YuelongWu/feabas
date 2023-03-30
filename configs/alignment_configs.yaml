@@ -29,6 +29,11 @@ optimization:
             tol: 1.0e-7
             atol: 0.001
             continue_on_flip: true
+            callback_settings:
+                timeout: null
+                early_stop_thresh: null
+                chances: null
+                eval_step: 10
 
 render:
     num_workers: 10

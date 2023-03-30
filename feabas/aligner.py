@@ -469,6 +469,9 @@ class Stack:
             if target_gear != const.MESH_GEAR_FIXED:
                 optm.anneal(gear=(target_gear, const.MESH_GEAR_FIXED), mode=const.ANNEAL_CONNECTED_RIGID)
         if optimize_elastic:
+            if 'callback_settings' in elastic_params:
+                elastic_params = elastic_params.copy()
+                elastic_params['callback_settings'].setdefault('early_stop_thresh', const.DEFAULT_RESOLUTION / self._resolution)
             cost = optm.optimize_elastic(target_gear=target_gear, **elastic_params)
             if (residue_mode is not None) and (residue_len > 0):
                 if residue_mode == 'huber':
@@ -557,7 +560,6 @@ class Stack:
         combined_flag = sel_flag | ref_flag
         return [s for flg, s in zip(combined_flag, self.section_list) if flg]
         
-
 
 
     @property

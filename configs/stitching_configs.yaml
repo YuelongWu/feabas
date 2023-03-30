@@ -37,6 +37,11 @@ optimization:
         tol: 1.0e-4
         residue_mode: huber # huber or threshold or None, deciding how to damp matches with large residue errors after optimization
         residue_len: 5      # characteristic residue distance used for damping. use 0 to skip
+        callback_settings:
+            timeout: null
+            early_stop_thresh: 1
+            chances: 20
+            eval_step: 10
     normalize:
         rotation_threshold: 0.5 # if rotation is larger than the threshold after optimization, rotate back
         offset: [1, 1]  # the upper-left corner of the section will be normalized to this coordinates as the final step
