@@ -1212,6 +1212,7 @@ class SLM:
         for lnk in self.links:
             if use_mask and not lnk.relevant:
                 dis.append(np.nan)
+                continue
             dxy = np.sum(lnk.dxy(gear=gear, use_mask=use_mask)**2, axis=-1)**0.5
             if quantile == 1:
                 dis.append(np.max(dxy))
