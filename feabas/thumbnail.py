@@ -10,7 +10,7 @@ class KeyPoints:
     """
     class to represents keypoints in feature matching.
     """
-    def init(self, xy=None, response=None, class_id=None, offset=(0,0), descriptor=None):
+    def __init__(self, xy=None, response=None, class_id=None, offset=(0,0), descriptor=None):
         if xy is None:
             self.xy = np.empty((0, 2), dtype=np.float32)
         else:
@@ -125,10 +125,11 @@ def extract_LRadon_feature(img, kps, offset=None, **kwargs):
     beam_num = kwargs.get('beam_num', 8)
     beam_wd = kwargs.get('beam_wd', 3)
     beam_radius = kwargs.get('beam_radius', 40)
+    max_batchsz = 16300
     if kps.des is not None:
         return kps
     if kps.num_points == 0:
-        kps.des = np.empty((0, beam_num*proj_num*2), dtype=np.float32)
+        kps.des = np.empty((0, beam_num, proj_num*2), dtype=np.float32)
         return kps
     if not np.issubdtype(img.dtype, np.floating):
         img = img.astype(np.float32)
@@ -138,11 +139,38 @@ def extract_LRadon_feature(img, kps, offset=None, **kwargs):
         xy0 = xy - kps.offset
     else:
         xy0 = xy - np.array(offset)
-    descriptor = []
+    descriptor0 = []    # 0-pi
+    descriptor1 = []    # pi-2pi
     for theta in np.linspace(0, np.pi, num=proj_num, endpoint=False):
         c, s = np.cos(theta), np.sin(theta)
         R = np.array([[c, s], [-s, c]])
         xy1 = xy0 @ R
         xy1_min = np.floor(xy1.min(axis=0) - beam_radius) - 4
         xy1_max = np.ceil(xy1.max(axis=0) + beam_radius) + 4
-
+        dst_sz = (xy1_max - xy1_min).astype(np.int32)
+        A = np.concatenate((R, -xy1_min.reshape(-1,2)), axis=0)
+        img_r = cv2.warpAffine(imgf, A.T, (dst_sz[0], dst_sz[1]))
+        img_rf = cv2.boxFilter(img_r, -1, (1, beam_radius))
+        x1, y1 = xy1[:,0] - xy1_min[0], xy1[:,1] - xy1_min[1]
+        dx = np.linspace(0, beam_num*beam_wd*2, num=beam_num*2, endpoint=False)
+        dx = dx - dx.mean()
+        xx = (x1.reshape(-1,1) + dx).astype(np.float32)
+        yy = (y1.reshape(-1,1) + np.zeros_like(dx)).astype(np.float32)
+        if xx.shape[0] < max_batchsz:
+            des0 = cv2.remap(img_rf, xx, yy, interpolation=cv2.INTER_LINEAR,
+                             borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+        else:
+            des0_list = []
+            for stt_idx in np.arange(0, xx.shape[0], max_batchsz):
+                xx_b = xx[stt_idx:(stt_idx+max_batchsz)]
+                yy_b = yy[stt_idx:(stt_idx+max_batchsz)]
+                des0_b = cv2.remap(img_rf, xx_b, yy_b, interpolation=cv2.INTER_LINEAR,
+                                   borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+                des0_list.append(des0_b)
+            des0 = np.concatenate(des0_list, axis=0)
+        descriptor0.append(des0[:, :beam_num])
+        descriptor1.append(des0[:, -1:(-beam_num-1):-1])
+    descriptor = np.concatenate((np.stack(descriptor0, axis=-1),
+                                 np.stack(descriptor1, axis=-1)), axis=-1)
+    kps.des = descriptor
+    return kps
