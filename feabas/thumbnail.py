@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
 from scipy.spatial import KDTree
+from scipy.fft import rfft, irfft
 from skimage.feature import peak_local_max
 
 from feabas import common
@@ -10,7 +11,7 @@ class KeyPoints:
     """
     class to represents keypoints in feature matching.
     """
-    def __init__(self, xy=None, response=None, class_id=None, offset=(0,0), descriptor=None):
+    def __init__(self, xy=None, response=None, class_id=None, offset=(0,0), descriptor=None, angle=None):
         if xy is None:
             self.xy = np.empty((0, 2), dtype=np.float32)
         else:
@@ -21,6 +22,7 @@ class KeyPoints:
         self._response = response
         self._class_id = class_id
         self.des = descriptor
+        self._angle = angle
 
 
     @classmethod
@@ -33,6 +35,7 @@ class KeyPoints:
         response_list = []
         class_id_list = []
         descriptor_list = []
+        angle_list = []
         for kp in kps:
             if computed and (kp.des is None):
                 continue
@@ -40,14 +43,17 @@ class KeyPoints:
             response_list.append(kp.response)
             class_id_list.append(kp.class_id)
             descriptor_list.append(kp.des)
+            angle_list.append(kp._angle)
         xy = np.concatenate(xy_list, axis=0)
         response = np.concatenate(response_list, axis=0)
         class_id = np.concatenate(class_id_list, axis=0)
         if computed:
             descriptor = np.concatenate(descriptor_list, axis=0)
+            angle = np.concatenate(angle_list, axis=0)
         else:
             descriptor = None
-        return cls(xy=xy, response=response, class_id=class_id, offset=offset0, descriptor=descriptor)
+            angle = None
+        return cls(xy=xy, response=response, class_id=class_id, offset=offset0, descriptor=descriptor, angle=angle)
 
 
     def filter_keypoints(self, indx, inplace=True):
@@ -64,14 +70,19 @@ class KeyPoints:
             descriptor = self.des[indx]
         else:
             descriptor = None
+        if self._angle is not None:
+            angle = self.angle[indx]
+        else:
+            angle = None
         if inplace:
             self.xy = xy
             self._response = response
             self._class_id = class_id
             self.des = descriptor
+            self._angle = angle
             return self
         else:
-            return self.__class__(xy=xy, response=response, class_id=class_id, offset=self.offset, descriptor=descriptor)
+            return self.__class__(xy=xy, response=response, class_id=class_id, offset=self.offset, descriptor=descriptor, angle=angle)
 
 
     @property
@@ -93,6 +104,14 @@ class KeyPoints:
             return np.ones(self.num_points, dtype=np.int16)
         else:
             return self._class_id
+
+
+    @property
+    def angle(self):
+        if self._angle is None:
+            return np.zeros(self.num_points, dtype=np.float32)
+        else:
+            return self._angle
 
 
 
@@ -120,6 +139,7 @@ def detect_extrema_log(img, mask=None, offset=(0,0), **kwargs):
     return KeyPoints(xy=xy, response=response, class_id=class_id, offset=offset)
 
 
+
 def extract_LRadon_feature(img, kps, offset=None, **kwargs):
     proj_num = kwargs.get('proj_num', 6)
     beam_num = kwargs.get('beam_num', 8)
@@ -141,6 +161,11 @@ def extract_LRadon_feature(img, kps, offset=None, **kwargs):
         xy0 = xy - np.array(offset)
     descriptor0 = []    # 0-pi
     descriptor1 = []    # pi-2pi
+    dx = np.linspace(0, beam_num*beam_wd*2, num=beam_num*2, endpoint=False)
+    dx = dx - dx.mean()
+    angle_wt = dx[:beam_num] ** 2
+    angle_wt = angle_wt / np.sum(angle_wt)
+    angle_vec = np.zeros((kps.num_points, 2), dtype=np.float32)
     for theta in np.linspace(0, np.pi, num=proj_num, endpoint=False):
         c, s = np.cos(theta), np.sin(theta)
         R = np.array([[c, s], [-s, c]])
@@ -152,25 +177,43 @@ def extract_LRadon_feature(img, kps, offset=None, **kwargs):
         img_r = cv2.warpAffine(imgf, A.T, (dst_sz[0], dst_sz[1]))
         img_rf = cv2.boxFilter(img_r, -1, (1, beam_radius))
         x1, y1 = xy1[:,0] - xy1_min[0], xy1[:,1] - xy1_min[1]
-        dx = np.linspace(0, beam_num*beam_wd*2, num=beam_num*2, endpoint=False)
-        dx = dx - dx.mean()
         xx = (x1.reshape(-1,1) + dx).astype(np.float32)
         yy = (y1.reshape(-1,1) + np.zeros_like(dx)).astype(np.float32)
         if xx.shape[0] < max_batchsz:
-            des0 = cv2.remap(img_rf, xx, yy, interpolation=cv2.INTER_LINEAR,
+            des_t = cv2.remap(img_rf, xx, yy, interpolation=cv2.INTER_LINEAR,
                              borderMode=cv2.BORDER_CONSTANT, borderValue=0)
         else:
-            des0_list = []
+            des_t_list = []
             for stt_idx in np.arange(0, xx.shape[0], max_batchsz):
                 xx_b = xx[stt_idx:(stt_idx+max_batchsz)]
                 yy_b = yy[stt_idx:(stt_idx+max_batchsz)]
-                des0_b = cv2.remap(img_rf, xx_b, yy_b, interpolation=cv2.INTER_LINEAR,
+                des_t_b = cv2.remap(img_rf, xx_b, yy_b, interpolation=cv2.INTER_LINEAR,
                                    borderMode=cv2.BORDER_CONSTANT, borderValue=0)
-                des0_list.append(des0_b)
-            des0 = np.concatenate(des0_list, axis=0)
-        descriptor0.append(des0[:, :beam_num])
-        descriptor1.append(des0[:, -1:(-beam_num-1):-1])
+                des_t_list.append(des_t_b)
+            des_t = np.concatenate(des_t_list, axis=0)
+        des0 = des_t[:, :beam_num]
+        des1 = des_t[:, -1:(-beam_num-1):-1]
+        angle_vec = angle_vec + np.sum((des0-des1) * angle_wt, axis=-1).reshape(-1,1) * np.array([s, c])
+        descriptor0.append(des0)
+        descriptor1.append(des1)
+    angle_in_rad = np.arctan2(angle_vec[:,0], angle_vec[:,1])
     descriptor = np.concatenate((np.stack(descriptor0, axis=-1),
                                  np.stack(descriptor1, axis=-1)), axis=-1)
-    kps.des = descriptor
+    mm = np.nanmean(descriptor, axis=(1,2), keepdims=True)
+    ss = np.nanstd(descriptor, axis=(1,2), keepdims=True).clip(1e-6, None)
+    descriptor = (descriptor - mm) / ss
+    # offset the angles
+    F = rfft(descriptor, n=proj_num*2, axis=-1)
+    omega = np.linspace(0, proj_num*2, num=proj_num*2, endpoint=False)
+    angle_offset = angle_in_rad.reshape(-1,1) * omega *1j
+    F = F * np.exp(angle_offset.reshape(-1, 1, proj_num*2))[:,:,:F.shape[-1]]
+    descriptor_offset = irfft(F, n=proj_num*2, axis=-1)
+    kps.des = descriptor_offset
+    kps._angle = angle_in_rad
     return kps
+
+
+
+def match_LRadon_feature(kps0, kps1, **kwargs):
+    exhaustive = kwargs.get('exhaustive', False)
+    conf_thresh = kwargs.get('conf_thresh', 0.5)
