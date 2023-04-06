@@ -65,7 +65,7 @@ class KeyPoints:
                    descriptor=descriptor, angle=angle, angle_aligned=angle_aligned)
 
 
-    def filter_keypoints(self, indx, inplace=True):
+    def filter_keypoints(self, indx, include_descriptor=True, inplace=True):
         xy = self.xy[indx]
         if self._response is not None:
             response = self.response[indx]
@@ -75,7 +75,7 @@ class KeyPoints:
             class_id = self.class_id[indx]
         else:
             class_id = None
-        if self.des is not None:
+        if include_descriptor and (self.des is not None):
             descriptor = self.des[indx]
         else:
             descriptor = None
@@ -181,7 +181,7 @@ def extract_LRadon_feature(img, kps, offset=None, **kwargs):
     proj_num = kwargs.get('proj_num', 6)
     beam_num = kwargs.get('beam_num', 8)
     beam_wd = kwargs.get('beam_wd', 3)
-    beam_radius = kwargs.get('beam_radius', 40)
+    beam_radius = kwargs.get('beam_radius', 15)
     max_batchsz = 16300
     if kps.des is not None:
         return kps
@@ -249,13 +249,39 @@ def extract_LRadon_feature(img, kps, offset=None, **kwargs):
 def match_LRadon_feature(kps0, kps1, **kwargs):
     exhaustive = kwargs.get('exhaustive', False)
     conf_thresh = kwargs.get('conf_thresh', 0.5)
+    if kps0.num_points > kps1.num_points:
+        kps0, kps1 = kps1, kps0
+        flipped = True
+    else:
+        flipped = False
     if exhaustive:
         des0 = kps0.reset_angle()
         des1 = kps1.reset_angle()
+        norm_fact = 1 / (des0.shape[-1] * des0.shape[-2])
         F0 = rfft(des0, n=des0.shape[-1], axis=-1)
         F1 = rfft(des1, n=des1.shape[-1], axis=-1)
-        F = np.einsum('mjk,njk->mnk', F0, F1, optimize=True)
-        C = irfft(F, n=des0.shape[-1], axis=-1) / (des0.shape[-1] * des0.shape[-2])
+        F = np.einsum('mjk,njk->mnk', F0, np.conj(F1), optimize=True)
+        C0 = irfft(F, n=des0.shape[-1], axis=-1)
+        C = norm_fact * C0.max(axis=-1)
     else:
         des0 = kps0.align_angle()
         des1 = kps1.align_angle()
+        norm_fact = 1 / (des0.shape[-1] * des0.shape[-2])
+        C = des0.reshape(des0.shape[0], -1) @ des1.reshape(des1.shape[0], -1).T
+        C = norm_fact * C
+    idx0 = np.arange(C.shape[0])
+    idx1 = np.argmax(C, axis=-1)
+    conf0 = C[idx0, idx1]
+    C[idx0, idx1] = -1
+    conf1 = np.max(C, axis=-1)
+    ROD = 1 - (conf1 / conf0)
+    conf = ROD * conf0 ** 2
+    if flipped:
+        idx0, idx1 = idx1, idx0,
+        kps0, kps1 = kps1, kps0
+    idx0 = idx0[conf0 > conf_thresh]
+    idx1 = idx1[conf0 > conf_thresh]
+    conf = conf[conf0 > conf_thresh]
+    kps0_out = kps0.filter_keypoints(idx0, include_descriptor=False, inplace=False)
+    kps1_out = kps1.filter_keypoints(idx1, include_descriptor=False, inplace=False)
+    return kps0_out, kps1_out, conf
