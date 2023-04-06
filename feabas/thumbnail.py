@@ -11,7 +11,7 @@ class KeyPoints:
     """
     class to represents keypoints in feature matching.
     """
-    def __init__(self, xy=None, response=None, class_id=None, offset=(0,0), descriptor=None, angle=None):
+    def __init__(self, xy=None, response=None, class_id=None, offset=(0,0), descriptor=None, angle=None, angle_aligned=False):
         if xy is None:
             self.xy = np.empty((0, 2), dtype=np.float32)
         else:
@@ -23,6 +23,7 @@ class KeyPoints:
         self._class_id = class_id
         self.des = descriptor
         self._angle = angle
+        self.angle_aligned = angle_aligned
 
 
     @classmethod
@@ -36,12 +37,19 @@ class KeyPoints:
         class_id_list = []
         descriptor_list = []
         angle_list = []
+        angle_aligned = None
         for kp in kps:
             if computed and (kp.des is None):
                 continue
+            if angle_aligned is None:
+                angle_aligned = kp.angle_aligned
             xy_list.append(kp.xy + kp.offset - offset0)
             response_list.append(kp.response)
             class_id_list.append(kp.class_id)
+            if angle_aligned:
+                kp.align_angle()
+            else:
+                kp.reset_angle()
             descriptor_list.append(kp.des)
             angle_list.append(kp._angle)
         xy = np.concatenate(xy_list, axis=0)
@@ -53,7 +61,8 @@ class KeyPoints:
         else:
             descriptor = None
             angle = None
-        return cls(xy=xy, response=response, class_id=class_id, offset=offset0, descriptor=descriptor, angle=angle)
+        return cls(xy=xy, response=response, class_id=class_id, offset=offset0,
+                   descriptor=descriptor, angle=angle, angle_aligned=angle_aligned)
 
 
     def filter_keypoints(self, indx, inplace=True):
@@ -82,7 +91,35 @@ class KeyPoints:
             self._angle = angle
             return self
         else:
-            return self.__class__(xy=xy, response=response, class_id=class_id, offset=self.offset, descriptor=descriptor, angle=angle)
+            return self.__class__(xy=xy, response=response, class_id=class_id,
+                                  offset=self.offset, descriptor=descriptor,
+                                  angle=angle, angle_aligned=self.angle_aligned)
+
+
+    def align_angle(self):
+        if (self.angle_aligned) or (self.des is None):
+            return self.des
+        proj_num = self.des.shape[-1]
+        F = rfft(self.des, n=proj_num, axis=-1)
+        omega = np.linspace(0, proj_num, num=proj_num, endpoint=False)
+        angle_offset = self._angle.reshape(-1,1) * omega *1j
+        F = F * np.exp(angle_offset.reshape(-1, 1, proj_num))[:,:,:F.shape[-1]]
+        self.des = irfft(F, n=proj_num, axis=-1)
+        self.angle_aligned = True
+        return self.des
+
+
+    def reset_angle(self):
+        if (self.angle_aligned) or (self.des is None):
+            return self.des
+        proj_num = self.des.shape[-1]
+        F = rfft(self.des, n=proj_num, axis=-1)
+        omega = np.linspace(0, proj_num, num=proj_num, endpoint=False)
+        angle_offset = -self._angle.reshape(-1,1) * omega *1j
+        F = F * np.exp(angle_offset.reshape(-1, 1, proj_num))[:,:,:F.shape[-1]]
+        self.des = irfft(F, n=proj_num, axis=-1)
+        self.angle_aligned = False
+        return self.des
 
 
     @property
@@ -202,14 +239,9 @@ def extract_LRadon_feature(img, kps, offset=None, **kwargs):
     mm = np.nanmean(descriptor, axis=(1,2), keepdims=True)
     ss = np.nanstd(descriptor, axis=(1,2), keepdims=True).clip(1e-6, None)
     descriptor = (descriptor - mm) / ss
-    # offset the angles
-    F = rfft(descriptor, n=proj_num*2, axis=-1)
-    omega = np.linspace(0, proj_num*2, num=proj_num*2, endpoint=False)
-    angle_offset = angle_in_rad.reshape(-1,1) * omega *1j
-    F = F * np.exp(angle_offset.reshape(-1, 1, proj_num*2))[:,:,:F.shape[-1]]
-    descriptor_offset = irfft(F, n=proj_num*2, axis=-1)
-    kps.des = descriptor_offset
+    kps.des = descriptor
     kps._angle = angle_in_rad
+    kps.angle_aligned = False
     return kps
 
 
@@ -217,3 +249,13 @@ def extract_LRadon_feature(img, kps, offset=None, **kwargs):
 def match_LRadon_feature(kps0, kps1, **kwargs):
     exhaustive = kwargs.get('exhaustive', False)
     conf_thresh = kwargs.get('conf_thresh', 0.5)
+    if exhaustive:
+        des0 = kps0.reset_angle()
+        des1 = kps1.reset_angle()
+        F0 = rfft(des0, n=des0.shape[-1], axis=-1)
+        F1 = rfft(des1, n=des1.shape[-1], axis=-1)
+        F = np.einsum('mjk,njk->mnk', F0, F1, optimize=True)
+        C = irfft(F, n=des0.shape[-1], axis=-1) / (des0.shape[-1] * des0.shape[-2])
+    else:
+        des0 = kps0.align_angle()
+        des1 = kps1.align_angle()
