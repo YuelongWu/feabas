@@ -1,10 +1,11 @@
 import cv2
 import numpy as np
-from scipy.spatial import KDTree
 from scipy.fft import rfft, irfft
 from skimage.feature import peak_local_max
+from itertools import combinations
 
 from feabas import common
+from feabas.spatial import fit_affine
 
 
 class KeyPoints:
@@ -284,4 +285,110 @@ def match_LRadon_feature(kps0, kps1, **kwargs):
     conf = conf[conf0 > conf_thresh]
     kps0_out = kps0.filter_keypoints(idx0, include_descriptor=False, inplace=False)
     kps1_out = kps1.filter_keypoints(idx1, include_descriptor=False, inplace=False)
-    return kps0_out, kps1_out, conf
+    mtch = common.Match.from_keypoints(kps0_out, kps1_out, weight=conf)
+    mtch.sort_match_by_weight()
+    return mtch
+
+
+def filter_match_pairwise_strain(matches, **kwargs):
+    strain_limit = kwargs.get('strain_limit', 0.2)
+    shear_limit = kwargs.get('shear_limit', 45)
+    sample_ratio = kwargs.get('sample_ratio', 0.05)
+    inlier_thresh = kwargs.get('inlier_thresh', 0.5)
+    if (strain_limit is None) and (shear_limit is None):
+        return matches
+    num_samples = max(25, int(matches.num_points*sample_ratio))
+    dis0, rot0 = _pairwise_distance_rotation(matches.xy0)
+    dis1, rot1 = _pairwise_distance_rotation(matches.xy1)
+    sindx = np.argsort(dis0, axis=-1)[:, 1:num_samples]
+    dis0 = np.take_along_axis(dis0, sindx, axis=-1)
+    dis1 = np.take_along_axis(dis1, sindx, axis=-1)
+    rot0 = np.take_along_axis(rot0, sindx, axis=-1)
+    rot1 = np.take_along_axis(rot1, sindx, axis=-1)
+    valid_pairs = np.ones_like(sindx, dtype=bool)
+    if strain_limit is not None:
+        strain = np.abs(np.log(dis0 / dis1.clip(1.0e-9, None)))
+        valid_pairs = (strain < strain_limit) & valid_pairs
+    if shear_limit is not None:
+        shear_limit = shear_limit * np.pi / 180
+        rot = rot0 - rot1
+        crot = np.cos(rot)
+        srot = np.sin(rot)
+        rot_med = np.arctan2(np.median(srot), np.median(crot))
+        rot_err = rot - rot_med
+        rot_err_wrap = rot_err - np.round(rot_err / (2*np.pi)) * (2*np.pi)
+        valid_pairs = (np.abs(rot_err_wrap) < shear_limit) & valid_pairs
+    valid_num = np.sum(valid_pairs, axis=-1)
+    kindx = valid_num > (inlier_thresh * np.max(valid_num))
+    matches.filter_match(kindx)
+    return matches
+
+
+def _pairwise_distance_rotation(xy):
+    x = xy[:,0]
+    y = xy[:,1]
+    dx = x.reshape(-1, 1) - x
+    dy = y.reshape(-1, 1) - y
+    dis = (dx ** 2 + dy ** 2) ** 0.5
+    rot = np.arctan2(dy, dx)
+    return dis, rot
+
+
+def filter_match_global_ransac(matches, **kwargs):
+    maxiter = kwargs.get('maxiter', 10000)
+    dis_tol = kwargs.get('dis_tol', 5)
+    early_stop_num = kwargs.get('early_stop_num', 150)
+    early_stop_ratio = kwargs.get('early_stop_ratio', 0.75)
+    num_points = matches.num_points
+    if num_points <= 3:
+        return matches
+    deform_thresh = 0.5
+    early_stop_num = max(early_stop_num, num_points*early_stop_ratio)
+    iternum = 0
+    hit = False
+    countdown = 20
+    inlier_indx = None
+    current_score = 0
+    xy0 = matches.xy0
+    xy1 = matches.xy1
+    early_stop = False
+    for indx2 in range(2, num_points):
+        if early_stop:
+            break
+        for indx01 in combinations(np.arange(indx2), 2):
+            iternum += 1
+            if (maxiter is not None) and (iternum > maxiter):
+                early_stop = True
+                break
+            smpl_indices = np.concatenate((indx01, (indx2,)), axis=None)
+            xy0_s = xy0[smpl_indices]
+            xy1_s = xy1[smpl_indices]
+            if (np.unique(xy0_s, axis=0).size != xy0_s.size) or (np.unique(xy1_s, axis=0).size != xy1_s.size):
+                continue
+            A = fit_affine(xy0_s, xy1_s, return_rigid=False)
+            if np.linalg.det(A[:2,:2]) <= 0:
+                continue
+            sv = np.linalg.svd(A[:2,:2], full_matrices=False, compute_uv=False)
+            deform = np.min(np.exp(-np.abs(np.log(sv))))
+            if deform < deform_thresh:
+                continue
+            dxy = xy1 @ A[:2,:2] + A[-1,:2] - xy0
+            inliers = np.sum(dxy**2, axis=-1) <= dis_tol ** 2
+            inlier_cnt = np.sum(inliers)
+            score = inlier_cnt * (deform - deform_thresh)
+            if score > current_score:
+                current_score = score
+                inlier_indx = inliers
+                if (not hit) and (inlier_cnt > early_stop_num):
+                    hit = True
+            if hit:
+                countdown -= 1
+                if countdown == 0:
+                    early_stop = True
+                    break
+    if inlier_indx is not None:
+        A = fit_affine(xy0[inlier_indx,:], xy1[inlier_indx,:], return_rigid=False)
+        dxy = xy1 @ A[:2,:2] + A[-1,:2] - xy0
+        inlier_indx = np.sum(dxy**2, axis=-1) <= dis_tol ** 2
+    matches.filter_match(inlier_indx)
+    return matches

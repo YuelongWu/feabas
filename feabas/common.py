@@ -13,7 +13,96 @@ import scipy.sparse.csgraph as csgraph
 import feabas.constant as const
 
 
-Match = namedtuple('Match', ('xy0', 'xy1', 'weight'))
+class Match:
+    def __init__(self, xy0, xy1, weight, class_id0=None, class_id1=None, angle0=None, angle1=None):
+        assert xy0.shape[0] == xy1.shape[0]
+        self.xy0 = xy0
+        self.xy1 = xy1
+        self._weight = weight
+        self._class_id0 = class_id0
+        self._class_id1 = class_id1
+        self._angle0 = angle0
+        self._angle1 = angle1
+
+    @classmethod
+    def from_keypoints(cls, kps0, kps1, weight=None):
+        xy0 = kps0.xy + kps0.offset
+        xy1 = kps1.xy + kps1.offset
+        class_id0 = kps0._class_id
+        class_id1 = kps1._class_id
+        angle0 = kps0._angle
+        angle1 = kps1._angle
+        return cls(xy0, xy1, weight, class_id0=class_id0, class_id1=class_id1, angle0=angle0, angle1=angle1)
+
+    def filter_match(self, indx):
+        if indx is None:
+            return self
+        self.xy0 = self.xy0[indx]
+        self.xy1 = self.xy1[indx]
+        if self._weight is not None:
+            self._weight = self._weight[indx]
+        if self._class_id0 is not None:
+            self._class_id0 = self._class_id0[indx]
+        if self._class_id1 is not None:
+            self._class_id1 = self._class_id1[indx]
+        if self._angle0 is not None:
+            self._angle0 = self._angle0[indx]
+        if self._angle1 is not None:
+            self._angle1 = self._angle1[indx]
+        return self
+
+    def sort_match_by_weight(self):
+        if self._weight is None:
+            return self
+        indx = np.argsort(self._weight, kind='stable')
+        if not np.all(indx == np.arange(indx.size)):
+            self.filter_match(indx[::-1])
+        return self
+
+    def reset_weight(self, val=None):
+        if val is not None:
+            self._weight = np.full(self.num_points, val, dtype=np.float32)
+        else:
+            self._weight = None
+
+    @property
+    def num_points(self):
+        return self.xy0.shape[0]
+
+    @property
+    def weight(self):
+        if self._weight is None:
+            return np.ones(self.num_points, dtype=np.float32)
+        else:
+            return self._weight
+
+    @property
+    def class_id0(self):
+        if self._class_id0 is None:
+            return np.ones(self.num_points, dtype=np.int16)
+        else:
+            return self._class_id0
+        
+    @property
+    def class_id1(self):
+        if self._class_id1 is None:
+            return np.ones(self.num_points, dtype=np.int16)
+        else:
+            return self._class_id1
+
+    @property
+    def angle0(self):
+        if self._angle0 is None:
+            return np.zeros(self.num_points, dtype=np.float32)
+        else:
+            return self._angle0
+
+    @property
+    def angle1(self):
+        if self._angle1 is None:
+            return np.zeros(self.num_points, dtype=np.float32)
+        else:
+            return self._angle1
 
 
 def imread(path, **kwargs):
