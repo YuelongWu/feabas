@@ -24,6 +24,16 @@ class Match:
         self._angle0 = angle0
         self._angle1 = angle1
 
+    def copy(self):
+        xy0 = self.xy0
+        xy1 = self.xy1
+        weight = self._weight
+        class_id0 = self._class_id0
+        class_id1 = self._class_id1
+        angle0 = self._angle0
+        angle1 = self._angle1
+        return self.__class__(xy0, xy1, weight, class_id0=class_id0, class_id1=class_id1, angle0=angle0, angle1=angle1)
+
     @classmethod
     def from_keypoints(cls, kps0, kps1, weight=None):
         xy0 = kps0.xy + kps0.offset
@@ -34,22 +44,26 @@ class Match:
         angle1 = kps1._angle
         return cls(xy0, xy1, weight, class_id0=class_id0, class_id1=class_id1, angle0=angle0, angle1=angle1)
 
-    def filter_match(self, indx):
+    def filter_match(self, indx, inplace=True):
+        if inplace:
+            mtch = self
+        else:
+            mtch = self.copy()
         if indx is None:
-            return self
-        self.xy0 = self.xy0[indx]
-        self.xy1 = self.xy1[indx]
-        if self._weight is not None:
-            self._weight = self._weight[indx]
-        if self._class_id0 is not None:
-            self._class_id0 = self._class_id0[indx]
-        if self._class_id1 is not None:
-            self._class_id1 = self._class_id1[indx]
-        if self._angle0 is not None:
-            self._angle0 = self._angle0[indx]
-        if self._angle1 is not None:
-            self._angle1 = self._angle1[indx]
-        return self
+            return mtch
+        mtch.xy0 = mtch.xy0[indx]
+        mtch.xy1 = mtch.xy1[indx]
+        if mtch._weight is not None:
+            mtch._weight = mtch._weight[indx]
+        if mtch._class_id0 is not None:
+            mtch._class_id0 = mtch._class_id0[indx]
+        if mtch._class_id1 is not None:
+            mtch._class_id1 = mtch._class_id1[indx]
+        if mtch._angle0 is not None:
+            mtch._angle0 = mtch._angle0[indx]
+        if mtch._angle1 is not None:
+            mtch._angle1 = mtch._angle1[indx]
+        return mtch
 
     def sort_match_by_weight(self):
         if self._weight is None:

@@ -8,6 +8,11 @@ from feabas import common
 from feabas.spatial import fit_affine
 
 
+def match_two_thumbnails(img0, img1, mask0=None, mask1=None, **kwargs):
+    pass
+
+
+
 class KeyPoints:
     """
     class to represents keypoints in feature matching.
@@ -158,6 +163,8 @@ def detect_extrema_log(img, mask=None, offset=(0,0), **kwargs):
     min_spacing = kwargs.get('min_spacing', 15)
     intensity_thresh = kwargs.get('intensity_thresh', 0.05)
     num_features = kwargs.get('num_features', np.inf)
+    if isinstance(img, KeyPoints):
+        return img
     if mask is None:
         mask = np.ones_like(img, dtype=np.uint8)
     elif not np.issubdtype(mask.dtype, np.integer):
@@ -247,12 +254,16 @@ def extract_LRadon_feature(img, kps, offset=None, **kwargs):
 
 
 
-def match_LRadon_feature(kps0, kps1, **kwargs):
+def match_LRadon_feature(kps0, kps1, exclude_class=None, **kwargs):
     exhaustive = kwargs.get('exhaustive', False)
     conf_thresh = kwargs.get('conf_thresh', 0.5)
+    if exclude_class is not None:
+        exclude_class = np.array(exclude_class, copy=False).reshape(-1,2)
     if kps0.num_points > kps1.num_points:
         kps0, kps1 = kps1, kps0
         flipped = True
+        if exclude_class is not None:
+            exclude_class = exclude_class[:,::-1]
     else:
         flipped = False
     if exhaustive:
@@ -270,6 +281,13 @@ def match_LRadon_feature(kps0, kps1, **kwargs):
         norm_fact = 1 / (des0.shape[-1] * des0.shape[-2])
         C = des0.reshape(des0.shape[0], -1) @ des1.reshape(des1.shape[0], -1).T
         C = norm_fact * C
+    if exclude_class is not None:
+        class_id0 = kps0.class_id
+        class_id1 = kps1.class_id
+        class_ids = class_id0.reshape(-1,1) + class_id1.reshape(1, -1) * 1j
+        excluded_ids = exclude_class[:,0] + exclude_class[:,1] * 1j
+        mask = np.isin(class_ids, excluded_ids)
+        C[mask] = -1
     idx0 = np.arange(C.shape[0])
     idx1 = np.argmax(C, axis=-1)
     conf0 = C[idx0, idx1]
@@ -296,7 +314,7 @@ def filter_match_pairwise_strain(matches, **kwargs):
     sample_ratio = kwargs.get('sample_ratio', 0.05)
     inlier_thresh = kwargs.get('inlier_thresh', 0.5)
     if (strain_limit is None) and (shear_limit is None):
-        return matches
+        return matches, None
     num_samples = max(25, int(matches.num_points*sample_ratio))
     dis0, rot0 = _pairwise_distance_rotation(matches.xy0)
     dis1, rot1 = _pairwise_distance_rotation(matches.xy1)
@@ -307,7 +325,7 @@ def filter_match_pairwise_strain(matches, **kwargs):
     rot1 = np.take_along_axis(rot1, sindx, axis=-1)
     valid_pairs = np.ones_like(sindx, dtype=bool)
     if strain_limit is not None:
-        strain = np.abs(np.log(dis0 / dis1.clip(1.0e-9, None)))
+        strain = np.abs(np.log(dis0.clip(1.0e-9, None) / dis1.clip(1.0e-9, None)))
         valid_pairs = (strain < strain_limit) & valid_pairs
     if shear_limit is not None:
         shear_limit = shear_limit * np.pi / 180
@@ -320,8 +338,12 @@ def filter_match_pairwise_strain(matches, **kwargs):
         valid_pairs = (np.abs(rot_err_wrap) < shear_limit) & valid_pairs
     valid_num = np.sum(valid_pairs, axis=-1)
     kindx = valid_num > (inlier_thresh * np.max(valid_num))
+    if np.all(kindx):
+        discarded = None
+    else:
+        discarded = matches.filter_match(~kindx, inplace=False)
     matches.filter_match(kindx)
-    return matches
+    return matches, discarded
 
 
 def _pairwise_distance_rotation(xy):
@@ -335,13 +357,14 @@ def _pairwise_distance_rotation(xy):
 
 
 def filter_match_global_ransac(matches, **kwargs):
-    maxiter = kwargs.get('maxiter', 10000)
+    maxiter = kwargs.get('maxiter', 5000)
     dis_tol = kwargs.get('dis_tol', 5)
     early_stop_num = kwargs.get('early_stop_num', 150)
     early_stop_ratio = kwargs.get('early_stop_ratio', 0.75)
+    mixed_class = kwargs.get('mixed_class', False)
     num_points = matches.num_points
-    if num_points <= 3:
-        return matches
+    if num_points < 3:
+        return matches, None
     deform_thresh = 0.5
     early_stop_num = max(early_stop_num, num_points*early_stop_ratio)
     iternum = 0
@@ -390,5 +413,36 @@ def filter_match_global_ransac(matches, **kwargs):
         A = fit_affine(xy0[inlier_indx,:], xy1[inlier_indx,:], return_rigid=False)
         dxy = xy1 @ A[:2,:2] + A[-1,:2] - xy0
         inlier_indx = np.sum(dxy**2, axis=-1) <= dis_tol ** 2
+    else:
+        return None, matches
+    if not mixed_class:
+        class_id0 = matches.class_id0
+        class_id1 = matches.class_id1
+        class_id = class_id0 + class_id1 * 1j
+        cls_val, cls_cnt = np.unique(class_id[inlier_indx], return_counts=True)
+        class_indx = class_id == cls_val[np.argmax(cls_cnt)]
+        inlier_indx = inlier_indx & class_indx
+    if np.all(inlier_indx):
+        discarded = None
+    else:
+        discarded = matches.filter_match(~inlier_indx, inplace=False)
     matches.filter_match(inlier_indx)
-    return matches
+    return matches, discarded
+
+
+def filter_match_sequential_ransac(matches, **kwargs):
+    min_features = kwargs.pop('min_features', 10)
+    max_rounds = kwargs.pop('max_rounds', np.inf)
+    match_list = []
+    cnt = 0
+    while True:
+        hit, matches = filter_match_global_ransac(matches, **kwargs)
+        if hit is None:
+            break
+        match_list.append(hit)
+        if (matches is None) or (matches.num_points < min_features):
+            break
+        cnt += 1
+        if cnt > max_rounds:
+            break
+    return match_list
