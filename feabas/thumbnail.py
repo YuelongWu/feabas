@@ -8,10 +8,6 @@ from feabas import common
 from feabas.spatial import fit_affine
 
 
-def match_two_thumbnails(img0, img1, mask0=None, mask1=None, **kwargs):
-    pass
-
-
 
 class KeyPoints:
     """
@@ -156,6 +152,21 @@ class KeyPoints:
         else:
             return self._angle
 
+
+
+def match_two_thumbnails(img0, img1, mask0=None, mask1=None, **kwargs):
+    detect_settings = kwargs.get('detect_settings', {})
+    extract_settings = kwargs.get('extract_settings', {})
+    strain_filter_settings = kwargs.get('strain_filter_settings', {})
+    ransac_filter_settings = kwargs.get('ransac_filter_settings', {})
+    matchnum_thresh = kwargs.get('matchnum_thresh', 25)
+    mesh_area = kwargs.get('mesh_area', 0.001)
+    feature_spacing = detect_settings.get('min_spacing', 15)
+    kps0 = detect_extrema_log(img0, mask=mask0, **detect_settings)
+    kps1 = detect_extrema_log(img1, mask=mask1, **detect_settings)
+    kps0 = extract_LRadon_feature(img0, kps0, **extract_settings)
+    kps1 = extract_LRadon_feature(img1, kps1, **extract_settings)
+    
 
 
 def detect_extrema_log(img, mask=None, offset=(0,0), **kwargs):
@@ -431,18 +442,22 @@ def filter_match_global_ransac(matches, **kwargs):
 
 
 def filter_match_sequential_ransac(matches, **kwargs):
-    min_features = kwargs.pop('min_features', 10)
+    min_features_ratio = kwargs.pop('min_features_ratio', 0.1)
+    kwargs.setdefault('mixed_class', False)
     max_rounds = kwargs.pop('max_rounds', np.inf)
     match_list = []
     cnt = 0
+    min_features = None
     while True:
         hit, matches = filter_match_global_ransac(matches, **kwargs)
         if hit is None:
             break
+        if min_features is None:
+            min_features = max(5, hit.num_points * min_features_ratio)
         match_list.append(hit)
         if (matches is None) or (matches.num_points < min_features):
             break
         cnt += 1
         if cnt > max_rounds:
             break
-    return match_list
+    return match_list, matches

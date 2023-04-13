@@ -276,11 +276,9 @@ class Link:
             return self._weight * self._residue_weight
 
 
-
     @property
     def default_name(self):
         return '_'.join(str(s) for s in self.uids)
-
 
 
     @property
