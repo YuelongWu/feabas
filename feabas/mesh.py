@@ -2097,7 +2097,7 @@ class Mesh:
                 polygons_tokeep.append(pp)
         polygon_odd_wind = unary_union(polygons_tokeep + thickened)
         polygon_odd_wind = polygon_odd_wind.buffer(self._epsilon/10, join_style=2)
-        polygon_odd_wind = polygon_odd_wind.buffer(-self._epsilon/2, join_style=2, mitre_limit=10)
+        polygon_odd_wind = polygon_odd_wind.buffer(-self._epsilon/2, join_style=2, mitre_limit=10).buffer(0)
         segments, tids0 = self.segments_w_triangle_ids(tri_mask=tri_mask)
         collided_segments = []
         rest_of_segments = []

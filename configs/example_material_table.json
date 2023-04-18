@@ -51,9 +51,9 @@
     "stiffness_func_factory": null,
     "stiffness_func_params": {}
   },
-  "soft": {
+  "wrinkle": {
     "enable_mesh": true,
-    "area_constraint": 1,
+    "area_constraint": 0,
     "render": true,
     "render_weight": 1.0e-3,
     "type": "MATERIAL_MODEL_ENG",
@@ -61,7 +61,10 @@
     "poisson_ratio": 0.0,
     "uid": 3,
     "mask_label": 50,
-    "stiffness_func_factory": null,
-    "stiffness_func_params": {}
+    "stiffness_func_factory": "feabas.material.asymmetrical_elasticity",
+    "stiffness_func_params": {
+      "stress": [0.0, 0.75, 1.0, 1.01],
+      "stiffness": [1.5, 1.0, 0.5, 0.0]
+    }
   }
 }
