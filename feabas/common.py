@@ -14,7 +14,7 @@ import feabas.constant as const
 
 
 class Match:
-    def __init__(self, xy0, xy1, weight, class_id0=None, class_id1=None, angle0=None, angle1=None):
+    def __init__(self, xy0, xy1, weight=None, class_id0=None, class_id1=None, angle0=None, angle1=None):
         assert xy0.shape[0] == xy1.shape[0]
         self.xy0 = xy0
         self.xy1 = xy1

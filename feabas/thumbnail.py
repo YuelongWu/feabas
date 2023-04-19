@@ -1,13 +1,18 @@
 import cv2
 import numpy as np
 from scipy.fft import rfft, irfft
+from shapely import convex_hull, MultiPoint, intersects_xy
 from skimage.feature import peak_local_max
 from itertools import combinations
 
 from feabas import common
-from feabas.spatial import fit_affine
+from feabas.spatial import fit_affine, Geometry
+from feabas.mesh import Mesh
+from feabas.optimizer import Link, SLM
+import feabas.constant as const
 
 
+DEFAULT_FEATURE_SPACING = 15
 
 class KeyPoints:
     """
@@ -155,23 +160,142 @@ class KeyPoints:
 
 
 def match_two_thumbnails(img0, img1, mask0=None, mask1=None, **kwargs):
-    detect_settings = kwargs.get('detect_settings', {})
-    extract_settings = kwargs.get('extract_settings', {})
-    strain_filter_settings = kwargs.get('strain_filter_settings', {})
-    ransac_filter_settings = kwargs.get('ransac_filter_settings', {})
+    mesh0 = kwargs.get('mesh0', None)
+    mesh1 = kwargs.get('mesh1', None)
+    detect_settings = kwargs.get('detect_settings', {}).copy()
+    extract_settings = kwargs.get('extract_settings', {}).copy()
+    matching_settings = kwargs.get('matching_settings', {}).copy()
+    feature_spacing = detect_settings.get('min_spacing', DEFAULT_FEATURE_SPACING)
+    strain_filter_settings = kwargs.get('strain_filter_settings', {}).copy()
+    ransac_filter_settings = kwargs.get('ransac_filter_settings', {}).copy()
     matchnum_thresh = kwargs.get('matchnum_thresh', 25)
-    mesh_area = kwargs.get('mesh_area', 0.001)
-    feature_spacing = detect_settings.get('min_spacing', 15)
+    mesh_size = kwargs.get('mesh_size', DEFAULT_FEATURE_SPACING * 2)
+    elastic_dis_tol = kwargs.get('elastic_dis_tol', feature_spacing / 5)
+    ransac_filter_settings.setdefault('dis_tol',feature_spacing / 3)
+    if mesh0 is None:
+        if mask0 is None:
+            imght, imgwd = img0.shape[:2]
+            mesh0 = Mesh.from_bbox((0,0,imgwd, imght), cartesian=True,
+                                   mesh_size=mesh_size, uid=0.0)
+        else:
+            meshes_stg = []
+            for lb in np.unique(mask0[mask0>0]):
+                G0 = Geometry.from_image_mosaic(255 - 255 * (mask0 == lb).astype(np.uint8),
+                                                region_names={'default':0, 'hole': 255})
+                G0.simplify(region_tol={'hole':1.5}, inplace=True)
+                meshes_stg.append(Mesh.from_PSLG(**G0.PSLG(), mesh_size=mesh_size,
+                                                 min_mesh_angle=20))
+            mesh0 = Mesh.combine_mesh(meshes_stg, uid=0.0)
+    if mesh1 is None:
+        if mask1 is None:
+            imght, imgwd = img1.shape[:2]
+            mesh1 = Mesh.from_bbox((0,0,imgwd, imght), cartesian=True,
+                                   mesh_size=mesh_size, uid=1.0)
+        else:
+            meshes_stg = []
+            for lb in np.unique(mask1[mask1>0]):
+                G1 = Geometry.from_image_mosaic(255 - 255 * (mask1 == lb).astype(np.uint8),
+                                                region_names={'default':0, 'hole': 255})
+                G1.simplify(region_tol={'hole':1.5}, inplace=True)
+                meshes_stg.append(Mesh.from_PSLG(**G1.PSLG(), mesh_size=mesh_size,
+                                                 min_mesh_angle=20))
+            mesh1 = Mesh.combine_mesh(meshes_stg, uid=1.0)
     kps0 = detect_extrema_log(img0, mask=mask0, **detect_settings)
     kps1 = detect_extrema_log(img1, mask=mask1, **detect_settings)
     kps0 = extract_LRadon_feature(img0, kps0, **extract_settings)
     kps1 = extract_LRadon_feature(img1, kps1, **extract_settings)
-    
+    optm = SLM([mesh0, mesh1], stiffness_lambda=100)
+    optm.divide_disconnected_submeshes(prune_links=False)
+    settled_link = None
+    while True:
+        modified = False
+        mtch = match_LRadon_feature(kps0, kps1, **matching_settings)
+        mtch, _ = filter_match_pairwise_strain(mtch, **strain_filter_settings)
+        match_list, _ = filter_match_sequential_ransac(mtch, **ransac_filter_settings)
+        used_matches = []
+        if match_list is None:
+            break
+        for mtch in match_list:
+            if settled_link is None:
+                settled_link = Link.from_coordinates(mesh0, mesh1, mtch.xy0, mtch.xy1,
+                                                     name='settled')
+                used_matches.append(mtch)
+                modified = True
+            elif (matchnum_thresh is not None) and (mtch.num_points > matchnum_thresh):
+                staging_link = Link.from_coordinates(mesh0, mesh1, mtch.xy0, mtch.xy1)
+                settled_link.combine_link(staging_link)
+                used_matches.append(mtch)
+                modified = True
+            else:
+                staging_link = Link.from_coordinates(mesh0, mesh1, mtch.xy0, mtch.xy1,
+                                                     weight=np.full(mtch.num_points, 0.1),
+                                                     name='staging')
+                optm.clear_links()
+                optm.add_link(settled_link, check_relevance=False, check_duplicates=False)
+                optm.add_link(staging_link, check_relevance=False, check_duplicates=False)
+                optm.optimize_affine_cascade(targt_gear=const.MESH_GEAR_FIXED)
+                optm.anneal(gear=(const.MESH_GEAR_FIXED, const.MESH_GEAR_MOVING), mode=const.ANNEAL_COPY_EXACT)
+                optm.clear_equation_terms()
+                optm.optimize_linear(tol=1.0e-5, targt_gear=const.MESH_GEAR_MOVING)
+                valid_num = 0
+                for lnk in optm.links:
+                    if lnk.name == 'staging':
+                        dis2 = np.sum(lnk.dxy(gear=const.MESH_GEAR_MOVING, use_mask=False)**2, axis=-1)
+                        valid_num += np.sum(dis2 < elastic_dis_tol**2)
+                if (valid_num / mtch.num_points) > 0.8:
+                    staging_link.reset_weight()
+                    settled_link.combine_link(staging_link)
+                    used_matches.append(mtch)
+                    modified = True
+                else:
+                    break
+        if not modified:
+            break
+        covered_region0 = {}
+        covered_region1 = {}
+        for mtch in used_matches:
+            cid0 = used_matches.class_id0[0]
+            cid1 = used_matches.class_id1[1]
+            cg0 = convex_hull(MultiPoint(mtch.xy0)).buffer(0.5*feature_spacing)
+            cg1 = convex_hull(MultiPoint(mtch.xy1)).buffer(0.5*feature_spacing)
+            if cid0 not in covered_region0:
+                covered_region0[cid0] = cg0
+            else:
+                covered_region0[cid0] = covered_region0[cid0].union(cg0)
+            if cid1 not in covered_region1:
+                covered_region1[cid1] = cg1
+            else:
+                covered_region0[cid1] = covered_region0[cid1].union(cg1)
+        fidx = np.ones(kps0.num_points, dtype=bool)
+        for cid0, cg0 in covered_region0:
+            cidx_t = kps0.class_id == cid0
+            xy_t = kps0.xy[cidx_t]
+            to_keep = ~intersects_xy(cg0, xy_t[:,0], xy_t[:,1])
+            fidx[cidx_t] = to_keep
+        if np.sum(fidx) < 3:
+            break
+        kps0.filter_keypoints(fidx, include_descriptor=True, inplace=True)
+        fidx = np.ones(kps1.num_points, dtype=bool)
+        for cid1, cg1 in covered_region1:
+            cidx_t = kps1.class_id == cid1
+            xy_t = kps1.xy[cidx_t]
+            to_keep = ~intersects_xy(cg1, xy_t[:,0], xy_t[:,1])
+            fidx[cidx_t] = to_keep
+        if np.sum(fidx) < 3:
+            break
+        kps1.filter_keypoints(fidx, include_descriptor=True, inplace=True)
+    if settled_link is None:
+        return None
+    else:
+        xy0 = settled_link.xy0(gear=const.MESH_GEAR_INITIAL, combine=True)
+        xy1 = settled_link.xy1(gear=const.MESH_GEAR_INITIAL, combine=True)
+        return common.Match(xy0, xy1)
+
 
 
 def detect_extrema_log(img, mask=None, offset=(0,0), **kwargs):
     sigma = kwargs.get('sigma', 3.5)
-    min_spacing = kwargs.get('min_spacing', 15)
+    min_spacing = kwargs.get('min_spacing', DEFAULT_FEATURE_SPACING)
     intensity_thresh = kwargs.get('intensity_thresh', 0.05)
     num_features = kwargs.get('num_features', np.inf)
     if isinstance(img, KeyPoints):
@@ -319,6 +443,7 @@ def match_LRadon_feature(kps0, kps1, exclude_class=None, **kwargs):
     return mtch
 
 
+
 def filter_match_pairwise_strain(matches, **kwargs):
     strain_limit = kwargs.get('strain_limit', 0.2)
     shear_limit = kwargs.get('shear_limit', 45)
@@ -357,6 +482,7 @@ def filter_match_pairwise_strain(matches, **kwargs):
     return matches, discarded
 
 
+
 def _pairwise_distance_rotation(xy):
     x = xy[:,0]
     y = xy[:,1]
@@ -367,9 +493,10 @@ def _pairwise_distance_rotation(xy):
     return dis, rot
 
 
+
 def filter_match_global_ransac(matches, **kwargs):
     maxiter = kwargs.get('maxiter', 5000)
-    dis_tol = kwargs.get('dis_tol', 5)
+    dis_tol = kwargs.get('dis_tol', DEFAULT_FEATURE_SPACING / 3)
     early_stop_num = kwargs.get('early_stop_num', 150)
     early_stop_ratio = kwargs.get('early_stop_ratio', 0.75)
     mixed_class = kwargs.get('mixed_class', False)
@@ -439,6 +566,7 @@ def filter_match_global_ransac(matches, **kwargs):
         discarded = matches.filter_match(~inlier_indx, inplace=False)
     matches.filter_match(inlier_indx)
     return matches, discarded
+
 
 
 def filter_match_sequential_ransac(matches, **kwargs):
