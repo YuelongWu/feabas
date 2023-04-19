@@ -69,6 +69,7 @@ def optimize_one_section(matchname, outname, **kwargs):
     else:
         groupings = None
     stitcher.set_groupings(groupings)
+    mesh_settings = mesh_settings.copy()
     mesh_sizes = mesh_settings.pop('mesh_sizes', [75, 150, 300])
     stitcher.initialize_meshes(mesh_sizes, **mesh_settings)
     discrd =stitcher.optimize_translation(target_gear=feabas.MESH_GEAR_FIXED, **translation_settings)
