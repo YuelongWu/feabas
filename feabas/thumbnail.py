@@ -217,22 +217,23 @@ def match_two_thumbnails(img0, img1, mask0=None, mask1=None, **kwargs):
             break
         for mtch in match_list:
             if settled_link is None:
-                settled_link = Link.from_coordinates(mesh0, mesh1, mtch.xy0, mtch.xy1,
+                settled_link, _ = Link.from_coordinates(mesh0, mesh1, mtch.xy0, mtch.xy1,
                                                      name='settled')
                 used_matches.append(mtch)
                 modified = True
             elif (matchnum_thresh is not None) and (mtch.num_points > matchnum_thresh):
-                staging_link = Link.from_coordinates(mesh0, mesh1, mtch.xy0, mtch.xy1)
+                staging_link, _ = Link.from_coordinates(mesh0, mesh1, mtch.xy0, mtch.xy1)
                 settled_link.combine_link(staging_link)
                 used_matches.append(mtch)
                 modified = True
             else:
-                staging_link = Link.from_coordinates(mesh0, mesh1, mtch.xy0, mtch.xy1,
+                staging_link, _ = Link.from_coordinates(mesh0, mesh1, mtch.xy0, mtch.xy1,
                                                      weight=np.full(mtch.num_points, 0.1),
                                                      name='staging')
                 optm.clear_links()
                 optm.add_link(settled_link, check_relevance=False, check_duplicates=False)
                 optm.add_link(staging_link, check_relevance=False, check_duplicates=False)
+                optm.prune_links()
                 optm.optimize_affine_cascade(targt_gear=const.MESH_GEAR_FIXED)
                 optm.anneal(gear=(const.MESH_GEAR_FIXED, const.MESH_GEAR_MOVING), mode=const.ANNEAL_COPY_EXACT)
                 optm.clear_equation_terms()
@@ -254,8 +255,8 @@ def match_two_thumbnails(img0, img1, mask0=None, mask1=None, **kwargs):
         covered_region0 = {}
         covered_region1 = {}
         for mtch in used_matches:
-            cid0 = used_matches.class_id0[0]
-            cid1 = used_matches.class_id1[1]
+            cid0 = mtch.class_id0[0]
+            cid1 = mtch.class_id1[1]
             cg0 = convex_hull(MultiPoint(mtch.xy0)).buffer(0.5*feature_spacing)
             cg1 = convex_hull(MultiPoint(mtch.xy1)).buffer(0.5*feature_spacing)
             if cid0 not in covered_region0:
