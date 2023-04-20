@@ -1,18 +1,19 @@
 import cv2
 import numpy as np
 from scipy.fft import rfft, irfft
-from shapely import convex_hull, MultiPoint, intersects_xy
+from shapely import concave_hull, MultiPoint, intersects_xy
 from skimage.feature import peak_local_max
 from itertools import combinations
 
 from feabas import common
 from feabas.spatial import fit_affine, Geometry
 from feabas.mesh import Mesh
-from feabas.optimizer import Link, SLM
+from feabas.optimizer import SLM
 import feabas.constant as const
 
 
 DEFAULT_FEATURE_SPACING = 15
+
 
 class KeyPoints:
     """
@@ -159,7 +160,7 @@ class KeyPoints:
 
 
 
-def match_two_thumbnails(img0, img1, mask0=None, mask1=None, **kwargs):
+def match_two_thumbnails_LRadon(img0, img1, mask0=None, mask1=None, **kwargs):
     mesh0 = kwargs.get('mesh0', None)
     mesh1 = kwargs.get('mesh1', None)
     detect_settings = kwargs.get('detect_settings', {}).copy()
@@ -168,7 +169,7 @@ def match_two_thumbnails(img0, img1, mask0=None, mask1=None, **kwargs):
     feature_spacing = detect_settings.get('min_spacing', DEFAULT_FEATURE_SPACING)
     strain_filter_settings = kwargs.get('strain_filter_settings', {}).copy()
     ransac_filter_settings = kwargs.get('ransac_filter_settings', {}).copy()
-    matchnum_thresh = kwargs.get('matchnum_thresh', 25)
+    matchnum_thresh = kwargs.get('matchnum_thresh', 64)
     mesh_size = kwargs.get('mesh_size', DEFAULT_FEATURE_SPACING * 2)
     elastic_dis_tol = kwargs.get('elastic_dis_tol', feature_spacing / 5)
     ransac_filter_settings.setdefault('dis_tol',feature_spacing / 3)
@@ -204,9 +205,13 @@ def match_two_thumbnails(img0, img1, mask0=None, mask1=None, **kwargs):
     kps1 = detect_extrema_log(img1, mask=mask1, **detect_settings)
     kps0 = extract_LRadon_feature(img0, kps0, **extract_settings)
     kps1 = extract_LRadon_feature(img1, kps1, **extract_settings)
-    optm = SLM([mesh0, mesh1], stiffness_lambda=100)
+    optm = SLM([mesh0, mesh1], stiffness_lambda=1.0)
     optm.divide_disconnected_submeshes(prune_links=False)
-    settled_link = None
+    xy0 = []
+    xy1 = []
+    class_id0 = []
+    class_id1 = []
+    settled_link = {}
     while True:
         modified = False
         mtch = match_LRadon_feature(kps0, kps1, **matching_settings)
@@ -216,40 +221,50 @@ def match_two_thumbnails(img0, img1, mask0=None, mask1=None, **kwargs):
         if match_list is None:
             break
         for mtch in match_list:
-            if settled_link is None:
-                settled_link, _ = Link.from_coordinates(mesh0, mesh1, mtch.xy0, mtch.xy1,
-                                                     name='settled')
-                used_matches.append(mtch)
-                modified = True
-            elif (matchnum_thresh is not None) and (mtch.num_points > matchnum_thresh):
-                staging_link, _ = Link.from_coordinates(mesh0, mesh1, mtch.xy0, mtch.xy1)
-                settled_link.combine_link(staging_link)
-                used_matches.append(mtch)
-                modified = True
-            else:
-                staging_link, _ = Link.from_coordinates(mesh0, mesh1, mtch.xy0, mtch.xy1,
-                                                     weight=np.full(mtch.num_points, 0.1),
-                                                     name='staging')
-                optm.clear_links()
-                optm.add_link(settled_link, check_relevance=False, check_duplicates=False)
-                optm.add_link(staging_link, check_relevance=False, check_duplicates=False)
-                optm.prune_links()
-                optm.optimize_affine_cascade(targt_gear=const.MESH_GEAR_FIXED)
+            optm.clear_links()
+            optm.add_link_from_coordinates(0.0, 1.0, mtch.xy0, mtch.xy1,
+                                           check_duplicates=False,
+                                           weight=np.full(mtch.num_points, 0.05),
+                                           name='staging')
+            staging_link = optm.links.copy()
+            if (settled_link is not None) and (mtch.num_points < matchnum_thresh):
+                for lnk in settled_link.values():
+                    optm.add_link(lnk, check_relevance=False, check_duplicates=False)
+                optm.optimize_affine_cascade(target_gear=const.MESH_GEAR_FIXED)
                 optm.anneal(gear=(const.MESH_GEAR_FIXED, const.MESH_GEAR_MOVING), mode=const.ANNEAL_COPY_EXACT)
                 optm.clear_equation_terms()
                 optm.optimize_linear(tol=1.0e-5, targt_gear=const.MESH_GEAR_MOVING)
                 valid_num = 0
+                xy0_t_list = []
+                xy1_t_list = []
                 for lnk in optm.links:
                     if lnk.name == 'staging':
                         dis2 = np.sum(lnk.dxy(gear=const.MESH_GEAR_MOVING, use_mask=False)**2, axis=-1)
-                        valid_num += np.sum(dis2 < elastic_dis_tol**2)
-                if (valid_num / mtch.num_points) > 0.8:
-                    staging_link.reset_weight()
-                    settled_link.combine_link(staging_link)
-                    used_matches.append(mtch)
-                    modified = True
-                else:
+                        inlier_indx = dis2 < elastic_dis_tol**2
+                        valid_num += np.sum(inlier_indx)
+                        xy0_t = lnk.xy0(gear=const.MESH_GEAR_INITIAL, use_mask=False, combine=True)
+                        xy1_t = lnk.xy1(gear=const.MESH_GEAR_INITIAL, use_mask=False, combine=True)
+                        xy0_t_list.append(xy0_t[inlier_indx])
+                        xy1_t_list.append(xy1_t[inlier_indx])
+                if (valid_num / mtch.num_points) < 0.8:
                     break
+            else:
+                xy0_t_list = [mtch.xy0]
+                xy1_t_list = [mtch.xy1]
+            xy0.extend(xy0_t_list)
+            xy1.extend(xy1_t_list)
+            class_id0.append(mtch.class_id0)
+            class_id1.append(mtch.class_id1)
+            for lnk in staging_link:
+                lnk.name = 'settled'
+                lnk.reset_weight()
+                lnk_uids = tuple(lnk.uids)
+                if lnk_uids in settled_link:
+                    settled_link[lnk_uids].combine_link(lnk)
+                else:
+                    settled_link[lnk_uids] = lnk
+            used_matches.append(mtch)
+            modified = True
         if not modified:
             break
         covered_region0 = {}
@@ -257,8 +272,10 @@ def match_two_thumbnails(img0, img1, mask0=None, mask1=None, **kwargs):
         for mtch in used_matches:
             cid0 = mtch.class_id0[0]
             cid1 = mtch.class_id1[1]
-            cg0 = convex_hull(MultiPoint(mtch.xy0)).buffer(0.5*feature_spacing)
-            cg1 = convex_hull(MultiPoint(mtch.xy1)).buffer(0.5*feature_spacing)
+            cg0 = concave_hull(MultiPoint(mtch.xy0), ratio=0.25).buffer(0.5*feature_spacing)
+            cg1 = concave_hull(MultiPoint(mtch.xy1), ratio=0.25).buffer(0.5*feature_spacing)
+            # cg0 = MultiPoint(mtch.xy0).buffer(2*feature_spacing)
+            # cg1 = MultiPoint(mtch.xy1).buffer(2*feature_spacing)
             if cid0 not in covered_region0:
                 covered_region0[cid0] = cg0
             else:
@@ -266,9 +283,9 @@ def match_two_thumbnails(img0, img1, mask0=None, mask1=None, **kwargs):
             if cid1 not in covered_region1:
                 covered_region1[cid1] = cg1
             else:
-                covered_region0[cid1] = covered_region0[cid1].union(cg1)
+                covered_region1[cid1] = covered_region0[cid1].union(cg1)
         fidx = np.ones(kps0.num_points, dtype=bool)
-        for cid0, cg0 in covered_region0:
+        for cid0, cg0 in covered_region0.items():
             cidx_t = kps0.class_id == cid0
             xy_t = kps0.xy[cidx_t]
             to_keep = ~intersects_xy(cg0, xy_t[:,0], xy_t[:,1])
@@ -277,7 +294,7 @@ def match_two_thumbnails(img0, img1, mask0=None, mask1=None, **kwargs):
             break
         kps0.filter_keypoints(fidx, include_descriptor=True, inplace=True)
         fidx = np.ones(kps1.num_points, dtype=bool)
-        for cid1, cg1 in covered_region1:
+        for cid1, cg1 in covered_region1.items():
             cidx_t = kps1.class_id == cid1
             xy_t = kps1.xy[cidx_t]
             to_keep = ~intersects_xy(cg1, xy_t[:,0], xy_t[:,1])
@@ -285,12 +302,14 @@ def match_two_thumbnails(img0, img1, mask0=None, mask1=None, **kwargs):
         if np.sum(fidx) < 3:
             break
         kps1.filter_keypoints(fidx, include_descriptor=True, inplace=True)
-    if settled_link is None:
+    if len(xy0) == 0:
         return None
     else:
-        xy0 = settled_link.xy0(gear=const.MESH_GEAR_INITIAL, combine=True)
-        xy1 = settled_link.xy1(gear=const.MESH_GEAR_INITIAL, combine=True)
-        return common.Match(xy0, xy1)
+        xy0 = np.concatenate(xy0, axis=0)
+        xy1 = np.concatenate(xy1, axis=0)
+        class_id0 = np.concatenate(class_id0)
+        class_id1 = np.concatenate(class_id1)
+        return common.Match(xy0, xy1, class_id0=class_id0, class_id1=class_id1)
 
 
 
@@ -505,7 +524,7 @@ def filter_match_global_ransac(matches, **kwargs):
     if num_points < 3:
         return matches, None
     deform_thresh = 0.5
-    early_stop_num = max(early_stop_num, num_points*early_stop_ratio)
+    early_stop_num = max(25, min(early_stop_num, num_points*early_stop_ratio))
     iternum = 0
     hit = False
     countdown = 20
@@ -513,6 +532,10 @@ def filter_match_global_ransac(matches, **kwargs):
     current_score = 0
     xy0 = matches.xy0
     xy1 = matches.xy1
+    _, cnt0 = np.unique(matches.class_id0, return_counts=True)
+    _, cnt1 = np.unique(matches.class_id1, return_counts=True)
+    cnt_mx = max(cnt0.max(), cnt1.max())
+    early_stop_num = early_stop_num * cnt_mx / matches.num_points
     early_stop = False
     for indx2 in range(2, num_points):
         if early_stop:

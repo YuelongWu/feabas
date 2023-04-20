@@ -41,6 +41,8 @@ class Link:
                          gear=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_INITIAL),
                          weight=None,
                          **kwargs):
+        if xy0.size == 0:
+            return None, None
         tid0, B0 = mesh0.cart2bary(xy0, gear[0], tid=None, **kwargs)
         indx0 = tid0 >= 0
         if not np.any(indx0):
