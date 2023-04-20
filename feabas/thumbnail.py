@@ -227,7 +227,7 @@ def match_two_thumbnails_LRadon(img0, img1, mask0=None, mask1=None, **kwargs):
                                            weight=np.full(mtch.num_points, 0.05),
                                            name='staging')
             staging_link = optm.links.copy()
-            if (settled_link is not None) and (mtch.num_points < matchnum_thresh):
+            if (len(settled_link) > 0) and (mtch.num_points < matchnum_thresh):
                 for lnk in settled_link.values():
                     optm.add_link(lnk, check_relevance=False, check_duplicates=False)
                 optm.optimize_affine_cascade(target_gear=const.MESH_GEAR_FIXED)
@@ -239,14 +239,16 @@ def match_two_thumbnails_LRadon(img0, img1, mask0=None, mask1=None, **kwargs):
                 xy1_t_list = []
                 for lnk in optm.links:
                     if lnk.name == 'staging':
-                        dis2 = np.sum(lnk.dxy(gear=const.MESH_GEAR_MOVING, use_mask=False)**2, axis=-1)
-                        inlier_indx = dis2 < elastic_dis_tol**2
+                        lnk.set_hard_residue_filter(elastic_dis_tol)
+                        lnk.adjust_weight_from_residue()
+                        inlier_indx = lnk.mask
                         valid_num += np.sum(inlier_indx)
-                        xy0_t = lnk.xy0(gear=const.MESH_GEAR_INITIAL, use_mask=False, combine=True)
-                        xy1_t = lnk.xy1(gear=const.MESH_GEAR_INITIAL, use_mask=False, combine=True)
-                        xy0_t_list.append(xy0_t[inlier_indx])
-                        xy1_t_list.append(xy1_t[inlier_indx])
-                if (valid_num / mtch.num_points) < 0.8:
+                        xy0_t = lnk.xy0(gear=const.MESH_GEAR_INITIAL, use_mask=True, combine=True)
+                        xy1_t = lnk.xy1(gear=const.MESH_GEAR_INITIAL, use_mask=True, combine=True)
+                        xy0_t_list.append(xy0_t)
+                        xy1_t_list.append(xy1_t)
+                        lnk.eliminate_zero_weight()
+                if ((valid_num / mtch.num_points) < 0.9) or (valid_num < 3):
                     break
             else:
                 xy0_t_list = [mtch.xy0]
