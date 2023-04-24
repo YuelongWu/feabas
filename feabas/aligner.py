@@ -66,11 +66,10 @@ def match_section_from_initial_matches(match_name, meshes, loaders, out_dir, con
         raise TypeError('configuration type not supported.')
     match_name_delimiter = conf.get('match_name_delimiter', '__to__')
     resolution = conf.get('working_resolution', const.DEFAULT_RESOLUTION)
-    loader_config = conf.get('loader_config', {})
-    matcher_config = conf.get('matcher_config', {})
+    loader_config = conf.get('loader_config', {}).copy()
+    matcher_config = conf.get('matcher_config', {}).copy()
     secnames = os.path.splitext(os.path.basename(match_name))[0].split(match_name_delimiter)
     if 'cache_size' in loader_config and loader_config['cache_size'] is not None:
-        loader_config = loader_config.copy()
         loader_config['cache_size'] = loader_config['cache_size'] // (2 * matcher_config.get('num_workers',1))
     if isinstance(meshes, str):
         meshes = (os.path.join(meshes, secnames[0]+'.h5'), os.path.join(meshes, secnames[1]+'.h5'))
@@ -456,9 +455,9 @@ class Stack:
     def optimize_section_list(self, section_list, **kwargs):
         target_gear = kwargs.get('target_gear', const.MESH_GEAR_MOVING)
         optimize_rigid = kwargs.get('optimize_rigid', True)
-        rigid_params = kwargs.get('rigid_params', {})
+        rigid_params = kwargs.get('rigid_params', {}).copy()
         optimize_elastic = kwargs.get('optimize_elastic', True)
-        elastic_params = kwargs.get('elastic_params', {})
+        elastic_params = kwargs.get('elastic_params', {}).copy()
         residue_len = kwargs.get('residue_len', 0)
         residue_mode = kwargs.get('residue_mode', None)
         optm = self.initialize_SLM(section_list)
@@ -470,7 +469,6 @@ class Stack:
                 optm.anneal(gear=(target_gear, const.MESH_GEAR_FIXED), mode=const.ANNEAL_CONNECTED_RIGID)
         if optimize_elastic:
             if 'callback_settings' in elastic_params:
-                elastic_params = elastic_params.copy()
                 elastic_params['callback_settings'].setdefault('early_stop_thresh', const.DEFAULT_RESOLUTION / self._resolution)
             cost = optm.optimize_elastic(target_gear=target_gear, **elastic_params)
             if (residue_mode is not None) and (residue_len > 0):

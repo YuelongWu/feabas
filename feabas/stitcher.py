@@ -269,7 +269,7 @@ class Stitcher:
         num_workers = kwargs.pop('num_workers', 1)
         verbose = kwargs.pop('verbose', False)
         num_overlaps_per_job = kwargs.get('num_overlaps_per_job', 180) # 180 roughly number of overlaps in an MultiSEM mFoV
-        loader_config = kwargs.pop('loader_config', {})
+        loader_config = kwargs.pop('loader_config', {}).copy()
         if bool(loader_config.get('cache_size', None)) and (num_workers > 1):
             loader_config = loader_config.copy()
             loader_config['cache_size'] = int(np.ceil(loader_config['cache_size'] / num_workers))
@@ -380,8 +380,8 @@ class Stitcher:
         index_mapper = kwargs.get('index_mapper', None)
         margin = kwargs.get('margin', 1.0)
         image_to_mask_path = kwargs.get('image_to_mask_path', None)
-        loader_config = kwargs.get('loader_config', {})
-        matcher_config = kwargs.get('matcher_config', {})
+        loader_config = kwargs.get('loader_config', {}).copy()
+        matcher_config = kwargs.get('matcher_config', {}).copy()
         instant_gc = kwargs.get('instant_gc', False)
         margin_ratio_switch = 2
         err_raised = False
@@ -754,8 +754,8 @@ class Stitcher:
                 M0.set_default_cache(cache=default_caches[gear], gear=gear)
         opt = SLM(sel_meshes)
         for uids0, uids1 in zip(match_uids, sel_match_uids):
-            match = self.matches[tuple(uids0)]
-            xy0, xy1, weight = match
+            mtch = self.matches[tuple(uids0)]
+            xy0, xy1, weight = mtch
             opt.add_link_from_coordinates(uids1[0], uids1[1], xy0, xy1,
                 weight=weight, check_duplicates=False)
         cost = opt.optimize_linear(groupings=sel_grps, **kwargs)
@@ -1016,7 +1016,7 @@ class MontageRenderer:
             root directory.
     """
     def __init__(self, imgpaths, mesh_info, tile_sizes, **kwargs):
-        self._loader_settings = kwargs.get('loader_settings', {})
+        self._loader_settings = kwargs.get('loader_settings', {}).copy()
         self._connected_subsystem = kwargs.get('connected_subsystem', None)
         if bool(kwargs.get('root_dir', None)):
             self.imgrootdir = kwargs['root_dir']

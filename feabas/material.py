@@ -54,7 +54,7 @@ class Material:
         self._poisson_ratio = kwargs.get('poisson_ratio', 0.0)
         self.mask_label = kwargs.get('mask_label', None)
         stiffness_func_factory = kwargs.get('stiffness_func_factory', None)
-        stiffness_func_params = kwargs.get('stiffness_func_params', {})
+        stiffness_func_params = kwargs.get('stiffness_func_params', {}).copy()
         self.update_stiffness_func(stiffness_func_factory, stiffness_func_params)
         uid = kwargs.get('uid', None)
         if uid is None:

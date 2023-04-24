@@ -864,7 +864,7 @@ class SLM:
         maxiter = kwargs.get('maxiter', None)
         tol = kwargs.get('tol', 1e-7)
         atol = kwargs.get('atol', None)
-        callback_settings = kwargs.get('callback_settings', {})
+        callback_settings = kwargs.get('callback_settings', {}).copy()
         shape_gear = kwargs.get('shape_gear', const.MESH_GEAR_FIXED)
         targt_gear = kwargs.get('target_gear', const.MESH_GEAR_MOVING)
         start_gear = kwargs.get('start_gear', targt_gear)
@@ -993,7 +993,7 @@ class SLM:
         shrink_trial = kwargs.get('shrink_trial', 3)
         groupings = kwargs.get('groupings', None)
         batch_num_matches = kwargs.get('batch_num_matches', None)
-        callback_settings = kwargs.get('callback_settings', {})
+        callback_settings = kwargs.get('callback_settings', {}).copy()
         shape_gear = const.MESH_GEAR_FIXED
         start_gear = const.MESH_GEAR_MOVING
         if cont_on_flip:
@@ -1293,7 +1293,7 @@ class SLM:
         if link_initialized:
             xy0 = link.xy0(gear=working_gear, use_mask=False, combine=True)
             xy1 = link.xy1(gear=working_gear, use_mask=False, combine=True)
-            weight = link._weight
+            weight = link.weight(use_mask=False)
             if link.name == link.default_name:
                 name = None
             else:

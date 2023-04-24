@@ -159,6 +159,112 @@ class KeyPoints:
             return self._angle
 
 
+class KeyPointMatches:
+    def __init__(self, xy0, xy1, weight=None, class_id0=None, class_id1=None, angle0=None, angle1=None):
+        assert xy0.shape[0] == xy1.shape[0]
+        self.xy0 = xy0
+        self.xy1 = xy1
+        self._weight = weight
+        self._class_id0 = class_id0
+        self._class_id1 = class_id1
+        self._angle0 = angle0
+        self._angle1 = angle1
+
+    def copy(self):
+        xy0 = self.xy0
+        xy1 = self.xy1
+        weight = self._weight
+        class_id0 = self._class_id0
+        class_id1 = self._class_id1
+        angle0 = self._angle0
+        angle1 = self._angle1
+        return self.__class__(xy0, xy1, weight, class_id0=class_id0, class_id1=class_id1, angle0=angle0, angle1=angle1)
+
+    @classmethod
+    def from_keypoints(cls, kps0, kps1, weight=None):
+        xy0 = kps0.xy + kps0.offset
+        xy1 = kps1.xy + kps1.offset
+        class_id0 = kps0._class_id
+        class_id1 = kps1._class_id
+        angle0 = kps0._angle
+        angle1 = kps1._angle
+        return cls(xy0, xy1, weight, class_id0=class_id0, class_id1=class_id1, angle0=angle0, angle1=angle1)
+
+    def filter_match(self, indx, inplace=True):
+        if inplace:
+            mtch = self
+        else:
+            mtch = self.copy()
+        if indx is None:
+            return mtch
+        mtch.xy0 = mtch.xy0[indx]
+        mtch.xy1 = mtch.xy1[indx]
+        if mtch._weight is not None:
+            mtch._weight = mtch._weight[indx]
+        if mtch._class_id0 is not None:
+            mtch._class_id0 = mtch._class_id0[indx]
+        if mtch._class_id1 is not None:
+            mtch._class_id1 = mtch._class_id1[indx]
+        if mtch._angle0 is not None:
+            mtch._angle0 = mtch._angle0[indx]
+        if mtch._angle1 is not None:
+            mtch._angle1 = mtch._angle1[indx]
+        return mtch
+
+    def sort_match_by_weight(self):
+        if self._weight is None:
+            return self
+        indx = np.argsort(self._weight, kind='stable')
+        if not np.all(indx == np.arange(indx.size)):
+            self.filter_match(indx[::-1])
+        return self
+
+    def reset_weight(self, val=None):
+        if val is not None:
+            self._weight = np.full(self.num_points, val, dtype=np.float32)
+        else:
+            self._weight = None
+
+    @property
+    def num_points(self):
+        return self.xy0.shape[0]
+
+    @property
+    def weight(self):
+        if self._weight is None:
+            return np.ones(self.num_points, dtype=np.float32)
+        else:
+            return self._weight
+
+    @property
+    def class_id0(self):
+        if self._class_id0 is None:
+            return np.ones(self.num_points, dtype=np.int16)
+        else:
+            return self._class_id0
+        
+    @property
+    def class_id1(self):
+        if self._class_id1 is None:
+            return np.ones(self.num_points, dtype=np.int16)
+        else:
+            return self._class_id1
+
+    @property
+    def angle0(self):
+        if self._angle0 is None:
+            return np.zeros(self.num_points, dtype=np.float32)
+        else:
+            return self._angle0
+
+    @property
+    def angle1(self):
+        if self._angle1 is None:
+            return np.zeros(self.num_points, dtype=np.float32)
+        else:
+            return self._angle1
+
+
 
 def match_two_thumbnails_LRadon(img0, img1, mask0=None, mask1=None, **kwargs):
     mesh0 = kwargs.get('mesh0', None)
@@ -209,8 +315,6 @@ def match_two_thumbnails_LRadon(img0, img1, mask0=None, mask1=None, **kwargs):
     optm.divide_disconnected_submeshes(prune_links=False)
     xy0 = []
     xy1 = []
-    class_id0 = []
-    class_id1 = []
     settled_link = {}
     while True:
         modified = False
@@ -255,8 +359,6 @@ def match_two_thumbnails_LRadon(img0, img1, mask0=None, mask1=None, **kwargs):
                 xy1_t_list = [mtch.xy1]
             xy0.extend(xy0_t_list)
             xy1.extend(xy1_t_list)
-            class_id0.append(mtch.class_id0)
-            class_id1.append(mtch.class_id1)
             for lnk in staging_link:
                 lnk.name = 'settled'
                 lnk.reset_weight()
@@ -309,9 +411,8 @@ def match_two_thumbnails_LRadon(img0, img1, mask0=None, mask1=None, **kwargs):
     else:
         xy0 = np.concatenate(xy0, axis=0)
         xy1 = np.concatenate(xy1, axis=0)
-        class_id0 = np.concatenate(class_id0)
-        class_id1 = np.concatenate(class_id1)
-        return common.Match(xy0, xy1, class_id0=class_id0, class_id1=class_id1)
+        weight = np.ones(xy0.shape[0], dtype=np.float32)
+        return common.Match(xy0, xy1, weight)
 
 
 
@@ -460,7 +561,7 @@ def match_LRadon_feature(kps0, kps1, exclude_class=None, **kwargs):
     conf = conf[conf0 > conf_thresh]
     kps0_out = kps0.filter_keypoints(idx0, include_descriptor=False, inplace=False)
     kps1_out = kps1.filter_keypoints(idx1, include_descriptor=False, inplace=False)
-    mtch = common.Match.from_keypoints(kps0_out, kps1_out, weight=conf)
+    mtch = KeyPointMatches.from_keypoints(kps0_out, kps1_out, weight=conf)
     mtch.sort_match_by_weight()
     return mtch
 
