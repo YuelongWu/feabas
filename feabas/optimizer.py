@@ -795,6 +795,10 @@ class SLM:
             link_wt_sum = Adj.dot(~to_optimize) * to_optimize
             if not np.any(link_wt_sum > 0):
                 link_wt_sum = Adj.dot(np.ones_like(to_optimize)) * to_optimize
+                if not np.any(link_wt_sum > 0):
+                    orphans = set([m.name for m, flg in zip(self.meshes, to_optimize) if flg])
+                    print('orphan: ' + ' '.join(orphans))
+                    break
             idx0 = np.argmax(link_wt_sum)
             pair_locked_flag = ~to_optimize[linked_pairs]
             link_filter = np.nonzero(np.any(linked_pairs==idx0, axis=-1)
