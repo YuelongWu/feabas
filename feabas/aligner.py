@@ -369,7 +369,9 @@ class Stack:
         if (window_size is None) or window_size > self.num_sections:
             window_size = self.num_sections
             start_loc = 'L'
-        buffer_size = kwargs.get('buffer_size', window_size//4)
+            buffer_size = 0
+        else:
+            buffer_size = kwargs.get('buffer_size', window_size//4)
         if locked_section is not None:
             self.unlock_all()
             if not isinstance(locked_section, str):

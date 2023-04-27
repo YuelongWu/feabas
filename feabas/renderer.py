@@ -480,8 +480,13 @@ def render_whole_mesh(mesh, image_loader, prefix, **kwargs):
     tileht, tilewd = tile_size
     if canvas_bbox is None:
         gx_min, gy_min, gx_max, gy_max = mesh.bbox(gear=const.MESH_GEAR_MOVING)
+        x0, y0 = 0, 0
     else:
         gx_min, gy_min, gx_max, gy_max = canvas_bbox
+        x0, y0 = gx_min, gy_min
+        gx_max = gx_max - gx_min
+        gy_max = gy_max - gy_min
+        gx_min, gy_min = 0, 0
     tx_max = int(np.ceil(gx_max  / tilewd))
     ty_max = int(np.ceil(gy_max  / tileht))
     tx_min = int(np.floor(gx_min  / tilewd))
@@ -494,7 +499,7 @@ def render_whole_mesh(mesh, image_loader, prefix, **kwargs):
     bboxes = []
     region = mesh.shapely_regions(gear=const.MESH_GEAR_MOVING, offsetting=True)
     for r, c in zip(rows, cols):
-        bbox = (c*tilewd, r*tileht, (c+1)*tilewd, (r+1)*tileht)
+        bbox = (c*tilewd + x0, r*tileht + y0, (c+1)*tilewd + x0, (r+1)*tileht + y0)
         if not region.intersects(shpgeo.box(*bbox)):
             continue
         bboxes.append(bbox)
