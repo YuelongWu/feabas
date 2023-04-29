@@ -21,8 +21,8 @@ def xcorr_fft(img0, img1, conf_mode=const.FFT_CONF_MIRROR, **kwargs):
     find the displacements between two image(-stack)s from the Fourier based
     cross-correlation.
     Args:
-        img0(ndarray): the first image, N x H0 x W0.
-        img1(ndarray): the second image, N x H1 x W1.
+        img0(ndarray): the first image, N x H0 x W0 (x C).
+        img1(ndarray): the second image, N x H1 x W1 (x C).
     Kwargs:
         sigma: if set to larger than 0, will apply masked Difference of Gassian
             filter to the images before cross-correlation
@@ -46,21 +46,25 @@ def xcorr_fft(img0, img1, conf_mode=const.FFT_CONF_MIRROR, **kwargs):
     if sigma > 0:
         img0 = common.masked_dog_filter(img0, sigma, mask=mask0)
         img1 = common.masked_dog_filter(img1, sigma, mask=mask1)
-    imgshp0 = img0.shape[-2:]
-    imgshp1 = img1.shape[-2:]
+    imgshp0 = img0.shape[1:3]
+    imgshp1 = img1.shape[1:3]
     if pad:
         fftshp = [next_fast_len(s0 + s1 - 1) for s0, s1 in zip(imgshp0, imgshp1)]
     else:
         fftshp = [next_fast_len(max(s0, s1)) for s0, s1 in zip(imgshp0, imgshp1)]
-    F0 = fft.rfft2(img0, s=fftshp)
-    F1 = fft.rfft2(img1, s=fftshp)
-    C = fft.irfft2(np.conj(F0) * F1, s=fftshp)
-    C = C.reshape(-1, np.prod(fftshp))
+    F0 = fft.rfft2(img0, s=fftshp, axes=(1,2))
+    F1 = fft.rfft2(img1, s=fftshp, axes=(1,2))
+    FF = np.conj(F0) * F1
+    if len(FF.shape) > 3:
+        FF = FF.mean(axis=-1)
+    C = fft.irfft2(FF, s=fftshp, axes=(1,2))
+    Nimg = C.shape[0]
+    C = C.reshape(Nimg, -1)
     if normalize:
         if mask0 is None:
-            mask0 = np.ones_like(img0)
+            mask0 = np.ones_like(img0, shape=img0.shape[:3])
         if mask1 is None:
-            mask1 = np.ones_like(img1)
+            mask1 = np.ones_like(img1, shape=img1.shape[:3])
         M0 = fft.rfft2(mask0, s=fftshp)
         M1 = fft.rfft2(mask1, s=fftshp)
         NC = fft.irfft2(np.conj(M0) * M1, s=fftshp)
@@ -76,8 +80,11 @@ def xcorr_fft(img0, img1, conf_mode=const.FFT_CONF_MIRROR, **kwargs):
     if conf_mode == const.FFT_CONF_NONE:
         conf = np.ones_like(dx, dtype=np.float32)
     elif conf_mode == const.FFT_CONF_MIRROR:
-        C_mirror = np.abs(fft.irfft2(F0 * F1, s=fftshp))
-        C_mirror = C_mirror.reshape(-1, np.prod(fftshp))
+        FF = F0 * F1
+        if len(FF.shape) > 3:
+            FF = FF.mean(axis=-1)
+        C_mirror = np.abs(fft.irfft2(FF, s=fftshp, axes=(1,2)))
+        C_mirror = C_mirror.reshape(Nimg, -1)
         if normalize:
             NC = fft.irfft2(M0 * M1, s=fftshp)
             NC = NC.reshape(-1, np.prod(fftshp))
