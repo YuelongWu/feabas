@@ -94,7 +94,27 @@ def find_contours(mask):
         _, contours, hierarchy = cv2.findContours(mask, cv2.RETR_CCOMP, approx_mode)
     else:
         contours, hierarchy = cv2.findContours(mask, cv2.RETR_CCOMP, approx_mode)
+    contours = _pad_concave_corner(contours)
     return contours, hierarchy
+
+
+def _pad_concave_corner(countours):
+    padded = []
+    for ct in countours:
+        xy0 = ct.squeeze()
+        xy1 = np.roll(xy0, 1, axis=0)
+        stp = xy1 - xy0
+        diag_indx = np.nonzero(np.all(stp != 0, axis=-1))[0]
+        if diag_indx.size > 0:
+            dxy = stp[diag_indx]
+            dxy = (dxy + dxy[:,::-1] * np.array([-1, 1])) / 2
+            txy = xy0[diag_indx] + dxy
+            xy0 = np.insert(xy0, diag_indx, txy, axis=0)
+            stp0 = (np.roll(xy0, 1, axis=0) - xy0 != 0) | (np.roll(xy0, -1, axis=0) - xy0 != 0)
+            keep_indx = np.all(stp0, axis=-1)
+            xy0 = xy0[keep_indx]
+        padded.append(xy0)
+    return padded
 
 
 
@@ -118,7 +138,7 @@ def countours_to_polygon(contours, hierarchy, offset, scale, upsample):
         xy = scale_coordinates(ct.reshape(number_of_points, -1), scale=1/upsample)
         xy = scale_coordinates(xy + np.asarray(offset), scale=scale)
         lr = shpgeo.polygon.LinearRing(xy)
-        lr = smooth_zigzag(lr, scale=scale)
+        # lr = smooth_zigzag(lr, scale=scale)
         pp = shpgeo.Polygon(lr)
         if lr.is_ccw:
             holes[indx] = pp
@@ -298,6 +318,9 @@ def smooth_zigzag(boundary, scale=1.0, tol=0.5):
         if lr.length == 0:
             continue
         vertices = get_coordinates(lr)
+        if vertices.shape[0] <= 2:
+            smoothened.append(lr)
+            continue
         if np.all(vertices[0] == vertices[-1]):
             is_closed = True
         else:
@@ -872,6 +895,7 @@ class Geometry:
             slist = [s for s in segs_in_regions[lbl] if s not in simplify_order]
             simplify_order.extend(slist)
             simplify_tol.extend([tol]*len(slist))
+        bag_of_segs = [smooth_zigzag(s) for s in bag_of_segs]
         for sidx, tol in zip(simplify_order, simplify_tol):
             seg_target = unary_union([s for k, s in enumerate(bag_of_segs) if (k==sidx)])
             segs_except_target = unary_union([s for k, s in enumerate(bag_of_segs) if (k!=sidx)])
@@ -992,7 +1016,7 @@ class Geometry:
         seg_groups = defaultdict(list)
         for seg_idx, lbl_ids in labels_of_segs.items():
             seg_groups[tuple(lbl_ids)].append(bag_of_segs[seg_idx])
-        seg_groups = {lbl_id: linemerge(lines) for lbl_id, lines in seg_groups.items()}
+        seg_groups = {lbl_id: smooth_zigzag(linemerge(lines)) for lbl_id, lines in seg_groups.items()}
         group_indices = sorted(seg_groups.keys())
         group_tols = [region_tols[region_names[lbl[0]]] for lbl in group_indices]
         for gidx, tol in zip(group_indices, group_tols):
