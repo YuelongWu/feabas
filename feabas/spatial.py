@@ -139,7 +139,7 @@ def countours_to_polygon(contours, hierarchy, offset, scale, upsample):
         xy = scale_coordinates(xy + np.asarray(offset), scale=scale)
         lr = shpgeo.polygon.LinearRing(xy)
         # lr = smooth_zigzag(lr, scale=scale)
-        pp = shpgeo.Polygon(lr)
+        pp = shpgeo.Polygon(lr).buffer(0)
         if lr.is_ccw:
             holes[indx] = pp
         else:

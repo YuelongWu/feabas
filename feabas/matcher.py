@@ -711,7 +711,7 @@ def distributor_cartesian_region(mesh0, mesh1, spacing, **kwargs):
     if hasattr(cntrs, 'geoms'):
         bcnters = np.array([(p.x, p.y) for p in cntrs.geoms])
     else:
-        bcnters = np.array((cntrs.x, cntrs.y))
+        bcnters = np.array([(cntrs.x, cntrs.y)])
     bboxes0 = np.concatenate((bcnters-blk_hfsz0, bcnters+blk_hfsz0), axis=-1)
     bboxes1 = np.concatenate((bcnters-blk_hfsz1, bcnters+blk_hfsz1), axis=-1)
     if zorder:
