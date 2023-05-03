@@ -402,7 +402,7 @@ class Stack:
                     continue
                 cst = self.optimize_section_list(seclst, **kwargs)
                 if cst is not None:
-                    costs['_'.join((self.section_list[idx0], seclst[-1]))] = cst
+                    costs.update(cst)
                 self.update_lock_flags({s:True for s in seclst[:-buffer_size]})
             else:
                 self.flush_meshes()
@@ -415,7 +415,7 @@ class Stack:
                     continue
                 cst = self.optimize_section_list(seclst, **kwargs)
                 if cst is not None:
-                    costs['_'.join((self.section_list[idx0], seclst[-1]))] = cst
+                    costs.update(cst)
                 self.update_lock_flags({s:True for s in seclst[buffer_size:]})
             else:
                 self.flush_meshes()
@@ -424,7 +424,7 @@ class Stack:
             seclst = self.section_list[init_idx0:(init_idx0+window_size)]
             cst = self.optimize_section_list(seclst, **kwargs)
             if cst is not None:
-                costs['_'.join((seclst[0], seclst[-1]))] = cst
+                costs.update(cst)
             self.flush_meshes()
             sections_to_lock = seclst[buffer_size:-buffer_size]
             self.update_lock_flags({s:True for s in sections_to_lock})
@@ -482,8 +482,13 @@ class Stack:
                 if weight_modified:
                     cost1 = optm.optimize_elastic(target_gear=target_gear, **elastic_params)
                     cost = (cost[0], cost1[-1])
+        residue = {}
+        for matchname, lnks in self._link_cache.items():
+            dxy = np.concatenate([lnk.dxy(gear=1) for lnk in lnks], axis=0)
+            dis = np.sum(dxy ** 2, axis=1)**0.5
+            residue[matchname] = (dis.max(), dis.mean())
         print(f'{optm.meshes[0].name} -> {optm.meshes[-1].name}: cost {cost} | {time.time()-t0} sec')
-        return cost
+        return residue
 
 
     def update_lock_flags(self, flags):
