@@ -223,6 +223,8 @@ def images_to_polygons(imgs, labels, offset=(0, 0), scale=1.0, upsample=2):
                 mask = np.all(tile == np.array(lbl), axis=-1)
             else:
                 mask = (tile == lbl)
+            if not np.any(mask, axis=None):
+                continue
             if upsample != 1:
                 mask = (cv2.resize(255*mask.astype(np.uint8), None, fx=upsample, fy=upsample, interpolation=cv2.INTER_LINEAR)) > 127
             ct, h = find_contours(mask)
@@ -799,7 +801,8 @@ class Geometry:
         if not isinstance(region_tol, dict):
             region_tols = defaultdict(lambda: region_tol)
         else:
-            region_tols = region_tol
+            region_tols = region_tol.copy()
+        region_tols.setdefault('default', np.inf)
         if method == const.SPATIAL_SIMPLIFY_SEGMENT:
             G = self.simplify_by_segments(region_tols, roi_tol=roi_tol,
                 inplace=inplace, scale=scale, area_thresh=area_thresh)
@@ -853,7 +856,7 @@ class Geometry:
         boundaries = OrderedDict()
         poly_assigned = np.zeros(len(polygons_formalized), dtype=bool)
         for lbl in reversed(self._zorder):
-            if lbl not in polygons_cleaned:
+            if (lbl == 'default') or (lbl not in polygons_cleaned):
                 continue
             poly = polygons_cleaned[lbl]
             if poly.area == 0:
@@ -873,6 +876,9 @@ class Geometry:
                     poly_assigned[kf] = True
                     area_left -= area_ints
             boundaries[lbl] = unary_union(bndr)
+        if not np.all(poly_assigned):
+            left_overs = unary_union([pf for pf, flg in zip(polygons_formalized, poly_assigned) if not flg])
+            boundaries['default'] = left_overs.boundary
         b_merged = unary_union(boundaries.values())
         if hasattr(b_merged, 'geoms'):
             b_merged = linemerge(b_merged)
@@ -880,7 +886,7 @@ class Geometry:
             bag_of_segs = [b_merged]
         else:
             bag_of_segs = list(b_merged.geoms)
-        region_names = sorted(list(self._regions.keys()), key=lambda s:region_tols[s])
+        region_names = sorted(list(self._regions.keys()), key=lambda s:region_tols[s]) + ['default']
         segs_in_regions = defaultdict(list)
         for seg_idx, seg in enumerate(bag_of_segs):
             for lbl, bndr in boundaries.items():
@@ -897,6 +903,8 @@ class Geometry:
             simplify_tol.extend([tol]*len(slist))
         bag_of_segs = [smooth_zigzag(s) for s in bag_of_segs]
         for sidx, tol in zip(simplify_order, simplify_tol):
+            if np.isinf(tol):
+                continue
             seg_target = unary_union([s for k, s in enumerate(bag_of_segs) if (k==sidx)])
             segs_except_target = unary_union([s for k, s in enumerate(bag_of_segs) if (k!=sidx)])
             segs_all = unary_union(bag_of_segs)
@@ -914,7 +922,8 @@ class Geometry:
             if seg_new.length > 0:
                 bag_of_segs[sidx] = seg_new
         regions_new = {} # reassemble boundaries
-        for lbl, sidx in segs_in_regions.items():
+        for lbl in self._regions:
+            sidx = segs_in_regions[lbl]
             boundaries_new = unary_union([bag_of_segs[s] for s in sidx])
             polys = list(polygonize(boundaries_new))
             cnt = np.zeros(len(polys), dtype=np.uint16)
@@ -979,7 +988,7 @@ class Geometry:
         boundaries = OrderedDict()
         poly_assigned = np.zeros(len(polygons_formalized), dtype=bool)
         for lbl in reversed(self._zorder):
-            if lbl not in polygons_cleaned:
+            if (lbl == 'default') or (lbl not in polygons_cleaned):
                 continue
             poly = polygons_cleaned[lbl]
             if poly.area == 0:
@@ -999,6 +1008,9 @@ class Geometry:
                     poly_assigned[kf] = True
                     area_left -= area_ints
             boundaries[lbl] = unary_union(bndr)
+        if not np.all(poly_assigned):
+            left_overs = unary_union([pf for pf, flg in zip(polygons_formalized, poly_assigned) if not flg])
+            boundaries['default'] = left_overs.boundary
         b_merged = unary_union(list(boundaries.values()))
         if hasattr(b_merged, 'geoms'):
             b_merged = linemerge(b_merged)
@@ -1006,7 +1018,7 @@ class Geometry:
             bag_of_segs = [b_merged]
         else:
             bag_of_segs = list(b_merged.geoms)
-        region_names = sorted(list(self._regions.keys()), key=lambda s:region_tols[s])
+        region_names = sorted(list(self._regions.keys()), key=lambda s:region_tols[s]) + ['default']
         region_names_lut = {rn:krn for krn, rn in enumerate(region_names)}
         labels_of_segs = defaultdict(list)
         for seg_idx, seg in enumerate(bag_of_segs):
@@ -1015,11 +1027,13 @@ class Geometry:
                     labels_of_segs[seg_idx].append(region_names_lut[lbl])
         seg_groups = defaultdict(list)
         for seg_idx, lbl_ids in labels_of_segs.items():
-            seg_groups[tuple(lbl_ids)].append(bag_of_segs[seg_idx])
+            seg_groups[tuple(sorted(lbl_ids))].append(bag_of_segs[seg_idx])
         seg_groups = {lbl_id: smooth_zigzag(linemerge(lines)) for lbl_id, lines in seg_groups.items()}
         group_indices = sorted(seg_groups.keys())
         group_tols = [region_tols[region_names[lbl[0]]] for lbl in group_indices]
         for gidx, tol in zip(group_indices, group_tols):
+            if np.isinf(tol):
+                continue
             seg_target = unary_union([s for k, s in seg_groups.items() if (k==gidx)])
             segs_except_target = unary_union([s for k, s in seg_groups.items() if (k!=gidx)])
             segs_all = unary_union(list(seg_groups.values()))
@@ -1036,7 +1050,7 @@ class Geometry:
                 seg_new = linemerge(seg_new)
             seg_groups[gidx] = seg_new
         regions_new = {} # reassemble boundaries
-        for lbl in region_names:
+        for lbl in self._regions:
             lbl_id = region_names_lut[lbl]
             boundaries_new = unary_union([s for gidx, s in seg_groups.items() if lbl_id in gidx])
             polys = list(polygonize(boundaries_new))
