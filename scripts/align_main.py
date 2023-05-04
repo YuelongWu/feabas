@@ -40,15 +40,16 @@ def optimize_main(section_list, match_dir, mesh_dir, mesh_out_dir, **conf):
     print(f'{locked_flags.size} images| {np.sum(locked_flags)} references')
     cost = stk.optimize_slide_window(optimize_rigid=True, optimize_elastic=True,
         target_gear=const.MESH_GEAR_MOVING, **slide_window)
-    # cost = {}
-    # for s in stk.section_list:
-    #     stk.get_mesh(s)
-    # for m in stk.match_list:
-    #     links = stk.get_link(m)
-    #     dxy = np.concatenate([lnk.dxy(gear=1) for lnk in links], axis=0)
-    #     dis = np.sum(dxy ** 2, axis=1)**0.5
-    #     cost[m] = (dis.max(), dis.mean())
-    with open(os.path.join(mesh_out_dir, 'cost.csv'), 'w') as f:
+    if os.path.isfile(os.path.join(mesh_out_dir, 'residue.csv')):
+        cost0 = {}
+        with open(os.path.join(mesh_out_dir, 'residue.csv'), 'r') as f:
+            lines = f.readlines()
+            for line in lines:
+                mn, dis0, dis1 = line.split(', ')
+                cost0[mn] = (float(dis0), float(dis1))
+        cost0.update(cost)
+        cost = cost0
+    with open(os.path.join(mesh_out_dir, 'residue.csv'), 'w') as f:
         for key, val in cost.items():
             f.write(f'{key}, {val[0]}, {val[1]}\n')
     print('finished')

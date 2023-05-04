@@ -156,6 +156,20 @@ class Stack:
                 section_list = sorted([os.path.basename(s).replace('.h5', '') for s in slist])
             else:
                 raise RuntimeError('no section found.')
+            section_order_file = os.path.join(self._mesh_dir, 'section_order.txt')
+            if os.path.isfile(section_order_file):
+                with open(section_order_file, 'r') as f:
+                    section_orders = f.readlines()
+                section_orders = [s.strip() for s in section_orders]
+                assert len(section_orders) == len(set(section_orders))
+                section_lut = {os.path.basename(secname).replace('.h5', ''):k 
+                               for k, secname in enumerate(section_list)}
+                section_ids0 = np.array([section_lut.get(s, -1) for s in section_orders])
+                section_ids0 = section_ids0[section_ids0 >= 0]
+                section_ids1 = np.sort(section_ids0)
+                section_list0 = section_list.copy()
+                for sid0, sid1 in zip(section_ids0, section_ids1):
+                    section_list[sid1] = section_list0[sid0]
         assert len(section_list) == len(set(section_list))
         self.section_list = tuple(section_list)
         self._mesh_cache_size = kwargs.get('mesh_cache_size', self.num_sections)
@@ -403,7 +417,10 @@ class Stack:
                 cst = self.optimize_section_list(seclst, **kwargs)
                 if cst is not None:
                     costs.update(cst)
-                self.update_lock_flags({s:True for s in seclst[:-buffer_size]})
+                if buffer_size > 0:
+                    self.update_lock_flags({s:True for s in seclst[:-buffer_size]})
+                else:
+                    self.update_lock_flags({s:True for s in seclst})
             else:
                 self.flush_meshes()
         elif start_loc == 'R':
@@ -416,7 +433,10 @@ class Stack:
                 cst = self.optimize_section_list(seclst, **kwargs)
                 if cst is not None:
                     costs.update(cst)
-                self.update_lock_flags({s:True for s in seclst[buffer_size:]})
+                if buffer_size > 0:
+                    self.update_lock_flags({s:True for s in seclst[buffer_size:]})
+                else:
+                    self.update_lock_flags({s:True for s in seclst})
             else:
                 self.flush_meshes()
         else:
@@ -426,7 +446,10 @@ class Stack:
             if cst is not None:
                 costs.update(cst)
             self.flush_meshes()
-            sections_to_lock = seclst[buffer_size:-buffer_size]
+            if buffer_size > 0:
+                sections_to_lock = seclst[buffer_size:-buffer_size]
+            else:
+                sections_to_lock = seclst
             self.update_lock_flags({s:True for s in sections_to_lock})
             lock_id0, lock_id1 = self.secname_to_id(sections_to_lock[0]), self.secname_to_id(sections_to_lock[-1])
             matchlist_l = self.filtered_match_list(secnames=self.section_list[lock_id0:], check_lock=True)
@@ -462,7 +485,14 @@ class Stack:
         elastic_params = kwargs.get('elastic_params', {}).copy()
         residue_len = kwargs.get('residue_len', 0)
         residue_mode = kwargs.get('residue_mode', None)
+        residue = {}
+        if len(section_list) == 0:
+            print('no section to optimize.')
+            return residue
         optm = self.initialize_SLM(section_list)
+        if len(optm.meshes) == 0:
+            print(f'{section_list[0]} -> {section_list[-1]}: all sections settled.') 
+            return residue
         cost = None
         t0 = time.time()
         if optimize_rigid:
@@ -482,7 +512,6 @@ class Stack:
                 if weight_modified:
                     cost1 = optm.optimize_elastic(target_gear=target_gear, **elastic_params)
                     cost = (cost[0], cost1[-1])
-        residue = {}
         for matchname, lnks in self._link_cache.items():
             dxy = np.concatenate([lnk.dxy(gear=1) for lnk in lnks], axis=0)
             dis = np.sum(dxy ** 2, axis=1)**0.5
