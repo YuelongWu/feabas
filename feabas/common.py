@@ -651,8 +651,9 @@ class CacheNull:
     Attributes:
         _maxlen: the maximum capacity of the cache. No upper limit if set to None.
     """
-    def __init__(self, maxlen=0):
+    def __init__(self, maxlen=0, maxbytes=None):
         self._maxlen = maxlen
+        self._maxbytes = maxbytes
 
     def clear(self, instant_gc=False):
         """Clear cache"""
@@ -697,10 +698,11 @@ class CacheFIFO(CacheNull):
     """
     Cache with first in first out (FIFO) replacement policy.
     """
-    def __init__(self, maxlen=None):
-        self._maxlen = maxlen
+    def __init__(self, maxlen=None, maxbytes=None):
+        super().__init__(maxlen=maxlen, maxbytes=maxbytes)
         self._keys = collections.deque(maxlen=maxlen)
         self._vals = collections.deque(maxlen=maxlen)
+        self._bytes = collections.deque(maxlen=maxlen)
 
 
     def clear(self, instant_gc=False):
@@ -763,8 +765,8 @@ class CacheLRU(CacheNull):
     """
     Cache with least recently used (LRU) replacement policy
     """
-    def __init__(self, maxlen=None):
-        self._maxlen = maxlen
+    def __init__(self, maxlen=None, maxbytes=None):
+        super().__init__(maxlen=maxlen, maxbytes=maxbytes)
         self._cached_nodes = {}
         self._cache_list = DoublyLinkedList() # head:old <-> tail:new
 
@@ -858,8 +860,8 @@ class CacheLFU(CacheNull):
             cached data nodes, with later added nodes attached to the tail. Each
             data node contains cached data and points to its frequency node.
     """
-    def __init__(self, maxlen=None):
-        self._maxlen = maxlen
+    def __init__(self, maxlen=None, maxbytes=None):
+        super().__init__(maxlen=maxlen, maxbytes=maxbytes)
         self._cached_nodes = {}
         self._freq_list = DoublyLinkedList()
 
@@ -989,17 +991,17 @@ class CacheMFU(CacheLFU):
                 freq_node = freq_node.prev
 
 
-def generate_cache(cache_type='fifo', maxlen=None):
-    if (maxlen == 0) or (cache_type.lower() == 'none'):
+def generate_cache(cache_type='fifo', maxlen=None, maxbytes=None):
+    if (maxlen == 0) or (maxbytes == 0) or (cache_type.lower() == 'none'):
         return CacheNull()
     elif cache_type.lower() == 'fifo':
-        return CacheFIFO(maxlen=maxlen)
+        return CacheFIFO(maxlen=maxlen, maxbytes=maxbytes)
     elif cache_type.lower() == 'lru':
-        return CacheLRU(maxlen=maxlen)
+        return CacheLRU(maxlen=maxlen, maxbytes=maxbytes)
     elif cache_type.lower() == 'lfu':
-        return CacheLFU(maxlen=maxlen)
+        return CacheLFU(maxlen=maxlen, maxbytes=maxbytes)
     elif cache_type.lower() == 'mfu':
-        return CacheMFU(maxlen=maxlen)
+        return CacheMFU(maxlen=maxlen, maxbytes=maxbytes)
     else:
         errmsg = 'cache type {} not implemented'.format(cache_type)
         raise NotImplementedError(errmsg)
