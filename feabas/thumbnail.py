@@ -316,9 +316,10 @@ def match_two_thumbnails_LRadon(img0, img1, mask0=None, mask1=None, **kwargs):
     xy0 = []
     xy1 = []
     settled_link = {}
+    D0 = None
     while True:
         modified = False
-        mtch = match_LRadon_feature(kps0, kps1, **matching_settings)
+        mtch, D0 = match_LRadon_feature(kps0, kps1, D=D0, **matching_settings)
         mtch, _ = filter_match_pairwise_strain(mtch, **strain_filter_settings)
         match_list, _ = filter_match_sequential_ransac(mtch, **ransac_filter_settings)
         used_matches = []
@@ -396,6 +397,7 @@ def match_two_thumbnails_LRadon(img0, img1, mask0=None, mask1=None, **kwargs):
             fidx[cidx_t] = to_keep
         if np.sum(fidx) < 3:
             break
+        D0 = D0[fidx]
         kps0.filter_keypoints(fidx, include_descriptor=True, inplace=True)
         fidx = np.ones(kps1.num_points, dtype=bool)
         for cid1, cg1 in covered_region1.items():
@@ -405,6 +407,7 @@ def match_two_thumbnails_LRadon(img0, img1, mask0=None, mask1=None, **kwargs):
             fidx[cidx_t] = to_keep
         if np.sum(fidx) < 3:
             break
+        D0 = D0[:, fidx]
         kps1.filter_keypoints(fidx, include_descriptor=True, inplace=True)
     if len(xy0) == 0:
         return None
@@ -512,33 +515,37 @@ def extract_LRadon_feature(img, kps, offset=None, **kwargs):
 
 
 
-def match_LRadon_feature(kps0, kps1, exclude_class=None, **kwargs):
+def match_LRadon_feature(kps0, kps1, D=None, exclude_class=None, **kwargs):
     exhaustive = kwargs.get('exhaustive', False)
     conf_thresh = kwargs.get('conf_thresh', 0.5)
     if exclude_class is not None:
         exclude_class = np.array(exclude_class, copy=False).reshape(-1,2)
     if kps0.num_points > kps1.num_points:
         kps0, kps1 = kps1, kps0
+        if D is not None:
+            D = D.T
         flipped = True
         if exclude_class is not None:
             exclude_class = exclude_class[:,::-1]
     else:
         flipped = False
-    if exhaustive:
-        des0 = kps0.reset_angle()
-        des1 = kps1.reset_angle()
-        norm_fact = 1 / (des0.shape[-1] * des0.shape[-2])
-        F0 = rfft(des0, n=des0.shape[-1], axis=-1)
-        F1 = rfft(des1, n=des1.shape[-1], axis=-1)
-        F = np.einsum('mjk,njk->mnk', F0, np.conj(F1), optimize=True)
-        C0 = irfft(F, n=des0.shape[-1], axis=-1)
-        C = norm_fact * C0.max(axis=-1)
-    else:
-        des0 = kps0.align_angle()
-        des1 = kps1.align_angle()
-        norm_fact = 1 / (des0.shape[-1] * des0.shape[-2])
-        C = des0.reshape(des0.shape[0], -1) @ des1.reshape(des1.shape[0], -1).T
-        C = norm_fact * C
+    if D is None:
+        if exhaustive:
+            des0 = kps0.reset_angle()
+            des1 = kps1.reset_angle()
+            norm_fact = 1 / (des0.shape[-1] * des0.shape[-2])
+            F0 = rfft(des0, n=des0.shape[-1], axis=-1)
+            F1 = rfft(des1, n=des1.shape[-1], axis=-1)
+            F = np.einsum('mjk,njk->mnk', F0, np.conj(F1), optimize=True)
+            D0 = irfft(F, n=des0.shape[-1], axis=-1)
+            D = norm_fact * D0.max(axis=-1)
+        else:
+            des0 = kps0.align_angle()
+            des1 = kps1.align_angle()
+            norm_fact = 1 / (des0.shape[-1] * des0.shape[-2])
+            D = des0.reshape(des0.shape[0], -1) @ des1.reshape(des1.shape[0], -1).T
+            D = norm_fact * D
+    C = D.copy()
     if exclude_class is not None:
         class_id0 = kps0.class_id
         class_id1 = kps1.class_id
@@ -556,6 +563,7 @@ def match_LRadon_feature(kps0, kps1, exclude_class=None, **kwargs):
     if flipped:
         idx0, idx1 = idx1, idx0,
         kps0, kps1 = kps1, kps0
+        D = D.T
     idx0 = idx0[conf0 > conf_thresh]
     idx1 = idx1[conf0 > conf_thresh]
     conf = conf[conf0 > conf_thresh]
@@ -563,7 +571,7 @@ def match_LRadon_feature(kps0, kps1, exclude_class=None, **kwargs):
     kps1_out = kps1.filter_keypoints(idx1, include_descriptor=False, inplace=False)
     mtch = KeyPointMatches.from_keypoints(kps0_out, kps1_out, weight=conf)
     mtch.sort_match_by_weight()
-    return mtch
+    return mtch, D
 
 
 
