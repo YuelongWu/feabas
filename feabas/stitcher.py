@@ -18,7 +18,7 @@ from feabas.dal import StaticImageLoader
 from feabas.matcher import stitching_matcher
 from feabas.mesh import Mesh
 from feabas.optimizer import SLM
-from feabas import common
+from feabas import common, caching
 from feabas.spatial import scale_coordinates
 import feabas.constant as const
 
@@ -273,6 +273,9 @@ class Stitcher:
         if bool(loader_config.get('cache_size', None)) and (num_workers > 1):
             loader_config = loader_config.copy()
             loader_config['cache_size'] = int(np.ceil(loader_config['cache_size'] / num_workers))
+        if bool(loader_config.get('cache_capacity', None)) and (num_workers > 1):
+            loader_config = loader_config.copy()
+            loader_config['cache_capacity'] = int(np.ceil(loader_config['cache_capacity'] / num_workers))
         loader_config['number_of_channels'] = 1 # only gray-scale matching are supported
         target_func = partial(Stitcher.subprocess_match_list_of_overlaps,
                               root_dir=self.imgrootdir, loader_config=loader_config,
