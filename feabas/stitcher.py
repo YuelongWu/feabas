@@ -275,7 +275,7 @@ class Stitcher:
             loader_config['cache_size'] = int(np.ceil(loader_config['cache_size'] / num_workers))
         if bool(loader_config.get('cache_capacity', None)) and (num_workers > 1):
             loader_config = loader_config.copy()
-            loader_config['cache_capacity'] = int(np.ceil(loader_config['cache_capacity'] / num_workers))
+            loader_config['cache_capacity'] = loader_config['cache_capacity'] / num_workers
         loader_config['number_of_channels'] = 1 # only gray-scale matching are supported
         target_func = partial(Stitcher.subprocess_match_list_of_overlaps,
                               root_dir=self.imgrootdir, loader_config=loader_config,
