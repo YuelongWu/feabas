@@ -4,6 +4,7 @@ import collections
 import gc
 import importlib
 import os
+import sys
 
 import numpy as np
 from scipy import sparse
@@ -502,6 +503,21 @@ def parse_coordinate_files(filename, **kwargs):
 
 
 ##--------------------------------- caches -----------------------------------##
+def getsizeof(data):
+    if isinstance(data, np.ndarray):
+        bt = sys.getsizeof(data) / (1024**2)
+    elif isinstance(data, (list, tuple)):
+        bt = 0.0
+        for d in data:
+            bt += getsizeof(d)
+    elif isinstance(data, dict):
+        bt = 0.0
+        for d in data.values():
+            bt += getsizeof(d)
+    else:
+        bt = sys.getsizeof(data, default=0) / (1024**2)
+    return bt
+
 
 class Node:
     """
@@ -677,6 +693,10 @@ class CacheNull:
         """Current number of items in the cache"""
         return 0
 
+    @property
+    def total_bytes(self):
+        return 0
+
     def __setitem__(self, key, data):
         """Cache an item"""
         pass
@@ -693,6 +713,30 @@ class CacheNull:
         """remove an item by providing the key"""
         pass
 
+    def _evict_item_by_policy(self):
+        """remove an item by policy specific to the cache type."""
+        pass
+
+    def trim(self):
+        """remove items so that the data does not exceed its capacity"""
+        if len(self) == 0:
+            return
+        trimmed = False
+        if self._maxlen is not None:
+            while len(self) >= self._maxlen:
+                self._evict_item_by_policy()
+                trimmed = True
+                if len(self) == 0:
+                    break
+        if self._maxbytes is not None:
+            while  self.total_bytes >= self._maxbytes:
+                self._evict_item_by_policy()
+                trimmed = True
+                if len(self) == 0:
+                    break
+        if trimmed:
+            gc.collect()
+
 
 class CacheFIFO(CacheNull):
     """
@@ -708,6 +752,7 @@ class CacheFIFO(CacheNull):
     def clear(self, instant_gc=False):
         self._keys.clear()
         self._vals.clear()
+        self._bytes.clear()
         if instant_gc:
             gc.collect()
 
@@ -729,11 +774,20 @@ class CacheFIFO(CacheNull):
         return len(self._keys)
 
 
+    @property
+    def total_bytes(self):
+        return np.sum(self._bytes)
+
+
     def __setitem__(self, key, data):
         if (self._maxlen) == 0 or (key in self._keys):
             return
-        self._keys.append(key)
-        self._vals.append(data)
+        dtsz = getsizeof(data)
+        if (self._maxbytes is None) or (dtsz < self._maxbytes):
+            self._keys.append(key)
+            self._vals.append(data)
+            self._bytes.append(dtsz)
+        self.trim()
 
 
     def __iter__(self):
@@ -747,17 +801,26 @@ class CacheFIFO(CacheNull):
         if key in self._keys:
             indx = self._keys.index(key)
             self._vals[indx] = data
+            self._bytes[indx] = getsizeof(data)
+            self.trim()
         else:
             self.__setitem__(key, data)
 
 
     def _evict_item_by_key(self, key):
-        """remove an item from dequeue may be anti-pattern. set it to None"""
         if (self._maxlen) == 0:
             return
         if key in self._keys:
             indx = self._keys.index(key)
-            self._vals[indx] = None
+            del self._vals[indx]
+            del self._keys[indx]
+            del self._bytes[indx]
+
+
+    def _evict_item_by_policy(self):
+        self._keys.popleft()
+        self._vals.popleft()
+        self._bytes.popleft()
 
 
 
@@ -769,11 +832,13 @@ class CacheLRU(CacheNull):
         super().__init__(maxlen=maxlen, maxbytes=maxbytes)
         self._cached_nodes = {}
         self._cache_list = DoublyLinkedList() # head:old <-> tail:new
+        self._bytes = {}
 
 
     def clear(self, instant_gc=False):
         self._cached_nodes.clear()
         self._cache_list.clear()
+        self._bytes.clear()
         if instant_gc:
             gc.collect()
 
@@ -787,6 +852,7 @@ class CacheLRU(CacheNull):
         if key in self._cached_nodes:
             node = self._cached_nodes.pop(key)
             self._cache_list.remove_node(node)
+            self._bytes.pop(key, 0)
 
 
     def _evict_item_by_policy(self):
@@ -823,15 +889,21 @@ class CacheLRU(CacheNull):
         return len(self._cached_nodes)
 
 
+    @property
+    def total_bytes(self):
+        return np.sum(list(self._bytes.values()))
+
+
     def __setitem__(self, key, data):
-        if (self._maxlen == 0) or (key in self._cached_nodes):
+        if (self._maxlen == 0) or (self._maxbytes == 0) or (key in self._cached_nodes):
             return
-        if self._maxlen is not None:
-            while len(self._cached_nodes) >= self._maxlen:
-                self._evict_item_by_policy()
-        data_node = Node(key, data)
-        self._cache_list.insert_tail(data_node)
-        self._cached_nodes[key] = data_node
+        dtsz = getsizeof(data)
+        if (self._maxbytes is None) or (dtsz < self._maxbytes):
+            data_node = Node(key, data)
+            self._cache_list.insert_tail(data_node)
+            self._cached_nodes[key] = data_node
+            self._bytes[key] = dtsz
+        self.trim()
 
 
     def __iter__(self):
@@ -845,6 +917,8 @@ class CacheLRU(CacheNull):
         if key in self._cached_nodes:
             data_node = self._cached_nodes[key]
             data_node.modify_data(data)
+            self._bytes[key] = getsizeof(data)
+            self.trim()
         else:
             self.__setitem__(key, data)
 
@@ -864,12 +938,14 @@ class CacheLFU(CacheNull):
         super().__init__(maxlen=maxlen, maxbytes=maxbytes)
         self._cached_nodes = {}
         self._freq_list = DoublyLinkedList()
+        self._bytes = {}
 
 
     def clear(self, instant_gc=False):
         for key in self._cached_nodes:
             self._evict_item_by_key(key)
         self._freq_list.clear()
+        self._bytes.clear()
         if instant_gc:
             gc.collect()
 
@@ -885,6 +961,7 @@ class CacheLFU(CacheNull):
             freq_node = node.pointer
             cache_list = freq_node.pointer
             cache_list.remove_node(node)
+            self._bytes.pop(key, 0)
             if (len(cache_list) == 0) and (freq_node.data != 0):
                 self._freq_list.remove_node(freq_node)
 
@@ -936,25 +1013,32 @@ class CacheLFU(CacheNull):
             errmsg = "fail to access data with key {} from cached.".format(key)
             raise KeyError(errmsg)
 
+
     def __len__(self):
         return len(self._cached_nodes)
 
 
+    @property
+    def total_bytes(self):
+        return np.sum(list(self._bytes.values()))
+
+
     def __setitem__(self, key, data):
-        if (self._maxlen == 0) or (key in self._cached_nodes):
+        if (self._maxlen == 0) or (self._maxbytes == 0) or (key in self._cached_nodes):
             return
-        if self._maxlen is not None:
-            while len(self._cached_nodes) >= self._maxlen:
-                self._evict_item_by_policy()
         if (self._freq_list.head is None) or (self._freq_list.head.data != 0):
             self._freq_list.insert_head((None, 0))
             self._freq_list.head.pointer = DoublyLinkedList()
-        data_node = Node(key, data)
-        freq_node = self._freq_list.head
-        data_node.pointer = freq_node
-        cache_list = freq_node.pointer
-        cache_list.insert_tail(data_node)
-        self._cached_nodes[key] = data_node
+        dtsz = getsizeof(data)
+        if (self._maxbytes is None) or (dtsz < self._maxbytes):
+            data_node = Node(key, data)
+            freq_node = self._freq_list.head
+            data_node.pointer = freq_node
+            cache_list = freq_node.pointer
+            cache_list.insert_tail(data_node)
+            self._cached_nodes[key] = data_node
+            self._bytes[key] = dtsz
+        self.trim()
 
 
     def __iter__(self):
@@ -968,8 +1052,11 @@ class CacheLFU(CacheNull):
         if key in self._cached_nodes:
             data_node = self._cached_nodes[key]
             data_node.modify_data(data)
+            self._bytes[key] = getsizeof(data)
+            self.trim()
         else:
             self.__setitem__(key, data)
+
 
 
 class CacheMFU(CacheLFU):
