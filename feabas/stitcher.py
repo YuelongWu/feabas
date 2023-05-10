@@ -599,7 +599,7 @@ class Stitcher:
         if self._default_mesh_cache is None:
             default_caches = {}
             for gear in const.MESH_GEARS:
-                default_caches[gear] = defaultdict(lambda: common.CacheFIFO(maxlen=cache_size))
+                default_caches[gear] = defaultdict(lambda: caching.CacheFIFO(maxlen=cache_size))
             self._default_mesh_cache = default_caches
         else:
             default_caches = self._default_mesh_cache
@@ -746,7 +746,7 @@ class Stitcher:
         if self._default_mesh_cache is None:
             default_caches = {}
             for gear in const.MESH_GEARS:
-                default_caches[gear] = defaultdict(lambda: common.CacheFIFO(maxlen=cache_size))
+                default_caches[gear] = defaultdict(lambda: caching.CacheFIFO(maxlen=cache_size))
             self._default_mesh_cache = default_caches
         else:
             default_caches = self._default_mesh_cache
@@ -924,7 +924,7 @@ class Stitcher:
                     self.clear_mesh_cache(gear=g)
             else:
                 cache = self._default_mesh_cache[gear]
-                if isinstance(cache, common.CacheNull):
+                if isinstance(cache, caching.CacheNull):
                     cache.clear()
                 elif isinstance(cache, dict):
                     for c in cache.values():

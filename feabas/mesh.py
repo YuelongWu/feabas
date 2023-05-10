@@ -17,7 +17,7 @@ import shapely.geometry as shpgeo
 from shapely.ops import polygonize, unary_union
 import triangle
 
-from feabas import common, material, spatial
+from feabas import common, material, spatial, caching
 import feabas.constant as const
 
 
@@ -68,7 +68,7 @@ def config_cache(gear):
             otherwise, use self._current_gear.
     cache: If False, no caching;
         If True, save to self as an attribute (default);
-        If type of common.Cache, save to the cache object with key;
+        If type of caching.Cache, save to the cache object with key;
         If type defaultdict,  save to cache object with key under dict[prop_name].
     assign_value: if kwargs assign_value is given, instead of computing the property,
         directly return that value and force cache it if required.
@@ -167,7 +167,7 @@ def config_cache(gear):
                     return prop
             else:
                 cache_key = self.caching_keys(gear=cgear)
-                if isinstance(cache, common.CacheNull):
+                if isinstance(cache, caching.CacheNull):
                     key = (*cache_key, prop_name0)
                     if not force_update and (key in cache):
                         prop = cache[key]
@@ -1163,7 +1163,7 @@ class Mesh:
                     keys_to_probe = (current_keys[0], *[s for s in current_keys[1:] if isinstance(s, tuple)])
                 else:
                     keys_to_probe = (current_keys[0], *[s for s in current_keys[1:] if isinstance(s, str)])
-            if isinstance(cache, common.CacheNull):
+            if isinstance(cache, caching.CacheNull):
                 if len(cache) == 0:
                     return
                 keys_to_delete = []

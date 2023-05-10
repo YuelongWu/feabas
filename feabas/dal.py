@@ -11,7 +11,7 @@ import cv2
 import numpy as np
 from rtree import index
 
-from feabas import common
+from feabas import common, caching
 import feabas.constant as const
 
 
@@ -143,7 +143,7 @@ class AbstractImageLoader(ABC):
         self._use_cache = (self._cache_size is None) or (self._cache_size > 0)
         self._init_tile_divider(**kwargs)
         self._cache_type = kwargs.get('cache_type', 'mfu')
-        self._cache = common.generate_cache(self._cache_type, maxlen=self._cache_size, maxbytes=self._cache_capacity)
+        self._cache = caching.generate_cache(self._cache_type, maxlen=self._cache_size, maxbytes=self._cache_capacity)
         self._preprocess = kwargs.get('preprocess', None)
         self.resolution = kwargs.get('resolution', const.DEFAULT_RESOLUTION)
         self._read_counter = 0
