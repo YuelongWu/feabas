@@ -124,6 +124,7 @@ class AbstractImageLoader(ABC):
         inverse(bool): whether to invert images.
         fillval(scalar): fill value for missing data.
         cache_size(int): length of image cache.
+        cache_capacity(float): capacity of image cache in MiB.
         cache_border_margin(int)/cache_block_size(int): the border width
             for _tile_divider_border caching, or the square block size for
             _tile_divider_block caching. If neither is set, cache
@@ -138,10 +139,11 @@ class AbstractImageLoader(ABC):
         self._inverse = kwargs.get('inverse', False)
         self._default_fillval = kwargs.get('fillval', 0)
         self._cache_size = kwargs.get('cache_size', 0)
+        self._cache_capacity = kwargs.get('cache_capacity', None)
         self._use_cache = (self._cache_size is None) or (self._cache_size > 0)
         self._init_tile_divider(**kwargs)
         self._cache_type = kwargs.get('cache_type', 'mfu')
-        self._cache = common.generate_cache(self._cache_type, maxlen=self._cache_size)
+        self._cache = common.generate_cache(self._cache_type, maxlen=self._cache_size, maxbytes=self._cache_capacity)
         self._preprocess = kwargs.get('preprocess', None)
         self.resolution = kwargs.get('resolution', const.DEFAULT_RESOLUTION)
         self._read_counter = 0
