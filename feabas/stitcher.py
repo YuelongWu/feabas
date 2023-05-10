@@ -469,6 +469,7 @@ class Stitcher:
                     print(image_loader.imgrootdir, err)
                     err_raised = True
                 print(f'error: {image_loader.imgrelpaths[idx0]} <-> {image_loader.imgrelpaths[idx1]}')
+        image_loader.clear_cache()
         if instant_gc:
             gc.collect()
         return matches, strains, err_raised
@@ -1251,6 +1252,7 @@ class MontageRenderer:
                 continue
             common.imwrite(filename, imgt)
             rendered[filename] = bbox
+        self.image_loader.clear_cache()
         return rendered
 
 

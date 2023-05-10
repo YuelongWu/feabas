@@ -724,16 +724,16 @@ class CacheNull:
         trimmed = False
         if self._maxlen is not None:
             while len(self) >= self._maxlen:
-                self._evict_item_by_policy()
-                trimmed = True
                 if len(self) == 0:
                     break
+                self._evict_item_by_policy()
+                trimmed = True
         if self._maxbytes is not None:
             while  self.total_bytes >= self._maxbytes:
-                self._evict_item_by_policy()
-                trimmed = True
                 if len(self) == 0:
                     break
+                self._evict_item_by_policy()
+                trimmed = True
         if trimmed:
             gc.collect()
 

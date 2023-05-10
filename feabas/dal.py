@@ -365,17 +365,17 @@ class AbstractImageLoader(ABC):
         inverse = kwargs.get('inverse', self._inverse)
         if number_of_channels == 3:
             img = common.imread(imgpath, flag=cv2.IMREAD_COLOR)
+        elif number_of_channels == 1:
+            img = common.imread(imgpath, flag=cv2.IMREAD_GRAYSCALE)
         else:
             img = common.imread(imgpath, flag=cv2.IMREAD_UNCHANGED)
         self._read_counter += 1
         if img is None:
             raise RuntimeError(f'Image file {imgpath} not valid!')
-        if (number_of_channels == 1) and (len(img.shape) > 2) and (img.shape[-1] > 1):
-            img = img.mean(axis=-1)
-        if dtype is not None:
-            img = img.astype(dtype, copy=False)
-        else:
+        if dtype is None:
             dtype = img.dtype
+        if (number_of_channels == 1) and (len(img.shape) > 2) and (img.shape[-1] > 1):
+            img = img.mean(axis=-1).astype(dtype)
         if apply_CLAHE:
             img = self._CLAHE.apply(img)
         if self._preprocess is not None:
@@ -482,6 +482,8 @@ class DynamicImageLoader(AbstractImageLoader):
                 if img is None:
                     img = self._read_image(imgpath, **kwargs)
                 blk = img[blkbbox[1]:blkbbox[3], blkbbox[0]:blkbbox[2],...]
+                if blk.size != img.size:
+                    blk = blk.copy()
                 cache_dict[bid] = blk
                 new_cache = True
         if new_cache:
@@ -625,11 +627,14 @@ class StaticImageLoader(AbstractImageLoader):
         else:
             cache_dict = {}
         new_cache = False
-        for bid, blkbbox in self.divider(fileid).items():
+        divider = self.divider(fileid)
+        for bid, blkbbox in divider.items():
             if (bid > 0) and (bid not in cache_dict):
                 if img is None:
                     img = self._read_image(fileid, **kwargs)
                 blk = img[blkbbox[1]:blkbbox[3], blkbbox[0]:blkbbox[2],...]
+                if blk.size != img.size:
+                    blk = blk.copy()
                 cache_dict[bid] = blk
                 new_cache = True
         if new_cache:
