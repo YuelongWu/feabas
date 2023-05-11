@@ -288,8 +288,8 @@ def match_two_thumbnails_LRadon(img0, img1, mask0=None, mask1=None, **kwargs):
             meshes_stg = []
             for lb in np.unique(mask0[mask0>0]):
                 G0 = Geometry.from_image_mosaic(255 - 255 * (mask0 == lb).astype(np.uint8),
-                                                region_names={'default':0, 'hole': 255})
-                G0.simplify(region_tol={'hole':1.5}, inplace=True)
+                                                region_names={'default':0, 'exclude': 255})
+                G0.simplify(region_tol={'exclude':1.5}, inplace=True)
                 meshes_stg.append(Mesh.from_PSLG(**G0.PSLG(), mesh_size=mesh_size,
                                                  min_mesh_angle=20))
             mesh0 = Mesh.combine_mesh(meshes_stg, uid=0.0)
@@ -302,8 +302,8 @@ def match_two_thumbnails_LRadon(img0, img1, mask0=None, mask1=None, **kwargs):
             meshes_stg = []
             for lb in np.unique(mask1[mask1>0]):
                 G1 = Geometry.from_image_mosaic(255 - 255 * (mask1 == lb).astype(np.uint8),
-                                                region_names={'default':0, 'hole': 255})
-                G1.simplify(region_tol={'hole':1.5}, inplace=True)
+                                                region_names={'default':0, 'exclude': 255})
+                G1.simplify(region_tol={'exclude':1.5}, inplace=True)
                 meshes_stg.append(Mesh.from_PSLG(**G1.PSLG(), mesh_size=mesh_size,
                                                  min_mesh_angle=20))
             mesh1 = Mesh.combine_mesh(meshes_stg, uid=1.0)

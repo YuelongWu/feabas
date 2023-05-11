@@ -720,10 +720,10 @@ class Geometry:
                     filled_cover.append(shpgeo.Polygon(linestr))
             holes = unary_union(filled_cover).difference(covered)
             if holes.area > 0:
-                if 'hole' in self._regions:
-                    self._regions['hole'] = (self._regions['hole'].union(holes)).buffer(0)
+                if 'exclude' in self._regions:
+                    self._regions['exclude'] = (self._regions['exclude'].union(holes)).buffer(0)
                 else:
-                    self._regions['hole'] = holes.buffer(0)
+                    self._regions['exclude'] = holes.buffer(0)
         self._committed = True
 
 

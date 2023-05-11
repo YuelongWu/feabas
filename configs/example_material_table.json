@@ -12,7 +12,7 @@
     "stiffness_func_factory": null,
     "stiffness_func_params": {}
   },
-  "hole": {
+  "exclude": {
     "enable_mesh": false,
     "area_constraint": 0,
     "render": true,
@@ -25,7 +25,7 @@
     "stiffness_func_factory": null,
     "stiffness_func_params": {}
   },
-  "tape": {
+  "split": {
     "enable_mesh": false,
     "area_constraint": 0,
     "render": true,
@@ -38,7 +38,7 @@
     "stiffness_func_factory": null,
     "stiffness_func_params": {}
   },
-  "resin": {
+  "soft": {
     "enable_mesh": true,
     "area_constraint": 0,
     "render": true,

@@ -16,7 +16,7 @@ class Material:
     properties.
     Kwargs:
         enable_mesh(bool): if enable_mesh set to False, the material is treated
-            as holes and no mesh will be generated on it.
+            as excluded region and no mesh will be generated on it.
         area_constraint(float): maximum triangle area constraint multiplier used
             to feed into triangulation function for meshing. The actual area
             constraint would be this value multiplied by the size settings
@@ -267,7 +267,7 @@ class Material:
 
 
 
-MATERIAL_HOLE = Material(enable_mesh=False,
+MATERIAL_EXCLUDE = Material(enable_mesh=False,
                          uid=0,
                          mask_label=255,
                          stiffness_multiplier=0.0,
@@ -306,8 +306,8 @@ class MaterialTable:
             table['default'] = MATERIAL_DEFAULT
             default_factory = lambda: MATERIAL_DEFAULT
         self._table = defaultdict(default_factory)
-        if 'hole' not in table:
-            table['hole'] =  MATERIAL_HOLE
+        if 'exclude' not in table:
+            table['exclude'] =  MATERIAL_EXCLUDE
         self._table.update(table)
 
 
