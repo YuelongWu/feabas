@@ -2,6 +2,8 @@ import cv2
 import numpy as np
 from scipy.fft import rfft, irfft
 from shapely import concave_hull, MultiPoint, intersects_xy
+import shapely.geometry as shpgeo
+from shapely.affinity import affine_transform
 from skimage.feature import peak_local_max
 from itertools import combinations
 
@@ -265,63 +267,86 @@ class KeyPointMatches:
             return self._angle1
 
 
-
-def match_two_thumbnails_LRadon(img0, img1, mask0=None, mask1=None, **kwargs):
-    mesh0 = kwargs.get('mesh0', None)
-    mesh1 = kwargs.get('mesh1', None)
+def prepare_image(img, mask=None, **kwargs):
+    uid = kwargs.get('uid', None)
     detect_settings = kwargs.get('detect_settings', {}).copy()
     extract_settings = kwargs.get('extract_settings', {}).copy()
+    mesh_size = kwargs.get('mesh_size', DEFAULT_FEATURE_SPACING * 2)
+    out = {'image': img, 'mask': mask}
+    regions = {}
+    if mask is None:
+        imght, imgwd = img.shape[:2]
+        regions[1] = shpgeo.box(0,0,imgwd, imght)
+        mesh = Mesh.from_bbox((0,0,imgwd, imght), cartesian=True,
+                                mesh_size=mesh_size, uid=uid)
+    else:
+        meshes_stg = []
+        for lb in np.unique(mask[mask>0]):
+            G0 = Geometry.from_image_mosaic(255 - 255 * (mask == lb).astype(np.uint8),
+                                            region_names={'default':0, 'exclude': 255})
+            G0.simplify(region_tol={'exclude':1.5}, inplace=True)
+            regions[lb] = G0.region_default
+            meshes_stg.append(Mesh.from_PSLG(**G0.PSLG(), mesh_size=mesh_size,
+                                             min_mesh_angle=20, uid=-1.0))
+        mesh = Mesh.combine_mesh(meshes_stg, uid=uid)
+    out['regions'] = regions
+    out['mesh'] = mesh
+    kps = detect_extrema_log(img, mask=mask, **detect_settings)
+    kps = extract_LRadon_feature(img, kps, **extract_settings)
+    out['kps'] = kps
+    return out
+            
+
+
+def match_two_thumbnails_LRadon(img0, img1, mask0=None, mask1=None, **kwargs):
+    affine_only = kwargs.get('affine_only', False)
+    detect_settings = kwargs.get('detect_settings', {}).copy()
     matching_settings = kwargs.get('matching_settings', {}).copy()
     feature_spacing = detect_settings.get('min_spacing', DEFAULT_FEATURE_SPACING)
     strain_filter_settings = kwargs.get('strain_filter_settings', {}).copy()
     ransac_filter_settings = kwargs.get('ransac_filter_settings', {}).copy()
     matchnum_thresh = kwargs.get('matchnum_thresh', 64)
-    mesh_size = kwargs.get('mesh_size', DEFAULT_FEATURE_SPACING * 2)
     elastic_dis_tol = kwargs.get('elastic_dis_tol', feature_spacing / 5)
     ransac_filter_settings.setdefault('dis_tol',feature_spacing / 3)
-    if mesh0 is None:
-        if mask0 is None:
-            imght, imgwd = img0.shape[:2]
-            mesh0 = Mesh.from_bbox((0,0,imgwd, imght), cartesian=True,
-                                   mesh_size=mesh_size, uid=0.0)
-        else:
-            meshes_stg = []
-            for lb in np.unique(mask0[mask0>0]):
-                G0 = Geometry.from_image_mosaic(255 - 255 * (mask0 == lb).astype(np.uint8),
-                                                region_names={'default':0, 'exclude': 255})
-                G0.simplify(region_tol={'exclude':1.5}, inplace=True)
-                meshes_stg.append(Mesh.from_PSLG(**G0.PSLG(), mesh_size=mesh_size,
-                                                 min_mesh_angle=20))
-            mesh0 = Mesh.combine_mesh(meshes_stg, uid=0.0)
-    if mesh1 is None:
-        if mask1 is None:
-            imght, imgwd = img1.shape[:2]
-            mesh1 = Mesh.from_bbox((0,0,imgwd, imght), cartesian=True,
-                                   mesh_size=mesh_size, uid=1.0)
-        else:
-            meshes_stg = []
-            for lb in np.unique(mask1[mask1>0]):
-                G1 = Geometry.from_image_mosaic(255 - 255 * (mask1 == lb).astype(np.uint8),
-                                                region_names={'default':0, 'exclude': 255})
-                G1.simplify(region_tol={'exclude':1.5}, inplace=True)
-                meshes_stg.append(Mesh.from_PSLG(**G1.PSLG(), mesh_size=mesh_size,
-                                                 min_mesh_angle=20))
-            mesh1 = Mesh.combine_mesh(meshes_stg, uid=1.0)
-    kps0 = detect_extrema_log(img0, mask=mask0, **detect_settings)
-    kps1 = detect_extrema_log(img1, mask=mask1, **detect_settings)
-    kps0 = extract_LRadon_feature(img0, kps0, **extract_settings)
-    kps1 = extract_LRadon_feature(img1, kps1, **extract_settings)
+    if not isinstance(img0, dict):
+        img0 = prepare_image(img0, mask=mask0, **kwargs)
+        mesh0 = img0['mesh']
+    else:
+        mesh0 = img0['mesh'].copy()
+    if not isinstance(img1, dict):
+        img1 = prepare_image(img1, mask=mask1, **kwargs)
+        mesh1 = img1['mesh']
+    else:
+        mesh1 = img1['mesh'].copy()
+    kps0, kps1 = img0['kps'], img1['kps']
+    mesh0.uid = 0.0
+    mesh1.uid = 1.0
     optm = SLM([mesh0, mesh1], stiffness_lambda=1.0)
     optm.divide_disconnected_submeshes(prune_links=False)
     xy0 = []
     xy1 = []
     settled_link = {}
     D0 = None
+    exclude_class = []
+    if affine_only:
+        clsid0 = np.unique(kps0.class_id)
+        clsid1 = np.unique(kps1.class_id)
+        num_cls_cmb = clsid0.size * clsid1.size
+    filter_in_place = False
     while True:
         modified = False
-        mtch, D0 = match_LRadon_feature(kps0, kps1, D=D0, **matching_settings)
+        mtch, D0 = match_LRadon_feature(kps0, kps1, D=D0, exclude_class=exclude_class, **matching_settings)
         mtch, _ = filter_match_pairwise_strain(mtch, **strain_filter_settings)
-        match_list, _ = filter_match_sequential_ransac(mtch, **ransac_filter_settings)
+        if affine_only:
+            mtch, _ = filter_match_global_ransac(mtch, **ransac_filter_settings)
+            if (mtch is None) or (mtch.num_points == 0):
+                match_list = None
+            else:
+                match_list = [mtch]
+                clsids = (mtch.class_id0[0], mtch.class_id1[0])
+                exclude_class.append(clsids)
+        else:
+            match_list, _ = filter_match_sequential_ransac(mtch, **ransac_filter_settings)
         used_matches = []
         if match_list is None:
             break
@@ -372,15 +397,25 @@ def match_two_thumbnails_LRadon(img0, img1, mask0=None, mask1=None, **kwargs):
             modified = True
         if not modified:
             break
+        if affine_only and (len(exclude_class) >= num_cls_cmb):
+            break
         covered_region0 = {}
         covered_region1 = {}
         for mtch in used_matches:
             cid0 = mtch.class_id0[0]
             cid1 = mtch.class_id1[1]
-            cg0 = concave_hull(MultiPoint(mtch.xy0), ratio=0.25).buffer(0.5*feature_spacing)
-            cg1 = concave_hull(MultiPoint(mtch.xy1), ratio=0.25).buffer(0.5*feature_spacing)
-            # cg0 = MultiPoint(mtch.xy0).buffer(2*feature_spacing)
-            # cg1 = MultiPoint(mtch.xy1).buffer(2*feature_spacing)
+            if affine_only:
+                A0 = fit_affine(mtch.xy0, mtch.xy1, avoid_flip=True)
+                A0_m = np.concatenate((A0[:2,:2].T, A0[-1,:2]), axis=None)
+                cg0 = affine_transform(img1['regions'][cid1], A0_m)
+                A1 = np.linalg.inv(A0)
+                A1_m = np.concatenate((A1[:2,:2].T, A1[-1,:2]), axis=None)
+                cg1 = affine_transform(img0['regions'][cid0], A1_m)
+            else:
+                cg0 = concave_hull(MultiPoint(mtch.xy0), ratio=0.25).buffer(0.5*feature_spacing)
+                cg1 = concave_hull(MultiPoint(mtch.xy1), ratio=0.25).buffer(0.5*feature_spacing)
+                # cg0 = MultiPoint(mtch.xy0).buffer(2*feature_spacing)
+                # cg1 = MultiPoint(mtch.xy1).buffer(2*feature_spacing)
             if cid0 not in covered_region0:
                 covered_region0[cid0] = cg0
             else:
@@ -398,7 +433,7 @@ def match_two_thumbnails_LRadon(img0, img1, mask0=None, mask1=None, **kwargs):
         if np.sum(fidx) < 3:
             break
         D0 = D0[fidx]
-        kps0.filter_keypoints(fidx, include_descriptor=True, inplace=True)
+        kps0 = kps0.filter_keypoints(fidx, include_descriptor=True, inplace=filter_in_place)
         fidx = np.ones(kps1.num_points, dtype=bool)
         for cid1, cg1 in covered_region1.items():
             cidx_t = kps1.class_id == cid1
@@ -408,7 +443,8 @@ def match_two_thumbnails_LRadon(img0, img1, mask0=None, mask1=None, **kwargs):
         if np.sum(fidx) < 3:
             break
         D0 = D0[:, fidx]
-        kps1.filter_keypoints(fidx, include_descriptor=True, inplace=True)
+        kps1 = kps1.filter_keypoints(fidx, include_descriptor=True, inplace=filter_in_place)
+        filter_in_place = True
     if len(xy0) == 0:
         return None
     else:
@@ -518,14 +554,15 @@ def extract_LRadon_feature(img, kps, offset=None, **kwargs):
 def match_LRadon_feature(kps0, kps1, D=None, exclude_class=None, **kwargs):
     exhaustive = kwargs.get('exhaustive', False)
     conf_thresh = kwargs.get('conf_thresh', 0.5)
-    if exclude_class is not None:
+    to_exclude_class = (exclude_class is not None) and (len(exclude_class) > 0)
+    if to_exclude_class:
         exclude_class = np.array(exclude_class, copy=False).reshape(-1,2)
     if kps0.num_points > kps1.num_points:
         kps0, kps1 = kps1, kps0
         if D is not None:
             D = D.T
         flipped = True
-        if exclude_class is not None:
+        if to_exclude_class:
             exclude_class = exclude_class[:,::-1]
     else:
         flipped = False
@@ -546,7 +583,7 @@ def match_LRadon_feature(kps0, kps1, D=None, exclude_class=None, **kwargs):
             D = des0.reshape(des0.shape[0], -1) @ des1.reshape(des1.shape[0], -1).T
             D = norm_fact * D
     C = D.copy()
-    if exclude_class is not None:
+    if to_exclude_class:
         class_id0 = kps0.class_id
         class_id1 = kps1.class_id
         class_ids = class_id0.reshape(-1,1) + class_id1.reshape(1, -1) * 1j

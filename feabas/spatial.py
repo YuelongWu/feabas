@@ -1164,6 +1164,15 @@ class Geometry:
         return PSLG
 
 
+    @property
+    def region_default(self):
+        mask = self._roi
+        for lb, pp in self._regions.items():
+            if lb != 'default':
+                mask = mask.difference(pp)
+        return mask
+
+
     @staticmethod
     def region_names_from_material_dict(material_dict):
         if isinstance(material_dict, str):
