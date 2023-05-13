@@ -15,6 +15,7 @@ from scipy import sparse
 import scipy.sparse.csgraph as csgraph
 
 from feabas.dal import StaticImageLoader
+from feabas import logging
 from feabas.matcher import stitching_matcher
 from feabas.mesh import Mesh
 from feabas.optimizer import SLM
@@ -267,9 +268,10 @@ class Stitcher:
         """
         overwrite = kwargs.pop('overwrite', False)
         num_workers = kwargs.pop('num_workers', 1)
-        verbose = kwargs.pop('verbose', False)
         num_overlaps_per_job = kwargs.get('num_overlaps_per_job', 180) # 180 roughly number of overlaps in an MultiSEM mFoV
         loader_config = kwargs.pop('loader_config', {}).copy()
+        logger_info = kwargs.get('logger', None)
+        logger = logging.get_logger(logger_info)
         if bool(loader_config.get('cache_size', None)) and (num_workers > 1):
             loader_config = loader_config.copy()
             loader_config['cache_size'] = int(np.ceil(loader_config['cache_size'] / num_workers))
@@ -310,18 +312,17 @@ class Stitcher:
                 imgpaths = [self.imgrelpaths[s] for s in mapper]
                 job = executor.submit(target_func, ovlp, imgpaths, bboxes, index_mapper=mapper)
                 jobs.append(job)
-            verbose_counter = 0
+            matched_counter = 0
             for job in as_completed(jobs):
                 matches, match_strains, ouch = job.result()
                 err_raised = err_raised or ouch
                 num_new_matches += len(matches)
                 self.matches.update(matches)
                 self.match_strains.update(match_strains)
-                if verbose:
-                    verbose_counter += len(matches)
-                    if verbose_counter > (len(overlaps)/10):
-                        print(f'\tmatching in progress: {num_new_matches}/{len(overlaps)}')
-                        verbose_counter = 0
+                matched_counter += len(matches)
+                if matched_counter > (len(overlaps)/10):
+                    logger.debug(f'\tmatching in progress: {num_new_matches}/{len(overlaps)}')
+                    matched_counter = 0
         return num_new_matches, err_raised
 
 
@@ -386,6 +387,8 @@ class Stitcher:
         loader_config = kwargs.get('loader_config', {}).copy()
         matcher_config = kwargs.get('matcher_config', {}).copy()
         instant_gc = kwargs.get('instant_gc', False)
+        logger_info = kwargs.get('logger', None)
+        logger = logging.get_logger(logger_info)
         margin_ratio_switch = 2
         err_raised = False
         if len(overlaps) == 0:
@@ -419,6 +422,7 @@ class Stitcher:
             mask_exist = np.zeros(len(imgpaths), dtype=bool)
         matches = {}
         strains = {}
+        error_messages = []
         for indices, bbox_ov, wd in zip(overlaps, bboxes_overlap, wds):
             if wd <= min_width:
                 continue
@@ -469,9 +473,12 @@ class Stitcher:
                 strains[(idx0, idx1)] = strain
             except Exception as err:
                 if not err_raised:
-                    print(image_loader.imgrootdir, err)
+                    error_messages.append(f'{image_loader.imgrootdir}: {err}')
                     err_raised = True
-                print(f'error: {image_loader.imgrelpaths[idx0]} <-> {image_loader.imgrelpaths[idx1]}')
+                error_messages.append(f'\t{image_loader.imgrelpaths[idx0]} <-> {image_loader.imgrelpaths[idx1]}')
+        if err_raised:
+            msg = '\n'.join(error_messages)
+            logger.error(msg)
         image_loader.clear_cache()
         if instant_gc:
             gc.collect()

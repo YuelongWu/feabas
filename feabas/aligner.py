@@ -13,6 +13,7 @@ import time
 
 from feabas.mesh import Mesh
 from feabas import dal
+from feabas import logging
 from feabas.spatial import scale_coordinates
 from feabas.matcher import section_matcher
 from feabas.optimizer import SLM
@@ -485,14 +486,20 @@ class Stack:
         elastic_params = kwargs.get('elastic_params', {}).copy()
         residue_len = kwargs.get('residue_len', 0)
         residue_mode = kwargs.get('residue_mode', None)
+        logger_info = kwargs.get('logger', None)
+        logger = logging.get_logger(logger_info)
         residue = {}
         if len(section_list) == 0:
-            print('no section to optimize.')
+            logger.info('no section to optimize.')
             return residue
         optm = self.initialize_SLM(section_list)
         if len(optm.meshes) == 0:
-            print(f'{section_list[0]} -> {section_list[-1]}: all sections settled.') 
+            logger.info(f'{section_list[0]} -> {section_list[-1]}: all sections settled.')
             return residue
+        outcasts = optm.flag_outcasts()
+        if np.any(outcasts):
+            outcast_names = set([str(m.name) for flg, m in zip(outcasts, optm.meshes) if flg])
+            logger.warning('outcasts: ' + ' '.join(outcast_names))
         cost = None
         t0 = time.time()
         if optimize_rigid:
@@ -516,7 +523,7 @@ class Stack:
             dxy = np.concatenate([lnk.dxy(gear=1) for lnk in lnks], axis=0)
             dis = np.sum(dxy ** 2, axis=1)**0.5
             residue[matchname] = (dis.max(), dis.mean())
-        print(f'{optm.meshes[0].name} -> {optm.meshes[-1].name}: cost {cost} | {time.time()-t0} sec')
+        logger.info(f'{optm.meshes[0].name} -> {optm.meshes[-1].name}: cost {cost} | {time.time()-t0} sec')
         return residue
 
 

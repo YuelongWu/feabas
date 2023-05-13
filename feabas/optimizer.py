@@ -796,8 +796,6 @@ class SLM:
             if not np.any(link_wt_sum > 0):
                 link_wt_sum = Adj.dot(np.ones_like(to_optimize)) * to_optimize
                 if not np.any(link_wt_sum > 0):
-                    orphans = set([m.name for m, flg in zip(self.meshes, to_optimize) if flg])
-                    print('orphan: ' + ' '.join(orphans))
                     break
             idx0 = np.argmax(link_wt_sum)
             pair_locked_flag = ~to_optimize[linked_pairs]
@@ -1101,6 +1099,27 @@ class SLM:
         stiffness_lambda, crosslink_lambda = self.relative_lambda(stiffness_lambda, crosslink_lambda)
         Cs_rht, Cs_rht = self._crosslink_terms
         return np.linalg.norm(crosslink_lambda * Cs_rht - stiffness_lambda * stress_v)
+
+
+    def flag_outcasts(self):
+        """
+        outcasts are defined as: 1) meshes not connected to any locked meshes
+        (if there is any); or 2) meshes in the minority of the subsystems if
+        all meshes are free-floating.
+        """
+        outcasts = np.zeros(self.num_meshes, dtype=bool)
+        labels, n = self.connected_subsystems
+        if n == 1:
+            return outcasts
+        lock_flags = self.lock_flags
+        if np.any(lock_flags):
+            locked_label = labels[lock_flags]
+            outcasts = np.isin(labels, locked_label)
+        else:
+            u, cnt = np.unique(labels, return_counts=True)
+            indx = np.argmax(cnt)
+            outcasts = labels != u[indx]
+        return outcasts
 
 
     @property
