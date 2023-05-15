@@ -44,7 +44,7 @@ def get_main_logger(logger_name):
     main_logger.setLevel(logging.WARNING)
     log_dir = log_conf['log_dir']
     logger_prefix = logger_name.replace('.', '_')
-    formatter = logging.Formatter(fmt='%(asctime)s-%(name)s-%(levelname)s: %(message)s',
+    formatter = logging.Formatter(fmt='%(asctime)s-%(levelname)s: %(message)s',
                                 datefmt='%Y-%m-%d %H:%M:%S')
     if log_conf['console_level'] is not None:
         main_logger.setLevel(logging.DEBUG)
@@ -57,14 +57,14 @@ def get_main_logger(logger_name):
         archive_dir = os.path.join(log_dir, 'archive')
         os.makedirs(archive_dir, exist_ok=True)
         archivefile = os.path.join(archive_dir, _time_stamp + '_' + logger_prefix + '.log')
-        archive_handler = logging.FileHandler(archivefile, mode='a')
+        archive_handler = logging.FileHandler(archivefile, mode='a', delay=True)
         archive_handler.setFormatter(formatter)
         archive_handler.setLevel(log_conf['archive_level'])
         main_logger.addHandler(archive_handler)
     if log_conf['logfile_level'] is not None:
         main_logger.setLevel(logging.DEBUG)
         warnfile = os.path.join(log_dir, _time_stamp + '_' + logger_prefix + '.log')
-        warn_handler = logging.FileHandler(warnfile, mode='a')
+        warn_handler = logging.FileHandler(warnfile, mode='a', delay=True)
         warn_handler.setFormatter(formatter)
         warn_handler.setLevel(logging.WARNING)
         main_logger.addHandler(warn_handler)

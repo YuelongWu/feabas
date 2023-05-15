@@ -443,7 +443,8 @@ class CacheLFU(CacheNull):
 
 
     def clear(self, instant_gc=False):
-        for key in self._cached_nodes:
+        cached_keys = list(self._cached_nodes.keys())
+        for key in cached_keys:
             self._evict_item_by_key(key)
         self._freq_list.clear()
         self._bytes.clear()

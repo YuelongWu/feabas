@@ -43,28 +43,32 @@ def xcorr_fft(img0, img1, conf_mode=const.FFT_CONF_MIRROR, **kwargs):
     mask1 = kwargs.get('mask1', None)
     normalize = kwargs.get('normalize', False)
     pad = kwargs.get('pad', True)
+    if len(img0.shape) > 3:
+        img0 = np.moveaxis(img0, -1, 1)
+    if len(img1.shape) > 3:
+        img1 = np.moveaxis(img1, -1, 1)
     if sigma > 0:
         img0 = common.masked_dog_filter(img0, sigma, mask=mask0)
         img1 = common.masked_dog_filter(img1, sigma, mask=mask1)
-    imgshp0 = img0.shape[1:3]
-    imgshp1 = img1.shape[1:3]
+    imgshp0 = img0.shape[-2:]
+    imgshp1 = img1.shape[-2:]
     if pad:
         fftshp = [next_fast_len(s0 + s1 - 1) for s0, s1 in zip(imgshp0, imgshp1)]
     else:
         fftshp = [next_fast_len(max(s0, s1)) for s0, s1 in zip(imgshp0, imgshp1)]
-    F0 = fft.rfft2(img0, s=fftshp, axes=(1,2))
-    F1 = fft.rfft2(img1, s=fftshp, axes=(1,2))
+    F0 = fft.rfft2(img0, s=fftshp, axes=(-2,-1))
+    F1 = fft.rfft2(img1, s=fftshp, axes=(-2,-1))
     FF = np.conj(F0) * F1
     if len(FF.shape) > 3:
-        FF = FF.mean(axis=-1)
-    C = fft.irfft2(FF, s=fftshp, axes=(1,2))
+        FF = FF.mean(axis=1)
+    C = fft.irfft2(FF, s=fftshp, axes=(-2,-1))
     Nimg = C.shape[0]
     C = C.reshape(Nimg, -1)
     if normalize:
         if mask0 is None:
-            mask0 = np.ones_like(img0, shape=img0.shape[:3])
+            mask0 = np.ones_like(img0, shape=img0.shape[-2:])
         if mask1 is None:
-            mask1 = np.ones_like(img1, shape=img1.shape[:3])
+            mask1 = np.ones_like(img1, shape=img1.shape[-2:])
         M0 = fft.rfft2(mask0, s=fftshp)
         M1 = fft.rfft2(mask1, s=fftshp)
         NC = fft.irfft2(np.conj(M0) * M1, s=fftshp)
@@ -82,8 +86,8 @@ def xcorr_fft(img0, img1, conf_mode=const.FFT_CONF_MIRROR, **kwargs):
     elif conf_mode == const.FFT_CONF_MIRROR:
         FF = F0 * F1
         if len(FF.shape) > 3:
-            FF = FF.mean(axis=-1)
-        C_mirror = np.abs(fft.irfft2(FF, s=fftshp, axes=(1,2)))
+            FF = FF.mean(axis=1)
+        C_mirror = np.abs(fft.irfft2(FF, s=fftshp, axes=(-2,-1)))
         C_mirror = C_mirror.reshape(Nimg, -1)
         if normalize:
             NC = fft.irfft2(M0 * M1, s=fftshp)
@@ -114,7 +118,9 @@ def global_translation_matcher(img0, img1, **kwargs):
     if sigma > 0:
         img0 = common.masked_dog_filter(img0, sigma, mask=mask0)
         img1 = common.masked_dog_filter(img1, sigma, mask=mask1)
-    tx, ty, conf = xcorr_fft(img0, img1, conf_mode=conf_mode, pad=True)
+    img0_t = np.expand_dims(img0, 0)
+    img1_t = np.expand_dims(img1, 0)
+    tx, ty, conf = xcorr_fft(img0_t, img1_t, conf_mode=conf_mode, pad=True)
     tx, ty, conf = tx.item(), ty.item(), conf.item()
     if conf > conf_thresh:
         return tx, ty, conf

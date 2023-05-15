@@ -321,7 +321,7 @@ class Stitcher:
                 self.match_strains.update(match_strains)
                 matched_counter += len(matches)
                 if matched_counter > (len(overlaps)/10):
-                    logger.debug(f'\tmatching in progress: {num_new_matches}/{len(overlaps)}')
+                    logger.debug(f'matching in progress: {num_new_matches}/{len(overlaps)}')
                     matched_counter = 0
         return num_new_matches, err_raised
 
@@ -520,7 +520,7 @@ class Stitcher:
         interior_growth = kwargs.get('interior_growth', 3.0)
         match_soften = kwargs.get('match_soften', None)
         soft_top = kwargs.get('soft_top', 0.2)
-        soft_top_width = kwargs.get('soft_top_width', 0.1)
+        soft_top_width = kwargs.get('soft_top_width', 0.0)
         soft_left = kwargs.get('soft_left', 0.2)
         soft_left_width = kwargs.get('soft_top_width', 0.0)
         cache_size = kwargs.get('cache_size', None)
@@ -827,6 +827,7 @@ class Stitcher:
         disconnected blocks roughly maintain the initial relative positions.
         """
         gear = (const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING)
+        explode_factor = kwargs.get('explode_factor', 1.0)
         maxiter = kwargs.get('maxiter', None)
         tol = kwargs.get('tol', 1e-07)
         if self._optimizer is None:
@@ -855,7 +856,7 @@ class Stitcher:
         txy = np.array([self.meshes[s].estimate_translation(gear=gear) for s in overlaps_u])
         offset1 = txy[overlaps_inverse[:,0]] - txy[overlaps_inverse[:,1]]
         offset0 = self._init_offset[overlaps[:,0]] - self._init_offset[overlaps[:,1]]
-        bxy = np.append(offset0 - offset1, [[0, 0]], axis=0)
+        bxy = np.append(explode_factor * offset0 - offset1, [[0, 0]], axis=0)
         Tx = sparse.linalg.lsqr(A, bxy[:,0], atol=tol, btol=tol, iter_lim=maxiter)[0]
         Ty = sparse.linalg.lsqr(A, bxy[:,1], atol=tol, btol=tol, iter_lim=maxiter)[0]
         if np.any(Tx != 0) or np.any(Ty != 0):
@@ -869,7 +870,7 @@ class Stitcher:
         N_blk, L_blk = csgraph.connected_components(A_blk, directed=False, return_labels=True)
         if N_blk > 1:
             offset1 = np.array([m.estimate_translation(gear=gear) for m in self.meshes])
-            dxy = self._init_offset - offset1
+            dxy = explode_factor * (self._init_offset) - offset1
             Ls = L_blk[Lbls]
             for lbl in range(N_blk):
                 txy = np.mean(dxy[Ls == lbl], axis = 0)

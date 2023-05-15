@@ -377,7 +377,12 @@ class AbstractImageLoader(ABC):
         if (number_of_channels == 1) and (len(img.shape) > 2) and (img.shape[-1] > 1):
             img = img.mean(axis=-1).astype(dtype)
         if apply_CLAHE:
-            img = self._CLAHE.apply(img)
+            if len(img.shape) > 2:
+                img = cv2.cvtColor(img, cv2.COLOR_RGB2Lab)
+                img[:,:,0] = self._CLAHE.apply(img[:,:,0])
+                img = cv2.cvtColor(img, cv2.COLOR_Lab2RGB)
+            else:
+                img = self._CLAHE.apply(img)
         if self._preprocess is not None:
             img = self._preprocess(img)
         if inverse:
@@ -967,7 +972,12 @@ class StreamLoader(AbstractImageLoader):
     def clahe_img(self):
         if self._clahe_img is None:
             clahe_filter = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
-            self._clahe_img = clahe_filter.apply(self.img)
+            if len(self.img.shape) > 2:
+                img = cv2.cvtColor(self.img, cv2.COLOR_RGB2Lab)
+                img[:,:,0] = clahe_filter.apply(img[:,:,0])
+                self._clahe_img = cv2.cvtColor(img, cv2.COLOR_Lab2RGB)
+            else:
+                self._clahe_img = clahe_filter.apply(self.img)
         return self._clahe_img
 
 
