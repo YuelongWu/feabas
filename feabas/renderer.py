@@ -548,7 +548,7 @@ def render_whole_mesh(mesh, image_loader, prefix, **kwargs):
             imgt = renderer.crop(bbox)
             if imgt is not None:
                 common.imwrite(fname, imgt)
-                rendered[os.path.basename(fname)] = bbox
+                rendered[fname] = bbox
     return rendered
 
 
@@ -569,10 +569,10 @@ def subprocess_render_mesh_tiles(imgloader, mesh, bboxes, outnames, **kwargs):
     rendered = {}
     for fname, bbox in zip(outnames, bboxes):
         if os.path.isfile(fname):
-            rendered[os.path.basename(fname)] = bbox
+            rendered[fname] = bbox
             continue
         imgt = renderer.crop(bbox)
         if (imgt is not None) and np.any(imgt != fillval, axis=None):
             common.imwrite(fname, imgt)
-            rendered[os.path.basename(fname)] = bbox
+            rendered[fname] = bbox
     return rendered

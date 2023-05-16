@@ -10,7 +10,7 @@ import time
 import yaml
 
 import feabas
-from feabas import logging, path
+from feabas import logging, path, dal
 
 
 def match_one_section(coordname, outname, **kwargs):
@@ -143,16 +143,21 @@ def render_one_section(tform_name, out_prefix, meta_name=None, **kwargs):
     num_workers = kwargs.get('num_workers', 1)
     tile_size = kwargs.get('tile_size', [4096, 4096])
     scale = kwargs.get('scale', 1.0)
+    resolution = kwargs.pop('resolution', None)
     loader_settings = kwargs.get('loader_settings', {})
-    render_settings = kwargs.get('render_settings', {})
+    render_settings = kwargs.get('render_settings', {}).copy()
     filename_settings = kwargs.get('filename_settings', {})
     if loader_settings.get('cache_size', None) is not None:
         loader_settings = loader_settings.copy()
         loader_settings['cache_size'] = loader_settings['cache_size'] // num_workers
-    render_settings['scale'] = scale
     if meta_name is not None and os.path.isfile(meta_name):
         return None
     renderer = MontageRenderer.from_h5(tform_name, loader_settings=loader_settings)
+    if resolution is not None:
+        scale = renderer.resolution / resolution
+    else:
+        resolution = renderer.resolution / scale
+    render_settings['scale'] = scale
     render_series = renderer.plan_render_series(tile_size, prefix=out_prefix,
         scale=scale, **filename_settings)
     if num_workers == 1:
@@ -171,15 +176,13 @@ def render_one_section(tform_name, out_prefix, meta_name=None, **kwargs):
                 jobs.append(job)
             for job in as_completed(jobs):
                 metadata.update(job.result())
-    if meta_name is not None:
-        with open(meta_name, 'w') as f:
-            root_dir = os.path.dirname(out_prefix)
-            f.write(f'{{ROOT_DIR}}\t{root_dir}\n')
-            fnames = sorted(list(metadata.keys()))
-            for fname in fnames:
-                bbox = metadata[fname]
-                relpath = os.path.relpath(fname, root_dir)
-                f.write(f'{relpath}\t{bbox[0]}\t{bbox[1]}\t{bbox[2]}\t{bbox[3]}\n')
+    if (meta_name is not None) and (len(metadata) > 0):
+        fnames = sorted(list(metadata.keys()))
+        bboxes = []
+        for fname in fnames:
+            bboxes.append(metadata[fname])
+        out_loader = dal.StaticImageLoader(fnames, bboxes=bboxes, resolution=resolution)
+        out_loader.to_coordinate_file(meta_name)
     return len(metadata)
 
 

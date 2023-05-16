@@ -42,6 +42,7 @@ class Stitcher:
         root_dir = kwargs.get('root_dir', None)
         groupings = kwargs.get('groupings', None)
         self._connected_subsystem = kwargs.get('connected_subsystem', None)
+        self.resolution = kwargs.get('resolution', const.DEFAULT_RESOLUTION)
         if bool(root_dir):
             self.imgrootdir = root_dir
             self.imgrelpaths = imgpaths
@@ -65,8 +66,8 @@ class Stitcher:
 
     @classmethod
     def from_coordinate_file(cls, filename, **kwargs):
-        imgpaths, bboxes, root_dir, _ = common.parse_coordinate_files(filename, **kwargs)
-        return cls(imgpaths, bboxes, root_dir=root_dir)
+        imgpaths, bboxes, root_dir, resolution = common.parse_coordinate_files(filename, **kwargs)
+        return cls(imgpaths, bboxes, root_dir=root_dir, resolution=resolution)
 
 
     @classmethod
@@ -87,6 +88,10 @@ class Stitcher:
                 connected_subsystem = f['connected_subsystem'][()]
             else:
                 connected_subsystem = None
+            if 'resolution' in f:
+                resolution = f['resolution'][()]
+            else:
+                resolution = const.DEFAULT_RESOLUTION
         if selected is not None:
             imgpaths = [s for k, s in enumerate(imgpaths) if k in selected]
             bboxes = bboxes[selected]
@@ -95,7 +100,7 @@ class Stitcher:
         else:
             check_order = False
         obj = cls(imgpaths, bboxes, root_dir=root_dir, groupings=groupings,
-            connected_subsystem=connected_subsystem)
+            connected_subsystem=connected_subsystem, resolution=resolution)
         if load_matches:
             obj.load_matches_from_h5(filename, check_order=check_order)
         if load_meshes:
@@ -113,6 +118,7 @@ class Stitcher:
             else:
                 create_dataset = f.create_dataset
             f.create_dataset('imgrootdir', data=common.str_to_numpy_ascii(self.imgrootdir))
+            f.create_dataset('resolution', data=self.resolution)
             imgnames_encoded = common.str_to_numpy_ascii('\n'.join(self.imgrelpaths))
             create_dataset('imgrelpaths', data=imgnames_encoded)
             create_dataset('init_bboxes', data=self.init_bboxes)
@@ -273,10 +279,8 @@ class Stitcher:
         logger_info = kwargs.get('logger', None)
         logger = logging.get_logger(logger_info)
         if bool(loader_config.get('cache_size', None)) and (num_workers > 1):
-            loader_config = loader_config.copy()
             loader_config['cache_size'] = int(np.ceil(loader_config['cache_size'] / num_workers))
         if bool(loader_config.get('cache_capacity', None)) and (num_workers > 1):
-            loader_config = loader_config.copy()
             loader_config['cache_capacity'] = loader_config['cache_capacity'] / num_workers
         loader_config['number_of_channels'] = 1 # only gray-scale matching are supported
         target_func = partial(Stitcher.subprocess_match_list_of_overlaps,
@@ -1028,6 +1032,7 @@ class MontageRenderer:
             root directory.
     """
     def __init__(self, imgpaths, mesh_info, tile_sizes, **kwargs):
+        self.resolution = kwargs.get('resolution', const.DEFAULT_RESOLUTION)
         self._loader_settings = kwargs.get('loader_settings', {}).copy()
         self._connected_subsystem = kwargs.get('connected_subsystem', None)
         if bool(kwargs.get('root_dir', None)):
@@ -1052,6 +1057,7 @@ class MontageRenderer:
         imgpaths = stitcher.imgrelpaths
         tile_sizes = stitcher.tile_sizes
         connected_subsystem = stitcher.connected_subsystem
+        resolution = stitcher.resolution
         mesh_info = []
         for M in stitcher.meshes:
             v0 = M.vertices_w_offset(gear=gear[0])
@@ -1060,7 +1066,7 @@ class MontageRenderer:
             T = M.triangles
             mesh_info.append(Mesh_Info(v1, offset, T, v0))
         return cls(imgpaths, mesh_info, tile_sizes, root_dir=root_dir,
-                   connected_subsystem=connected_subsystem, **kwargs)
+                   connected_subsystem=connected_subsystem, resolution=resolution, **kwargs)
 
 
     @classmethod
@@ -1085,6 +1091,7 @@ class MontageRenderer:
             kwargs = {}
             kwargs['root_dir'] = self.imgrootdir
             kwargs['loader_settings'] = self._loader_settings
+            kwargs['resolution'] = self.resolution
         return args, kwargs
 
 

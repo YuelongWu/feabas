@@ -7,7 +7,7 @@ from shapely.ops import unary_union
 import os
 
 from feabas.dal import MosaicLoader
-from feabas import common, logging
+from feabas import common, logging, dal
 from feabas.spatial import Geometry
 from feabas.mesh import Mesh
 from feabas.renderer import render_whole_mesh, MeshRenderer
@@ -93,12 +93,14 @@ def mip_one_level(src_dir, out_dir, **kwargs):
         rendered = render_whole_mesh(M, image_loader, prefix, num_workers=num_workers,
                                     tile_size=tile_size, pattern=pattern+'.'+ext_out,
                                     scale= 1/downsample, one_based=one_based)
-        with open(out_meta_file, 'w') as f:
-            f.write(f'{{ROOT_DIR}}\t{out_root_dir}\n')
+        if len(rendered) > 0:
             fnames = sorted(list(rendered.keys()))
+            bboxes = []
             for fname in fnames:
-                bbox = rendered[fname]
-                f.write(f'{fname}\t{bbox[0]}\t{bbox[1]}\t{bbox[2]}\t{bbox[3]}\n')
+                bboxes.append(rendered[fname])
+            out_loader = dal.StaticImageLoader(fnames, bboxes=bboxes,
+                                               resolution=image_loader.resolution*downsample)
+            out_loader.to_coordinate_file(out_meta_file)
     except Exception as err:
         logger.error(f'{src_dir}: {err}')
         return None
