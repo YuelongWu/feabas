@@ -119,5 +119,8 @@ def create_thumbnail(src_dir, downsample=4, highpass=True, **kwargs):
     bbox = M.bbox()
     xmax, ymax = bbox[2], bbox[3]
     if highpass:
-        rndr = MeshRenderer.from_mesh(M, fillval=0, dtype=np.float32, image_loaer=image_loader)
+        rndr = MeshRenderer.from_mesh(M, fillval=0, dtype=np.float32, image_loader=image_loader)
+    else:
+        rndr = MeshRenderer.from_mesh(M, image_loader=image_loader)
+    pass
 

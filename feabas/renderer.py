@@ -513,7 +513,7 @@ def render_whole_mesh(mesh, image_loader, prefix, **kwargs):
     num_tiles = len(filenames)
     if num_tiles == 0:
         pass
-    elif (num_workers > 1) or (num_tiles == 1):
+    elif (num_workers > 1) and (num_tiles > 1):
         num_tile_per_job = max(1, num_tiles // num_workers)
         if max_tile_per_job is not None:
             num_tile_per_job = min(num_tile_per_job, max_tile_per_job)
@@ -542,20 +542,14 @@ def render_whole_mesh(mesh, image_loader, prefix, **kwargs):
             for job in as_completed(jobs):
                 rendered.update(job.result())
     else:
-        renderer = MeshRenderer.from_mesh(mesh, **kwargs)
-        renderer.link_image_loader(image_loader)
-        for fname, bbox in zip(filenames, bboxes):
-            imgt = renderer.crop(bbox)
-            if imgt is not None:
-                common.imwrite(fname, imgt)
-                rendered[fname] = bbox
+        rendered = subprocess_render_mesh_tiles(image_loader, mesh, bboxes, filenames, **kwargs)
     return rendered
 
 
 def subprocess_render_mesh_tiles(imgloader, mesh, bboxes, outnames, **kwargs):
     target_resolution = kwargs.pop('target_resolution')
     if isinstance(imgloader, (str, dict)):
-        image_loader = dal.get_loader_from_json(imgloader)
+        imgloader = dal.get_loader_from_json(imgloader)
     if isinstance(mesh, str):
         M = Mesh.from_h5(mesh)
     elif isinstance(mesh, dict):
@@ -564,14 +558,14 @@ def subprocess_render_mesh_tiles(imgloader, mesh, bboxes, outnames, **kwargs):
         M = mesh
     M.change_resolution(target_resolution)
     renderer = MeshRenderer.from_mesh(M, **kwargs)
-    renderer.link_image_loader(image_loader)
+    renderer.link_image_loader(imgloader)
     fillval = kwargs.get('fillval', renderer.default_fillval)
     rendered = {}
     for fname, bbox in zip(outnames, bboxes):
         if os.path.isfile(fname):
             rendered[fname] = bbox
             continue
-        imgt = renderer.crop(bbox)
+        imgt = renderer.crop(bbox, **kwargs)
         if (imgt is not None) and np.any(imgt != fillval, axis=None):
             common.imwrite(fname, imgt)
             rendered[fname] = bbox

@@ -1256,6 +1256,8 @@ class MontageRenderer:
             iinfo = np.iinfo(dtype_out)
             img_out = img_out.clip(iinfo.min, iinfo.max)
         img_out = img_out.astype(dtype_out, copy=False)
+        if np.all(img_out == fillval, axis=None):
+            return None
         return img_out
 
 
