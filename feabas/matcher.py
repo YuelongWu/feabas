@@ -14,7 +14,7 @@ from feabas.renderer import MeshRenderer
 from feabas import optimizer, dal, common, spatial
 import feabas.constant as const
 
-
+import matplotlib.pyplot as plt
 
 def xcorr_fft(img0, img1, conf_mode=const.FFT_CONF_MIRROR, **kwargs):
     """
@@ -168,18 +168,19 @@ def stitching_matcher(img0, img1, **kwargs):
     given two images with rectangular shape, return the displacement vectors on a
     grid of sample points. Mostly for stitching matching.
     """
-    sigma = kwargs.get('sigma', 2.5)
-    mask0 = kwargs.get('mask0', None)
-    mask1 = kwargs.get('mask1', None)
+    sigma = kwargs.pop('sigma', 2.5)
+    mask0 = kwargs.pop('mask0', None)
+    mask1 = kwargs.pop('mask1', None)
+    coarse_downsample = kwargs.pop('coarse_downsample', 1)
+    fine_downsample = kwargs.pop('fine_downsample', 1)
+    spacings = kwargs.pop('spacings', None)
+    residue_len = kwargs.pop('residue_len', 5)
     conf_mode = kwargs.get('conf_mode', const.FFT_CONF_MIRROR)
     conf_thresh = kwargs.get('conf_thresh', 0.3)
-    residue_mode = kwargs.get('residue_mode', 'huber')
-    residue_len = kwargs.get('residue_len', 5)
-    opt_tol = kwargs.get('opt_tol', None)
-    coarse_downsample = kwargs.get('coarse_downsample', 1)
-    fine_downsample = kwargs.get('fine_downsample', 1)
-    spacings = kwargs.get('spacings', None)
     min_num_blocks = kwargs.get('min_num_blocks', 2)
+    kwargs.setdefault('residue_mode', 'huber')
+    kwargs.setdefault('opt_tol', None)
+    
     if spacings is None:
         imgshp = np.minimum(img0.shape, img1.shape)
         smx = max(imgshp) * 0.25
@@ -259,9 +260,7 @@ def stitching_matcher(img0, img1, **kwargs):
     mesh0.apply_translation((tx0, ty0), const.MESH_GEAR_FIXED)
     mesh0.lock()
     xy0, xy1, weight, strain = iterative_xcorr_matcher_w_mesh(mesh0, mesh1, img_loader0, img_loader1,
-        conf_mode=conf_mode, conf_thresh=conf_thresh, residue_mode=residue_mode,
-        residue_len=residue_len, opt_tol=opt_tol, spacings=spacings,
-        distributor='cartesian_bbox', min_num_blocks=min_num_blocks)
+        spacings=spacings, distributor='cartesian_bbox', residue_len=residue_len, **kwargs)
     if (fine_downsample != 1) and (xy0 is not None):
         xy0 = spatial.scale_coordinates(xy0, 1/fine_downsample)
         xy1 = spatial.scale_coordinates(xy1, 1/fine_downsample)
@@ -382,6 +381,7 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
     batch_size = kwargs.pop('batch_size', None)
     initial_matches = kwargs.get('initial_matches', None)
     to_pad = kwargs.get('pad', None)
+    max_spacing_skip = kwargs.get('max_spacing_skip', 1)
     continue_on_flip = kwargs.get('continue_on_flip', True)
     if num_workers > 1 and batch_size is not None:
         batch_size = max(1, batch_size / num_workers)
@@ -425,6 +425,10 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
     initialized = False
     spacing_enlarged = False
     dwelled = 0
+    if to_pad is None:
+        pad = True
+    else:
+        pad = to_pad
     while sp_indx < spacings.size:
         if sp == spacings[-1]:
             mnb = min_num_blocks
@@ -460,10 +464,6 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
             else:
                 batch_size_s = min(max(1, num_blocks/num_workers), batch_size_s)
             num_batchs = int(np.ceil(num_blocks / batch_size_s))
-            if to_pad is None:
-                pad = not initialized
-            else:
-                pad = to_pad
             if num_batchs == 1:
                 xy0, xy1, conf = bboxes_mesh_renderer_matcher(mesh0, mesh1,
                     image_loader0, image_loader1, bboxes0, bboxes1,
@@ -506,7 +506,7 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
         else:
             xy0, xy1, conf = bboxes_mesh_renderer_matcher(mesh0, mesh1,
                 image_loader0, image_loader1, bboxes0, bboxes1,
-                batch_size=batch_size, pad=(not initialized), **kwargs)
+                batch_size=batch_size, pad=pad, **kwargs)
         if np.all(conf <= conf_thresh):
             if not initialized:
                 return invalid_output
@@ -526,15 +526,23 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
         if (not spacing_enlarged) and (next_pos < 0):
             spacing_enlarged = True
             sp = np.ceil(min_block_size)
+            pad = True
             continue
         spacing_enlarged = True
         if next_pos > sp_indx:
+            next_pos = min(next_pos, sp_indx + 1 + max_spacing_skip)
+            if next_pos > sp_indx + 1:
+                pad = True
+            else:
+                pad = False
             sp_indx = next_pos
             dwelled = 0
         elif dwelled >= allow_dwell:
+            pad = True
             sp_indx += 1
             dwelled = 0
         else:
+            pad = True
             dwelled += 1
         opt.add_link_from_coordinates(mesh0.uid, mesh1.uid, xy0, xy1,
                         gear=(const.MESH_GEAR_MOVING, const.MESH_GEAR_MOVING), weight=wt,
