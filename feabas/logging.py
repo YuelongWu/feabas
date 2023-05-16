@@ -5,6 +5,8 @@ import yaml
 import time
 from multiprocessing import Process, Manager
 
+from feabas import path
+
 
 _time_stamp = time.strftime("%Y%m%d%H%M")
 
@@ -19,10 +21,7 @@ def _get_log_configs():
             conf = yaml.safe_load(f)
     else:
         conf = {}
-    log_dir = conf.get('logging_directory', None)
-    if log_dir is None:
-        work_dir = conf.get('working_directory', './work_dir')
-        log_dir = os.path.join(work_dir, 'logs')
+    log_dir = path.get_log_dir()
     logfile_level = LEVELS.get(conf.get('logfile_level', 'WARNING').upper(), logging.WARNING)
     console_level = LEVELS.get(conf.get('console_level', 'INFO').upper(), logging.INFO)
     archive_level = LEVELS.get(conf.get('archive_level', 'INFO').upper(), logging.INFO)

@@ -14,6 +14,7 @@ matching:
         residue_len: 3  # characteristic residue distance used for damping. use 0 to skip
         min_boundary_distance: 20   # minimum distance allowed from a matching point to the boundary of the meshes
         boundary_tolerance: 20  # maximum distance between grid points when distributor=='oneway_triangulation'
+
 optimization:
     stack_config:
         resolution: 4
@@ -35,7 +36,8 @@ optimization:
                 chances: null
                 eval_step: 10
 
-render:
+rendering:
+    out_dir: null  # directory to save the aligned stack. if set to null, default to working_directory/aligned_stack
     num_workers: 10
     cache_size: 50
     pattern: _tr{ROW_IND}-tc{COL_IND}.png

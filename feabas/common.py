@@ -137,7 +137,7 @@ def render_by_subregions(map_x, map_y, mask, img_loader, fileid=None,  **kwargs)
     return imgt
 
 
-def masked_dog_filter(img, sigma, mask=None):
+def masked_dog_filter(img, sigma, mask=None, signed=True):
     """
     apply Difference of Gaussian filter to an image. if a mask is provided, make
     sure any signal outside the mask will not bleed out.
@@ -160,6 +160,8 @@ def masked_dog_filter(img, sigma, mask=None):
         imgf_a = np.abs(imgf)
         imgf_a = (imgf_a - maskf).clip(0, None)
         imgf = imgf_a * np.sign(imgf)
+    if not signed:
+        imgf = np.abs(imgf)
     return imgf
 
 

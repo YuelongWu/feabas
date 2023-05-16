@@ -10,7 +10,7 @@ import time
 import yaml
 
 import feabas
-from feabas import logging
+from feabas import logging, path
 
 
 def match_one_section(coordname, outname, **kwargs):
@@ -118,7 +118,7 @@ def optmization_main(match_list, out_dir, **kwargs):
     kwargs['logger'] = logger_info[0]
     logger= logging.get_logger(logger_info[0])
     target_func = partial(optimize_one_section, **kwargs)
-    if num_workers <= 1:
+    if num_workers == 1:
         for matchname in match_list:
             outname = os.path.join(out_dir, os.path.basename(matchname))
             if os.path.isfile(outname):
@@ -155,7 +155,7 @@ def render_one_section(tform_name, out_prefix, meta_name=None, **kwargs):
     renderer = MontageRenderer.from_h5(tform_name, loader_settings=loader_settings)
     render_series = renderer.plan_render_series(tile_size, prefix=out_prefix,
         scale=scale, **filename_settings)
-    if num_workers <= 1:
+    if num_workers == 1:
         bboxes, filenames, _ = render_series
         metadata = renderer.render_series_to_file(bboxes, filenames, **render_settings)
     else:
@@ -183,18 +183,18 @@ def render_one_section(tform_name, out_prefix, meta_name=None, **kwargs):
     return len(metadata)
 
 
-def render_main(tform_list, out_dir, meta_dir, **kwargs):
+def render_main(tform_list, out_dir, **kwargs):
     logger_info = logging.initialize_main_logger(logger_name='stitch_rendering', mp=False)
     logger = logger_info[0]
     for tname in tform_list:
         t0 = time.time()
         sec_name = os.path.basename(tname).replace('.h5', '')
         try:
-            meta_name = os.path.join(meta_dir, sec_name+'.txt')
+            sec_outdir = os.path.join(out_dir, sec_name)
+            meta_name = os.path.join(sec_outdir, 'metadata.txt')
             if os.path.isfile(meta_name):
                 continue
             logger.info(f'{sec_name}: start')
-            sec_outdir = os.path.join(out_dir, sec_name)
             os.makedirs(sec_outdir, exist_ok=True)
             out_prefix = os.path.join(sec_outdir, sec_name)
             num_rendered = render_one_section(tname, out_prefix, meta_name=meta_name, **kwargs)
@@ -227,14 +227,12 @@ def parse_args(args=None):
 if __name__ == '__main__':
     args = parse_args()
 
+    root_dir = path.get_work_dir()
     with open(os.path.join('configs', 'general_configs.yaml'), 'r') as f:
         general_configs = yaml.safe_load(f)
-    root_dir = general_configs['working_directory']
     num_cpus = general_configs['cpu_budget']
 
-    config_file = os.path.join(root_dir, 'configs', 'stitching_configs.yaml')
-    if not os.path.isfile(config_file):
-        config_file = os.path.join('configs', 'default_stitching_configs.yaml')
+    config_file = path.stitch_config_file()
     with open(config_file, 'r') as f:        
         stitch_configs = yaml.safe_load(f)
     if args.mode.lower().startswith('r'):
@@ -257,10 +255,7 @@ if __name__ == '__main__':
     coord_dir = os.path.join(stitch_dir, 'stitch_coord')
     match_dir = os.path.join(stitch_dir, 'match_h5')
     mesh_dir = os.path.join(stitch_dir, 'tforms')
-    meta_dir = os.path.join(stitch_dir, 'rendered_metadata')
-    image_outdir = general_configs.get('output_stitch_directory', None)
-    if image_outdir is None:
-        image_outdir = os.path.join(root_dir, 'stitched_sections')
+    image_outdir = path.stitch_render_dir()
     image_outdir = os.path.join(image_outdir, 'mip0')
     stt_idx, stp_idx, step = args.start, args.stop, args.step
     if stp_idx == 0:
@@ -273,8 +268,7 @@ if __name__ == '__main__':
         if args.reverse:
             tform_list = tform_list[::-1]
         os.makedirs(image_outdir, exist_ok=True)
-        os.makedirs(meta_dir, exist_ok=True)
-        render_main(tform_list, image_outdir, meta_dir, **stitch_configs)
+        render_main(tform_list, image_outdir, **stitch_configs)
     elif mode == 'optimization':
         match_list = sorted(glob.glob(os.path.join(match_dir, '*.h5')))
         match_list = match_list[indx]

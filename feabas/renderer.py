@@ -565,13 +565,14 @@ def subprocess_render_mesh_tiles(imgloader, mesh, bboxes, outnames, **kwargs):
     M.change_resolution(target_resolution)
     renderer = MeshRenderer.from_mesh(M, **kwargs)
     renderer.link_image_loader(image_loader)
+    fillval = kwargs.get('fillval', renderer.default_fillval)
     rendered = {}
     for fname, bbox in zip(outnames, bboxes):
         if os.path.isfile(fname):
             rendered[os.path.basename(fname)] = bbox
             continue
         imgt = renderer.crop(bbox)
-        if imgt is not None:
+        if (imgt is not None) and np.any(imgt != fillval, axis=None):
             common.imwrite(fname, imgt)
             rendered[os.path.basename(fname)] = bbox
     return rendered
