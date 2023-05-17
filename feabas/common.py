@@ -71,6 +71,8 @@ def render_by_subregions(map_x, map_y, mask, img_loader, fileid=None,  **kwargs)
     fillval = kwargs.get('fillval', img_loader.default_fillval)
     dtype_out = kwargs.get('dtype_out', img_loader.dtype)
     return_empty = kwargs.get('return_empty', False)
+    seeds = kwargs.get('seeds', None)
+    mx_dis = np.atleast_1d(mx_dis)
     if map_x.size == 0:
         return None
     if not np.any(mask, axis=None):
@@ -78,16 +80,34 @@ def render_by_subregions(map_x, map_y, mask, img_loader, fileid=None,  **kwargs)
             return np.full_like(map_x, fillval, dtype=dtype_out)
         else:
             return None
+    tile_ht, tile_wd = mask.shape[:2]
     imgt = np.full_like(map_x, fillval, dtype=dtype_out)
     to_render = mask
+    if seeds is None:
+        seed_indices = np.empty((0, 2), dtype=np.int8)
+    else:
+        seeds = np.atleast_1d(seeds).ravel()
+        num_r = seeds[0]
+        num_c = seeds[-1]
+        idx0 = np.unique(np.round(np.arange(tile_ht*0.5/num_r, tile_ht, tile_ht/num_r)))
+        idx1 = np.unique(np.round(np.arange(tile_wd*0.5/num_c, tile_wd, tile_wd/num_c)))
+        seed_idx0, seed_idx1 = np.meshgrid(idx0.astype(np.int32), idx1.astype(np.int32))
+        seed_idx0, seed_idx1 = seed_idx0.ravel(), seed_idx1.ravel()
+        seed_indices = np.stack((seed_idx0, seed_idx1), axis=-1)
+        sel_idx = to_render[seed_idx0, seed_idx1]
+        seed_indices = seed_indices[sel_idx]
     multichannel = False
     while np.any(to_render, axis=None):
-        indx0, indx1 = np.nonzero(to_render)
-        indx0_sel = indx0[indx0.size//2]
+        if seed_indices.size > 0:
+            indx0_sel = seed_indices[0, 0]
+            indx1_sel = seed_indices[0, 1]
+        else:
+            indx0, indx1 = np.nonzero(to_render)
+            indx0_sel = indx0[indx0.size//2]
         indx1_sel = indx1[indx1.size//2]
         xx0 = map_x[indx0_sel, indx1_sel]
         yy0 = map_y[indx0_sel, indx1_sel]
-        mskt = (np.abs(map_x - xx0) < mx_dis) & (np.abs(map_y - yy0) < mx_dis) & to_render
+        mskt = (np.abs(map_x - xx0) < mx_dis[-1]) & (np.abs(map_y - yy0) < mx_dis[0]) & to_render
         xmin = np.floor(map_x[mskt].min()) - 4 # Lanczos 8x8 kernel
         xmax = np.ceil(map_x[mskt].max()) + 4
         ymin = np.floor(map_y[mskt].min()) - 4
@@ -134,6 +154,9 @@ def render_by_subregions(map_x, map_y, mask, img_loader, fileid=None,  **kwargs)
                 imgtt = imgtt[:(map_xt.size)]
                 imgt[mskt] = imgtt.ravel()
         to_render = to_render & (~mskt)
+        if seed_indices.size > 0:
+            sel_idx = to_render[seed_indices[:,0], seed_indices[:,1]]
+            seed_indices = seed_indices[sel_idx]
     return imgt
 
 
