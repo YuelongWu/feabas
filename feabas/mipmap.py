@@ -65,7 +65,9 @@ def mip_one_level(src_dir, out_dir, **kwargs):
     tile_size = kwargs.pop('tile_size', None)
     downsample = kwargs.pop('downsample', 2)
     logger_info = kwargs.get('logger', None)
-    kwargs.setdefault('remap_interp', cv2.INTER_AREA)
+    kwargs.setdefault('cache_type', 'fifo')
+    kwargs.setdefault('cache_size', downsample + 2)
+    kwargs.setdefault('cache_border_margin', 10)
     logger = logging.get_logger(logger_info)
     out_meta_file = os.path.join(out_dir, 'metadata.txt')
     if os.path.isfile(out_meta_file):
@@ -89,6 +91,9 @@ def mip_one_level(src_dir, out_dir, **kwargs):
         prefix = os.path.join(out_dir, prefix0)
         out_root_dir = os.path.dirname(prefix)
         os.makedirs(out_root_dir, exist_ok=True)
+        kwargs.setdefault('remap_interp', cv2.INTER_AREA)
+        kwargs.setdefault('seeds', downsample)
+        kwargs.setdefault('mx_dis', (tile_size[0]/2+4, tile_size[-1]/2+4))
         rendered = render_whole_mesh(M, image_loader, prefix, tile_size=tile_size,
                                      pattern=pattern+'.'+ext_out, scale= 1/downsample,
                                      **kwargs)
@@ -112,14 +117,40 @@ def create_thumbnail(src_dir, downsample=4, highpass=True, **kwargs):
         kwargs['dtype'] = np.float32
     else:
         kwargs['preprocess'] = None
+    kwargs.setdefault('cache_type', 'fifo')
+    kwargs.setdefault('cache_size', 8)
+    kwargs.setdefault('cache_border_margin', 10)
     image_loader = _get_image_loader(src_dir, **kwargs)
     M = _mesh_from_image_loader(image_loader)
+    bounds0 = M.bbox()
+    for bbox in image_loader.file_bboxes(margin=0):
+        tile_size0 = (bbox[3] - bbox[1], bbox[2] - bbox[0])
+        break
+    n_col = round(bounds0[2] / tile_size0[1])
+    n_row = round(bounds0[3] / tile_size0[0])
+    kwargs.setdefault('remap_interp', cv2.INTER_AREA)
+    kwargs.setdefault('seeds', (n_row, n_col))
+    kwargs.setdefault('mx_dis', (tile_size0[0]/2+4, tile_size0[-1]/2+4))
     M.change_resolution(image_loader.resolution * downsample)
-    bbox = M.bbox()
-    xmax, ymax = bbox[2], bbox[3]
+    bounds1 = M.bbox()
+    out_wd, out_ht = bounds1[2], bounds1[3]
+    out_bbox = (0, 0, out_wd, out_ht)
     if highpass:
         rndr = MeshRenderer.from_mesh(M, fillval=0, dtype=np.float32, image_loader=image_loader)
+        img = rndr.crop(out_bbox, ** kwargs)
     else:
         rndr = MeshRenderer.from_mesh(M, image_loader=image_loader)
-    pass
+        img = rndr.crop(out_bbox, ** kwargs)
 
+
+def _max_entropy_scaling(img):
+    if np.all(img == 0):
+        return img.astype(np.uint8)
+    data0 = img[img > 0]
+    scale0 = 128 / np.mean(data0, axis=None)
+    data0 = data0 / np.mean(data0, axis=None) * 128
+    bin_edges = np.arange(max(255, data0.max() + 1))
+    hist, _ = np.histogram(data0, density=True)
+    indx = np.nonzero((hist[:-2] < hist[1:-1]) & (hist[2:] < hist[1:-1]))[0]
+    if indx.size == 0:
+        return 

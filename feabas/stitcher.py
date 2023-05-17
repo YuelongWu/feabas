@@ -526,7 +526,7 @@ class Stitcher:
         soft_top = kwargs.get('soft_top', 0.2)
         soft_top_width = kwargs.get('soft_top_width', 0.0)
         soft_left = kwargs.get('soft_left', 0.2)
-        soft_left_width = kwargs.get('soft_top_width', 0.0)
+        soft_left_width = kwargs.get('soft_left_width', 0.0)
         cache_size = kwargs.get('cache_size', None)
         groupings = self.groupings(normalize=True)
         if (not kwargs.get('force_update', False)) and (self.meshes is not None):
