@@ -526,23 +526,27 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
         if (not spacing_enlarged) and (next_pos < 0):
             spacing_enlarged = True
             sp = np.ceil(min_block_size)
-            pad = True
+            if to_pad is None:
+                pad = True
             continue
         spacing_enlarged = True
         if next_pos > sp_indx:
             next_pos = min(next_pos, sp_indx + 1 + max_spacing_skip)
-            if next_pos > sp_indx + 1:
-                pad = True
-            else:
-                pad = False
+            if to_pad is None:
+                if next_pos > sp_indx + 1:
+                    pad = True
+                else:
+                    pad = False
             sp_indx = next_pos
             dwelled = 0
         elif dwelled >= allow_dwell:
-            pad = True
+            if to_pad is None:
+                pad = True
             sp_indx += 1
             dwelled = 0
         else:
-            pad = True
+            if to_pad is None:
+                pad = True
             dwelled += 1
         opt.add_link_from_coordinates(mesh0.uid, mesh1.uid, xy0, xy1,
                         gear=(const.MESH_GEAR_MOVING, const.MESH_GEAR_MOVING), weight=wt,

@@ -60,24 +60,23 @@ def _mesh_from_image_loader(image_loader):
 
 
 def mip_one_level(src_dir, out_dir, **kwargs):
-    num_workers = kwargs.pop('num_workers', 1)
     ext_out = kwargs.pop('output_format', 'png')
-    pattern = kwargs.get('pattern', '_tr{ROW_IND}-tc{COL_IND}.png')
-    one_based = kwargs.get('one_based', True)
-    tile_size = kwargs.get('tile_size', None)
+    pattern = kwargs.pop('pattern', '_tr{ROW_IND}-tc{COL_IND}.png')
+    tile_size = kwargs.pop('tile_size', None)
     downsample = kwargs.pop('downsample', 2)
     logger_info = kwargs.get('logger', None)
+    kwargs.setdefault('remap_interp', cv2.INTER_AREA)
     logger = logging.get_logger(logger_info)
     out_meta_file = os.path.join(out_dir, 'metadata.txt')
     if os.path.isfile(out_meta_file):
         n_img = len(glob.glob(out_dir, '*.'+ext_out))
         return n_img
-    pattern = os.path.splitext(pattern)[0]
     rendered = {}
     try:
-        image_loader = _get_image_loader(src_dir, **kwargs)
+        image_loader = _get_image_loader(src_dir, pattern=pattern, tile_size=tile_size, **kwargs)
         if image_loader is None:
             return 0
+        pattern = os.path.splitext(pattern)[0]
         M = _mesh_from_image_loader(image_loader)
         if tile_size is None:
             for bbox in image_loader.file_bboxes(margin=0):
@@ -90,9 +89,9 @@ def mip_one_level(src_dir, out_dir, **kwargs):
         prefix = os.path.join(out_dir, prefix0)
         out_root_dir = os.path.dirname(prefix)
         os.makedirs(out_root_dir, exist_ok=True)
-        rendered = render_whole_mesh(M, image_loader, prefix, num_workers=num_workers,
-                                    tile_size=tile_size, pattern=pattern+'.'+ext_out,
-                                    scale= 1/downsample, one_based=one_based)
+        rendered = render_whole_mesh(M, image_loader, prefix, tile_size=tile_size,
+                                     pattern=pattern+'.'+ext_out, scale= 1/downsample,
+                                     **kwargs)
         if len(rendered) > 0:
             fnames = sorted(list(rendered.keys()))
             bboxes = []
