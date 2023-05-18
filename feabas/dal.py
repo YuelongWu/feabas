@@ -996,10 +996,10 @@ class StreamLoader(AbstractImageLoader):
             img = np.tile(img.reshape(img.shape[0], img.shape[1], 1), (1,1,number_of_channels))
         elif (self._src_number_of_channels > 1) and (number_of_channels == 1):
             img = img.mean(axis=-1)
-        if (dtype is not None) and (np.dtype(dtype) != img.dtype):
-            img = img.astype(dtype)
         if self._preprocess is not None:
             img = self._preprocess(img)
+        if (dtype is not None) and (np.dtype(dtype) != img.dtype):
+            img = img.astype(dtype)
         if inverse:
             img = common.inverse_image(img, dtype)
         return img

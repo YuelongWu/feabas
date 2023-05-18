@@ -115,14 +115,15 @@ def mip_one_level(src_dir, out_dir, **kwargs):
 
 
 def create_thumbnail(src_dir, downsample=4, highpass=True, **kwargs):
+    normalize_hist = kwargs.get('normalize_hist', True)
     kwargs.setdefault('remap_interp', cv2.INTER_LINEAR)
     if kwargs['remap_interp'] == cv2.INTER_NEAREST:
         blur = 1
     else:
         blur = downsample
+    kwargs.setdefault('dtype', np.float32)
     if highpass:
         kwargs.setdefault('preprocess', partial(_smooth_filter, blur=blur, sigma=0.5))
-        kwargs.setdefault('dtype', np.float32)
     else:
         if blur == 1:
             kwargs.setdefault('preprocess', None)
@@ -148,17 +149,19 @@ def create_thumbnail(src_dir, downsample=4, highpass=True, **kwargs):
     if highpass:
         rndr = MeshRenderer.from_mesh(M, fillval=0, dtype=np.float32, image_loader=image_loader)
         img = rndr.crop(out_bbox, ** kwargs)
-        img = 255 - _max_entropy_scaling(img)
+        img = 255 - _max_entropy_scaling_one_side(img)
     else:
         rndr = MeshRenderer.from_mesh(M, image_loader=image_loader)
         img = rndr.crop(out_bbox, ** kwargs)
+        if normalize_hist:
+            img = _max_entropy_scaling_both_sides(img)
     return img
 
 
-def _max_entropy_scaling(img, **kwargs):
+def _max_entropy_scaling_one_side(img, **kwargs):
     if np.ptp(img, axis=None) == 0:
         return img.astype(np.uint8)
-    hist_step = kwargs.get('hist_step', 0.0025)
+    hist_step = kwargs.get('hist_step', 0.1)
     lower_bound = kwargs.get('lower_bound', 0.7)
     upper_bound = kwargs.get('upper_bound', 1.0)
     gain_step = kwargs.get('gain_step', 1.05)
@@ -179,7 +182,7 @@ def _max_entropy_scaling(img, **kwargs):
     gain = (np.log(uu) - np.log(bb)) / np.log(gain_step)
     trials = bb * (gain_step ** np.linspace(0, gain, num=round(gain)+1, endpoint=True))
     lvls = trials.reshape(-1, 1) * (np.arange(1, 255) / 255)
-    cdf_interp = interp1d(edge_cntrs, cdf, kind='linear', fill_value=(0, cdf[-1]), assume_sorted=True)
+    cdf_interp = interp1d(edge_cntrs, cdf, kind='linear', bounds_error=False, fill_value=(0, cdf[-1]), assume_sorted=True)
     cdf_matrix = cdf_interp(lvls)
     pdf_matrix = np.diff(cdf_matrix, n=1, axis=-1, prepend=0, append=cdf[-1]) / cdf[-1]
     indx = pdf_matrix > 0
@@ -191,10 +194,53 @@ def _max_entropy_scaling(img, **kwargs):
     return img
 
 
+def _max_entropy_scaling_both_sides(img, **kwargs):
+    if np.ptp(img, axis=None) == 0:
+        return img.astype(np.uint8)
+    hist_num = kwargs.get('hist_num', 3000)
+    right_lower_bound = kwargs.get('r_lower_bound', 0.7)
+    right_upper_bound = kwargs.get('r_upper_bound', 1.0)
+    left_lower_bound = kwargs.get('l_lower_bound', 0.0)
+    left_upper_bound = kwargs.get('l_upper_bound', 0.3)
+    num_gain = 50
+    data0 = img[(img > img.min()) & (img < img.max())]
+    bin_edges = np.linspace(img.min(), img.max(), num=hist_num, endpoint=True)
+    edge_cntrs = (bin_edges[:-1] + bin_edges[1:]) / 2
+    hist, _ = np.histogram(data0, bins=bin_edges)
+    cdf = np.cumsum(hist, axis=None)
+    if right_upper_bound == 1.0:
+        ru = np.max(data0)
+    else:
+        ru = np.quantile(data0, right_upper_bound)
+    rl = np.quantile(data0, right_lower_bound)
+    if left_lower_bound == 0:
+        ll = np.min(data0)
+    else:
+        ll = np.quantile(data0, left_lower_bound)
+    lu = np.quantile(data0, left_upper_bound)
+    trials_r = np.linspace(rl, ru, num=num_gain, endpoint=True)
+    trials_l = np.linspace(ll, lu, num=num_gain, endpoint=True)
+    gain = trials_r.reshape(-1, 1, 1) - trials_l.reshape(1, -1 ,1)
+    lvls = gain * (np.arange(1, 255) / 255) + trials_l.reshape(1, -1 ,1)
+    cdf_interp = interp1d(edge_cntrs, cdf, kind='linear', bounds_error=False, fill_value=(0, cdf[-1]), assume_sorted=True)
+    cdf_matrix = cdf_interp(lvls)
+    pdf_matrix = np.diff(cdf_matrix, n=1, axis=-1, prepend=0, append=cdf[-1]) / cdf[-1]
+    indx = pdf_matrix > 0
+    pp = pdf_matrix[indx]
+    pdf_matrix[indx] = pp * np.log(pp)
+    entropy = -np.sum(pdf_matrix, axis=-1)
+    idx_mx = np.argmax(entropy, axis=None)
+    idx0, idx1 = np.unravel_index(idx_mx, entropy.shape)
+    r = trials_r[idx0]
+    l = trials_l[idx1]
+    img = (255*(img.astype(np.float32) - l)/(r-l)).clip(0, 255).astype(np.uint8)
+    return img
+
+
 def _smooth_filter(img, blur=2, sigma=0.0):
     dtype = img.dtype
     if sigma > 0:
         img = common.masked_dog_filter(img, sigma=sigma, signed=False)
     if blur != 1:
         img = cv2.blur(img, (round(blur), round(blur)))
-    return img.astype(dtype, copy=False)
+    return img
