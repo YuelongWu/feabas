@@ -387,7 +387,7 @@ class AbstractImageLoader(ABC):
             img = self._preprocess(img)
         if inverse:
             img = common.inverse_image(img, dtype)
-        return img
+        return img.astype(dtype, copy=False)
 
 
     def _export_dict(self, **kwargs):

@@ -104,7 +104,7 @@ def render_by_subregions(map_x, map_y, mask, img_loader, fileid=None,  **kwargs)
         else:
             indx0, indx1 = np.nonzero(to_render)
             indx0_sel = indx0[indx0.size//2]
-        indx1_sel = indx1[indx1.size//2]
+            indx1_sel = indx1[indx1.size//2]
         xx0 = map_x[indx0_sel, indx1_sel]
         yy0 = map_y[indx0_sel, indx1_sel]
         mskt = (np.abs(map_x - xx0) < mx_dis[-1]) & (np.abs(map_y - yy0) < mx_dis[0]) & to_render

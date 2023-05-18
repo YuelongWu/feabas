@@ -2,6 +2,7 @@ import cv2
 import glob
 import numpy as np
 from functools import partial
+from scipy.interpolate import interp1d
 import shapely.geometry as shpgeo
 from shapely.ops import unary_union
 import os
@@ -65,9 +66,12 @@ def mip_one_level(src_dir, out_dir, **kwargs):
     tile_size = kwargs.pop('tile_size', None)
     downsample = kwargs.pop('downsample', 2)
     logger_info = kwargs.get('logger', None)
+    kwargs.setdefault('remap_interp', cv2.INTER_LINEAR)
     kwargs.setdefault('cache_type', 'fifo')
     kwargs.setdefault('cache_size', downsample + 2)
-    kwargs.setdefault('cache_border_margin', 10)
+    if kwargs['remap_interp'] == cv2.INTER_NEAREST:
+        kwargs.setdefault('preprocess', partial(_smooth_filter, blur=downsample, sigma=0.0))
+    # kwargs.setdefault('cache_border_margin', 10)
     logger = logging.get_logger(logger_info)
     out_meta_file = os.path.join(out_dir, 'metadata.txt')
     if os.path.isfile(out_meta_file):
@@ -91,7 +95,6 @@ def mip_one_level(src_dir, out_dir, **kwargs):
         prefix = os.path.join(out_dir, prefix0)
         out_root_dir = os.path.dirname(prefix)
         os.makedirs(out_root_dir, exist_ok=True)
-        kwargs.setdefault('remap_interp', cv2.INTER_AREA)
         kwargs.setdefault('seeds', downsample)
         kwargs.setdefault('mx_dis', (tile_size[0]/2+4, tile_size[-1]/2+4))
         rendered = render_whole_mesh(M, image_loader, prefix, tile_size=tile_size,
@@ -112,14 +115,22 @@ def mip_one_level(src_dir, out_dir, **kwargs):
 
 
 def create_thumbnail(src_dir, downsample=4, highpass=True, **kwargs):
-    if highpass:
-        kwargs['preprocess'] = partial(common.masked_dog_filter, sigma=1, signed=False)
-        kwargs['dtype'] = np.float32
+    kwargs.setdefault('remap_interp', cv2.INTER_LINEAR)
+    if kwargs['remap_interp'] == cv2.INTER_NEAREST:
+        blur = 1
     else:
-        kwargs['preprocess'] = None
+        blur = downsample
+    if highpass:
+        kwargs.setdefault('preprocess', partial(_smooth_filter, blur=blur, sigma=0.5))
+        kwargs.setdefault('dtype', np.float32)
+    else:
+        if blur == 1:
+            kwargs.setdefault('preprocess', None)
+        else:
+            kwargs.setdefault('preprocess', partial(_smooth_filter, blur=blur, sigma=0.0))
     kwargs.setdefault('cache_type', 'fifo')
     kwargs.setdefault('cache_size', 8)
-    kwargs.setdefault('cache_border_margin', 10)
+    # kwargs.setdefault('cache_border_margin', 10)
     image_loader = _get_image_loader(src_dir, **kwargs)
     M = _mesh_from_image_loader(image_loader)
     bounds0 = M.bbox()
@@ -128,7 +139,6 @@ def create_thumbnail(src_dir, downsample=4, highpass=True, **kwargs):
         break
     n_col = round(bounds0[2] / tile_size0[1])
     n_row = round(bounds0[3] / tile_size0[0])
-    kwargs.setdefault('remap_interp', cv2.INTER_AREA)
     kwargs.setdefault('seeds', (n_row, n_col))
     kwargs.setdefault('mx_dis', (tile_size0[0]/2+4, tile_size0[-1]/2+4))
     M.change_resolution(image_loader.resolution * downsample)
@@ -138,19 +148,53 @@ def create_thumbnail(src_dir, downsample=4, highpass=True, **kwargs):
     if highpass:
         rndr = MeshRenderer.from_mesh(M, fillval=0, dtype=np.float32, image_loader=image_loader)
         img = rndr.crop(out_bbox, ** kwargs)
+        img = 255 - _max_entropy_scaling(img)
     else:
         rndr = MeshRenderer.from_mesh(M, image_loader=image_loader)
         img = rndr.crop(out_bbox, ** kwargs)
+    return img
 
 
-def _max_entropy_scaling(img):
-    if np.all(img == 0):
+def _max_entropy_scaling(img, **kwargs):
+    if np.ptp(img, axis=None) == 0:
         return img.astype(np.uint8)
+    hist_step = kwargs.get('hist_step', 0.0025)
+    lower_bound = kwargs.get('lower_bound', 0.7)
+    upper_bound = kwargs.get('upper_bound', 1.0)
+    gain_step = kwargs.get('gain_step', 1.05)
     data0 = img[img > 0]
     scale0 = 128 / np.mean(data0, axis=None)
-    data0 = data0 / np.mean(data0, axis=None) * 128
-    bin_edges = np.arange(max(255, data0.max() + 1))
-    hist, _ = np.histogram(data0, density=True)
-    indx = np.nonzero((hist[:-2] < hist[1:-1]) & (hist[2:] < hist[1:-1]))[0]
-    if indx.size == 0:
-        return 
+    data0 = data0 * scale0
+    bin_edges = np.arange(0, max(256, data0.max() + hist_step), hist_step)
+    edge_cntrs = (bin_edges[:-1] + bin_edges[1:]) / 2
+    hist, _ = np.histogram(data0, bins=bin_edges)
+    cdf = np.cumsum(hist, axis=None)
+    if upper_bound == 1.0:
+        uu = np.max(data0)
+    else:
+        uu = np.quantile(data0, upper_bound)
+    bb = np.quantile(data0, lower_bound)
+    if uu == bb:
+        return (img * scale0).astype(np.uint8)
+    gain = (np.log(uu) - np.log(bb)) / np.log(gain_step)
+    trials = bb * (gain_step ** np.linspace(0, gain, num=round(gain)+1, endpoint=True))
+    lvls = trials.reshape(-1, 1) * (np.arange(1, 255) / 255)
+    cdf_interp = interp1d(edge_cntrs, cdf, kind='linear', fill_value=(0, cdf[-1]), assume_sorted=True)
+    cdf_matrix = cdf_interp(lvls)
+    pdf_matrix = np.diff(cdf_matrix, n=1, axis=-1, prepend=0, append=cdf[-1]) / cdf[-1]
+    indx = pdf_matrix > 0
+    pp = pdf_matrix[indx]
+    pdf_matrix[indx] = pp * np.log(pp)
+    entropy = -np.sum(pdf_matrix, axis=-1)
+    scale = 255 / trials[np.argmax(entropy)]
+    img = (img.astype(np.float32) * scale0 * scale).clip(0, 255).astype(np.uint8)
+    return img
+
+
+def _smooth_filter(img, blur=2, sigma=0.0):
+    dtype = img.dtype
+    if sigma > 0:
+        img = common.masked_dog_filter(img, sigma=sigma, signed=False)
+    if blur != 1:
+        img = cv2.blur(img, (round(blur), round(blur)))
+    return img.astype(dtype, copy=False)

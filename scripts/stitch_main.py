@@ -257,7 +257,7 @@ if __name__ == '__main__':
     stitch_dir = os.path.join(root_dir, 'stitch')
     coord_dir = os.path.join(stitch_dir, 'stitch_coord')
     match_dir = os.path.join(stitch_dir, 'match_h5')
-    mesh_dir = os.path.join(stitch_dir, 'tforms')
+    mesh_dir = os.path.join(stitch_dir, 'tform')
     image_outdir = path.stitch_render_dir()
     image_outdir = os.path.join(image_outdir, 'mip0')
     stt_idx, stp_idx, step = args.start, args.stop, args.step
