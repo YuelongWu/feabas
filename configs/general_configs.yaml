@@ -1,6 +1,8 @@
 working_directory: ./work_dir   # project specific working directory
 cpu_budget: 20      # CPU cores to use (estimated target only, no hard control)
 
+full_resolution: 4
+
 # logging configs
 logging_directory: null # directory to save log files. if set to null, default to working_directory/logs
 logfile_level: WARNING  # DEBUG, INFO, WARNING, ERROR or NONE

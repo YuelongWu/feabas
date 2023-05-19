@@ -11,6 +11,7 @@ from shapely.ops import unary_union
 import feabas.constant as const
 from feabas.mesh import Mesh
 from feabas import common, spatial, dal
+from feabas.config import DEFAULT_RESOLUTION
 
 
 class MeshRenderer:
@@ -27,7 +28,7 @@ class MeshRenderer:
         self.weight_multiplier = kwargs.get('weight_multiplier', [None for _ in range(n_region)])
         self._collision_region = kwargs.get('collision_region', None)
         self._image_loader = kwargs.get('image_loader', None)
-        self.resolution = kwargs.get('resolution', const.DEFAULT_RESOLUTION)
+        self.resolution = kwargs.get('resolution', DEFAULT_RESOLUTION)
         self._default_fillval = kwargs.get('fillval', None)
         self._dtype = kwargs.get('dtype', None)
 

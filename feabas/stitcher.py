@@ -1,3 +1,4 @@
+import cv2
 from collections import defaultdict, namedtuple
 from concurrent.futures.process import ProcessPoolExecutor
 from concurrent.futures import as_completed
@@ -22,7 +23,7 @@ from feabas.optimizer import SLM
 from feabas import common, caching
 from feabas.spatial import scale_coordinates
 import feabas.constant as const
-
+from feabas.config import DEFAULT_RESOLUTION
 
 class Stitcher:
     """
@@ -42,7 +43,7 @@ class Stitcher:
         root_dir = kwargs.get('root_dir', None)
         groupings = kwargs.get('groupings', None)
         self._connected_subsystem = kwargs.get('connected_subsystem', None)
-        self.resolution = kwargs.get('resolution', const.DEFAULT_RESOLUTION)
+        self.resolution = kwargs.get('resolution', DEFAULT_RESOLUTION)
         if bool(root_dir):
             self.imgrootdir = root_dir
             self.imgrelpaths = imgpaths
@@ -91,7 +92,7 @@ class Stitcher:
             if 'resolution' in f:
                 resolution = f['resolution'][()]
             else:
-                resolution = const.DEFAULT_RESOLUTION
+                resolution = DEFAULT_RESOLUTION
         if selected is not None:
             imgpaths = [s for k, s in enumerate(imgpaths) if k in selected]
             bboxes = bboxes[selected]
@@ -1032,7 +1033,7 @@ class MontageRenderer:
             root directory.
     """
     def __init__(self, imgpaths, mesh_info, tile_sizes, **kwargs):
-        self.resolution = kwargs.get('resolution', const.DEFAULT_RESOLUTION)
+        self.resolution = kwargs.get('resolution', DEFAULT_RESOLUTION)
         self._loader_settings = kwargs.get('loader_settings', {}).copy()
         self._connected_subsystem = kwargs.get('connected_subsystem', None)
         if bool(kwargs.get('root_dir', None)):
@@ -1263,6 +1264,12 @@ class MontageRenderer:
 
     def render_series_to_file(self, bboxes, filenames, **kwargs):
         rendered = {}
+        scale = kwargs.get('scale', 1.0)
+        if scale > 0.33:
+            self.image_loader._preprocess = None
+        else:
+            ksz = round(0.5/scale) * 2 - 1
+            self.image_loader._preprocess = partial(cv2.blur, ksize=(ksz, ksz))
         for bbox, filename in zip(bboxes, filenames):
             if os.path.isfile(filename):
                 rendered[filename] = bbox

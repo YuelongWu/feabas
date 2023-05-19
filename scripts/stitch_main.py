@@ -7,10 +7,9 @@ import math
 from functools import partial
 import os
 import time
-import yaml
 
 import feabas
-from feabas import logging, path, dal
+from feabas import config, logging, dal
 
 
 def match_one_section(coordname, outname, **kwargs):
@@ -208,15 +207,6 @@ def render_main(tform_list, out_dir, **kwargs):
     logging.terminate_logger(*logger_info)
 
 
-def limit_numpy_thread(nthreads):
-    nthread_str = str(nthreads)
-    os.environ["OMP_NUM_THREADS"] = nthread_str
-    os.environ["OPENBLAS_NUM_THREADS"] = nthread_str
-    os.environ["MKL_NUM_THREADS"] = nthread_str
-    os.environ["VECLIB_MAXIMUM_THREADS"] = nthread_str
-    os.environ["NUMEXPR_NUM_THREADS"] = nthread_str
-
-
 def parse_args(args=None):
     parser = argparse.ArgumentParser(description="Run stitching")
     parser.add_argument("--mode", metavar="mode", type=str, default='matching')
@@ -230,14 +220,11 @@ def parse_args(args=None):
 if __name__ == '__main__':
     args = parse_args()
 
-    root_dir = path.get_work_dir()
-    with open(os.path.join('configs', 'general_configs.yaml'), 'r') as f:
-        general_configs = yaml.safe_load(f)
-    num_cpus = general_configs['cpu_budget']
+    root_dir = config.get_work_dir()
+    generate_settings = config.general_settings()
+    num_cpus = generate_settings['cpu_budget']
 
-    config_file = path.stitch_config_file()
-    with open(config_file, 'r') as f:        
-        stitch_configs = yaml.safe_load(f)
+    stitch_configs = config.stitch_configs()
     if args.mode.lower().startswith('r'):
         stitch_configs = stitch_configs['rendering']
         mode = 'rendering'
@@ -249,7 +236,7 @@ if __name__ == '__main__':
         mode = 'matching'
     num_workers = stitch_configs.get('num_workers', 1)
     nthreads = max(1, math.floor(num_cpus / num_workers))
-    limit_numpy_thread(nthreads)
+    config.limit_numpy_thread(nthreads)
 
     from feabas.stitcher import Stitcher, MontageRenderer
     import numpy as np
@@ -258,7 +245,7 @@ if __name__ == '__main__':
     coord_dir = os.path.join(stitch_dir, 'stitch_coord')
     match_dir = os.path.join(stitch_dir, 'match_h5')
     mesh_dir = os.path.join(stitch_dir, 'tform')
-    image_outdir = path.stitch_render_dir()
+    image_outdir = config.stitch_render_dir()
     image_outdir = os.path.join(image_outdir, 'mip0')
     stt_idx, stp_idx, step = args.start, args.stop, args.step
     if stp_idx == 0:

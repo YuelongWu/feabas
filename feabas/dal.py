@@ -12,7 +12,7 @@ import numpy as np
 from rtree import index
 
 from feabas import common, caching
-import feabas.constant as const
+from feabas.config import DEFAULT_RESOLUTION
 
 
 # bbox :int: [xmin, ymin, xmax, ymax]
@@ -145,7 +145,7 @@ class AbstractImageLoader(ABC):
         self._cache_type = kwargs.get('cache_type', 'mfu')
         self._cache = caching.generate_cache(self._cache_type, maxlen=self._cache_size, maxbytes=self._cache_capacity)
         self._preprocess = kwargs.get('preprocess', None)
-        self.resolution = kwargs.get('resolution', const.DEFAULT_RESOLUTION)
+        self.resolution = kwargs.get('resolution', DEFAULT_RESOLUTION)
         self._read_counter = 0
 
 
@@ -943,7 +943,7 @@ class StreamLoader(AbstractImageLoader):
         self._preprocess = kwargs.get('preprocess', None)
         self._inverse = kwargs.get('inverse', False)
         self._default_fillval = kwargs.get('fillval', 0)
-        self.resolution = kwargs.get('resolution', const.DEFAULT_RESOLUTION)
+        self.resolution = kwargs.get('resolution', DEFAULT_RESOLUTION)
         self.x0 = kwargs.get('x0', 0)
         self.y0 = kwargs.get('y0', 0)
 

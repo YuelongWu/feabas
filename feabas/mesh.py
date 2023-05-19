@@ -19,6 +19,7 @@ import triangle
 
 from feabas import common, material, spatial, caching
 import feabas.constant as const
+from feabas.config import DEFAULT_RESOLUTION
 
 
 def gear_constant_to_str(gear_const):
@@ -253,7 +254,7 @@ class Mesh:
                 self._stiffness_multiplier = self._stiffness_multiplier[indx]
         self.triangles = triangles
         self._material_ids = material_ids
-        self._resolution = kwargs.get('resolution', const.DEFAULT_RESOLUTION)
+        self._resolution = kwargs.get('resolution', DEFAULT_RESOLUTION)
         self._epsilon = kwargs.get('epsilon', const.EPSILON0)
         self._name = kwargs.get('name', '')
         if isinstance(self._name, np.ndarray):
@@ -295,8 +296,8 @@ class Mesh:
                 meshing performance, default to 0.
         """
         material_table = kwargs.get('material_table', material.MaterialTable())
-        resolution = kwargs.get('resolution', const.DEFAULT_RESOLUTION)
-        mesh_size = kwargs.get('mesh_size', (400*const.DEFAULT_RESOLUTION/resolution))
+        resolution = kwargs.get('resolution', DEFAULT_RESOLUTION)
+        mesh_size = kwargs.get('mesh_size', (400*DEFAULT_RESOLUTION/resolution))
         min_angle = kwargs.get('min_mesh_angle', 0)
         mesh_area = mesh_size ** 2
         regions = []
@@ -376,8 +377,8 @@ class Mesh:
         initialize an equilateral mesh that covers the (Multi)Polygon region
         defined by mask.
         """
-        resolution = kwargs.get('resolution', const.DEFAULT_RESOLUTION)
-        mesh_size = kwargs.get('mesh_size', (400*const.DEFAULT_RESOLUTION/resolution))
+        resolution = kwargs.get('resolution', DEFAULT_RESOLUTION)
+        mesh_size = kwargs.get('mesh_size', (400*DEFAULT_RESOLUTION/resolution))
         vertices = spatial.generate_equilat_grid_mask(mask, mesh_size)
         triangles = triangle.delaunay(vertices)
         edges = Mesh.triangle2edge(triangles, directional=True)
@@ -393,8 +394,8 @@ class Mesh:
         # [xmin, ymin, xmax, ymax]
         if cartesian:
             # return a mesh from cartetian grids
-            resolution = kwargs.get('resolution', const.DEFAULT_RESOLUTION)
-            mesh_size = kwargs.get('mesh_size', (100*const.DEFAULT_RESOLUTION/resolution)) # tentative block size
+            resolution = kwargs.get('resolution', DEFAULT_RESOLUTION)
+            mesh_size = kwargs.get('mesh_size', (100*DEFAULT_RESOLUTION/resolution)) # tentative block size
             max_aspect_ratio = kwargs.get('max_aspect_ratio', 2) # the maximum aspect ratio of each block
             min_num_blocks = kwargs.get('min_num_blocks', 1) # minimum number of blocks on each side
             xmin, ymin, xmax, ymax = bbox
@@ -437,8 +438,8 @@ class Mesh:
                 multiples of the mesh size. Otherwise, adjust the mesh size
             mesh_growth: increase of the mesh size in the interior region.
         """
-        resolution = kwargs.get('resolution', const.DEFAULT_RESOLUTION)
-        mesh_size = kwargs.get('mesh_size', (400*const.DEFAULT_RESOLUTION/resolution))
+        resolution = kwargs.get('resolution', DEFAULT_RESOLUTION)
+        mesh_size = kwargs.get('mesh_size', (400*DEFAULT_RESOLUTION/resolution))
         tan_theta = np.tan(55*np.pi/180) / 2
         xmin, ymin, xmax, ymax = bbox
         ht = ymax - ymin

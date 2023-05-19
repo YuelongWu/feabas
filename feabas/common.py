@@ -8,7 +8,7 @@ from scipy import sparse
 from scipy.ndimage import gaussian_filter1d
 import scipy.sparse.csgraph as csgraph
 
-import feabas.constant as const
+from feabas.config import DEFAULT_RESOLUTION
 
 
 Match = namedtuple('Match', ('xy0', 'xy1', 'weight'))
@@ -467,7 +467,7 @@ def parse_coordinate_files(filename, **kwargs):
     root_dir = kwargs.get('root_dir', None)
     tile_size = kwargs.get('tile_size', None)
     delimiter = kwargs.get('delimiter', '\t') # None for any whitespace
-    resolution = kwargs.get('resolution', const.DEFAULT_RESOLUTION)
+    resolution = kwargs.get('resolution', DEFAULT_RESOLUTION)
     imgpaths = []
     bboxes = []
     with open(filename, 'r') as f:

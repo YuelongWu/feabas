@@ -19,7 +19,7 @@ from feabas.matcher import section_matcher
 from feabas.optimizer import SLM
 import feabas.constant as const
 from feabas.common import str_to_numpy_ascii, Match
-
+from feabas.config import DEFAULT_RESOLUTION
 
 
 def read_matches_from_h5(match_name, target_resolution=None):
@@ -66,7 +66,7 @@ def match_section_from_initial_matches(match_name, meshes, loaders, out_dir, con
     elif not isinstance(conf, dict):
         raise TypeError('configuration type not supported.')
     match_name_delimiter = conf.get('match_name_delimiter', '__to__')
-    resolution = conf.get('working_resolution', const.DEFAULT_RESOLUTION)
+    resolution = conf.get('working_resolution', DEFAULT_RESOLUTION)
     loader_config = conf.get('loader_config', {}).copy()
     matcher_config = conf.get('matcher_config', {}).copy()
     secnames = os.path.splitext(os.path.basename(match_name))[0].split(match_name_delimiter)
@@ -179,7 +179,7 @@ class Stack:
         lock_flags = kwargs.get('lock_flags', None)
         mesh_cache = kwargs.get('mesh_cache', {})
         link_cache = kwargs.get('link_cache', {})
-        self._resolution = kwargs.get('resolution', const.DEFAULT_RESOLUTION)
+        self._resolution = kwargs.get('resolution', DEFAULT_RESOLUTION)
         self._mesh_cache = OrderedDict()
         self._mesh_cache.update(mesh_cache)
         self._link_cache = OrderedDict()
@@ -508,7 +508,7 @@ class Stack:
                 optm.anneal(gear=(target_gear, const.MESH_GEAR_FIXED), mode=const.ANNEAL_CONNECTED_RIGID)
         if optimize_elastic:
             if 'callback_settings' in elastic_params:
-                elastic_params['callback_settings'].setdefault('early_stop_thresh', const.DEFAULT_RESOLUTION / self._resolution)
+                elastic_params['callback_settings'].setdefault('early_stop_thresh', DEFAULT_RESOLUTION / self._resolution)
             cost = optm.optimize_elastic(target_gear=target_gear, **elastic_params)
             if (residue_mode is not None) and (residue_len > 0):
                 if residue_mode == 'huber':

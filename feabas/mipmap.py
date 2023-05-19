@@ -66,12 +66,11 @@ def mip_one_level(src_dir, out_dir, **kwargs):
     tile_size = kwargs.pop('tile_size', None)
     downsample = kwargs.pop('downsample', 2)
     logger_info = kwargs.get('logger', None)
-    kwargs.setdefault('remap_interp', cv2.INTER_LINEAR)
+    kwargs.setdefault('remap_interp', cv2.INTER_AREA)
     kwargs.setdefault('cache_type', 'fifo')
     kwargs.setdefault('cache_size', downsample + 2)
-    if kwargs['remap_interp'] == cv2.INTER_NEAREST:
+    if (kwargs['remap_interp'] != cv2.INTER_NEAREST) and (downsample > 2):
         kwargs.setdefault('preprocess', partial(_smooth_filter, blur=downsample, sigma=0.0))
-    # kwargs.setdefault('cache_border_margin', 10)
     logger = logging.get_logger(logger_info)
     out_meta_file = os.path.join(out_dir, 'metadata.txt')
     if os.path.isfile(out_meta_file):
@@ -114,9 +113,9 @@ def mip_one_level(src_dir, out_dir, **kwargs):
     return len(rendered)
 
 
-def create_thumbnail(src_dir, downsample=4, highpass=True, **kwargs):
+def create_thumbnail(src_dir, outname=None, downsample=4, highpass=True, **kwargs):
     normalize_hist = kwargs.get('normalize_hist', True)
-    kwargs.setdefault('remap_interp', cv2.INTER_LINEAR)
+    kwargs.setdefault('remap_interp', cv2.INTER_AREA)
     if kwargs['remap_interp'] == cv2.INTER_NEAREST:
         blur = 1
     else:
@@ -125,13 +124,12 @@ def create_thumbnail(src_dir, downsample=4, highpass=True, **kwargs):
     if highpass:
         kwargs.setdefault('preprocess', partial(_smooth_filter, blur=blur, sigma=0.5))
     else:
-        if blur == 1:
+        if blur <= 2:
             kwargs.setdefault('preprocess', None)
         else:
             kwargs.setdefault('preprocess', partial(_smooth_filter, blur=blur, sigma=0.0))
     kwargs.setdefault('cache_type', 'fifo')
     kwargs.setdefault('cache_size', 8)
-    # kwargs.setdefault('cache_border_margin', 10)
     image_loader = _get_image_loader(src_dir, **kwargs)
     M = _mesh_from_image_loader(image_loader)
     bounds0 = M.bbox()
@@ -148,14 +146,17 @@ def create_thumbnail(src_dir, downsample=4, highpass=True, **kwargs):
     out_bbox = (0, 0, out_wd, out_ht)
     if highpass:
         rndr = MeshRenderer.from_mesh(M, fillval=0, dtype=np.float32, image_loader=image_loader)
-        img = rndr.crop(out_bbox, ** kwargs)
+        img = rndr.crop(out_bbox, **kwargs)
         img = 255 - _max_entropy_scaling_one_side(img)
     else:
         rndr = MeshRenderer.from_mesh(M, image_loader=image_loader)
-        img = rndr.crop(out_bbox, ** kwargs)
+        img = rndr.crop(out_bbox, **kwargs)
         if normalize_hist:
             img = _max_entropy_scaling_both_sides(img)
-    return img
+    if outname is None:
+        return img
+    else:
+        common.imwrite(outname, img)
 
 
 def _max_entropy_scaling_one_side(img, **kwargs):
@@ -238,9 +239,11 @@ def _max_entropy_scaling_both_sides(img, **kwargs):
 
 
 def _smooth_filter(img, blur=2, sigma=0.0):
-    dtype = img.dtype
     if sigma > 0:
         img = common.masked_dog_filter(img, sigma=sigma, signed=False)
-    if blur != 1:
-        img = cv2.blur(img, (round(blur), round(blur)))
+    if blur > 2:
+        if blur % 2 == 1:
+            img = cv2.blur(img, (round(blur), round(blur)))
+        else:
+            img = cv2.blur(img, (round(blur-1), round(blur-1)))
     return img
