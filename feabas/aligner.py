@@ -18,7 +18,7 @@ from feabas.spatial import scale_coordinates
 from feabas.matcher import section_matcher
 from feabas.optimizer import SLM
 import feabas.constant as const
-from feabas.common import str_to_numpy_ascii, Match
+from feabas.common import str_to_numpy_ascii, Match, rearrange_section_order
 from feabas.config import DEFAULT_RESOLUTION
 
 
@@ -157,20 +157,8 @@ class Stack:
                 section_list = sorted([os.path.basename(s).replace('.h5', '') for s in slist])
             else:
                 raise RuntimeError('no section found.')
-            section_order_file = os.path.join(self._mesh_dir, 'section_order.txt')
-            if os.path.isfile(section_order_file):
-                with open(section_order_file, 'r') as f:
-                    section_orders = f.readlines()
-                section_orders = [s.strip() for s in section_orders]
-                assert len(section_orders) == len(set(section_orders))
-                section_lut = {os.path.basename(secname).replace('.h5', ''):k 
-                               for k, secname in enumerate(section_list)}
-                section_ids0 = np.array([section_lut.get(s, -1) for s in section_orders])
-                section_ids0 = section_ids0[section_ids0 >= 0]
-                section_ids1 = np.sort(section_ids0)
-                section_list0 = section_list.copy()
-                for sid0, sid1 in zip(section_ids0, section_ids1):
-                    section_list[sid1] = section_list0[sid0]
+            section_order_file = kwargs.get('section_order_file', os.path.join(self._mesh_dir, 'section_order.txt'))
+            section_list = rearrange_section_order(section_list, section_order_file)
         assert len(section_list) == len(set(section_list))
         self.section_list = tuple(section_list)
         self._mesh_cache_size = kwargs.get('mesh_cache_size', self.num_sections)

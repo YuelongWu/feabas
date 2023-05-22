@@ -45,6 +45,12 @@ def stitch_configs():
         conf = yaml.safe_load(f)
     return conf
 
+def material_table_file():
+    work_dir = get_work_dir()
+    mt_file = os.path.join(work_dir, 'configs', 'material_table.json')
+    if not os.path.isfile(mt_file):
+        mt_file = os.path.join('configs', 'default_material_table.json')
+
 
 def align_config_file():
     work_dir = get_work_dir()

@@ -1,5 +1,7 @@
 import cv2
 import numpy as np
+import h5py
+import os
 from scipy.fft import rfft, irfft
 from shapely import concave_hull, MultiPoint, intersects_xy
 import shapely.geometry as shpgeo
@@ -7,11 +9,14 @@ from shapely.affinity import affine_transform
 from skimage.feature import peak_local_max
 from itertools import combinations
 
-from feabas import common
+from feabas import common, logging
 from feabas.spatial import fit_affine, Geometry
 from feabas.mesh import Mesh
 from feabas.optimizer import SLM
 import feabas.constant as const
+from feabas.dal import StreamLoader
+from feabas.matcher import section_matcher
+from feabas.aligner import read_matches_from_h5
 
 
 DEFAULT_FEATURE_SPACING = 15
@@ -269,6 +274,7 @@ class KeyPointMatches:
 
 def prepare_image(img, mask=None, **kwargs):
     uid = kwargs.get('uid', None)
+    compute_keypoints = kwargs.get('compute_keypoints', True)
     detect_settings = kwargs.get('detect_settings', {}).copy()
     extract_settings = kwargs.get('extract_settings', {}).copy()
     mesh_size = kwargs.get('mesh_size', DEFAULT_FEATURE_SPACING * 2)
@@ -291,9 +297,10 @@ def prepare_image(img, mask=None, **kwargs):
         mesh = Mesh.combine_mesh(meshes_stg, uid=uid)
     out['regions'] = regions
     out['mesh'] = mesh
-    kps = detect_extrema_log(img, mask=mask, **detect_settings)
-    kps = extract_LRadon_feature(img, kps, **extract_settings)
-    out['kps'] = kps
+    if compute_keypoints:
+        kps = detect_extrema_log(img, mask=mask, **detect_settings)
+        kps = extract_LRadon_feature(img, kps, **extract_settings)
+        out['kps'] = kps
     return out
             
 
@@ -452,6 +459,82 @@ def match_two_thumbnails_LRadon(img0, img1, mask0=None, mask1=None, **kwargs):
         xy1 = np.concatenate(xy1, axis=0)
         weight = np.ones(xy0.shape[0], dtype=np.float32)
         return common.Match(xy0, xy1, weight)
+
+
+
+def match_two_thumbnails_pmcc(img0, img1, mask0=None, mask1=None, **kwargs):
+    sigma = kwargs.pop('sigma', 3)
+    if not isinstance(img0, dict):
+        img0 = prepare_image(img0, mask=mask0, compute_keypoints=False, **kwargs)
+        mesh0 = img0['mesh']
+    else:
+        mesh0 = img0['mesh'].copy()
+    if not isinstance(img1, dict):
+        img1 = prepare_image(img1, mask=mask1, compute_keypoints=False, **kwargs)
+        mesh1 = img1['mesh']
+    else:
+        mesh1 = img1['mesh'].copy()
+    mesh0.uid = 0.0
+    mesh1.uid = 1.0
+    if not 'dog_image' in img0:
+        img0['dog_image'] = common.masked_dog_filter(img0['image'], sigma=sigma, mask=img0['mask'])
+    if not 'dog_image' in img1:
+        img1['dog_image'] = common.masked_dog_filter(img1['image'], sigma=sigma, mask=img1['mask'])
+    loader0 = StreamLoader(img0['dog_image'])
+    loader1 = StreamLoader(img1['dog_image'])
+    xy0, xy1, weight = section_matcher(mesh0, mesh1, loader0, loader1, **kwargs)
+    if xy0 is None:
+        return None
+    return common.Match(xy0, xy1, weight)
+
+
+
+def align_two_thumbnails(img0, img1, outname, mask0=None, mask1=None, **kwargs):
+    if os.path.isfile(outname):
+        return
+    resolution = kwargs.get('resolution')
+    feature_match_settings = kwargs.get('feature_matching', {}).copy()
+    block_match_settings = kwargs.get('block_matching', {}).copy()
+    feature_match_dir = kwargs.get('feature_match_dir', None)
+    save_feature_match = kwargs.get('save_feature_match', False)
+    logger_info = kwargs.get('logger', None)
+    logger= logging.get_logger(logger_info)
+    bname_ext = os.path.basename(outname)
+    bname = bname_ext.replace('.h5', '')
+    if feature_match_dir is not None:
+        feature_matchname = os.path.join(feature_match_dir, bname_ext)
+    else:
+        feature_matchname = None
+    if (feature_matchname is not None) and (os.path.isfile(feature_matchname)):
+        mtch0 = read_matches_from_h5(feature_matchname, target_resolution=resolution)
+    else:
+        mtch0 = match_two_thumbnails_LRadon(img0, img1, mask0=mask0, mask1=mask1,
+                                            **feature_match_settings)
+        if mtch0 is None:     
+            logger.warning(f'{bname}: fail to find matches.')
+            return 0
+        if save_feature_match:
+            xy0, xy1, weight = mtch0
+            os.makedirs(feature_match_dir, exist_ok=True)
+            with h5py.File(feature_matchname, 'w') as f:
+                f.create_dataset('xy0', data=xy0, compression="gzip")
+                f.create_dataset('xy1', data=xy1, compression="gzip")
+                f.create_dataset('weight', data=weight, compression="gzip")
+                f.create_dataset('resolution', data=resolution)
+    mtch1 = match_two_thumbnails_pmcc(img0, img1, mask0=mask0, mask1=mask1,
+                                      initial_matches=mtch0, **block_match_settings)
+    if mtch1 is None:
+        logger.warning(f'{bname}: fail to find matches.')
+        return 0
+    else:
+        xy0, xy1, weight = mtch1
+        os.makedirs(os.path.dirname(outname), exist_ok=True)
+        with h5py.File(outname, 'w') as f:
+            f.create_dataset('xy0', data=xy0, compression="gzip")
+            f.create_dataset('xy1', data=xy1, compression="gzip")
+            f.create_dataset('weight', data=weight, compression="gzip")
+            f.create_dataset('resolution', data=resolution)
+        return xy0.shape[0]
 
 
 

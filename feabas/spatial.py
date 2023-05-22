@@ -43,7 +43,6 @@ def fit_affine(pts0, pts1, return_rigid=False, weight=None, svd_clip=(1,1), avoi
         r = 2
     if r == 1:
         A = np.eye(3)
-        A[-1,:2] = mm0 - mm1
     elif r == 2:
         pts0_rot90 = pts0[:,::-1] * np.array([1,-1])
         pts1_rot90 = pts1[:,::-1] * np.array([1,-1])

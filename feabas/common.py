@@ -176,7 +176,7 @@ def masked_dog_filter(img, sigma, mask=None, signed=True):
     img1f = gaussian_filter1d(gaussian_filter1d(img, sigma1, axis=-1, mode='nearest'), sigma1, axis=-2, mode='nearest')
     imgf = img0f - img1f
     if (mask is not None) and (not np.all(mask, axis=None)):
-        mask_img = img.ptp() * (1 - mask)
+        mask_img = img.ptp() * (mask == 0)
         mask0f = gaussian_filter1d(gaussian_filter1d(mask_img, sigma0, axis=-1, mode='nearest'), sigma0, axis=-2, mode='nearest')
         mask1f = gaussian_filter1d(gaussian_filter1d(mask_img, sigma1, axis=-1, mode='nearest'), sigma1, axis=-2, mode='nearest')
         maskf = np.maximum(mask0f, mask1f)
@@ -522,3 +522,22 @@ def parse_coordinate_files(filename, **kwargs):
         imgpaths.append(mpath)
         bboxes.append((x_min, y_min, x_max, y_max))
     return imgpaths, bboxes, root_dir, resolution
+
+
+def rearrange_section_order(section_list, section_order_file):
+    if os.path.isfile(section_order_file):
+        with open(section_order_file, 'r') as f:
+            section_orders = f.readlines()
+        section_orders = [s.strip() for s in section_orders]
+        assert len(section_orders) == len(set(section_orders))
+        section_lut = {os.path.splitext(os.path.basename(secname))[0]:k 
+                    for k, secname in enumerate(section_list)}
+        section_ids0 = np.array([section_lut.get(s, -1) for s in section_orders])
+        section_ids0 = section_ids0[section_ids0 >= 0]
+        section_ids1 = np.sort(section_ids0)
+        section_list_out = section_list.copy()
+        for sid0, sid1 in zip(section_ids0, section_ids1):
+            section_list_out[sid1] = section_list[sid0]
+        return section_list_out
+    else:
+        return section_list

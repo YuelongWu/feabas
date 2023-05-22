@@ -7,7 +7,7 @@ matching:
         num_workers: 12
         batch_size: 100 # number of cropped regions to do fft at the same time
         conf_thresh: 0.35    # cross-correlations with confidence value smaller than this will be rejected
-        # distributor: intersect_triangulation
+        distributor: cartesian_region   # cartesian_region/intersect_triangulation/oneway_triangulation
         spacings: [400, 100]    # distance between grid points at each coarse-to-fine level
         shrink_factor: 0.7  # the size of the cropped fft tiles compared to the spacings
         residue_mode: huber # huber or threshold or None, deciding how to damp matches with large residue errors after optimization

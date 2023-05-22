@@ -14,7 +14,7 @@ from feabas.renderer import MeshRenderer
 from feabas import optimizer, dal, common, spatial
 import feabas.constant as const
 
-import matplotlib.pyplot as plt
+
 
 def xcorr_fft(img0, img1, conf_mode=const.FFT_CONF_MIRROR, **kwargs):
     """

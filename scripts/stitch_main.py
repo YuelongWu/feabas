@@ -46,6 +46,8 @@ def match_main(coord_list, out_dir, **kwargs):
 
 
 def optimize_one_section(matchname, outname, **kwargs):
+    from feabas.stitcher import Stitcher
+    import numpy as np
     use_group = kwargs.get('use_group', True)
     msem = kwargs.get('msem', False)
     mesh_settings = kwargs.get('mesh_settings', {})

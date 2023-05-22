@@ -74,7 +74,7 @@ def mip_one_level(src_dir, out_dir, **kwargs):
     logger = logging.get_logger(logger_info)
     out_meta_file = os.path.join(out_dir, 'metadata.txt')
     if os.path.isfile(out_meta_file):
-        n_img = len(glob.glob(out_dir, '*.'+ext_out))
+        n_img = len(glob.glob(os.path.join(out_dir, '*.'+ext_out)))
         return n_img
     rendered = {}
     try:
