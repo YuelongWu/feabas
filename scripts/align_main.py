@@ -121,7 +121,7 @@ def match_main(match_list):
     if len(match_list) == 0:
         return
     for mname in match_list:
-        outname = os.path.join(match_dir, mname)
+        outname = os.path.join(match_dir, os.path.basename(mname))
         if os.path.isfile(outname):
             continue
         t0 = time.time()
@@ -288,7 +288,7 @@ if __name__ == '__main__':
     elif mode == 'matching':
         os.makedirs(match_dir, exist_ok=True)
         generate_mesh_main()
-        match_list = sorted(os.path.join(thumb_match_dir, '*.h5'))
+        match_list = sorted(glob.glob(os.path.join(thumb_match_dir, '*.h5')))
         match_list = match_list[indx]
         if args.reverse:
             match_list = match_list[::-1]

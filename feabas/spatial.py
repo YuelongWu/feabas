@@ -304,7 +304,7 @@ def polygon_area_filter(poly, area_thresh=0):
         raise TypeError
 
 
-def smooth_zigzag(boundary, scale=1.0, tol=0.5):
+def smooth_zigzag(boundary, roi=None, scale=1.0, tol=0.5):
     """
     smooth the zigzag border of a polygon defined by bit-map images.
     boundary (shapely.geometry.LineString): boundary of the polygon
@@ -335,6 +335,9 @@ def smooth_zigzag(boundary, scale=1.0, tol=0.5):
             ml = shpgeo.LineString(mid_points)
         dis = ml.distance(vpts)
         to_keep = dis >= tol
+        if roi is not None:
+            dis0 = roi.distance(vpts)
+            to_keep = to_keep | (dis0 < tol)
         if not is_closed:
             to_keep[0] = True
             to_keep[-1] = True
@@ -939,6 +942,9 @@ class Geometry:
                 self._regions[lbl] = pp_updated
             else:
                 regions_new[lbl] = pp_updated
+        roi = unary_union(list(polygonize(bag_of_segs)))
+        if inplace:
+            self._roi = roi
         if inplace:
             return self
         else:
@@ -1067,6 +1073,9 @@ class Geometry:
                 self._regions[lbl] = pp_updated
             else:
                 regions_new[lbl] = pp_updated
+        roi = unary_union(list(polygonize(list(seg_groups.values()))))
+        if inplace:
+            self._roi = roi
         if inplace:
             return self
         else:
