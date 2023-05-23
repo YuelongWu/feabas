@@ -6,6 +6,7 @@ from scipy.interpolate import interp1d
 import shapely.geometry as shpgeo
 from shapely.ops import unary_union
 import os
+import time
 
 from feabas.dal import MosaicLoader
 from feabas import common, logging, dal
@@ -14,7 +15,7 @@ from feabas.mesh import Mesh
 from feabas.renderer import render_whole_mesh, MeshRenderer
 
 
-def _get_image_loader(src_dir, **kwargs):
+def get_image_loader(src_dir, **kwargs):
     ext = kwargs.pop('input_formats', ('png', 'jpg', 'tif', 'bmp'))
     pattern = kwargs.pop('pattern', '_tr{ROW_IND}-tc{COL_IND}.png')
     one_based = kwargs.pop('one_based', True)
@@ -78,7 +79,7 @@ def mip_one_level(src_dir, out_dir, **kwargs):
         return n_img
     rendered = {}
     try:
-        image_loader = _get_image_loader(src_dir, pattern=pattern, tile_size=tile_size, **kwargs)
+        image_loader = get_image_loader(src_dir, pattern=pattern, tile_size=tile_size, **kwargs)
         if image_loader is None:
             return 0
         pattern = os.path.splitext(pattern)[0]
@@ -113,6 +114,23 @@ def mip_one_level(src_dir, out_dir, **kwargs):
     return len(rendered)
 
 
+def mip_map_one_section(sec_name, img_dir, max_mip, **kwargs):
+    ext_out = kwargs.pop('format', 'jpg')
+    logger_info = kwargs.get('logger', None)
+    logger = logging.get_logger(logger_info)
+    t0 = time.time()
+    num_tiles = []
+    for m in range(max_mip):
+        src_dir = os.path.join(img_dir, 'mip'+str(m), sec_name)
+        out_dir = os.path.join(img_dir, 'mip'+str(m+1), sec_name)
+        n_tile = mip_one_level(src_dir, out_dir, output_format=ext_out,
+                                      downsample=2, **kwargs)
+        num_tiles.append(n_tile)
+        if n_tile is None:
+            break
+    logger.info(f'{sec_name}: number of tiles {num_tiles} | {(time.time()-t0)/60} min')
+
+
 def create_thumbnail(src_dir, outname=None, downsample=4, highpass=True, **kwargs):
     normalize_hist = kwargs.get('normalize_hist', True)
     kwargs.setdefault('remap_interp', cv2.INTER_AREA)
@@ -130,7 +148,7 @@ def create_thumbnail(src_dir, outname=None, downsample=4, highpass=True, **kwarg
             kwargs.setdefault('preprocess', partial(_smooth_filter, blur=blur, sigma=0.0))
     kwargs.setdefault('cache_type', 'fifo')
     kwargs.setdefault('cache_size', 8)
-    image_loader = _get_image_loader(src_dir, **kwargs)
+    image_loader = get_image_loader(src_dir, **kwargs)
     M = _mesh_from_image_loader(image_loader)
     bounds0 = M.bbox()
     for bbox in image_loader.file_bboxes(margin=0):

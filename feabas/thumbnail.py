@@ -299,6 +299,9 @@ def prepare_image(img, mask=None, **kwargs):
     out['mesh'] = mesh
     if compute_keypoints:
         kps = detect_extrema_log(img, mask=mask, **detect_settings)
+        if (mask is not None) and not (np.all(mask>0, axis=None)):
+            mm = np.mean(img[mask>0])
+            img = (img * (mask > 0) + mm * (mask == 0)).astype(img.dtype)
         kps = extract_LRadon_feature(img, kps, **extract_settings)
         out['kps'] = kps
     return out
@@ -410,7 +413,7 @@ def match_two_thumbnails_LRadon(img0, img1, mask0=None, mask1=None, **kwargs):
         covered_region1 = {}
         for mtch in used_matches:
             cid0 = mtch.class_id0[0]
-            cid1 = mtch.class_id1[1]
+            cid1 = mtch.class_id1[0]
             if affine_only:
                 A0 = fit_affine(mtch.xy0, mtch.xy1, avoid_flip=True)
                 A0_m = np.concatenate((A0[:2,:2].T, A0[-1,:2]), axis=None)

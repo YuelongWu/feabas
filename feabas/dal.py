@@ -83,10 +83,10 @@ def _tile_divider_block(imght, imgwd, x0=0, y0=0, cache_block_size=0):
 
 def get_loader_from_json(json_info, loader_type=None, **kwargs):
     if isinstance(json_info, str):
-        if json_info.endswith('.json'):
+        if json_info.lower().endswith('.json'):
             with open(json_info, 'r') as f:
                 json_obj = json.load(f)
-        elif json_info.endswith('.txt'): # could use tab separated txt, not recommend
+        elif json_info.lower().endswith('.txt'): # could use tab separated txt, not recommend
             if loader_type == 'StaticImageLoader':
                 loader = StaticImageLoader.from_coordinate_file(json_info)
             else:
@@ -325,7 +325,7 @@ class AbstractImageLoader(ABC):
     @staticmethod
     def _load_settings_from_json(jsonname):
         if isinstance(jsonname, str):
-            if jsonname.endswith('.json'):
+            if jsonname.lower().endswith('.json'):
                 with open(jsonname, 'r') as f:
                     json_obj = json.load(f)
             else:

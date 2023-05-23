@@ -10,30 +10,12 @@ import time
 from feabas import config, logging
 
 
-def mip_map_one_section(sec_name, img_dir, max_mip, **kwargs):
-    from feabas import mipmap
-    ext_out = kwargs.pop('format', 'jpg')
-    logger_info = kwargs.get('logger', None)
-    logger = logging.get_logger(logger_info)
-    t0 = time.time()
-    num_tiles = []
-    for m in range(max_mip):
-        src_dir = os.path.join(img_dir, 'mip'+str(m), sec_name)
-        out_dir = os.path.join(img_dir, 'mip'+str(m+1), sec_name)
-        n_tile = mipmap.mip_one_level(src_dir, out_dir, output_format=ext_out,
-                                      downsample=2, **kwargs)
-        num_tiles.append(n_tile)
-        if n_tile is None:
-            break
-    logger.info(f'{sec_name}: number of tiles {num_tiles} | {(time.time()-t0)/60} min')
-
-
 def generate_stitched_mipmaps(img_dir, max_mip, **kwargs):
     min_mip = kwargs.pop('min_mip', 0)
     num_workers = kwargs.pop('num_workers', 1)
     parallel_within_section = kwargs.pop('parallel_within_section', True)
     logger_info = kwargs.get('logger', None)
-    logger= logging.get_logger(logger_info)
+    logger = logging.get_logger(logger_info)
     meta_list = sorted(glob.glob(os.path.join(img_dir, 'mip'+str(min_mip), '**', 'metadata.txt'), recursive=True))
     secnames = [os.path.basename(os.path.dirname(s)) for s in meta_list]
     if parallel_within_section or (num_workers == 1):
@@ -55,7 +37,7 @@ def generate_stitched_mipmaps(img_dir, max_mip, **kwargs):
 def generate_thumbnails(src_dir, out_dir, **kwargs):
     num_workers = kwargs.pop('num_workers', 1)
     logger_info = kwargs.pop('logger', None)
-    logger= logging.get_logger(logger_info)
+    logger = logging.get_logger(logger_info)
     meta_list = sorted(glob.glob(os.path.join(src_dir, '**', 'metadata.txt'), recursive=True))
     secnames = [os.path.basename(os.path.dirname(s)) for s in meta_list]
     target_func = partial(mipmap.create_thumbnail, **kwargs)
@@ -148,43 +130,48 @@ def align_thumbnail_pairs(pairnames, image_dir, out_dir, **kwargs):
     match_name_delimiter = kwargs.pop('match_name_delimiter', '__to__')
     cache_size = kwargs.pop('cache_size', 3)
     feature_match_settings = kwargs.get('feature_matching', {})
+    logger_info = kwargs.get('logger', None)
+    logger = logging.get_logger(logger_info)
     prepared_cache = caching.CacheFIFO(maxlen=cache_size)
     for pname in pairnames:
-        sname0_ext, sname1_ext = pname
-        sname0 = os.path.splitext(sname0_ext)[0]
-        sname1 = os.path.splitext(sname1_ext)[0]
-        outname = os.path.join(out_dir, sname0 + match_name_delimiter + sname1 + '.h5')
-        if os.path.isfile(outname):
-            continue
-        if sname0 in prepared_cache:
-            minfo0 = prepared_cache[sname0]
-        else:
-            img0 = common.imread(os.path.join(image_dir, sname0_ext))
-            if (region_mask_dir is not None) and os.path.isfile(os.path.join(region_mask_dir, sname0_ext)):
-                mask0 = common.imread(os.path.join(region_mask_dir, sname0_ext))
-            elif (material_mask_dir is not None) and os.path.isfile(os.path.join(material_mask_dir, sname0_ext)):
-                mask_t = common.imread(os.path.join(material_mask_dir, sname0_ext))
-                mask_t = np.isin(mask_t, region_labels).astype(np.uint8)
-                _, mask0 = cv2.connectedComponents(mask_t, connectivity=4, ltype=cv2.CV_16U)
+        try:
+            sname0_ext, sname1_ext = pname
+            sname0 = os.path.splitext(sname0_ext)[0]
+            sname1 = os.path.splitext(sname1_ext)[0]
+            outname = os.path.join(out_dir, sname0 + match_name_delimiter + sname1 + '.h5')
+            if os.path.isfile(outname):
+                continue
+            if sname0 in prepared_cache:
+                minfo0 = prepared_cache[sname0]
             else:
-                mask0 = None
-            minfo0 = thumbnail.prepare_image(img0, mask=mask0, **feature_match_settings)
-            prepared_cache[sname0] = minfo0
-        if sname1 in prepared_cache:
-            minfo1 = prepared_cache[sname1]
-        else:
-            img1 = common.imread(os.path.join(image_dir, sname1_ext))
-            if (region_mask_dir is not None) and os.path.isfile(os.path.join(region_mask_dir, sname1_ext)):
-                mask1 = common.imread(os.path.join(region_mask_dir, sname1_ext))
-            elif (material_mask_dir is not None) and os.path.isfile(os.path.join(material_mask_dir, sname1_ext)):
-                mask_t = common.imread(os.path.join(material_mask_dir, sname1_ext))
-                mask_t = np.isin(mask_t, region_labels).astype(np.uint8)
-                _, mask1 = cv2.connectedComponents(mask_t, connectivity=4, ltype=cv2.CV_16U)
+                img0 = common.imread(os.path.join(image_dir, sname0_ext))
+                if (region_mask_dir is not None) and os.path.isfile(os.path.join(region_mask_dir, sname0_ext)):
+                    mask0 = common.imread(os.path.join(region_mask_dir, sname0_ext))
+                elif (material_mask_dir is not None) and os.path.isfile(os.path.join(material_mask_dir, sname0_ext)):
+                    mask_t = common.imread(os.path.join(material_mask_dir, sname0_ext))
+                    mask_t = np.isin(mask_t, region_labels).astype(np.uint8)
+                    _, mask0 = cv2.connectedComponents(mask_t, connectivity=4, ltype=cv2.CV_16U)
+                else:
+                    mask0 = None
+                minfo0 = thumbnail.prepare_image(img0, mask=mask0, **feature_match_settings)
+                prepared_cache[sname0] = minfo0
+            if sname1 in prepared_cache:
+                minfo1 = prepared_cache[sname1]
             else:
-                mask1 = None
-            minfo1 = thumbnail.prepare_image(img1, mask=mask1, **feature_match_settings)
-            prepared_cache[sname1] = minfo1
-        thumbnail.align_two_thumbnails(minfo0, minfo1, outname, **kwargs)
+                img1 = common.imread(os.path.join(image_dir, sname1_ext))
+                if (region_mask_dir is not None) and os.path.isfile(os.path.join(region_mask_dir, sname1_ext)):
+                    mask1 = common.imread(os.path.join(region_mask_dir, sname1_ext))
+                elif (material_mask_dir is not None) and os.path.isfile(os.path.join(material_mask_dir, sname1_ext)):
+                    mask_t = common.imread(os.path.join(material_mask_dir, sname1_ext))
+                    mask_t = np.isin(mask_t, region_labels).astype(np.uint8)
+                    _, mask1 = cv2.connectedComponents(mask_t, connectivity=4, ltype=cv2.CV_16U)
+                else:
+                    mask1 = None
+                minfo1 = thumbnail.prepare_image(img1, mask=mask1, **feature_match_settings)
+                prepared_cache[sname1] = minfo1
+            thumbnail.align_two_thumbnails(minfo0, minfo1, outname, **kwargs)
+        except Exception as err:
+            logger.error(f'{pname}: error {err}')
 
 
 
@@ -217,6 +204,7 @@ if __name__ == '__main__':
     config.limit_numpy_thread(nthreads)
 
     from feabas import mipmap, common, material
+    from feabas.mipmap import mip_map_one_section
     import numpy as np
 
     thumbnail_dir = os.path.join(root_dir, 'thumbnail_align')

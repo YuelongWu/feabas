@@ -1,8 +1,16 @@
+meshing:
+    num_workers: 12
+    mesh_size: 600  # spacings between mesh grids in pixel at mip0
+    simplify_tol: 2 # when approximate regions defined by mask images to polygon, the tolerance of distance error
+    mask_dir: null  # the folder contains the material masks. if set to null, default to working_directory/align/material_masks. If mask not exist in this folder, use the one in the thumbnail folder     
+    mask_mip_level: 4 # the resolution of the masks in mask_dir folder
+    area_thresh: 25 # regions with area smaller than the threshold will be discarded
+
 matching:
-    working_resolution: 16  # resolution at which to do the matching
+    working_mip_level: 2  # resolution at which to do the matching
     match_name_delimiter: __to__    # so that the match file follows the patern sec0{delimieter}sec2.h5
     loader_config:
-        cache_size: 64  # total number of source images allowed to cache in RAM
+        cache_size: 60  # total number of source images allowed to cache in RAM
     matcher_config:
         num_workers: 12
         batch_size: 100 # number of cropped regions to do fft at the same time
@@ -17,7 +25,7 @@ matching:
 
 optimization:
     stack_config:
-        resolution: 4
+        mip_level: 0
         mesh_cache_size: 90
     slide_window:
         num_workers: 2
@@ -39,12 +47,14 @@ optimization:
 rendering:
     out_dir: null  # directory to save the aligned stack. if set to null, default to working_directory/aligned_stack
     num_workers: 10
-    cache_size: 50
     pattern: _tr{ROW_IND}-tc{COL_IND}.png
     one_based: true # zero-based or one-based row/colume indexing
-    fillval: 0
-    apply_CLAHE: false
     max_tile_per_job: 20
-    scale: 1
+    mip_level: 0
     canvas_bbox: null
     tile_size: [4096, 4096]
+    remap_interp: LANCZOS # LANCZOS | CUBIC | LINEAR | NEAREST
+    loader_config:
+        cache_size: 50
+        fillval: 0
+        apply_CLAHE: false

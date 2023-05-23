@@ -72,6 +72,12 @@ def render_by_subregions(map_x, map_y, mask, img_loader, fileid=None,  **kwargs)
     dtype_out = kwargs.get('dtype_out', img_loader.dtype)
     return_empty = kwargs.get('return_empty', False)
     seeds = kwargs.get('seeds', None)
+    if isinstance(rintp, str):
+        rintp_dict = {'NEAREST': cv2.INTER_NEAREST,
+                      'LINEAR': cv2.INTER_LINEAR,
+                      'CUBIC': cv2.INTER_CUBIC,
+                      'LANCZOS': cv2.INTER_LANCZOS4}
+        rintp = rintp_dict.get(rintp.upper(), cv2.INTER_LANCZOS4)
     mx_dis = np.atleast_1d(mx_dis)
     if map_x.size == 0:
         return None

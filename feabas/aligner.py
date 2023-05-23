@@ -56,7 +56,7 @@ def match_section_from_initial_matches(match_name, meshes, loaders, out_dir, con
     outname = os.path.join(out_dir, os.path.basename(match_name))
     if os.path.isfile(outname):
         return None
-    if isinstance(conf, str) and conf.endswith('.yaml'):
+    if isinstance(conf, str) and conf.lower().endswith('.yaml'):
         with open(conf, 'r') as f:
             conf = yaml.safe_load(f)
     if 'matching' in conf:
@@ -66,7 +66,8 @@ def match_section_from_initial_matches(match_name, meshes, loaders, out_dir, con
     elif not isinstance(conf, dict):
         raise TypeError('configuration type not supported.')
     match_name_delimiter = conf.get('match_name_delimiter', '__to__')
-    resolution = conf.get('working_resolution', DEFAULT_RESOLUTION)
+    working_mip_level = conf.get('working_mip_level', 0)
+    resolution = DEFAULT_RESOLUTION * (2 ** working_mip_level)
     loader_config = conf.get('loader_config', {}).copy()
     matcher_config = conf.get('matcher_config', {}).copy()
     secnames = os.path.splitext(os.path.basename(match_name))[0].split(match_name_delimiter)
@@ -167,7 +168,8 @@ class Stack:
         lock_flags = kwargs.get('lock_flags', None)
         mesh_cache = kwargs.get('mesh_cache', {})
         link_cache = kwargs.get('link_cache', {})
-        self._resolution = kwargs.get('resolution', DEFAULT_RESOLUTION)
+        mip_level = kwargs.get('mip_level', 0)
+        self._resolution = DEFAULT_RESOLUTION * (2 ** mip_level)
         self._mesh_cache = OrderedDict()
         self._mesh_cache.update(mesh_cache)
         self._link_cache = OrderedDict()

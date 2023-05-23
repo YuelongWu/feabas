@@ -50,6 +50,7 @@ def material_table_file():
     mt_file = os.path.join(work_dir, 'configs', 'material_table.json')
     if not os.path.isfile(mt_file):
         mt_file = os.path.join('configs', 'default_material_table.json')
+    return mt_file
 
 
 def align_config_file():
