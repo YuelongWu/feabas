@@ -146,6 +146,7 @@ def optimize_main(section_list):
     slide_window['logger'] = logger_info[0]
     logger = logging.get_logger(logger_info[0])
     stk = Stack(section_list=section_list, mesh_dir=mesh_dir, match_dir=match_dir, mesh_out_dir=tform_dir, **stack_config)
+    section_list = stk.section_list
     stk.update_lock_flags({s: os.path.isfile(os.path.join(tform_dir, s + '.h5')) for s in section_list})
     locked_flags = stk.locked_array
     logger.info(f'{locked_flags.size} images| {np.sum(locked_flags)} references')
@@ -295,7 +296,7 @@ if __name__ == '__main__':
         align_config.setdefault('match_name_delimiter',  match_name_delimiter)
         match_main(match_list)
     elif mode == 'optimization':
-        os.makedirs(tform_dir)
+        os.makedirs(tform_dir, exist_ok=True)
         optimize_main(None)
     elif mode == 'rendering':
         os.makedirs(render_dir, exist_ok=True)
