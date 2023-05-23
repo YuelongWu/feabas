@@ -9,6 +9,7 @@ matching:   # see stitcher.Stitcher.subprocess_match_list_of_overlaps for detail
     matcher_config: # see matcher.stitching_matcher for details
         spacing: null   # the spacing between grid points. null to decide dynamically
         conf_thresh: 0.33   # cross-correlations with confidence value smaller than this will be rejected
+        pad: true
         sigma: 2.5          # sigma of DoG filter applied to the images before matching
         coarse_downsample: 0.5      # down-sample the images at the coase-level matching
         fine_downsample: 1.0        # down-sample the images at the fine-level matching to save time at the cost of accuracy

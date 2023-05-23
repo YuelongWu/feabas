@@ -162,9 +162,43 @@ def optimize_main(section_list):
         cost0.update(cost)
         cost = cost0
     with open(os.path.join(tform_dir, 'residue.csv'), 'w') as f:
-        for key, val in cost.items():
+        mnames = sorted(list(cost.keys()))
+        for key in mnames:
+            val = cost[key]
             f.write(f'{key}, {val[0]}, {val[1]}\n')
     logger.info('finished')
+    logging.terminate_logger(*logger_info)
+
+
+def offset_bbox_main():
+    logger_info = logging.initialize_main_logger(logger_name='offset_bbox', mp=False)
+    logger = logging.get_logger(logger_info[0])
+    outname = os.path.join(tform_dir, 'offset.txt')
+    tform_list = sorted(glob.glob(os.path.join(tform_dir, '*.h5')))
+    if os.path.isfile(outname) or (len(tform_list) == 0):
+        return
+    secnames = [os.path.splitext(os.path.basename(s))[0] for s in tform_list]
+    mip_level = align_config.pop('get', 0)
+    outdir = os.path.join(render_dir, 'mip'+str(mip_level))
+    for sname in secnames:
+        if os.path.isdir(os.path.join(outdir, sname)):
+            logger.info(f'section {sname} already rendered: transformation not performed')
+            return
+    bbox_union = None
+    for tname in tform_list:
+        M = Mesh.from_h5(tname)
+        M.change_resolution(config.DEFAULT_RESOLUTION)
+        bbox = M.bbox(gear=const.MESH_GEAR_MOVING, offsetting=True)
+        if bbox_union is None:
+            bbox_union = bbox
+        else:
+            bbox_union = common.bbox_union((bbox_union, bbox))
+    offset = -bbox_union[:2]
+    bbox_union_new = bbox_union + np.tile(offset, 2)
+    if not os.path.isfile(outname):
+        with open(outname, 'w') as f:
+            f.write('\t'.join([str(s) for s in offset]))
+    logger.warn(f'bbox offset: {tuple(bbox_union)} -> {tuple(bbox_union_new)}')
     logging.terminate_logger(*logger_info)
 
 
@@ -172,6 +206,7 @@ def render_one_section(h5name, **kwargs):
     logger_info = kwargs.pop('logger', None)
     logger = logging.get_logger(logger_info)
     mip_level = kwargs.pop('mip_level', 0)
+    offset = kwargs.pop('offset', None)
     secname = os.path.splitext(os.path.basename(h5name))[0]
     outdir = os.path.join(render_dir, 'mip'+str(mip_level), secname)
     resolution = config.DEFAULT_RESOLUTION * (2 ** mip_level)
@@ -189,9 +224,10 @@ def render_one_section(h5name, **kwargs):
     loader = get_image_loader(os.path.join(stitched_image_dir, secname), **loader_config)
     M = Mesh.from_h5(h5name)
     M.change_resolution(resolution)
+    if offset is not None:
+        M.apply_translation(offset * config.DEFAULT_RESOLUTION/resolution, gear=const.MESH_GEAR_MOVING)
+    os.makedirs(outdir, exist_ok=True)
     prefix = os.path.join(outdir, secname)
-    os.makedirs(prefix, exist_ok=True)
-    prefix = os.path.join(prefix, secname)
     rendered = render_whole_mesh(M, loader, prefix, **kwargs)
     fnames = sorted(list(rendered.keys()))
     bboxes = []
@@ -212,11 +248,44 @@ def render_main(tform_list):
     if (cache_size is not None) and (num_workers > 1):
         align_config.setdefault('loader_config', {})
         align_config['loader_config'].setdefault('cache_size', cache_size // num_workers)
+    offset_name = os.path.join(tform_dir, 'offset.txt')
+    if os.path.isfile(offset_name):
+        with open(offset_name, 'r') as f:
+            line = f.readline()
+        offset = np.array([float(s) for s in line.strip().split('\t')])
+        logger.info(f'use offset {offset}')
+    else:
+        offset = None
     for tname in tform_list:
-        render_one_section(tname, **align_config)
+        render_one_section(tname, offset=offset, **align_config)
     logger.info('finished')
     logging.terminate_logger(*logger_info)
 
+
+def generate_aligned_mipmaps(img_dir, max_mip, **kwargs):
+    min_mip = kwargs.pop('min_mip', 0)
+    num_workers = kwargs.pop('num_workers', 1)
+    parallel_within_section = kwargs.pop('parallel_within_section', True)
+    logger_info = logging.initialize_main_logger(logger_name='align_mipmap', mp=num_workers>0)
+    kwargs['logger'] = logger_info[0]
+    logger = logging.get_logger(logger_info[0])
+    meta_list = sorted(glob.glob(os.path.join(img_dir, 'mip'+str(min_mip), '**', 'metadata.txt'), recursive=True))
+    secnames = [os.path.basename(os.path.dirname(s)) for s in meta_list]
+    if parallel_within_section or (num_workers == 1):
+        for sname in secnames:
+            mip_map_one_section(sname, img_dir, max_mip, num_workers=num_workers, **kwargs)
+    else:
+        target_func = partial(mip_map_one_section, img_dir=img_dir,
+                                max_mip=max_mip, num_workers=1, **kwargs)
+        jobs = []
+        with ProcessPoolExecutor(max_workers=num_workers, mp_context=get_context('spawn')) as executor:
+            for sname in secnames:
+                job = executor.submit(target_func, sname)
+                jobs.append(job)
+            for job in jobs:
+                job.result()
+    logger.info('mipmapping generated.')
+    logging.terminate_logger(*logger_info)
 
 
 def parse_args(args=None):
@@ -254,16 +323,23 @@ if __name__ == '__main__':
         align_config = align_config['matching']
         mode = 'matching'
         num_workers = align_config.get('matcher_config', {}).get('num_workers', 1)
-    else:
+    elif args.mode.lower().startswith('me'):
         mesh_config = align_config['meshing']
         mode = 'meshing'
         num_workers = mesh_config.get('num_workers', 1)
+    elif args.mode.lower().startswith('d'):
+        min_mip = align_config.get('rendering', {}).get('mip_level', 0)
+        mode = 'downsample'
+        align_config = align_config['downsample']
+        num_workers = align_config.get('num_workers', 1)
+    else:
+        raise RuntimeError(f'{args.mode} not supported mode.')
     nthreads = max(1, math.floor(num_cpus / num_workers))
     config.limit_numpy_thread(nthreads)
 
-    from feabas import material, dal
+    from feabas import material, dal, common
     from feabas.mesh import Mesh
-    from feabas.mipmap import get_image_loader
+    from feabas.mipmap import get_image_loader, mip_map_one_section
     from feabas.aligner import match_section_from_initial_matches
     from feabas.renderer import render_whole_mesh
     import numpy as np
@@ -299,8 +375,14 @@ if __name__ == '__main__':
         os.makedirs(tform_dir, exist_ok=True)
         optimize_main(None)
     elif mode == 'rendering':
+        if align_config.pop('offset_bbox', True):
+            offset_bbox_main()
         os.makedirs(render_dir, exist_ok=True)
         tform_list = sorted(glob.glob(os.path.join(tform_dir, '*.h5')))
         tform_list = tform_list[indx]
         if args.reverse:
             tform_list = tform_list[::-1]
+        render_main(tform_list)
+    elif mode == 'downsample':
+        max_mip = align_config.pop('max_mip', 8)
+        generate_aligned_mipmaps(render_dir, max_mip=max_mip, min_mip=min_mip, **align_config)

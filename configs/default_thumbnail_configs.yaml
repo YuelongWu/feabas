@@ -36,7 +36,7 @@ alignment:
     block_matching:
         sigma: 3.5
         conf_thresh: 0.35
-        to_pad: True
+        pad: True
         spacing: [150, 50]
         distributor: intersect_triangulation
         residue_mode: huber

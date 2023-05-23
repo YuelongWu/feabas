@@ -380,7 +380,7 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
     compute_strain = kwargs.get('compute_strain', True)
     batch_size = kwargs.pop('batch_size', None)
     initial_matches = kwargs.get('initial_matches', None)
-    to_pad = kwargs.get('pad', None)
+    to_pad = kwargs.pop('pad', None)
     max_spacing_skip = kwargs.get('max_spacing_skip', 1)
     continue_on_flip = kwargs.get('continue_on_flip', True)
     if num_workers > 1 and batch_size is not None:

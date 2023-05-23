@@ -16,6 +16,7 @@ matching:
         batch_size: 100 # number of cropped regions to do fft at the same time
         conf_thresh: 0.35    # cross-correlations with confidence value smaller than this will be rejected
         sigma: 3.5
+        pad: true
         distributor: cartesian_region   # cartesian_region/intersect_triangulation/oneway_triangulation
         spacings: [400, 100]    # distance between grid points at each coarse-to-fine level
         shrink_factor: 0.7  # the size of the cropped fft tiles compared to the spacings
@@ -46,6 +47,7 @@ optimization:
                 eval_step: 10
 
 rendering:
+    offset_bbox: true
     out_dir: null  # directory to save the aligned stack. if set to null, default to working_directory/aligned_stack
     num_workers: 10
     pattern: _tr{ROW_IND}-tc{COL_IND}.png
@@ -59,3 +61,9 @@ rendering:
         cache_size: 50
         fillval: 0
         apply_CLAHE: false
+
+downsample:
+    num_workers: 10
+    parallel_within_section: true   # whether to parallel among tiles within a section, or among sections
+    max_mip: 7
+    format: jpg
