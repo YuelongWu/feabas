@@ -262,20 +262,21 @@ def render_main(tform_list):
     logging.terminate_logger(*logger_info)
 
 
-def generate_aligned_mipmaps(img_dir, max_mip, **kwargs):
+def generate_aligned_mipmaps(render_dir, max_mip, meta_list=None, **kwargs):
     min_mip = kwargs.pop('min_mip', 0)
     num_workers = kwargs.pop('num_workers', 1)
     parallel_within_section = kwargs.pop('parallel_within_section', True)
     logger_info = logging.initialize_main_logger(logger_name='align_mipmap', mp=num_workers>0)
     kwargs['logger'] = logger_info[0]
     logger = logging.get_logger(logger_info[0])
-    meta_list = sorted(glob.glob(os.path.join(img_dir, 'mip'+str(min_mip), '**', 'metadata.txt'), recursive=True))
+    if meta_list is None:
+        meta_list = sorted(glob.glob(os.path.join(render_dir, 'mip'+str(min_mip), '**', 'metadata.txt'), recursive=True))
     secnames = [os.path.basename(os.path.dirname(s)) for s in meta_list]
     if parallel_within_section or (num_workers == 1):
         for sname in secnames:
-            mip_map_one_section(sname, img_dir, max_mip, num_workers=num_workers, **kwargs)
+            mip_map_one_section(sname, render_dir, max_mip, num_workers=num_workers, **kwargs)
     else:
-        target_func = partial(mip_map_one_section, img_dir=img_dir,
+        target_func = partial(mip_map_one_section, img_dir=render_dir,
                                 max_mip=max_mip, num_workers=1, **kwargs)
         jobs = []
         with ProcessPoolExecutor(max_workers=num_workers, mp_context=get_context('spawn')) as executor:
@@ -330,7 +331,12 @@ if __name__ == '__main__':
     elif args.mode.lower().startswith('d'):
         min_mip = align_config.get('rendering', {}).get('mip_level', 0)
         mode = 'downsample'
-        align_config = align_config['downsample']
+        render_config = align_config.get('rendering', {})
+        filename_config = {key:val for key, val in render_config.items() if key in ('pattern', 'one_based', 'tile_size')}
+        if render_config.get('loader_config', {}).get('fillval', None) is not None:
+            filename_config['fillval'] = render_config['loader_config']['fillval']
+        filename_config.update(align_config['downsample'])
+        align_config = filename_config
         num_workers = align_config.get('num_workers', 1)
     else:
         raise RuntimeError(f'{args.mode} not supported mode.')
@@ -385,4 +391,8 @@ if __name__ == '__main__':
         render_main(tform_list)
     elif mode == 'downsample':
         max_mip = align_config.pop('max_mip', 8)
-        generate_aligned_mipmaps(render_dir, max_mip=max_mip, min_mip=min_mip, **align_config)
+        meta_list = sorted(glob.glob(os.path.join(render_dir, 'mip'+str(min_mip), '**', 'metadata.txt'), recursive=True))
+        meta_list = meta_list[indx]
+        if args.reverse:
+            meta_list = meta_list[::-1]
+        generate_aligned_mipmaps(render_dir, max_mip=max_mip, meta_list=meta_list, min_mip=min_mip, **align_config)
