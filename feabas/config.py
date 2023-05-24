@@ -3,8 +3,10 @@ import yaml
 from feabas import constant
 
 
+_default_configuration_folder = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'configs')
+
 def general_settings():
-    config_file = os.path.join('configs', 'general_configs.yaml')
+    config_file = os.path.join(_default_configuration_folder, 'general_configs.yaml')
     if os.path.isfile(config_file):
         with open(config_file, 'r') as f:
             conf = yaml.safe_load(f)
@@ -35,7 +37,7 @@ def stitch_config_file():
     work_dir = get_work_dir()
     config_file = os.path.join(work_dir, 'configs', 'stitching_configs.yaml')
     if not os.path.isfile(config_file):
-        config_file = os.path.join('configs', 'default_stitching_configs.yaml')
+        config_file = os.path.join(_default_configuration_folder, 'default_stitching_configs.yaml')
         assert(os.path.isfile(config_file))
     return config_file
 
@@ -49,7 +51,7 @@ def material_table_file():
     work_dir = get_work_dir()
     mt_file = os.path.join(work_dir, 'configs', 'material_table.json')
     if not os.path.isfile(mt_file):
-        mt_file = os.path.join('configs', 'default_material_table.json')
+        mt_file = os.path.join(_default_configuration_folder, 'default_material_table.json')
     return mt_file
 
 
@@ -57,7 +59,7 @@ def align_config_file():
     work_dir = get_work_dir()
     config_file = os.path.join(work_dir, 'configs', 'alignment_configs.yaml')
     if not os.path.isfile(config_file):
-        config_file = os.path.join('configs', 'default_alignment_configs.yaml')
+        config_file = os.path.join(_default_configuration_folder, 'default_alignment_configs.yaml')
         assert(os.path.isfile(config_file))
     return config_file
 
@@ -72,7 +74,7 @@ def thumbnail_config_file():
     work_dir = get_work_dir()
     config_file = os.path.join(work_dir, 'configs', 'thumbnail_configs.yaml')
     if not os.path.isfile(config_file):
-        config_file = os.path.join('configs', 'default_thumbnail_configs.yaml')
+        config_file = os.path.join(_default_configuration_folder, 'default_thumbnail_configs.yaml')
         assert(os.path.isfile(config_file))
     return config_file
 

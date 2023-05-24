@@ -8,15 +8,22 @@ from functools import lru_cache
 
 from feabas.common import numpy_to_str_ascii
 from feabas.spatial import scale_coordinates
+from feabas import config
 
-@lru_cache(maxsize=20)
-def parse_h5_match(match_name, target_resolution=None):
+@lru_cache(maxsize=10)
+def parse_h5_match(match_name, target_resolution=None, delimiter='__to__'):
     with h5py.File(match_name, 'r') as f:
         xy0 = f['xy0'][()]
         xy1 = f['xy1'][()]
         resolution = f['resolution'][()]
-        name0 = numpy_to_str_ascii(f['name0'][()])
-        name1 = numpy_to_str_ascii(f['name1'][()])
+        if ('name0' in f) and ('name1' in f):
+            name0 = numpy_to_str_ascii(f['name0'][()])
+            name1 = numpy_to_str_ascii(f['name1'][()])
+        else:
+            fname = os.path.splitext(os.path.basename(match_name))[0]
+            secnames = fname.split(delimiter)
+            name0 = secnames[0]
+            name1 = secnames[1]
         if isinstance(resolution, np.ndarray):
             resolution = resolution.item()
         if target_resolution is not None:
@@ -27,16 +34,21 @@ def parse_h5_match(match_name, target_resolution=None):
 
 
 if __name__ == '__main__':
-    root_dir = '/n/boslfs02/LABS/lichtman_lab/yuelong/dce/data/Fish2/alignment'
-    thumb_dir = os.path.join(root_dir, 'stitched_256nm')
-    match_dir = os.path.join(root_dir, 'match_h5')
-    out_dir = os.path.join(root_dir, 'match_cover')
-    delimiter = '__to__'
+    root_dir = config.get_work_dir()
+    thumb_dir = os.path.join(root_dir, 'thumbnail_align', 'thumbnails')
+    match_dir = os.path.join(root_dir, 'align', 'matches')
+    out_dir = os.path.join(match_dir, 'match_cover')
     ext = '.png'
-    thumb_res = 256
-    ds = 2
-    blksz = int(np.ceil(100 * 16 / thumb_res))
+    thumbnail_configs = config.thumbnail_configs()
+    delimiter = thumbnail_configs.get('alignment', {}).get('match_name_delimiter', '__to__')
+    thumb_mip = thumbnail_configs.get('thumbnail_mip_level', 6)
+    thumb_res = config.DEFAULT_RESOLUTION * (2 ** thumb_mip)
+    align_configs = config.align_configs()
+    align_mip = align_configs.get('matching', {}).get('working_mip_level', 2)
+    blksz = align_configs.get('matching', {}).get('spacings', [100])[-1]
+    blksz = int(np.ceil(blksz * 2 ** (align_mip / thumb_mip)))
     skel = np.ones((blksz, blksz), np.uint8)
+    ds = 2
 
     os.makedirs(out_dir, exist_ok=True)
     
@@ -59,13 +71,13 @@ if __name__ == '__main__':
         imght = img.shape[0]
         imgwd = img.shape[1]
         for mname in prev_lut[tname_noext]:
-            m = parse_h5_match(mname, target_resolution=thumb_res)
+            m = parse_h5_match(mname, target_resolution=thumb_res, delimiter=delimiter)
             pts = m[tname_noext]
             x = np.round(pts[:,0].clip(0, imgwd-1)).astype(np.int32)
             y = np.round(pts[:,1].clip(0, imght-1)).astype(np.int32)
             mask0[y, x] = 1
         for mname in post_lut[tname_noext]:
-            m = parse_h5_match(mname, target_resolution=thumb_res)
+            m = parse_h5_match(mname, target_resolution=thumb_res, delimiter=delimiter)
             pts = m[tname_noext]
             x = np.round(pts[:,0].clip(0, imgwd-1)).astype(np.int32)
             y = np.round(pts[:,1].clip(0, imght-1)).astype(np.int32)

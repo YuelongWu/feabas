@@ -13,6 +13,7 @@ alignment:
     compare_distance: 2
     cache_size: 3
     save_feature_match: false
+    match_name_delimiter: __to__    # so that the match file follows the patern sec0{delimieter}sec2.h5
     feature_matching:
         affine_only: false
         detect_settings:

@@ -7,8 +7,7 @@ meshing:
     area_thresh: 25 # regions with area smaller than the threshold will be discarded
 
 matching:
-    working_mip_level: 2  # resolution at which to do the matching
-    match_name_delimiter: __to__    # so that the match file follows the patern sec0{delimieter}sec2.h5
+    working_mip_level: 2  # resolution at which to do the matchin
     loader_config:
         cache_size: 60  # total number of source images allowed to cache in RAM
     matcher_config:
