@@ -38,8 +38,9 @@ alignment:
         sigma: 3.5
         conf_thresh: 0.35
         pad: True
-        spacing: [150, 50]
-        distributor: intersect_triangulation
+        spacings: [150, 50]
+        shrink_factor: 1
+        distributor: cartesian_region
         residue_mode: huber
         residue_len: 3
         min_boundary_distance: 20

@@ -130,7 +130,7 @@ class KeyPoints:
         proj_num = self.des.shape[-1]
         F = rfft(self.des, n=proj_num, axis=-1)
         omega = np.linspace(0, proj_num, num=proj_num, endpoint=False)
-        angle_offset = -self._angle.reshape(-1,1) * omega *1j
+        angle_offset = -self.angle.reshape(-1,1) * omega *1j
         F = F * np.exp(angle_offset.reshape(-1, 1, proj_num))[:,:,:F.shape[-1]]
         self.des = irfft(F, n=proj_num, axis=-1)
         self.angle_aligned = False
@@ -298,10 +298,10 @@ def prepare_image(img, mask=None, **kwargs):
     out['regions'] = regions
     out['mesh'] = mesh
     if compute_keypoints:
-        kps = detect_extrema_log(img, mask=mask, **detect_settings)
         if (mask is not None) and not (np.all(mask>0, axis=None)):
             mm = np.mean(img[mask>0])
             img = (img * (mask > 0) + mm * (mask == 0)).astype(img.dtype)
+        kps = detect_extrema_log(img, mask=mask, **detect_settings)
         kps = extract_LRadon_feature(img, kps, **extract_settings)
         out['kps'] = kps
     return out
