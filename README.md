@@ -1,6 +1,6 @@
 # FEABAS
 
-FEABAS (Finite-Element Analysis Brain Assembly System) is a Python library powered by finite-element analysis for stitching & alignment of serial-sectioning electron microscopy connectomic datasets.
+FEABAS (Finite-Element Artificial Brain Assembly System) is a Python library powered by finite-element analysis for stitching & alignment of serial-sectioning electron microscopy connectomic datasets.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
@@ -119,3 +119,47 @@ python scripts/stitch_main.py --mode rendering
 ```
 
 It reads the transformation files in `(working_directory)/stitch/tform` folder, and renders the stitched section in the form of non-overlapping PNG tiles. The user can control the rendering process (like the output tile size, whether to use [CLAHE](https://en.wikipedia.org/wiki/Adaptive_histogram_equalization#Contrast_Limited_AHE) etc.) by manipulating the `rendering` element in the *working directory*'s `configs/stitching_configs.yaml` file. By default, FEABAS will render the images to the *working directory*. If the user would like to keep the *working directory* lightweight and put the stitched images elsewhere, it can be achieved by defining the target path to `rendering: out_dir` field in the stitching configuration file.
+
+### Thumbnail Alignment
+
+The FEABAS alignment workflow follows the 'coarse-to-fine' doctrine, with the thumbnail alignment as the most coarse alignment step that happens immediately after the stitching. The goal of the thumbnail alignment step is to find rough correspondences at a lower resolution between neighboring sections, making it easier for the finer matching step later on.
+
+#### thumbnail generation
+
+To generate the thumbnails of the stitched images, navigate to the FEABAS code root directory, and run:
+
+```bash
+python scripts/thumbnail_main.py --mode downsample
+```
+
+The downsampled thumbnails will be written to `(working_directory)/thumbnail_align/thumbnails` folder. There are a few options the user can control via `configs/thumbnail_configs.yaml` in the *working directory*; among which `thumbnail_mip_level` and `downsample: thumbnail_highpass` are probably the most important.
+
+- `thumbnail_mip_level` controls the resolution of the thumbnail by specifying its [mipmap level](https://en.wikipedia.org/wiki/Mipmap). The images are downsampled by a factor of two when the mipmap level increases by 1, with mip0 associated with the full resolution. The thumbnail should be small enough that each section can easily fit into one image file and the computation be efficient; while at the same time large enough so that there are enough image contents to extract features from. In our experience, the thumbnail alignment works best when the downsampled images are roughly 500~4000 pixels on each side. The user may target that thumbnail size based on the dimensions of their sections.
+
+-`downsample: thumbnail_highpass`: we observed that for some datasets, applying a high-pass filter before the downsampling step will enhance the visibility of the somata in the thumbnails, thereby facilitating the downstream alignment steps. While we haven't concluded what datasets benefit most from this small trick, our current rule of thumb is to set this to true when working with secondary electron images, and false for images taken with backscattered mode. And if the `thumbnail_mip_level` is very small, better to turn the high-pass filter off.
+
+#### thumbnail matching
+
+To find the matching points between neighboring thumbnails, navigate to the FEABAS code root directory, and run:
+
+```bash
+python scripts/thumbnail_main.py --mode alignment
+```
+
+It will save the files containing the rough matching points to `(working_directory)/thumbnail_align/matches` folder.
+
+This is the most error-prone step in the entire pipeline, so we'd like to advise the user to pay special attention to the warning log files in `(working_directory)/logs` folder if they are generated during the step. In our experience, the most common failure mode was when the targeting of the microscope is not sufficiently accurate, the ROIs of some neighboring sections are completely off and there are little to no overlaps. In that case, the user should plan to retake the images.
+
+By default, the thumbnail-matching step assumes all the connected regions in the thumbnail should have smooth transformation fields when aligning with their neighbors. However, that is not always the case. For example, if a section is broken into multiple pieces, and all the pieces are imaged as a single montage, then these disconnected parts may need very different transformations to be pieced back together. FEABAS allows the user to address this issue by modifying the mask files saved in the `(working_directory)/thumbnail_align/material_masks`. Each section has one corresponding mask file in PNG format that should overlay with its thumbnail. In the mask images, black color defines the regions within the ROI and white defines those outside of the ROI. The user can simply use the white color to label the split site, and break the black partial sections into disconnected 'islands'. Then FEABAS will automatically find transformations distinctive to each broken piece (as long as the pieces are not too fragmented). More about the masks in the "Special Topic: Non-Smooth Transformation in Alignment" segment of this readme.
+
+### Fine Alignment
+
+#### matching
+
+#### optimization
+
+#### rendering
+
+#### generate mipmaps for VAST
+
+### Special Topic: Non-Smooth Transformation in Alignment
