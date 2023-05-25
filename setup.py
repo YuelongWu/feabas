@@ -20,16 +20,18 @@ setup(
     install_requires=[
         'h5py',
         'matplotlib',
+        'numpy',
         'opencv-python',
-        'scikit-image',
+        'psutil',
         'pyyaml',
         'rtree',
+        'scikit-image',
         'scipy',
         'shapely>=2.0.0',
         'triangle'
     ],
     classifiers=[
-        'Development Status :: 3 - Alpha',
+        'Development Status :: 4 - Beta',
         'Intended Audience :: Science/Research',
         'Programming Language :: Python :: 3'
     ]

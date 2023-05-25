@@ -237,6 +237,9 @@ if __name__ == '__main__':
         stitch_configs = stitch_configs['matching']
         mode = 'matching'
     num_workers = stitch_configs.get('num_workers', 1)
+    if num_workers > num_cpus:
+        num_workers = num_cpus
+        stitch_configs['num_workers'] = num_workers
     nthreads = max(1, math.floor(num_cpus / num_workers))
     config.limit_numpy_thread(nthreads)
 

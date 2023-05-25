@@ -313,23 +313,38 @@ if __name__ == '__main__':
         align_config = align_config['rendering']
         mode = 'rendering'
         num_workers = align_config.get('num_workers', 1)
+        if num_workers > num_cpus:
+            num_workers = num_cpus
+            align_config['num_workers'] = num_workers
     elif args.mode.lower().startswith('o'):
         align_config = align_config['optimization']
         mode = 'optimization'
         start_loc = align_config.get('slide_window', {}).get('start_loc', 'M')
         if start_loc.upper() == 'M':
-            num_workers = align_config.get('slide_window', {}).get('num_workers', 2)
+            num_workers = min(2, align_config.get('slide_window', {}).get('num_workers', 2))
         else:
             num_workers = 1
+        if num_workers > num_cpus:
+            num_workers = num_cpus
+            align_config.setdefault('slide_window', {})
+            align_config['slide_window']['num_workers'] = num_workers
     elif args.mode.lower().startswith('ma'):
         mesh_config = align_config['meshing']
         align_config = align_config['matching']
         mode = 'matching'
         num_workers = align_config.get('matcher_config', {}).get('num_workers', 1)
+        if num_workers > num_cpus:
+            num_workers = num_cpus
+            align_config.setdefault('matcher_config', {})
+            align_config['matcher_config']['num_workers'] = num_workers
+            mesh_config['num_workers'] = min(num_workers, mesh_config.get('num_workers', num_workers))
     elif args.mode.lower().startswith('me'):
         mesh_config = align_config['meshing']
         mode = 'meshing'
         num_workers = mesh_config.get('num_workers', 1)
+        if num_workers > num_cpus:
+            num_workers = num_cpus
+            mesh_config['num_workers'] = num_workers
     elif args.mode.lower().startswith('d'):
         min_mip = align_config.get('rendering', {}).get('mip_level', 0)
         mode = 'downsample'
@@ -340,6 +355,9 @@ if __name__ == '__main__':
         filename_config.update(align_config['downsample'])
         align_config = filename_config
         num_workers = align_config.get('num_workers', 1)
+        if num_workers > num_cpus:
+            num_workers = num_cpus
+            align_config['num_workers'] = num_workers
     else:
         raise RuntimeError(f'{args.mode} not supported mode.')
     nthreads = max(1, math.floor(num_cpus / num_workers))

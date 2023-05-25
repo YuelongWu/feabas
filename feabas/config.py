@@ -12,6 +12,9 @@ def general_settings():
             conf = yaml.safe_load(f)
     else:
         conf = {}
+    if conf.get('cpu_budget', None) is None:
+        import psutil
+        conf['cpu_budget'] = psutil.cpu_count(logical=False)
     return conf
 
 

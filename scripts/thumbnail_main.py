@@ -200,6 +200,9 @@ if __name__ == '__main__':
         raise ValueError
 
     num_workers = thumbnail_configs.get('num_workers', 1)
+    if num_workers > num_cpus:
+        num_workers = num_cpus
+        thumbnail_configs['num_workers'] = num_workers
     nthreads = max(1, math.floor(num_cpus / num_workers))
     config.limit_numpy_thread(nthreads)
 
