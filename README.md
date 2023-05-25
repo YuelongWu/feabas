@@ -49,6 +49,7 @@ The `configs` folder in the *working directory* contains project-specific config
 The .txt files in the `stitch\stitch_coord` folder are user-created [TSV](https://en.wikipedia.org/wiki/Tab-separated_values) files specifying the approximate tile arrangement for each section. They are the inputs to the stitcher pipeline of FEABAS and usually can be derived from the metadata from the microscopy. In one coordinate file, it first defines some metadata info like the root directory of the images, the pixel resolution (in nanometers), and the size of each image tile (in pixels). Following the metadata is a table of all the image tiles associated with that section, with the first column giving the relative path of each image file relative to the root directory, and the second and the third column defining the x and y coordinates (in pixels) of the images. An example stitch coordinate text file looks like this:
 
 <div><code>s0001.txt</code></div>
+
 ```
 {ROOT_DIR}	/home/feabas/my_project/raw_data/s0001
 {RESOLUTION}	4.0
@@ -70,6 +71,7 @@ The filenames of the stitch coordinate text files define the name of the section
 To enable FEABAS to identify the dataset it needs to process, the user needs to modify the `working_directory` field in the `configs/general_configs.yaml` file under the code repo root directory:
 
 <div><code>feabas/configs/general_configs.yaml</code></div>
+
 ```yaml
 working_directory: FULL_PATH_TO_THE_WORKING_DIRECTORY_OF_THE_CURRENT_PROJECT
 ...
