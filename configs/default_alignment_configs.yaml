@@ -45,9 +45,10 @@ optimization:
                 eval_step: 10
 
 rendering:
+    num_workers: 10
     offset_bbox: true
     out_dir: null  # directory to save the aligned stack. if set to null, default to working_directory/aligned_stack
-    num_workers: 10
+    prefix_z_number: true
     pattern: _tr{ROW_IND}-tc{COL_IND}.png
     one_based: true # zero-based or one-based row/colume indexing
     max_tile_per_job: 20

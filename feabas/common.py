@@ -530,12 +530,14 @@ def parse_coordinate_files(filename, **kwargs):
     return imgpaths, bboxes, root_dir, resolution
 
 
-def rearrange_section_order(section_list, section_order_file):
+def rearrange_section_order(section_list, section_order_file, merge=False):
     if os.path.isfile(section_order_file):
         with open(section_order_file, 'r') as f:
             section_orders = f.readlines()
         section_orders = [s.strip() for s in section_orders]
         assert len(section_orders) == len(set(section_orders))
+        if merge:
+            section_list = sorted(list(set(section_list + section_orders)))
         section_lut = {os.path.splitext(os.path.basename(secname))[0]:k 
                     for k, secname in enumerate(section_list)}
         section_ids0 = np.array([section_lut.get(s, -1) for s in section_orders])

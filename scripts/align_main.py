@@ -7,7 +7,6 @@ from multiprocessing import get_context
 import math
 import os
 import time
-import yaml
 import gc
 
 from feabas import config, logging
@@ -202,13 +201,13 @@ def offset_bbox_main():
     logging.terminate_logger(*logger_info)
 
 
-def render_one_section(h5name, **kwargs):
+def render_one_section(h5name, z_prefix='', **kwargs):
     logger_info = kwargs.pop('logger', None)
     logger = logging.get_logger(logger_info)
     mip_level = kwargs.pop('mip_level', 0)
     offset = kwargs.pop('offset', None)
     secname = os.path.splitext(os.path.basename(h5name))[0]
-    outdir = os.path.join(render_dir, 'mip'+str(mip_level), secname)
+    outdir = os.path.join(render_dir, 'mip'+str(mip_level), z_prefix+secname)
     resolution = config.DEFAULT_RESOLUTION * (2 ** mip_level)
     meta_name = os.path.join(outdir, 'metadata.txt')
     if os.path.isfile(meta_name):
@@ -239,7 +238,7 @@ def render_one_section(h5name, **kwargs):
     return len(rendered)
 
 
-def render_main(tform_list):
+def render_main(tform_list, z_prefix=None):
     logger_info = logging.initialize_main_logger(logger_name='align_render', mp=False)
     align_config['logger'] = logger_info[0]
     logger = logging.get_logger(logger_info[0])
@@ -256,8 +255,11 @@ def render_main(tform_list):
         logger.info(f'use offset {offset}')
     else:
         offset = None
+    if z_prefix is None:
+        z_prefix = {}
     for tname in tform_list:
-        render_one_section(tname, offset=offset, **align_config)
+        z = z_prefix.get(os.path.basename(tname), '')
+        render_one_section(tname, z_prefix=z, offset=offset, **align_config)
     logger.info('finished')
     logging.terminate_logger(*logger_info)
 
@@ -388,7 +390,15 @@ if __name__ == '__main__':
         tform_list = tform_list[indx]
         if args.reverse:
             tform_list = tform_list[::-1]
-        render_main(tform_list)
+        z_prefix = defaultdict(lambda: '')
+        if align_config.pop('prefix_z_number', True):
+            seclist = sorted(glob.glob(os.path.join(mesh_dir, '*.h5')))
+            section_order_file = os.path.join(root_dir, 'section_order.txt')
+            seclist = common.rearrange_section_order(seclist, section_order_file, merge=True)
+            digit_num = math.ceil(math.log10(len(seclist)))
+            z_prefix.update({os.path.basename(s): str(k).rjust(digit_num, '0')+'_'
+                             for k, s in enumerate(seclist)})
+        render_main(tform_list, z_prefix)
     elif mode == 'downsample':
         max_mip = align_config.pop('max_mip', 8)
         meta_list = sorted(glob.glob(os.path.join(render_dir, 'mip'+str(min_mip), '**', 'metadata.txt'), recursive=True))
