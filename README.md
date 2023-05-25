@@ -43,12 +43,12 @@ The user needs to first create a dedicated *working directory* for each dataset 
 ```
 
 #### configuration files
-The `configs` folder in the *working directory* contains project-specific configuration files that override the default settings. If any of these files don't exist, FEABAS will use the corresponding default configuration files in the `configs` folder under the repository root directory (NOT the *working directory*) with the same file names but prefixed by `default_`, e.g. `default_stitching_configs.yaml`.
+The `configs` folder in the *working directory* contains project-specific configuration files that override the default settings. If any of these files don't exist, FEABAS will use the corresponding default configuration files in the `configs` folder under the repository root directory (NOT the *working directory*) with the same file names but prefixed by `default_`, e.g. `default_stitching_configs.yaml`. The user can copy these default configuration files to their *working directory* `configs` folder, remove the prefix in the filename, and adjust the file contents accordingly based on the specific needs of their dataset.
 
 #### stitch coordinate files
 The .txt files in the `stitch\stitch_coord` folder are user-created [TSV](https://en.wikipedia.org/wiki/Tab-separated_values) files specifying the approximate tile arrangement for each section. They are the inputs to the stitcher pipeline of FEABAS and usually can be derived from the metadata from the microscopy. In one coordinate file, it first defines some metadata info like the root directory of the images, the pixel resolution (in nanometers), and the size of each image tile (in pixels). Following the metadata is a table of all the image tiles associated with that section, with the first column giving the relative path of each image file relative to the root directory, and the second and the third column defining the x and y coordinates (in pixels) of the images. An example stitch coordinate text file looks like this:
 
-<div><code>s0001.txt</code></div>
+<div><code><ins>s0001.txt</ins></code></div>
 
 ```
 {ROOT_DIR}	/home/feabas/my_project/raw_data/s0001
@@ -68,9 +68,9 @@ It describes a section whose raw image tiles from the microscopy are saved under
 The filenames of the stitch coordinate text files define the name of the sections. By default, FEABAS assumes the order of sections in the final aligned stack can be reconstructed by sorting the section name alphabetically. If that's not the case, the user can define the right section order by providing an optional `section_order.txt` file directly under the working directory. In the file, each line is a section name corresponding to the stitch coordinate filenames (without `.txt` extension), and their positions in the file define their position in the aligned stack.
 
 #### direct FEABAS to the current project
-To enable FEABAS to identify the dataset it needs to process, the user needs to modify the `working_directory` field in the `configs/general_configs.yaml` file under the code repo root directory:
+To enable FEABAS to identify the dataset it needs to process, the user needs to modify the `working_directory` field in the `configs/general_configs.yaml` file under FEABAS code root directory:
 
-<div><code>feabas/configs/general_configs.yaml</code></div>
+<div><code><ins>feabas/configs/general_configs.yaml</ins></code></div>
 
 ```yaml
 working_directory: FULL_PATH_TO_THE_WORKING_DIRECTORY_OF_THE_CURRENT_PROJECT
@@ -82,4 +82,40 @@ full_resolution: 4
 ...
 ```
 
-The user can also define the number of CPU cores to use and the logging behaviors in `general_configs.yaml`. By default, FEABAS will try to use all the CPUs available; and log important info to the `logs` folder under the *working directory*, while keeping a more detailed record in `logs/archive` folder.
+The user can also define the number of CPU cores to use and the logging behaviors in `general_configs.yaml`. By default, FEABAS will try to use all the CPUs available; and log important info to the `logs` folder under the *working directory*, while keeping a more detailed record in the `logs/archive` folder.
+
+### Stitching
+
+The stitching pipeline comprises three distinctive steps: matching, optimization and rendering. The user can follow these steps by executing the main stitching script consecutively in different modes. `configs/stitching_configs.yaml` under the dataset *working directory* is the place to exercise finer control over the pipeline. For example, the user can balance the speed and memory usage by manipulating `num_workers` and `cache_size` fields in the YAML config file.
+
+#### matching
+
+To launch the matching step, first navigate to the FEABAS code root directory, and run:
+
+```bash
+python scripts/stitch_main.py --mode matching
+```
+
+The script parses the coordinate files in `(working_directory)/stitch/stitch_coord` folder, detects image overlaps, finds the matching points in these detected overlapping areas, and finally outputs the results to `(working_directory)/stitch/match_h5` folder in [HDF5](https://www.hdfgroup.org/solutions/hdf5/) file format.
+
+If it encounters any errors during the matching step, FEABAS will still try to save whatever results it has but with `.h5_err` extension instead of the usual `.h5`, and at the same time register an error entry in the log file. In our experience, the most common failure case is a corrupted raw image file. After the issue is resolved, the user can run the matching command again, and FEABAS will pick up where it left by loading in the `.h5_err` file and only matching the remaining part. However, if tile arrangements in the stitch coordinate files were modified, or the contents of the existing images were changed, the user should delete the `.h5_err` file and start fresh for that section.
+
+#### optimization
+
+To launch the optimization step, navigate to the FEABAS code root directory, and run:
+
+```bash
+python scripts/stitch_main.py --mode optimization
+```
+
+It reads the `.h5` files in `(working_directory)/stitch/match_h5` folder, elastically deforms each image tile based on the matches found in the previous step, and finds the global lowest energy state for the system. The resulting transformations are then saved to `(working_directory)/stitch/tform` folder, also in HDF5 format.
+
+#### rendering
+
+To launch the rendering step, navigate to the FEABAS code root directory, and run:
+
+```bash
+python scripts/stitch_main.py --mode rendering
+```
+
+It reads the transformation files in `(working_directory)/stitch/tform` folder, and renders the stitched section in the form of non-overlapping PNG tiles. The user can control the rendering process (like the output tile size, whether to use [CLAHE](https://en.wikipedia.org/wiki/Adaptive_histogram_equalization#Contrast_Limited_AHE) etc.) by manipulating the `rendering` element in the *working directory*'s `configs/stitching_configs.yaml` file. By default, FEABAS will render the images to the *working directory*. If the user would like to keep the *working directory* lightweight and put the stitched images elsewhere, it can be achieved by defining the target path to `rendering: out_dir` field in the stitching configuration file.
