@@ -60,6 +60,7 @@ Tile_0004.tif	0	3686
 Tile_0005.tif	3686	3686
 Tile_0006.tif	3686	3686
 ```
+
 It describes a section whose raw image tiles from the microscopy are saved under the directory `/home/feabas/my_project/raw_data/s0001`. It contains 6 images of size 4096x4096 pixels, arranged on a 2rows-by-3columns grid with 10% overlaps. Note that in general the images do not necessarily need to be arranged in a rectilinear pattern and the image files can have arbitrary names, as long as the coordinates are as accurate as possible. Also, make sure that the fields in the coordinate files are separated by Horizontal Tab `\t`, other delimiters are currently not supported.  
 
 ###### section order file (optional)
@@ -73,4 +74,5 @@ To enable FEABAS to identify the dataset it needs to process, the user needs to 
 working_directory: FULL_PATH_TO_THE_WORKING_DIRECTORY_OF_THE_CURRENT_PROJECT
 ...
 ```
+
 The user can also define the number of CPU cores to use and the logging behaviors in `general_configs.yaml`. By default, FEABAS will try to use all the CPUs available, and log important info to the `logs` folder under the *working directory*, while keeping a more detailed record in `logs/archive` folder.
