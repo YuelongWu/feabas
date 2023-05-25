@@ -1,6 +1,6 @@
 from setuptools import setup, find_packages
 
-VERSION = '0.1.1'
+VERSION = '1.0.0'
 
 def readme():
     with open('README.md') as f:
@@ -15,6 +15,7 @@ setup(
     author='Yuelong Wu',
     author_email='yuelong.wu.2017@gmail.com',
     packages=find_packages(),
+    include_package_data=True,
     license='MIT',
     install_requires=[
         'h5py',

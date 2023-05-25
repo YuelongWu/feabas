@@ -40,7 +40,7 @@ alignment:
         pad: True
         spacings: [150, 50]
         shrink_factor: 1
-        distributor: cartesian_region
+        distributor: intersect_triangulation
         residue_mode: huber
         residue_len: 3
         min_boundary_distance: 20

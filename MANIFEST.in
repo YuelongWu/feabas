@@ -1,2 +1,5 @@
 include *.py
-include *.yaml
+include configs/*.yaml
+include configs/*.json
+include scripts/*.py
+include tools/*.py

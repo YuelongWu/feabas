@@ -626,6 +626,7 @@ def bboxes_mesh_renderer_matcher(mesh0, mesh1, image_loader0, image_loader1, bbo
         stack1 = []
         xy_ctr0 = []
         xy_ctr1 = []
+        wt_ratio = []
         for bbox0, bbox1 in zip(block_indices0, block_indices1):
             img0 = render0.crop(bbox0, mode=render_mode, log_sigma=sigma, remap_interp=cv2.INTER_LINEAR)
             if img0 is None:
@@ -637,13 +638,17 @@ def bboxes_mesh_renderer_matcher(mesh0, mesh1, image_loader0, image_loader1, bbo
             stack1.append(img1)
             xy_ctr0.append(((bbox0[0]+bbox0[2]-1)/2, (bbox0[1]+bbox0[3]-1)/2))
             xy_ctr1.append(((bbox1[0]+bbox1[2]-1)/2, (bbox1[1]+bbox1[3]-1)/2))
+            wd0, ht0 = bbox0[2] - bbox0[0], bbox0[3] - bbox0[1]
+            wd1, ht1 = bbox1[2] - bbox1[0], bbox1[3] - bbox1[1]
+            wt_ratio.append((wd0 / (wd0 + wd1), ht0 / (ht0 + ht1)))
         dx, dy, conf_b = xcorr_fft(np.stack(stack0, axis=0), np.stack(stack1, axis=0),
             conf_mode=conf_mode, pad=pad)
         xy_ctr0 = np.array(xy_ctr0)
         xy_ctr1 = np.array(xy_ctr1)
+        wt_ratio = np.array(wt_ratio)
         dxy = np.stack((dx, dy), axis=-1)
-        xy0_b = xy_ctr0 - dxy/2
-        xy1_b = xy_ctr1 + dxy/2
+        xy0_b = xy_ctr0 - dxy * wt_ratio
+        xy1_b = xy_ctr1 + dxy * (1-wt_ratio)
         xy0.append(xy0_b)
         xy1.append(xy1_b)
         conf.append(conf_b)
@@ -751,7 +756,7 @@ def distributor_intersect_triangulation(mesh0, mesh1, spacing, **kwargs):
     reg_crx = region0.intersection(region1)
     if min_boundary_distance > 0:
         reg_crx = reg_crx.simplify(min_boundary_distance/3, preserve_topology=True)
-        reg_crx = reg_crx.buffer(-min_boundary_distance)
+        reg_crx = reg_crx.buffer(-min_boundary_distance * 0.8, join_style=2)
     if reg_crx.area == 0:
         return None, None
     roi = reg_crx
