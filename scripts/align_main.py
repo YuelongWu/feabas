@@ -53,7 +53,7 @@ def generate_mesh_from_mask(mask_names, outname, **kwargs):
         break
     secname = os.path.splitext(os.path.basename(outname))[0]
     if loader is None:
-        logger.warn(f'{secname}: mask does not exist.')
+        logger.warning(f'{secname}: mask does not exist.')
         return
     mesh_size = mesh_size * config.DEFAULT_RESOLUTION / src_resolution
     G = spatial.Geometry.from_image_mosaic(loader, material_table=material_table, resolution=src_resolution)
@@ -133,7 +133,7 @@ def match_main(match_list):
             if num_matches > 0:
                 logger.info(f'{tname}: {num_matches} matches, {round((time.time()-t0)/60,3)} min.')
             else:
-                logger.warn(f'{tname}: {num_matches} matches, {round((time.time()-t0)/60,3)} min.')
+                logger.warning(f'{tname}: {num_matches} matches, {round((time.time()-t0)/60,3)} min.')
         gc.collect()
     logger.info('matching finished.')
     logging.terminate_logger(*logger_info)
@@ -200,7 +200,7 @@ def offset_bbox_main():
     if not os.path.isfile(outname):
         with open(outname, 'w') as f:
             f.write('\t'.join([str(s) for s in offset]))
-    logger.warn(f'bbox offset: {tuple(bbox_union)} -> {tuple(bbox_union_new)}')
+    logger.warning(f'bbox offset: {tuple(bbox_union)} -> {tuple(bbox_union_new)}')
     logging.terminate_logger(*logger_info)
 
 

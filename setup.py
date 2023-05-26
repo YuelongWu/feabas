@@ -14,6 +14,7 @@ setup(
     long_description_content_type="text/markdown",
     author='Yuelong Wu',
     author_email='yuelong.wu.2017@gmail.com',
+    python_requires='>=3.8',
     packages=find_packages(),
     include_package_data=True,
     license='MIT',

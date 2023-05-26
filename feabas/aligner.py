@@ -210,9 +210,14 @@ class Stack:
                 continue
             mshes = self._mesh_cache[mshname]
             lock_flag = self.lock_flags[mshname]
+            outcast_flg = [m.is_outcast for m in mshes]
+            if np.all(outcast_flg):
+                self.lock_flags[mshname] = False
             for msh in mshes:
                 if not msh.is_outcast:
                     msh.locked = lock_flag
+                else:
+                    msh.locked = False
 
 
     def init_dict(self, secnames=None, include_cache=False, check_lock=False, **kwargs):
@@ -277,9 +282,9 @@ class Stack:
                 logger = logging.get_logger(self._logger)
                 if len(anchored_meshes) == 0:
                     self.lock_flags[cached_name] = False
-                    logger.warn(f'{cached_name}: not anchored.')
+                    logger.warning(f'{cached_name}: not anchored.')
                 else:
-                    logger.warn(f'{cached_name}: partially not anchored.')
+                    logger.warning(f'{cached_name}: partially not anchored.')
             if len(anchored_meshes) > 0:
                 cached_M = Mesh.combine_mesh(anchored_meshes, save_material=True)
                 outname = os.path.join(self._mesh_out_dir, cached_name+'.h5')
@@ -449,12 +454,13 @@ class Stack:
             cst = self.optimize_section_list(seclst, **kwargs)
             if cst is not None:
                 costs.update(cst)
-            self.flush_meshes()
             if buffer_size > 0:
                 sections_to_lock = seclst[buffer_size:-buffer_size]
             else:
                 sections_to_lock = seclst
             self.update_lock_flags({s:True for s in sections_to_lock})
+            self.flush_meshes()
+            kwargs.setdefault('need_anchor', True)
             lock_id0, lock_id1 = self.secname_to_id(sections_to_lock[0]), self.secname_to_id(sections_to_lock[-1])
             matchlist_l = self.filtered_match_list(secnames=self.section_list[lock_id0:], check_lock=True)
             seclist_l = self.filter_section_list_from_matches(match_list=matchlist_l)
@@ -490,6 +496,7 @@ class Stack:
         residue_len = kwargs.get('residue_len', 0)
         residue_mode = kwargs.get('residue_mode', None)
         logger_info = kwargs.get('logger', None)
+        need_anchor = kwargs.get('need_anchor', False)
         logger = logging.get_logger(logger_info)
         residue = {}
         if len(section_list) == 0:
@@ -501,6 +508,9 @@ class Stack:
             return residue
         outcasts = optm.flag_outcasts()
         if np.all(outcasts):
+            logger.error(f'{optm.meshes[0].name} -> {optm.meshes[-1].name}: disconnected due to lack of matches. abort.')
+            return residue
+        if need_anchor and (not np.any(optm.lock_flags)):
             logger.error(f'{optm.meshes[0].name} -> {optm.meshes[-1].name}: disconnected due to lack of matches. abort.')
             return residue
         cost = None

@@ -2,7 +2,7 @@
 
 FEABAS (Finite-Element Assisted Brain Assembly System) is a Python library powered by finite-element analysis for stitching & alignment of serial-sectioning electron microscopy connectomic datasets.
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT) [![PyPI](https://img.shields.io/pypi/v/feabas.svg)](https://pypi.org/project/feabas/) [![Python](https://img.shields.io/pypi/pyversions/feabas)](https://www.python.org/downloads/)
 
 ## Installation
 
