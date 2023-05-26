@@ -130,7 +130,10 @@ def match_main(match_list):
         loaders = [get_image_loader(os.path.join(stitched_image_dir, s), **loader_config) for s in secnames]
         num_matches = match_section_from_initial_matches(mname, mesh_dir, loaders, match_dir, align_config)
         if num_matches is not None:
-            logger.info(f'{tname}: {num_matches} matches, {round((time.time()-t0)/60,3)} min.')
+            if num_matches > 0:
+                logger.info(f'{tname}: {num_matches} matches, {round((time.time()-t0)/60,3)} min.')
+            else:
+                logger.warn(f'{tname}: {num_matches} matches, {round((time.time()-t0)/60,3)} min.')
         gc.collect()
     logger.info('matching finished.')
     logging.terminate_logger(*logger_info)
@@ -402,7 +405,10 @@ if __name__ == '__main__':
         optimize_main(None)
     elif mode == 'rendering':
         if align_config.pop('offset_bbox', True):
-            offset_bbox_main()
+            offset_name = os.path.join(tform_dir, 'offset.txt')
+            if not os.path.isfile(offset_name):
+                time.sleep(0.1 * (1 + (args.start % args.step))) # avoid racing
+                offset_bbox_main()
         os.makedirs(render_dir, exist_ok=True)
         tform_list = sorted(glob.glob(os.path.join(tform_dir, '*.h5')))
         tform_list = tform_list[indx]

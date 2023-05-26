@@ -193,6 +193,7 @@ class Stack:
                 else:
                     raise RuntimeError('no match list found.')
         self.match_list = self.filtered_match_list(match_list=match_list)
+        self._logger = None
 
 
     def normalize_mesh_resoltion(self):
@@ -210,7 +211,8 @@ class Stack:
             mshes = self._mesh_cache[mshname]
             lock_flag = self.lock_flags[mshname]
             for msh in mshes:
-                msh.locked = lock_flag
+                if not msh.is_outcast:
+                    msh.locked = lock_flag
 
 
     def init_dict(self, secnames=None, include_cache=False, check_lock=False, **kwargs):
@@ -270,9 +272,18 @@ class Stack:
         cached_name, cached_Ms = self._mesh_cache.popitem(last=False)
         rel_match_names = self.secname_to_matchname_mapper[cached_name]
         if self._mesh_out_dir is not None:
-            cached_M = Mesh.combine_mesh(cached_Ms, save_material=True)
-            outname = os.path.join(self._mesh_out_dir, cached_name+'.h5')
-            cached_M.save_to_h5(outname, vertex_flags=const.MESH_GEARS, save_material=True)
+            anchored_meshes = [m for m in cached_Ms if not m.is_outcast]
+            if len(anchored_meshes) != len(cached_Ms):
+                logger = logging.get_logger(self._logger)
+                if len(anchored_meshes) == 0:
+                    self.lock_flags[cached_name] = False
+                    logger.warn(f'{cached_name}: not anchored.')
+                else:
+                    logger.warn(f'{cached_name}: partially not anchored.')
+            if len(anchored_meshes) > 0:
+                cached_M = Mesh.combine_mesh(anchored_meshes, save_material=True)
+                outname = os.path.join(self._mesh_out_dir, cached_name+'.h5')
+                cached_M.save_to_h5(outname, vertex_flags=const.MESH_GEARS, save_material=True)
         for matchname in rel_match_names:
             self.dump_link(matchname)
 
@@ -371,6 +382,8 @@ class Stack:
         start_loc = kwargs.pop('start_loc', 'L') # L or R or M
         window_size = kwargs.get('window_size', None)
         func_name = 'optimize_slide_window'
+        if kwargs.get('logger', None) is not None:
+            self._logger = kwargs['logger']
         if (window_size is None) or window_size > self.num_sections:
             window_size = self.num_sections
             start_loc = 'L'
@@ -487,9 +500,9 @@ class Stack:
             logger.info(f'{section_list[0]} -> {section_list[-1]}: all sections settled.')
             return residue
         outcasts = optm.flag_outcasts()
-        if np.any(outcasts):
-            outcast_names = set([str(m.name) for flg, m in zip(outcasts, optm.meshes) if flg])
-            logger.warning('outcasts: ' + ' '.join(outcast_names))
+        if np.all(outcasts):
+            logger.error(f'{optm.meshes[0].name} -> {optm.meshes[-1].name}: disconnected due to lack of matches. abort.')
+            return residue
         cost = None
         t0 = time.time()
         if optimize_rigid:

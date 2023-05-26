@@ -76,7 +76,7 @@ def mip_one_level(src_dir, out_dir, **kwargs):
     out_meta_file = os.path.join(out_dir, 'metadata.txt')
     if os.path.isfile(out_meta_file):
         n_img = len(glob.glob(os.path.join(out_dir, '*.'+ext_out)))
-        return n_img
+        return -n_img
     rendered = {}
     try:
         image_loader = get_image_loader(src_dir, pattern=pattern, tile_size=tile_size, **kwargs)
@@ -120,15 +120,19 @@ def mip_map_one_section(sec_name, img_dir, max_mip, **kwargs):
     logger = logging.get_logger(logger_info)
     t0 = time.time()
     num_tiles = []
+    updated = False
     for m in range(max_mip):
         src_dir = os.path.join(img_dir, 'mip'+str(m), sec_name)
         out_dir = os.path.join(img_dir, 'mip'+str(m+1), sec_name)
         n_tile = mip_one_level(src_dir, out_dir, output_format=ext_out,
                                       downsample=2, **kwargs)
-        num_tiles.append(n_tile)
         if n_tile is None:
             break
-    logger.info(f'{sec_name}: number of tiles {num_tiles} | {(time.time()-t0)/60} min')
+        if n_tile > 0:
+            updated = True
+        num_tiles.append(abs(n_tile))
+    if updated:
+        logger.info(f'{sec_name}: number of tiles {num_tiles} | {(time.time()-t0)/60} min')
 
 
 def create_thumbnail(src_dir, outname=None, downsample=4, highpass=True, **kwargs):

@@ -105,7 +105,7 @@ def optimize_one_section(matchname, outname, **kwargs):
     ncomp1 = np.sum(cnt>1)
     dis = stitcher.match_residues()
     finish_str = f'{bname}: {cost} finished {time.time() - t0} sec | residue: {np.nanmean(dis)} | rotation: {round(rot)}'
-    if abs(rot) > 0.5:
+    if abs(rot) > 1.5:
         logger.warning(f'{bname}: rotation detected in final transform, potential mesh relaxation issues.')
     if ncomp > 1:
         finish_str = finish_str + f' | {ncomp1}/{ncomp} components'

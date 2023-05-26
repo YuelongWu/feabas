@@ -1109,16 +1109,19 @@ class SLM:
         """
         outcasts = np.zeros(self.num_meshes, dtype=bool)
         labels, n = self.connected_subsystems
+        outcast0 = [m.is_outcast for m in self.meshes]
         if n == 1:
-            return outcasts
+            return outcast0
         lock_flags = self.lock_flags
-        if np.any(lock_flags):
+        if np.any(outcast0) or np.any(lock_flags):
             locked_label = labels[lock_flags]
-            outcasts = np.isin(labels, locked_label)
+            outcasts = ~np.isin(labels, locked_label)
         else:
             u, cnt = np.unique(labels, return_counts=True)
             indx = np.argmax(cnt)
             outcasts = labels != u[indx]
+        for m, flg in zip(self.meshes, outcasts):
+            m.is_outcast = flg
         return outcasts
 
 

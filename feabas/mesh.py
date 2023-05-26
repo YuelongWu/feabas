@@ -279,6 +279,7 @@ class Mesh:
         else:
             self.uid = float(uid)
             Mesh.uid_counter = float(max(Mesh.uid_counter, uid) + 1)
+        self.is_outcast = False
 
 
     @classmethod

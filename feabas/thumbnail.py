@@ -727,7 +727,11 @@ def filter_match_pairwise_strain(matches, **kwargs):
         rot_err_wrap = rot_err - np.round(rot_err / (2*np.pi)) * (2*np.pi)
         valid_pairs = (np.abs(rot_err_wrap) < shear_limit) & valid_pairs
     valid_num = np.sum(valid_pairs, axis=-1)
-    kindx = valid_num > (inlier_thresh * np.max(valid_num))
+    if inlier_thresh < 1:
+        kindx = valid_num > (inlier_thresh * np.max(valid_num))
+    else:
+        qt = np.quantile(valid_num, max(0, (valid_num.size - valid_num) / valid_num.size))
+        kindx = valid_num > qt
     if np.all(kindx):
         discarded = None
     else:

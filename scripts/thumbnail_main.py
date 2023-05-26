@@ -5,7 +5,6 @@ from concurrent.futures.process import ProcessPoolExecutor
 import math
 from multiprocessing import get_context
 import os
-import time
 
 from feabas import config, logging
 
@@ -42,11 +41,13 @@ def generate_thumbnails(src_dir, out_dir, **kwargs):
     secnames = [os.path.basename(os.path.dirname(s)) for s in meta_list]
     target_func = partial(mipmap.create_thumbnail, **kwargs)
     os.makedirs(out_dir, exist_ok=True)
+    updated = []
     if num_workers == 1:
         for sname in secnames:
             outname = os.path.join(out_dir, sname + '.png')
             if os.path.isfile(outname):
                 continue
+            updated.append(sname)
             sdir = os.path.join(src_dir, sname)
             img_out = target_func(sdir)
             common.imwrite(outname, img_out)
@@ -57,17 +58,17 @@ def generate_thumbnails(src_dir, out_dir, **kwargs):
                 outname = os.path.join(out_dir, sname + '.png')
                 if os.path.isfile(outname):
                     continue
+                updated.append(sname)
                 sdir = os.path.join(src_dir, sname)
                 job = executor.submit(target_func, sdir, outname=outname)
                 jobs.append(job)
             for job in jobs:
                 job.result()
         logger.info('thumbnails generated.')
+    return updated
 
 
 def save_mask_for_one_sections(mesh_file, out_name, scale, **kwargs):
-    if os.path.isfile(out_name):
-        return
     from feabas.stitcher import MontageRenderer
     import numpy as np
     from feabas import common
@@ -88,7 +89,7 @@ def save_mask_for_one_sections(mesh_file, out_name, scale, **kwargs):
                 common.imwrite(thumb_name, thumb_out)
 
 
-def generate_thumbnail_masks(mesh_dir, out_dir, **kwargs):
+def generate_thumbnail_masks(mesh_dir, out_dir, seclist=None, **kwargs):
     num_workers = kwargs.get('num_workers', 1)
     scale = kwargs.get('scale')
     img_dir = kwargs.get('img_dir', None)
@@ -102,7 +103,9 @@ def generate_thumbnail_masks(mesh_dir, out_dir, **kwargs):
         for mname in mesh_list:
             sname = os.path.basename(mname).replace('.h5', '')
             outname = os.path.join(out_dir, sname + '.png')
-            if os.path.isfile(outname):
+            if seclist is None and os.path.isfile(outname):
+                continue
+            elif seclist is not None and sname not in seclist:
                 continue
             target_func(mname, outname)
     else:
@@ -111,7 +114,9 @@ def generate_thumbnail_masks(mesh_dir, out_dir, **kwargs):
             for mname in mesh_list:
                 sname = os.path.basename(mname).replace('.h5', '')
                 outname = os.path.join(out_dir, sname + '.png')
-                if os.path.isfile(outname):
+                if seclist is None and os.path.isfile(outname):
+                    continue
+                elif seclist is not None and sname not in seclist:
                     continue
                 job = executor.submit(target_func, mname, out_name=outname)
                 jobs.append(job)
@@ -214,6 +219,8 @@ if __name__ == '__main__':
     stitch_tform_dir = os.path.join(root_dir, 'stitch', 'tform')
     img_dir = os.path.join(thumbnail_dir, 'thumbnails')
     mat_mask_dir = os.path.join(thumbnail_dir, 'material_masks')
+    reg_mask_dir = os.path.join(thumbnail_dir, 'region_masks')
+    manual_dir = os.path.join(thumbnail_dir, 'manual_matches')
     match_dir = os.path.join(thumbnail_dir, 'matches')
     feature_match_dir = os.path.join(thumbnail_dir, 'feature_matches')
     if mode == 'downsample':
@@ -240,13 +247,15 @@ if __name__ == '__main__':
             highpass = False
         thumbnail_configs.setdefault('downsample', downsample)
         thumbnail_configs.setdefault('highpass', highpass)
-        generate_thumbnails(src_dir, img_dir, **thumbnail_configs)
+        slist = generate_thumbnails(src_dir, img_dir, **thumbnail_configs)
         mask_scale = 1 / (2 ** thumbnail_mip_lvl)
-        generate_thumbnail_masks(stitch_tform_dir, mat_mask_dir, scale=mask_scale, 
+        generate_thumbnail_masks(stitch_tform_dir, mat_mask_dir, seclist=slist, scale=mask_scale, 
                                  img_dir=img_dir, **thumbnail_configs)
         logger.info('finished.')
         logging.terminate_logger(*logger_info)
     elif mode == 'alignment':
+        os.makedirs(match_dir, exist_ok=True)
+        os.makedirs(manual_dir, exist_ok=True)
         compare_distance = thumbnail_configs.pop('compare_distance', 1)
         logger_info = logging.initialize_main_logger(logger_name='thumbnail_align', mp=num_workers>1)
         thumbnail_configs['logger'] = logger_info[0]
@@ -271,6 +280,7 @@ if __name__ == '__main__':
                 pairnames.append((bname_list[k], bname_list[k+stp]))
         pairnames.sort()
         target_func = partial(align_thumbnail_pairs, image_dir=img_dir, out_dir=match_dir,
+                              material_mask_dir=mat_mask_dir, region_mask_dir=reg_mask_dir,
                               **thumbnail_configs)
         if (num_workers == 1) or (len(pairnames) <= 1):
             target_func(pairnames)
