@@ -63,7 +63,7 @@
     "mask_label": 50,
     "stiffness_func_factory": "feabas.material.asymmetrical_elasticity",
     "stiffness_func_params": {
-      "stress": [0.0, 0.75, 1.0, 1.01],
+      "strain": [0.0, 0.75, 1.0, 1.01],
       "stiffness": [1.5, 1.0, 0.5, 0.0]
     }
   }

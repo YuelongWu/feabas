@@ -136,7 +136,7 @@ The downsampled thumbnails will be written to `(work_dir)/thumbnail_align/thumbn
 
 - `thumbnail_mip_level` controls the resolution of the thumbnail by specifying its [mipmap level](https://en.wikipedia.org/wiki/Mipmap). The images are downsampled by a factor of two when the mipmap level increases by 1, with mip0 associated with the full resolution. The thumbnail should be small enough that each section can easily fit into one image file and the computation be efficient; while at the same time large enough so that there are enough image contents to extract features from. In our experience, the thumbnail alignment works best when the downsampled images are roughly 500~4000 pixels on each side. The user may target that thumbnail size based on the dimensions of their sections.
 
--`downsample: thumbnail_highpass`: we observed that for some datasets, applying a high-pass filter before the downsampling step will enhance the visibility of the somata in the thumbnails, thereby facilitating the downstream alignment steps. While we haven't concluded what datasets benefit most from this small trick, our current rule of thumb is to set this to true when working with secondary electron images, and false for images taken with backscattered mode. And if the `thumbnail_mip_level` is very small, better to turn the high-pass filter off.
+- `downsample: thumbnail_highpass`: we observed that for some datasets, applying a high-pass filter before the downsampling step will enhance the visibility of the somata in the thumbnails, thereby facilitating the downstream alignment steps. While we haven't concluded what datasets benefit most from this small trick, our current rule of thumb is to set this to true when working with secondary electron images, and false for images taken with backscattered mode. And if the `thumbnail_mip_level` is very small, better to turn the high-pass filter off.
 
 #### thumbnail matching
 
@@ -210,3 +210,39 @@ to generate the mipmaps of the aligned stack for visualization in [VAST](https:/
 
 
 ### Advanced Topic: Non-Smooth Transformation in Alignment
+
+The strength of finite element analysis lies in its ability to handle a wide range of geometries and mechanical properties. This package harnesses this power, utilizing finite element techniques to model non-smooth deformations in the alignment of serial-sectioning datasets, thereby tackling issues caused by artifacts like wrinkles and folds.
+
+At the core of this feature's interface are two key components: material property configuration files and material masks.
+
+- material property configuration files: this can be either `configs/material_table.json` file in the working directory, or `configs/default_material_table.json` in the FEABAS directory if the previous one is not present. The JSON files provided a list of materials, their properties, and their corresponding labels in the material masks. Here is an example of the definition of one material called "wrinkle" in `default_material_table.json`:
+	```json
+	"wrinkle": {
+	"mask_label": 50,
+	"enable_mesh": true,
+	"area_constraint": 0,
+	"render": true,
+	"render_weight": 1.0e-3,
+	"type": "MATERIAL_MODEL_ENG",
+	"poisson_ratio": 0.0,
+	"stiffness_multiplier": 0.05,
+	"stiffness_func_factory": "feabas.material.asymmetrical_elasticity",
+	"stiffness_func_params": {
+		"strain": [0.0, 0.75, 1.0, 1.01],
+		"stiffness": [1.5, 1.0, 0.5, 0.0]
+		},
+	"uid": 3
+	}
+	```
+	- mask_label: the label representing this material in the material mask image files. For example, here all the pixels with a grayscale value of 50 will be designated as "wrinkle" material. Label 0 is reserved for default (normal) material, and 255 is reserved for empty regions.
+	- enable_mesh: whether to generate mesh on regions defined by the material. If set to false, the labeled region will be excluded and considered empty.
+	- area_constraint: it defines the granularity of the meshing grids in the regions assigned to this material. It's basically a modifier multiplied to the mesh_size argument when doing the meshing step. Therefore smaller value gives finer grids, with the only exception of 0, which will give the most coarse mesh possible under the geometric constraint.
+	- render: whether to render the region assigned to this material. If set to false, the material will still exert its mechanical effects during the mesh relaxation step, but will not be rendered eventually.
+	- render_weight: this is a variable that defines the priority for rendering. After transforming the mesh, some regions of the mesh may collide with other regions of the same mesh. In that case, materials with larger "render_weight" values will have a higher priority to be rendered. If the colliding parts have the same "render_weight", then the overlapping region will be split along the mid-line and each colliding partner will render its own half.
+	- type: the type of the element to use for this material. Options are: `"MATERIAL_MODEL_ENG"` for [engineering (linear)](https://en.wikipedia.org/wiki/Linear_elasticity) model, `"MATERIAL_MODEL_SVK"` for [Saint Venant-Kirchhoff](https://en.wikipedia.org/wiki/Hyperelastic_material#Saint_Venant.E2.80.93Kirchhoff_model) model, or `"MATERIAL_MODEL_NHK"` for [Neo-Hookean](https://en.wikipedia.org/wiki/Neo-Hookean_solid) model. In practice, we found that `"MATERIAL_MODEL_ENG"` is sufficient for most of the cases.
+	- poisson_ratio: [Poisson's ratio](https://en.wikipedia.org/wiki/Poisson%27s_ratio) to use if `type` is set to `"MATERIAL_MODEL_ENG"`.
+	- stiffness_multiplier: multiplier applied to the stiffness matrix. Smaller values give softer materials and larger values make more rigid ones. The default material has a multiplier of 1.0.
+	- stiffness_func_factory: function used to define nonlinear stress/strain relationship. It takes the keyword arguments defined in `stiffness_func_params`, and returns a function that maps the relative area change to a stiffness multiplier. For example, here I implemented `feabas.material.asymmetrical_elasticity` which is a wrapper around a linear interolator. By providing it with the strain/stiffness sample points in `stiffness_func_params`, it describes a material that can freely expand (strain > 1) but is hard to compress (strain < 1), which is exactly what we need to model the wrinkles. If set to null, the material stiffness is not a function of its area change.
+	- uid: a unique identifier for each material. can be any integer other than 0 (reserved for the default material) and -1 (reserved for empty regions).
+
+- material masks:

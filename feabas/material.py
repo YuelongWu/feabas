@@ -393,9 +393,9 @@ class MaterialTable:
 
 
 # stiffness function factories.
-# stress = 1: no change; stress = 0: flip.
+# strain = 1: no change; strain = 0: flip.
 def asymmetrical_elasticity(**params):
-    stress = params.get('stress', [0, 0.75, 1, 1.01])
+    strain = params.get('strain', [0, 0.75, 1, 1.01])
     stiffness = params.get('stiffness', [1.5, 1, 0.5, 0])
-    f = interp1d(stress, stiffness, kind='linear', bounds_error=False, fill_value=(stiffness[0], stiffness[-1]))
+    f = interp1d(strain, stiffness, kind='linear', bounds_error=False, fill_value=(stiffness[0], stiffness[-1]))
     return f
