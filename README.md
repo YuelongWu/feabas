@@ -1,6 +1,6 @@
 # FEABAS
 
-FEABAS (Finite-Element Artificial Brain Assembly System) is a Python library powered by finite-element analysis for stitching & alignment of serial-sectioning electron microscopy connectomic datasets.
+FEABAS (Finite-Element Assisted Brain Assembly System) is a Python library powered by finite-element analysis for stitching & alignment of serial-sectioning electron microscopy connectomic datasets.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
@@ -68,7 +68,7 @@ It describes a section whose raw image tiles from the microscopy are saved under
 The filenames of the stitch coordinate text files define the name of the sections. By default, FEABAS assumes the order of sections in the final aligned stack can be reconstructed by sorting the section name alphabetically. If that's not the case, the user can define the right section order by providing an optional `section_order.txt` file directly under the working directory. In the file, each line is a section name corresponding to the stitch coordinate filenames (without `.txt` extension), and their positions in the file define their position in the aligned stack.
 
 #### direct FEABAS to the current project
-To enable FEABAS to identify the dataset it needs to process, the user needs to modify the `working_directory` field in the `configs/general_configs.yaml` file under FEABAS code root directory:
+To enable FEABAS to identify the dataset it needs to process, the user needs to modify the `working_directory` field in the `configs/general_configs.yaml` file under FEABAS root directory:
 
 <div><code><ins>feabas/configs/general_configs.yaml</ins></code></div>
 
@@ -90,35 +90,35 @@ The stitching pipeline comprises three distinctive steps: matching, optimization
 
 #### matching
 
-To launch the matching step, first navigate to the FEABAS code root directory, and run:
+To launch the matching step, first navigate to the FEABAS root directory, and run:
 
 ```bash
 python scripts/stitch_main.py --mode matching
 ```
 
-The script parses the coordinate files in `(working_directory)/stitch/stitch_coord` folder, detects image overlaps, finds the matching points in these detected overlapping areas, and finally outputs the results to `(working_directory)/stitch/match_h5` folder in [HDF5](https://www.hdfgroup.org/solutions/hdf5/) file format.
+The script parses the coordinate files in `(work_dir)/stitch/stitch_coord` folder, detects image overlaps, finds the matching points in these detected overlapping areas, and finally outputs the results to `(work_dir)/stitch/match_h5` folder in [HDF5](https://www.hdfgroup.org/solutions/hdf5/) file format.
 
 If it encounters any errors during the matching step, FEABAS will still try to save whatever results it has but with `.h5_err` extension instead of the usual `.h5`, and at the same time register an error entry in the log file. In our experience, the most common failure case is a corrupted raw image file. After the issue is resolved, the user can run the matching command again, and FEABAS will pick up where it left by loading in the `.h5_err` file and only matching the remaining part. However, if tile arrangements in the stitch coordinate files were modified, or the contents of the existing images were changed, the user should delete the `.h5_err` file and start fresh for that section.
 
 #### optimization
 
-To launch the optimization step, navigate to the FEABAS code root directory, and run:
+To launch the optimization step, navigate to the FEABAS root directory, and run:
 
 ```bash
 python scripts/stitch_main.py --mode optimization
 ```
 
-It reads the `.h5` files in `(working_directory)/stitch/match_h5` folder, elastically deforms each image tile based on the matches found in the previous step, and finds the global lowest energy state for the system. The resulting transformations are then saved to `(working_directory)/stitch/tform` folder, also in HDF5 format.
+It reads the `.h5` files in `(work_dir)/stitch/match_h5` folder, elastically deforms each image tile based on the matches found in the previous step, and finds the global lowest energy state for the system. The resulting transformations are then saved to `(work_dir)/stitch/tform` folder, also in HDF5 format.
 
 #### rendering
 
-To launch the rendering step, navigate to the FEABAS code root directory, and run:
+To launch the rendering step, navigate to the FEABAS root directory, and run:
 
 ```bash
 python scripts/stitch_main.py --mode rendering
 ```
 
-It reads the transformation files in `(working_directory)/stitch/tform` folder, and renders the stitched section in the form of non-overlapping PNG tiles. The user can control the rendering process (like the output tile size, whether to use [CLAHE](https://en.wikipedia.org/wiki/Adaptive_histogram_equalization#Contrast_Limited_AHE) etc.) by manipulating the `rendering` element in the *working directory*'s `configs/stitching_configs.yaml` file. By default, FEABAS will render the images to the *working directory*. If the user would like to keep the *working directory* lightweight and put the stitched images elsewhere, it can be achieved by defining the target path to `rendering: out_dir` field in the stitching configuration file.
+It reads the transformation files in `(work_dir)/stitch/tform` folder, and renders the stitched section in the form of non-overlapping PNG tiles. The user can control the rendering process (like the output tile size, whether to use [CLAHE](https://en.wikipedia.org/wiki/Adaptive_histogram_equalization#Contrast_Limited_AHE) etc.) by manipulating the `rendering` element in the *working directory*'s `configs/stitching_configs.yaml` file. By default, FEABAS will render the images to the *working directory*. If the user would like to keep the *working directory* lightweight and put the stitched images elsewhere, it can be achieved by defining the target path to `rendering: out_dir` field in the stitching configuration file.
 
 ### Thumbnail Alignment
 
@@ -126,13 +126,13 @@ The FEABAS alignment workflow follows the 'coarse-to-fine' doctrine, with the th
 
 #### thumbnail generation
 
-To generate the thumbnails of the stitched images, navigate to the FEABAS code root directory, and run:
+To generate the thumbnails of the stitched images, navigate to the FEABAS root directory, and run:
 
 ```bash
 python scripts/thumbnail_main.py --mode downsample
 ```
 
-The downsampled thumbnails will be written to `(working_directory)/thumbnail_align/thumbnails` folder. There are a few options the user can control via `configs/thumbnail_configs.yaml` in the *working directory*; among which `thumbnail_mip_level` and `downsample: thumbnail_highpass` are probably the most important.
+The downsampled thumbnails will be written to `(work_dir)/thumbnail_align/thumbnails` folder. There are a few options the user can control via `configs/thumbnail_configs.yaml` in the *working directory*; among which `thumbnail_mip_level` and `downsample: thumbnail_highpass` are probably the most important.
 
 - `thumbnail_mip_level` controls the resolution of the thumbnail by specifying its [mipmap level](https://en.wikipedia.org/wiki/Mipmap). The images are downsampled by a factor of two when the mipmap level increases by 1, with mip0 associated with the full resolution. The thumbnail should be small enough that each section can easily fit into one image file and the computation be efficient; while at the same time large enough so that there are enough image contents to extract features from. In our experience, the thumbnail alignment works best when the downsampled images are roughly 500~4000 pixels on each side. The user may target that thumbnail size based on the dimensions of their sections.
 
@@ -140,26 +140,73 @@ The downsampled thumbnails will be written to `(working_directory)/thumbnail_ali
 
 #### thumbnail matching
 
-To find the matching points between neighboring thumbnails, navigate to the FEABAS code root directory, and run:
+To find the matching points between neighboring thumbnails, navigate to the FEABAS root directory, and run:
 
 ```bash
 python scripts/thumbnail_main.py --mode alignment
 ```
 
-It will save the files containing the rough matching points to `(working_directory)/thumbnail_align/matches` folder.
+It will save the files containing the rough matching points to `(work_dir)/thumbnail_align/matches` folder.
 
-This is the most error-prone step in the entire pipeline, so we'd like to advise the user to pay special attention to the warning log files in `(working_directory)/logs` folder if they are generated during the step. In our experience, the most common failure mode was when the targeting of the microscope is not sufficiently accurate, the ROIs of some neighboring sections are completely off and there are little to no overlaps. In that case, the user should plan to retake the images.
+This is the most error-prone step in the entire pipeline, so we'd like to advise the user to pay special attention to the warning log files in `(work_dir)/logs` folder if they are generated during the step. In our experience, the most common failure mode was when the targeting of the microscope is not sufficiently accurate, the ROIs of some neighboring sections are completely off and there are little to no overlaps. In that case, the user should plan to retake the images.
 
-By default, the thumbnail-matching step assumes all the connected regions in the thumbnail should have smooth transformation fields when aligning with their neighbors. However, that is not always the case. For example, if a section is broken into multiple pieces, and all the pieces are imaged as a single montage, then these disconnected parts may need very different transformations to be pieced back together. FEABAS allows the user to address this issue by modifying the mask files saved in the `(working_directory)/thumbnail_align/material_masks`. Each section has one corresponding mask file in PNG format that should overlay with its thumbnail. In the mask images, black color defines the regions within the ROI and white defines those outside of the ROI. The user can simply use the white color to label the split site, and break the black partial sections into disconnected 'islands'. Then FEABAS will automatically find transformations distinctive to each broken piece (as long as the pieces are not too fragmented). More about the masks in the "Advanced Topic: Non-Smooth Transformation in Alignment" segment of this readme.
+By default, the thumbnail-matching step assumes all the connected regions in the thumbnail should have smooth transformation fields when aligning with their neighbors. However, that is not always the case. For example, if a section is broken into multiple pieces, and all the pieces are imaged as a single montage, then these disconnected parts may need very different transformations to be pieced back together. FEABAS allows the user to address this issue by modifying the mask files saved in the `(work_dir)/thumbnail_align/material_masks`. Each section has one corresponding mask file in PNG format that should overlay with its thumbnail. In the mask images, black color defines the regions within the ROI and white defines those outside of the ROI. The user can simply use the white color to label the split site, and break the black partial sections into disconnected 'islands'. Then FEABAS will automatically find transformations distinctive to each broken piece (as long as the pieces are not too fragmented). More about the masks in the "Advanced Topic: Non-Smooth Transformation in Alignment" segment of this readme.
 
 ### Fine Alignment
 
+The fine alignment workflow refines the matching points found in the thumbnail alignment at a higher resolution, and then computes the transformations that align the entire stack by solving the system equation constructed by the finite-element method. The user can adjust the parameters related to the fine alignment workflow in `configs/alignment_configs.yaml` in the *working directory*.
+
+#### generate meshes
+
+One crucial component of finite-element analysis is mesh generation. FEABAS allows versatile definitions of mesh geometries and mechanical properties, which can help address a multitude of artifacts frequently encountered in connectomic datasets, e.g. broken sections, wrinkles and folds. More about that in "Advanced Topic: Non-Smooth Transformation in Alignment". For less challenging datasets, the user can simply run:
+
+```bash
+python scripts/align_main.py --mode meshing
+```
+to generate the meshes to `(work_dir)/align/mesh` folder, or directly run the `matching` command which will automatically generate the meshes if it is not done already. The mesh properties (e.g. mesh_size that defines the granularity of the meshes) can be controlled from the `meshing` part in `alignment_configs.yaml`.
+
 #### matching
+
+To launch the fine matching step of the alignment,  which aims to get denser and more accurate matching points from the thumbnail alignment results, navigate to the FEABAS root directory, and run:
+
+```bash
+python scripts/align_main.py --mode matching
+```
+
+It reads all the matching files from the thumbnail alignment, finds the right images from the folder that stores the stitched images, and performs template matching at a higher resolution. The results will be saved to `(work_dir)/align/matches`. The working resolution for the fine matching step can be defined by `matching: working_mip_level` field in `alignment_configs.yaml`. It is advisable to select a working mipmap level that makes the xy resolution of the image closer to its section thickness, making it more isotropic. For example, with 4nm full-resolution datasets, one can elect mip2 (16nm) or mip3 (32nm) for 30nm thick sections, or mip4 (64nm) for 80 nm sections.
+
 
 #### optimization
 
+To run the optimization step of the alignment workflow, navigate to the FEABAS root directory, and run:
+
+```bash
+python scripts/align_main.py --mode optimization
+```
+
+It loads the meshes in `(work_dir)/align/mesh` folder, arranges them in alphabetical order (or follows the order in `(work_dir)/section_order.txt` if provided), and uses the matches in `(work_dir)/align/matches` to drive the meshes into alignment. The aligned meshes are saved to `(work_dir)/align/tform` folder. FEABAS follows a "sliding window" strategy to perform the optimization step. It first selects a continuous subblock in the stack (size and location defined by `window_size` and `start_loc` fields in `alignment_configs.yaml`), optimizes within the block, and then moves the "window" to a neighboring block to repeat the process. The blocks before and after the "window" movement share a fixed number of sections (defined by `buffer_size` in `alignment_configs.yaml`), so that they are anchored to the same coordinate system.
+
+Note that if there are meshes already existing in `(work_dir)/align/tform` folder when the optimization command is executed, the program will load those meshes instead of the meshes of the corresponding sections in `(work_dir)/align/mesh` folder; and treat those sections as 'locked', i.e. not allowed to move and only serve as references to the rest of the stack during the remaining optimization process.
+
+
 #### rendering
 
+To render the aligned stack, navigate to the FEABAS root directory, and run:
+
+```bash
+python scripts/align_main.py --mode rendering
+```
+
+Again, the user can control the details of the rendering process via `alignment_configs.yaml`. As with the rendering step in the stitching workflow earlier, the output images can be directed to another storage location other than the *working directory* by providing the path to `rendering: out_dir` field in the configuration file. 
+
 #### generate mipmaps for VAST
+
+The user can also run:
+
+```bash
+python scripts/align_main.py --mode downsample
+```
+to generate the mipmaps of the aligned stack for visualization in [VAST](https://lichtman.rc.fas.harvard.edu/vast/).
+
 
 ### Advanced Topic: Non-Smooth Transformation in Alignment

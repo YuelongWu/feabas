@@ -25,41 +25,41 @@ matching:
 
 optimization:
     stack_config:
-        mip_level: 0
-        mesh_cache_size: 90
+        mip_level: 0    # all the matching points and meshes are scaled to this mip level before optimization
+        mesh_cache_size: 90 # number of meshes to cache in RAM. should be larger than window_size + buffer_size
     slide_window:
         num_workers: 2
-        start_loc: M
-        window_size: 64
-        buffer_size: 16
+        start_loc: M    # starting location of the optimization. L: left, R: right, M: start from middle and move in both directions
+        window_size: 64 # the width of the sliding window
+        buffer_size: 16 # the number of overlapping sections to re-optimize when window is moved, to minimize potential fringe effects.
         residue_mode: huber
-        residue_len: 20
+        residue_len: 20 # matching points with error larger than this width will be weakened in the second round of mesh relaxation
         elastic_params:
-            tol: 1.0e-7
+            tol: 1.0e-7 # convergence tolerance for the solver
             atol: 0.001
-            continue_on_flip: true
+            continue_on_flip: true # if to continue the process when a flipped triangle is detected. otherwise stop the program and raise error
             callback_settings:
-                timeout: null
-                early_stop_thresh: null
-                chances: null
-                eval_step: 10
+                timeout: null   # maximum time (in second) allowed for each round of optimization. After the timeout, select the best solution so far
+                early_stop_thresh: null # if after each step, the maximum movement of the mesh points is smaller than this, consider it a insiginificant update
+                chances: null   # number of insignificant or diverge steps allowed before an early stop envoked
+                eval_step: 10   # the interval (in steps) when the significance of the updates is evaluated 
 
 rendering:
     num_workers: 10
-    offset_bbox: true
+    offset_bbox: true   # if set to true, before the first rendering session, all the transformations will be normalized to align the most upper-left corner of the stack to (0,0)
     out_dir: null  # directory to save the aligned stack. if set to null, default to working_directory/aligned_stack
-    prefix_z_number: true
-    pattern: _tr{ROW_IND}-tc{COL_IND}.png
+    prefix_z_number: true   # whether to add the z-index before the section_name when rendering
+    pattern: _tr{ROW_IND}-tc{COL_IND}.png  # pattern of the filenames
     one_based: true # zero-based or one-based row/colume indexing
     max_tile_per_job: 20
     mip_level: 0
-    canvas_bbox: null
+    canvas_bbox: null   # if defined, only render the image inside the canvas box. otherwise render the whole thing.
     tile_size: [4096, 4096]
     remap_interp: LANCZOS # LANCZOS | CUBIC | LINEAR | NEAREST
     loader_config:
         cache_size: 50
         fillval: 0
-        apply_CLAHE: false
+        apply_CLAHE: false  # should already be applied during stitching 
 
 downsample:
     num_workers: 10
