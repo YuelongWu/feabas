@@ -227,7 +227,7 @@ def _max_entropy_scaling_both_sides(img, **kwargs):
     left_upper_bound = kwargs.get('l_upper_bound', 0.3)
     num_gain = 50
     data0 = img[(img > img.min()) & (img < img.max())]
-    bin_edges = np.linspace(img.min(), img.max(), num=hist_num, endpoint=True)
+    bin_edges = np.linspace(data0.min(), data0.max(), num=hist_num, endpoint=True)
     edge_cntrs = (bin_edges[:-1] + bin_edges[1:]) / 2
     hist, _ = np.histogram(data0, bins=bin_edges)
     cdf = np.cumsum(hist, axis=None)

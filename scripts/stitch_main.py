@@ -229,6 +229,7 @@ if __name__ == '__main__':
     stitch_configs = config.stitch_configs()
     if args.mode.lower().startswith('r'):
         stitch_configs = stitch_configs['rendering']
+        stitch_configs.pop('out_dir')
         mode = 'rendering'
     elif args.mode.lower().startswith('o'):
         stitch_configs = stitch_configs['optimization']

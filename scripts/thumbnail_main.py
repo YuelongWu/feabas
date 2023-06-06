@@ -227,7 +227,7 @@ if __name__ == '__main__':
         logger_info = logging.initialize_main_logger(logger_name='stitch_mipmap', mp=num_workers>1)
         thumbnail_configs['logger'] = logger_info[0]
         logger= logging.get_logger(logger_info[0])
-        max_mip = thumbnail_configs.pop('max_mip', thumbnail_mip_lvl-1)
+        max_mip = thumbnail_configs.pop('max_mip', max(0, thumbnail_mip_lvl-1))
         src_dir0 = config.stitch_render_dir()
         stitch_conf = config.stitch_configs()['rendering']
         pattern = stitch_conf['filename_settings']['pattern']
@@ -238,12 +238,17 @@ if __name__ == '__main__':
         thumbnail_configs.setdefault('fillval', fillval)
         generate_stitched_mipmaps(src_dir0, max_mip, **thumbnail_configs)
         if thumbnail_configs.get('thumbnail_highpass', True):
-            src_dir = os.path.join(src_dir0, 'mip'+str(thumbnail_mip_lvl-2))
-            downsample = 4
-            highpass = True
+            src_mip = max(0, thumbnail_mip_lvl-2)
+            src_dir = os.path.join(src_dir0, 'mip'+str(src_mip))
+            downsample = 2 ** (thumbnail_mip_lvl - src_mip)
+            if downsample >= 4:
+                highpass = True
+            else:
+                highpass = False
         else:
-            src_dir = os.path.join(src_dir0, 'mip'+str(thumbnail_mip_lvl-1))
-            downsample = 2
+            src_mip = max(0, thumbnail_mip_lvl-1)
+            src_dir = os.path.join(src_dir0, 'mip'+str(src_mip))
+            downsample = 2 ** (thumbnail_mip_lvl - src_mip)
             highpass = False
         thumbnail_configs.setdefault('downsample', downsample)
         thumbnail_configs.setdefault('highpass', highpass)

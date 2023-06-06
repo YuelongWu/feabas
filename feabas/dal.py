@@ -363,9 +363,9 @@ class AbstractImageLoader(ABC):
         dtype = kwargs.get('dtype', self._dtype)
         apply_CLAHE = kwargs.get('apply_CLAHE', self._apply_CLAHE)
         inverse = kwargs.get('inverse', self._inverse)
-        if number_of_channels == 3:
+        if (number_of_channels == 3) and (np.dtype(dtype) == np.uint8):
             img = common.imread(imgpath, flag=cv2.IMREAD_COLOR)
-        elif number_of_channels == 1:
+        elif (number_of_channels == 1) and np.dtype(dtype) == np.uint8:
             img = common.imread(imgpath, flag=cv2.IMREAD_GRAYSCALE)
         else:
             img = common.imread(imgpath, flag=cv2.IMREAD_UNCHANGED)
