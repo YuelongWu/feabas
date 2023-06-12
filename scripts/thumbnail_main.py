@@ -228,6 +228,8 @@ if __name__ == '__main__':
         thumbnail_configs['logger'] = logger_info[0]
         logger= logging.get_logger(logger_info[0])
         max_mip = thumbnail_configs.pop('max_mip', max(0, thumbnail_mip_lvl-1))
+        align_mip = config.align_configs['matching']['working_mip_level']
+        max_mip = max(align_mip, max_mip)
         src_dir0 = config.stitch_render_dir()
         stitch_conf = config.stitch_configs()['rendering']
         pattern = stitch_conf['filename_settings']['pattern']

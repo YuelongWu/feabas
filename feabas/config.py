@@ -1,9 +1,15 @@
+import math
 import os
 import yaml
 from feabas import constant
 
+if os.path.isfile(os.path.join(os.getcwd(), 'configs', 'general_configs.yaml')):
+    _default_configuration_folder = os.path.join(os.getcwd(), 'configs')
+elif os.path.isfile(os.path.join(os.path.dirname(os.getcwd()), 'configs', 'general_configs.yaml')):
+    _default_configuration_folder = os.path.join(os.path.dirname(os.getcwd()), 'configs')
+else:
+    _default_configuration_folder = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'configs')
 
-_default_configuration_folder = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'configs')
 
 def general_settings():
     config_file = os.path.join(_default_configuration_folder, 'general_configs.yaml')
@@ -70,6 +76,11 @@ def align_config_file():
 def align_configs():
     with open(align_config_file(), 'r') as f:
         conf = yaml.safe_load(f)
+    section_thickness = general_settings().get('section_thickness', None)
+    if (section_thickness is not None) and (conf.get('matching', {}).get('working_mip_level', None) is None):
+        align_mip = max(0, math.floor(math.log2(section_thickness / DEFAULT_RESOLUTION)))
+        conf.setdefault('matching', {})
+        conf['matching'].setdefault('working_mip_level', align_mip)
     return conf
 
 
