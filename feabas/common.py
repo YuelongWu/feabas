@@ -16,7 +16,39 @@ Match = namedtuple('Match', ('xy0', 'xy1', 'weight'))
 
 def imread(path, **kwargs):
     flag = kwargs.get('flag', cv2.IMREAD_UNCHANGED)
-    return cv2.imread(path, flag)
+    if path.startswith('gs://'):
+        if path.lower().endswith('.png'):
+            driver = 'png'
+        elif path.lower().endswith('.bmp'):
+            driver = 'bmp'
+        elif path.lower().endswith('.tif') or path.lower().endswith('.tiff'):
+            driver = 'tiff'
+        elif path.lower().endswith('.jpg') or path.lower().endswith('.jpeg'):
+            driver = 'jpeg'
+        elif path.lower().endswith('.avif'):
+            driver = 'avif'
+        elif path.lower().endswith('.webp'):
+            driver = 'webp'
+        else:
+            raise ValueError(f'format not supported: {path}')
+        import tensorstore as ts
+        js_spec = {'driver': driver, 'kvstore': path}
+        try:
+            ts_data = ts.open(js_spec).result()
+            img = ts_data.read().result()
+            if len(img.shape) < 3:
+                num_channels = 1
+            else:
+                num_channels = img.shape[-1]
+            if flag == cv2.IMREAD_GRAYSCALE and num_channels != 1:
+                img = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+            elif flag == cv2.IMREAD_COLOR and num_channels == 1:
+                img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
+        except ValueError:
+            img = None
+    else:
+        img = cv2.imread(path, flag)
+    return img
 
 
 def imwrite(path, image):
