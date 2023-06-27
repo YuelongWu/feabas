@@ -14,6 +14,7 @@ from scipy.interpolate import interp1d
 from scipy.ndimage import gaussian_filter, binary_dilation
 from scipy import sparse
 import scipy.sparse.csgraph as csgraph
+import tensorstore as ts
 
 from feabas.dal import StaticImageLoader
 from feabas import logging
@@ -23,7 +24,7 @@ from feabas.optimizer import SLM
 from feabas import common, caching
 from feabas.spatial import scale_coordinates
 import feabas.constant as const
-from feabas.config import DEFAULT_RESOLUTION
+from feabas.config import DEFAULT_RESOLUTION, general_settings
 
 class Stitcher:
     """
@@ -1270,15 +1271,28 @@ class MontageRenderer:
         else:
             ksz = round(0.5/scale) * 2 - 1
             self.image_loader._preprocess = partial(cv2.blur, ksize=(ksz, ksz))
-        for bbox, filename in zip(bboxes, filenames):
-            if os.path.isfile(filename):
+        if not isinstance(filenames, dict): # render as image tiles
+            for bbox, filename in zip(bboxes, filenames):
+                if os.path.isfile(filename):
+                    rendered[filename] = bbox
+                    continue
+                imgt = self.crop(bbox, **kwargs)
+                if imgt is None:
+                    continue
+                common.imwrite(filename, imgt)
                 rendered[filename] = bbox
-                continue
-            imgt = self.crop(bbox, **kwargs)
-            if imgt is None:
-                continue
-            common.imwrite(filename, imgt)
-            rendered[filename] = bbox
+        else: # use tensorstore
+            dataset = ts.open(filenames).result()
+            for bbox in bboxes:
+                imgt = self.crop(bbox, **kwargs)
+                if imgt is None:
+                    continue
+                xmin, ymin, _, _ = bbox
+                shp = imgt.shape
+                imght, imgwd = shp[0], shp[1]
+                data_view = dataset[ymin:(ymin+imght), xmin:(xmin+imgwd)]
+                data_view.write(imgt.reshape(data_view.shape)).result()
+                rendered[tuple(bbox)] = None
         self.image_loader.clear_cache()
         return rendered
 
@@ -1296,10 +1310,8 @@ class MontageRenderer:
             {Y_MAX}: maximum of y coordinates
         e.g. pattern: Section001_tr{ROW_IND}_tc{COL_IND}.png
         """
-        pattern = kwargs.get('pattern', 'tr{ROW_IND}_tc{COL_IND}.png')
+        driver = kwargs.get('driver', 'image')
         scale = kwargs.get('scale', 1)
-        one_based = kwargs.get('one_based', False)
-        keywords = ['{ROW_IND}', '{COL_IND}', '{X_MIN}', '{Y_MIN}', '{X_MAX}', '{Y_MAX}']
         if not hasattr(tile_size, '__len__'):
             tile_ht, tile_wd = tile_size, tile_size
         else:
@@ -1311,13 +1323,84 @@ class MontageRenderer:
         montage_ht = bounds[3]
         Ncol = int(np.ceil(montage_wd / tile_wd))
         Nrow = int(np.ceil(montage_ht / tile_ht))
+        montage_ht, montage_wd = Nrow * tile_ht, Ncol * tile_wd
         cols, rows = np.meshgrid(np.arange(Ncol), np.arange(Nrow))
         cols, rows = cols.ravel(), rows.ravel()
         idxz = common.z_order(np.stack((rows, cols), axis=-1))
         cols, rows =  cols[idxz], rows[idxz]
+        if driver == 'image':
+            filename_settings = kwargs.get('filename_settings', {})
+            pattern = filename_settings.get('pattern', 'tr{ROW_IND}_tc{COL_IND}.png')
+            one_based = filename_settings.get('one_based', False)
+            keywords = ['{ROW_IND}', '{COL_IND}', '{X_MIN}', '{Y_MIN}', '{X_MAX}', '{Y_MAX}']
+            filenames = []
+        else:
+            if not prefix.endswith('/'):
+                prefix = prefix + '/'
+            kv_headers = ('gs://', 'http://', 'https://', 'file://', 'memory://')
+            for kvh in kv_headers:
+                if prefix.startswith(kvh):
+                    break
+            else:
+                prefix = 'file://' + prefix
+            number_of_channels = self.number_of_channels
+            dtype = self.dtype
+            fillval = self.default_fillval
+            if driver == 'zarr':
+                filenames = {
+                    "driver": "zarr",
+                    "kvstore": prefix,
+                    "key_encoding": ".",
+                    "metadata": {
+                        "zarr_format": 2,
+                        "shape": [montage_ht, montage_wd, number_of_channels],
+                        "chunks": [tile_ht, tile_wd, number_of_channels],
+                        "dtype": np.dtype(dtype).str,
+                        "fill_value": fillval,
+                        "compressor": {"id": "gzip", "level": 6}
+                    },
+                    "open": True,
+                    "create": True,
+                    "delete_existing": False
+                }
+            elif driver == 'n5':
+                filenames = {
+                    "driver": "n5",
+                    "kvstore": prefix,
+                    "dtype": np.dtype(dtype).name,
+                    "metadata": {
+                        "dimensions": [montage_ht, montage_wd, number_of_channels],
+                        "blockSize": [tile_ht, tile_wd, number_of_channels],
+                        "resolution": [self.resolution, self.resolution],
+                        "compression": {"type": "gzip"}
+                    },
+                    "open": True,
+                    "create": True,
+                    "delete_existing": False
+                }
+            elif driver.startswith('neu'):
+                filenames = {
+                    "driver": "neuroglancer_precomputed",
+                    "kvstore": prefix,
+                    "multiscale_metadata":{
+                        "type": "image",
+                        "data_type": np.dtype(dtype).name,
+                        "num_channels": number_of_channels
+                    },
+                    "scale_metadata": {
+                        "size": [montage_ht, montage_wd, 1],
+                        "chunk_size": [tile_ht, tile_wd, 1],
+                        "encoding": "raw",
+                        "resolution": [self.resolution, self.resolution, general_settings().get('section_thickness', 30)]
+                    },
+                    "open": True,
+                    "create": True,
+                    "delete_existing": False
+                }
+            else:
+                raise ValueError(f'{driver} not supported')
         hits = []
         bboxes = []
-        filenames = []
         for r, c in zip(rows, cols):
             bbox = (c*tile_wd, r*tile_ht, (c+1)*tile_wd, (r+1)*tile_ht)
             if scale != 1:
@@ -1329,12 +1412,13 @@ class MontageRenderer:
                 continue
             hits.append(hit)
             bboxes.append(bbox)
-            xmin, ymin, xmax, ymax = bbox
-            keyword_replaces = [str(r+one_based), str(c+one_based), str(xmin), str(ymin), str(xmax), str(ymax)]
-            fname = pattern
-            for kw, kwr in zip(keywords, keyword_replaces):
-                fname = fname.replace(kw, kwr)
-            filenames.append(prefix + fname)
+            if driver == 'image':
+                xmin, ymin, xmax, ymax = bbox
+                keyword_replaces = [str(r+one_based), str(c+one_based), str(xmin), str(ymin), str(xmax), str(ymax)]
+                fname = pattern
+                for kw, kwr in zip(keywords, keyword_replaces):
+                    fname = fname.replace(kw, kwr)
+                filenames.append(prefix + fname)
         return bboxes, filenames, hits
 
 
@@ -1354,7 +1438,10 @@ class MontageRenderer:
         for idx0, idx1 in zip(indices[:-1], indices[1:]):
             idx0, idx1 = int(idx0), int(idx1)
             bboxes_list.append(bboxes[idx0:idx1])
-            filenames_list.append(filenames[idx0:idx1])
+            if isinstance(filenames, dict):
+                filenames_list.append(filenames)
+            else:
+                filenames_list.append(filenames[idx0:idx1])
             hits_list.append(set(s for hit in hits[idx0:idx1] for s in hit))
         return bboxes_list, filenames_list, hits_list
 
