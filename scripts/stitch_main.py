@@ -143,7 +143,7 @@ def optmization_main(match_list, out_dir, **kwargs):
 
 def render_one_section(tform_name, out_prefix, meta_name=None, **kwargs):
     num_workers = kwargs.get('num_workers', 1)
-    tile_size = kwargs.get('tile_size', [4096, 4096])
+    tile_size = kwargs.pop('tile_size', [4096, 4096])
     scale = kwargs.pop('scale', 1.0)
     resolution = kwargs.pop('resolution', None)
     loader_settings = kwargs.get('loader_settings', {})

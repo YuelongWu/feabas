@@ -1425,7 +1425,7 @@ class MontageRenderer:
     def divide_render_jobs(self, render_series, num_workers=1, **kwargs):
         max_tile_per_job = kwargs.get('max_tile_per_job', None)
         bboxes, filenames, hits = render_series
-        num_tiles = len(filenames)
+        num_tiles = len(bboxes)
         num_tile_per_job = max(1, num_tiles // num_workers)
         if max_tile_per_job is not None:
             num_tile_per_job = min(num_tile_per_job, max_tile_per_job)

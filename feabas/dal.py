@@ -374,10 +374,12 @@ class AbstractImageLoader(ABC):
             raise RuntimeError(f'Image file {imgpath} not valid!')
         if dtype is None:
             dtype = img.dtype
-        if (number_of_channels == 1) and (len(img.shape) > 2) and (img.shape[-1] > 1):
+        if (len(img.shape) > 2) and (img.shape[-1] == 1):
+            img = img[..., 0]
+        if (number_of_channels == 1) and (len(img.shape) > 2):
             img = img.mean(axis=-1).astype(dtype)
         if apply_CLAHE:
-            if len(img.shape) > 2:
+            if (len(img.shape) > 2) and (img.shape[-1] == 3):
                 img = cv2.cvtColor(img, cv2.COLOR_RGB2Lab)
                 img[:,:,0] = self._CLAHE.apply(img[:,:,0])
                 img = cv2.cvtColor(img, cv2.COLOR_Lab2RGB)

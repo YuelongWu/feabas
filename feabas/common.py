@@ -170,7 +170,8 @@ def render_by_subregions(map_x, map_y, mask, img_loader, fileid=None,  **kwargs)
             imgtt = cv2.remap(img0, map_xt.astype(np.float32), map_yt.astype(np.float32),
                 interpolation=rintp, borderMode=cv2.BORDER_CONSTANT, borderValue=fillval)
             if multichannel:
-                mskt3 = np.stack((mskt, )*imgtt.shape[-1], axis=-1)
+                mskt3 = np.stack((mskt, )*num_channel, axis=-1)
+                imgtt = imgtt.reshape(mskt3.shape)
                 imgt[mskt3] = imgtt[mskt3]
             else:
                 imgt[mskt] = imgtt[mskt]
