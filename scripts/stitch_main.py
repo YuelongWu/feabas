@@ -188,7 +188,7 @@ def render_one_section(tform_name, out_prefix, meta_name=None, **kwargs):
             else:
                 meta_name = 'file://' + meta_name
             meta_ts = ts.open({"driver": "json", "kvstore": meta_name}).result()
-            meta_ts.write(render_series[1]).result()
+            meta_ts.write({0: render_series[1]}).result()
         else:
             fnames = sorted(list(metadata.keys()))
             bboxes = []
@@ -205,7 +205,7 @@ def render_main(tform_list, out_dir, **kwargs):
     driver = kwargs.get('driver', 'image')
     use_tensorstore = driver != 'image'
     if use_tensorstore:
-        meta_dir = os.path.join(os.path.dirname(os.path.dirname(tform_list[0])), 'ts_specs')
+        meta_dir = kwargs['meta_dir']
         os.makedirs(meta_dir, exist_ok=True)
     for tname in tform_list:
         t0 = time.time()
@@ -219,10 +219,10 @@ def render_main(tform_list, out_dir, **kwargs):
             if os.path.isfile(meta_name):
                 continue
             logger.info(f'{sec_name}: start')
-            os.makedirs(sec_outdir, exist_ok=True)
             if use_tensorstore:
                 out_prefix = sec_outdir
             else:
+                os.makedirs(sec_outdir, exist_ok=True)
                 out_prefix = os.path.join(sec_outdir, sec_name)
             num_rendered = render_one_section(tname, out_prefix, meta_name=meta_name, **kwargs)
             logger.info(f'{sec_name}: {num_rendered} tiles | {(time.time()-t0)/60} min')
@@ -254,6 +254,10 @@ if __name__ == '__main__':
         stitch_configs = stitch_configs['rendering']
         stitch_configs.pop('out_dir')
         mode = 'rendering'
+        image_outdir = config.stitch_render_dir()
+        driver = stitch_configs.get('driver', 'image')
+        if not driver.startswith('neuroglancer'):
+            image_outdir = os.path.join(image_outdir, 'mip0')
     elif args.mode.lower().startswith('o'):
         stitch_configs = stitch_configs['optimization']
         mode = 'optimization'
@@ -274,8 +278,7 @@ if __name__ == '__main__':
     coord_dir = os.path.join(stitch_dir, 'stitch_coord')
     match_dir = os.path.join(stitch_dir, 'match_h5')
     mesh_dir = os.path.join(stitch_dir, 'tform')
-    image_outdir = config.stitch_render_dir()
-    image_outdir = os.path.join(image_outdir, 'mip0')
+    render_meta_dir = os.path.join(stitch_dir, 'ts_specs')
     stt_idx, stp_idx, step = args.start, args.stop, args.step
     if stp_idx == 0:
         stp_idx = None
@@ -286,7 +289,7 @@ if __name__ == '__main__':
         tform_list = tform_list[indx]
         if args.reverse:
             tform_list = tform_list[::-1]
-        os.makedirs(image_outdir, exist_ok=True)
+        stitch_configs.setdefault('meta_dir', render_meta_dir)
         render_main(tform_list, image_outdir, **stitch_configs)
     elif mode == 'optimization':
         match_list = sorted(glob.glob(os.path.join(match_dir, '*.h5')))

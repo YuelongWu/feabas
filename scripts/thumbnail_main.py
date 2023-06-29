@@ -230,14 +230,20 @@ if __name__ == '__main__':
         max_mip = thumbnail_configs.pop('max_mip', max(0, thumbnail_mip_lvl-1))
         align_mip = config.align_configs['matching']['working_mip_level']
         max_mip = max(align_mip, max_mip)
-        src_dir0 = config.stitch_render_dir()
         stitch_conf = config.stitch_configs()['rendering']
-        pattern = stitch_conf['filename_settings']['pattern']
-        one_based = stitch_conf['filename_settings']['one_based']
-        fillval = stitch_conf['loader_settings'].get('fillval', 0)
-        thumbnail_configs.setdefault('pattern', pattern)
-        thumbnail_configs.setdefault('one_based', one_based)
-        thumbnail_configs.setdefault('fillval', fillval)
+        driver = stitch_conf.get('driver', 'image')
+        thumbnail_configs.setdefault('driver', driver)
+        if driver == 'image':
+            src_dir0 = config.stitch_render_dir()
+            pattern = stitch_conf['filename_settings']['pattern']
+            one_based = stitch_conf['filename_settings']['one_based']
+            fillval = stitch_conf['loader_settings'].get('fillval', 0)
+            thumbnail_configs.setdefault('pattern', pattern)
+            thumbnail_configs.setdefault('one_based', one_based)
+            thumbnail_configs.setdefault('fillval', fillval)
+        else:
+            stitch_dir = os.path.join(root_dir, 'stitch')
+            src_dir0 = os.path.join(stitch_dir, 'ts_specs')
         generate_stitched_mipmaps(src_dir0, max_mip, **thumbnail_configs)
         if thumbnail_configs.get('thumbnail_highpass', True):
             src_mip = max(0, thumbnail_mip_lvl-2)
