@@ -163,13 +163,18 @@ def render_one_section(tform_name, out_prefix, meta_name=None, **kwargs):
     render_settings['scale'] = scale
     render_series = renderer.plan_render_series(tile_size, prefix=out_prefix,
         scale=scale, **kwargs)
+    if use_tensorstore:
+        store = ts.open(render_series[1]).result()
     if num_workers == 1:
         bboxes, filenames, _ = render_series
         metadata = renderer.render_series_to_file(bboxes, filenames, **render_settings)
     else:
         bboxes_list, filenames_list, hits_list = renderer.divide_render_jobs(render_series,
             num_workers=num_workers, max_tile_per_job=20)
-        metadata = {}
+        if use_tensorstore:
+            metadata = []
+        else:
+            metadata = {}
         jobs = []
         target_func = partial(MontageRenderer.subprocess_render_montages, **render_settings)
         with ProcessPoolExecutor(max_workers=num_workers, mp_context=get_context('spawn')) as executor:
@@ -178,7 +183,10 @@ def render_one_section(tform_name, out_prefix, meta_name=None, **kwargs):
                 job = executor.submit(target_func, init_args, bboxes, filenames)
                 jobs.append(job)
             for job in as_completed(jobs):
-                metadata.update(job.result())
+                if use_tensorstore:
+                    metadata.extend(job.result())
+                else:
+                    metadata.update(job.result())
     if (meta_name is not None) and (len(metadata) > 0):
         if use_tensorstore:
             kv_headers = ('gs://', 'http://', 'https://', 'file://', 'memory://')
@@ -188,7 +196,7 @@ def render_one_section(tform_name, out_prefix, meta_name=None, **kwargs):
             else:
                 meta_name = 'file://' + meta_name
             meta_ts = ts.open({"driver": "json", "kvstore": meta_name}).result()
-            meta_ts.write({0: render_series[1]}).result()
+            meta_ts.write({0: store.spec().to_json()}).result()
         else:
             fnames = sorted(list(metadata.keys()))
             bboxes = []

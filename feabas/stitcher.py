@@ -1264,14 +1264,19 @@ class MontageRenderer:
 
 
     def render_series_to_file(self, bboxes, filenames, **kwargs):
-        rendered = {}
+        if isinstance(filenames, (dict, ts.TensorStore)):
+            use_tensorstore = True
+            rendered = []
+        else:
+            use_tensorstore = False
+            rendered = {}
         scale = kwargs.get('scale', 1.0)
         if scale > 0.33:
             self.image_loader._preprocess = None
         else:
             ksz = round(0.5/scale) * 2 - 1
             self.image_loader._preprocess = partial(cv2.blur, ksize=(ksz, ksz))
-        if not isinstance(filenames, dict): # render as image tiles
+        if not use_tensorstore: # render as image tiles
             for bbox, filename in zip(bboxes, filenames):
                 if os.path.isfile(filename):
                     rendered[filename] = bbox
@@ -1282,7 +1287,10 @@ class MontageRenderer:
                 common.imwrite(filename, imgt)
                 rendered[filename] = bbox
         else: # use tensorstore
-            dataset = ts.open(filenames).result()
+            if not isinstance(filenames, ts.TensorStore):
+                dataset = ts.open(filenames).result()
+            else:
+                dataset = filenames
             for bbox in bboxes:
                 imgt = self.crop(bbox, **kwargs)
                 if imgt is None:
@@ -1292,7 +1300,7 @@ class MontageRenderer:
                 imght, imgwd = shp[0], shp[1]
                 data_view = dataset[ymin:(ymin+imght), xmin:(xmin+imgwd)]
                 data_view.write(imgt.reshape(data_view.shape)).result()
-                rendered[tuple(bbox)] = None
+                rendered.append(tuple(bbox))
         self.image_loader.clear_cache()
         return rendered
 

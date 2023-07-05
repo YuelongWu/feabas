@@ -181,6 +181,10 @@ def create_thumbnail(src_dir, outname=None, downsample=4, highpass=True, **kwarg
         common.imwrite(outname, img)
 
 
+def generate_target_miplevel(metafile, mip=None, **kwargs):
+    pass
+
+
 def _max_entropy_scaling_one_side(img, **kwargs):
     if np.ptp(img, axis=None) == 0:
         return img.astype(np.uint8)

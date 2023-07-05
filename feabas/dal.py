@@ -10,6 +10,7 @@ import re
 import cv2
 import numpy as np
 from rtree import index
+import tensorstore as ts
 
 from feabas import common, caching
 from feabas.config import DEFAULT_RESOLUTION
@@ -1041,6 +1042,45 @@ class StreamLoader(AbstractImageLoader):
     def bounds(self):
         return self.file_bboxes(margin=0)[0]
 
+
+
+class TensorStoreLoader(AbstractImageLoader):
+    """
+    Loader class for image saved by tensorstore. Mirrors the APIs of MosaicLoader.
+    """
+    def __init__(self, dataset, **kwargs):
+        super().__init__(**kwargs)
+        self._z = kwargs.get('z', 0)
+        self.dataset = dataset
+
+
+    @classmethod
+    def from_json(cls, js_spec, **kwargs):
+        if kwargs.get('cache_capacity', None) is not None:
+            total_bytes_limit = kwargs['cache_capacity'] * 1_000_000
+        elif kwargs.get('cache_size', None) is not None:
+            # assume 4k tiles
+            total_bytes_limit = kwargs['cache_size'] * 4096 * 4096
+        elif ('cache_capacity' not in kwargs) and ('cache_size' not in kwargs):
+            total_bytes_limit = 0
+        else:
+            total_bytes_limit = np.inf
+        if total_bytes_limit > 0:
+            pass
+
+
+    def crop(bbox, return_empty=False, **kwargs):
+        pass
+
+
+    @property
+    def bounds(self):
+        domain = self.dataset.domain
+        inclusive_min = domain.inclusive_min
+        exclusive_max = domain.exclusive_max
+        xmin, ymin = inclusive_min[0], inclusive_min[0]
+        xmax, ymax = exclusive_max[0], exclusive_max[0]
+        return (xmin, ymin, xmax, ymax)
 
 
 class MultiResolutionImageLoader:
