@@ -1062,14 +1062,20 @@ class TensorStoreLoader(AbstractImageLoader):
             # assume 4k tiles
             total_bytes_limit = kwargs['cache_size'] * 4096 * 4096
         elif ('cache_capacity' not in kwargs) and ('cache_size' not in kwargs):
-            total_bytes_limit = 0
+            total_bytes_limit = -1
         else:
             total_bytes_limit = np.inf
-        if total_bytes_limit > 0:
-            pass
+        if total_bytes_limit >= 0:
+            cntx = {'cache_pool': {'total_bytes_limit': total_bytes_limit}}
+            js_spec = js_spec.copy()
+            js_spec.update({'context': cntx})
+        dataset = ts.open(js_spec).result()
+        if js_spec['driver'] in ('neuroglancer_precomputed', 'n5'):
+            kwargs['fillval'] = 0
+        return cls(dataset, **kwargs)
+        
 
-
-    def crop(bbox, return_empty=False, **kwargs):
+    def crop(self, bbox, return_empty=False, **kwargs):
         pass
 
 

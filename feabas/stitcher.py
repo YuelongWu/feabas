@@ -1291,6 +1291,9 @@ class MontageRenderer:
                 dataset = ts.open(filenames).result()
             else:
                 dataset = filenames
+            driver = dataset.spec().to_json()['driver']
+            if driver in ('neuroglancer_precomputed', 'n5'):
+                kwargs['fillval'] = 0
             for bbox in bboxes:
                 imgt = self.crop(bbox, **kwargs)
                 if imgt is None:
@@ -1379,14 +1382,15 @@ class MontageRenderer:
                     "metadata": {
                         "dimensions": [montage_ht, montage_wd, number_of_channels],
                         "blockSize": [tile_ht, tile_wd, number_of_channels],
-                        "resolution": [self.resolution, self.resolution],
+                        "resolution": [self.resolution, self.resolution, 1],
+                        "units": ["nm", "nm", "channel"],
                         "compression": {"type": "gzip"}
                     },
                     "open": True,
                     "create": True,
                     "delete_existing": False
                 }
-            elif driver.startswith('neu'):
+            elif driver == '"neuroglancer_precomputed':
                 filenames = {
                     "driver": "neuroglancer_precomputed",
                     "kvstore": prefix,
