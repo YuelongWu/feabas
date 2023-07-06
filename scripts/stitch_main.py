@@ -161,6 +161,12 @@ def render_one_section(tform_name, out_prefix, meta_name=None, **kwargs):
     else:
         resolution = renderer.resolution / scale
     render_settings['scale'] = scale
+    if use_tensorstore:
+        if driver == 'n5':
+            out_prefix = os.path.join(out_prefix, 's0')
+        elif driver == 'zarr':
+            out_prefix = os.path.join(out_prefix, '0')
+        out_prefix = out_prefix.replace('\\', '/')
     render_series = renderer.plan_render_series(tile_size, prefix=out_prefix,
         scale=scale, **kwargs)
     if use_tensorstore:
@@ -189,6 +195,7 @@ def render_one_section(tform_name, out_prefix, meta_name=None, **kwargs):
                     metadata.update(job.result())
     if (meta_name is not None) and (len(metadata) > 0):
         if use_tensorstore:
+            meta_name = meta_name.replace('\\', '/')
             kv_headers = ('gs://', 'http://', 'https://', 'file://', 'memory://')
             for kvh in kv_headers:
                 if meta_name.startswith(kvh):
@@ -264,7 +271,7 @@ if __name__ == '__main__':
         mode = 'rendering'
         image_outdir = config.stitch_render_dir()
         driver = stitch_configs.get('driver', 'image')
-        if not driver.startswith('neuroglancer'):
+        if driver == 'image':
             image_outdir = os.path.join(image_outdir, 'mip0')
     elif args.mode.lower().startswith('o'):
         stitch_configs = stitch_configs['optimization']

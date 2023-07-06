@@ -1076,7 +1076,7 @@ class TensorStoreLoader(AbstractImageLoader):
         
 
     def crop(self, bbox, return_empty=False, **kwargs):
-        pass
+        rnk = self.dataset.rank
 
 
     @property

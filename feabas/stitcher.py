@@ -1383,7 +1383,7 @@ class MontageRenderer:
                         "dimensions": [montage_ht, montage_wd, number_of_channels],
                         "blockSize": [tile_ht, tile_wd, number_of_channels],
                         "resolution": [self.resolution, self.resolution, 1],
-                        "units": ["nm", "nm", "channel"],
+                        "units": ["nm", "nm", ""],
                         "compression": {"type": "gzip"}
                     },
                     "open": True,
