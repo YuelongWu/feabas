@@ -375,10 +375,11 @@ class AbstractImageLoader(ABC):
             raise RuntimeError(f'Image file {imgpath} not valid!')
         if dtype is None:
             dtype = img.dtype
-        if (len(img.shape) > 2) and (img.shape[-1] == 1):
+        while (len(img.shape) > 2) and (img.shape[-1] == 1):
             img = img[..., 0]
-        if (number_of_channels == 1) and (len(img.shape) > 2):
-            img = img.mean(axis=-1).astype(dtype)
+        if (number_of_channels == 1):
+            while (len(img.shape) > 2):
+                img = img.mean(axis=-1).astype(dtype)
         if apply_CLAHE:
             if (len(img.shape) > 2) and (img.shape[-1] == 3):
                 img = cv2.cvtColor(img, cv2.COLOR_RGB2Lab)
@@ -1055,7 +1056,12 @@ class TensorStoreLoader(AbstractImageLoader):
 
 
     @classmethod
-    def from_json(cls, js_spec, **kwargs):
+    def from_json(cls, jsonname, **kwargs):
+        pass
+
+
+    @classmethod
+    def from_json_spec(cls, js_spec, **kwargs):
         if kwargs.get('cache_capacity', None) is not None:
             total_bytes_limit = kwargs['cache_capacity'] * 1_000_000
         elif kwargs.get('cache_size', None) is not None:
@@ -1075,8 +1081,74 @@ class TensorStoreLoader(AbstractImageLoader):
         return cls(dataset, **kwargs)
         
 
+    def _export_dict(self, **kwargs):
+        pass
+
+
     def crop(self, bbox, return_empty=False, **kwargs):
+        fillval = kwargs.get('fillval', self._default_fillval)
+        apply_CLAHE = kwargs.get('apply_CLAHE', self._apply_CLAHE)
+        dtype = kwargs.get('dtype', self.dtype)
+        number_of_channels = kwargs.get('number_of_channels', self.number_of_channels)
+        inverse = kwargs.get('inverse', self._inverse)
         rnk = self.dataset.rank
+        if rnk > 2:
+            slc = self.dataset[:, :, self._z, ...]
+        else:
+            slc = self.dataset
+        while slc.rank > 2 and slc.shape[-1] == 1:
+            slc = slc[..., 0]
+        bbox_img = self.bounds
+        slc_crp, indx = common.crop_image_from_bbox(slc, bbox_img, bbox,
+                                                    return_index=True)
+        if (slc_crp is None) and (not return_empty):
+            return None
+        img_crp = slc_crp.read().result()
+        if np.all(img_crp == fillval) and (not return_empty):
+            return None
+        if dtype is None:
+            dtype = img_crp.dtype
+        if number_of_channels is not None:
+            if (number_of_channels > 1) and len(img_crp.shape) < 3:
+                img_crp = np.tile(img_crp[..., np.newaxis], (1,1,number_of_channels))
+            elif (number_of_channels == 1):
+                while len(img_crp.shape) > 2:
+                    img_crp = img_crp.mean(axis=-1).astype(img_crp.dtype)
+        if apply_CLAHE:
+            if (len(img_crp.shape) > 2) and (img_crp.shape[-1] == 3):
+                img_crp = cv2.cvtColor(img_crp, cv2.COLOR_RGB2Lab)
+                img_crp[:,:,0] = self._CLAHE.apply(img_crp[:,:,0])
+                img_crp = cv2.cvtColor(img_crp, cv2.COLOR_Lab2RGB)
+            else:
+                img_crp = self._CLAHE.apply(img_crp)
+        if self._preprocess is not None:
+            img_crp = self._preprocess(img_crp)
+        if inverse:
+            img = common.inverse_image(img, dtype)
+        outht = bbox[3] - bbox[1]
+        outwd = bbox[2] - bbox[0]
+        outsz = [outht, outwd] + list(img_crp.shape)[2:]
+        imgout = np.full_like(img_crp, fillval, shape=outsz)
+        imgout[indx] = img_crp
+        return imgout.astype(dtype, copy=False)
+
+
+    @property
+    def dtype(self):
+        if self._dtype is None:
+            self._dtype = np.dtype(self.dataset.dtype.name)
+        return self._dtype
+
+
+    @property
+    def number_of_channels(self):
+        if self._number_of_channels is None:
+            shp = self.dataset.shape
+            if len(shp) < 4:
+                self._number_of_channels = 1
+            else:
+                self._number_of_channels = shp[-1]
+        return self._number_of_channels
 
 
     @property
@@ -1084,8 +1156,8 @@ class TensorStoreLoader(AbstractImageLoader):
         domain = self.dataset.domain
         inclusive_min = domain.inclusive_min
         exclusive_max = domain.exclusive_max
-        xmin, ymin = inclusive_min[0], inclusive_min[0]
-        xmax, ymax = exclusive_max[0], exclusive_max[0]
+        xmin, ymin = inclusive_min[1], inclusive_min[0]
+        xmax, ymax = exclusive_max[1], exclusive_max[0]
         return (xmin, ymin, xmax, ymax)
 
 

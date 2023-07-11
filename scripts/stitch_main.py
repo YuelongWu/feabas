@@ -267,7 +267,7 @@ if __name__ == '__main__':
     stitch_configs = config.stitch_configs()
     if args.mode.lower().startswith('r'):
         stitch_configs = stitch_configs['rendering']
-        stitch_configs.pop('out_dir')
+        stitch_configs.pop('out_dir', '')
         mode = 'rendering'
         image_outdir = config.stitch_render_dir()
         driver = stitch_configs.get('driver', 'image')

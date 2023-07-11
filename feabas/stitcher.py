@@ -1364,8 +1364,8 @@ class MontageRenderer:
                     "key_encoding": ".",
                     "metadata": {
                         "zarr_format": 2,
-                        "shape": [montage_ht, montage_wd, number_of_channels],
-                        "chunks": [tile_ht, tile_wd, number_of_channels],
+                        "shape": [montage_ht, montage_wd, 1, number_of_channels],
+                        "chunks": [tile_ht, tile_wd, 1, number_of_channels],
                         "dtype": np.dtype(dtype).str,
                         "fill_value": fillval,
                         "compressor": {"id": "gzip", "level": 6}
@@ -1380,17 +1380,17 @@ class MontageRenderer:
                     "kvstore": prefix,
                     "dtype": np.dtype(dtype).name,
                     "metadata": {
-                        "dimensions": [montage_ht, montage_wd, number_of_channels],
-                        "blockSize": [tile_ht, tile_wd, number_of_channels],
-                        "resolution": [self.resolution, self.resolution, 1],
-                        "units": ["nm", "nm", ""],
+                        "dimensions": [montage_ht, montage_wd, 1, number_of_channels],
+                        "blockSize": [tile_ht, tile_wd, 1, number_of_channels],
+                        "resolution": [self.resolution, self.resolution, general_settings().get('section_thickness', 30), 1],
+                        "units": ["nm", "nm", "nm", ""],
                         "compression": {"type": "gzip"}
                     },
                     "open": True,
                     "create": True,
                     "delete_existing": False
                 }
-            elif driver == '"neuroglancer_precomputed':
+            elif driver == 'neuroglancer_precomputed':
                 filenames = {
                     "driver": "neuroglancer_precomputed",
                     "kvstore": prefix,
