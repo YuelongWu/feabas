@@ -52,7 +52,19 @@ def imread(path, **kwargs):
 
 
 def imwrite(path, image):
-    return cv2.imwrite(path, image)
+    if path.startswith('gs://'):
+        from google.cloud import storage
+        plist = path.replace('gs://', '').split('/')
+        plist = [s for s in plist if s]
+        bucket = plist[0]
+        relpath = '/'.join(plist[1:])
+        _, encoded_img = cv2.imencode('.PNG', image)
+        client = storage.Client()
+        bucket = client.get_bucket(bucket)
+        blob = bucket.blob(relpath)
+        blob.upload_from_string(encoded_img.tobytes(), content_type='image/png')
+    else:
+        return cv2.imwrite(path, image)
 
 
 def inverse_image(img, dtype=np.uint8):

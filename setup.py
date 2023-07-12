@@ -19,6 +19,7 @@ setup(
     include_package_data=True,
     license='MIT',
     install_requires=[
+        'google-cloud-storage',
         'h5py',
         'matplotlib',
         'numpy',
@@ -30,7 +31,7 @@ setup(
         'scipy',
         'shapely>=2.0.0',
         'tensorstore',
-        'triangle'
+        'triangle',
     ],
     classifiers=[
         'Development Status :: 4 - Beta',
