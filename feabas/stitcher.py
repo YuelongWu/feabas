@@ -1334,12 +1334,12 @@ class MontageRenderer:
         montage_ht = bounds[3]
         Ncol = int(np.ceil(montage_wd / tile_wd))
         Nrow = int(np.ceil(montage_ht / tile_ht))
-        montage_ht, montage_wd = Nrow * tile_ht, Ncol * tile_wd
         cols, rows = np.meshgrid(np.arange(Ncol), np.arange(Nrow))
         cols, rows = cols.ravel(), rows.ravel()
         idxz = common.z_order(np.stack((rows, cols), axis=-1))
         cols, rows =  cols[idxz], rows[idxz]
         if driver == 'image':
+            montage_ht, montage_wd = Nrow * tile_ht, Ncol * tile_wd
             filename_settings = kwargs.get('filename_settings', {})
             pattern = filename_settings.get('pattern', 'tr{ROW_IND}_tc{COL_IND}.png')
             one_based = filename_settings.get('one_based', False)
@@ -1357,6 +1357,22 @@ class MontageRenderer:
             number_of_channels = self.number_of_channels
             dtype = self.dtype
             fillval = self.default_fillval
+            schema = {
+                "chunk_layout":{
+                    "grid_origin": [0, 0, 0, 0],
+                    "inner_order": [3, 2, 1, 0],
+                    "read_chunk": {"shape": [tile_ht, tile_wd, 1, number_of_channels]},
+                    "write_chunk": {"shape": [tile_ht, tile_wd, 1, number_of_channels]},
+                },
+                "domiain":{
+                    "exclusive_max": [montage_ht, montage_wd, 1, number_of_channels],
+                    "inclusive_min": [0, 0, 0, 0],
+                    "labels": ["y", "x", "z", "channel"]
+                },
+                "dimension_units": [[self.resolution, "nm"], [self.resolution, "nm"], [general_settings().get('section_thickness', 30), "nm"], None],
+                "dtype": np.dtype(dtype).name,
+                "rank" : 4
+            }
             if driver == 'zarr':
                 filenames = {
                     "driver": "zarr",
@@ -1364,58 +1380,55 @@ class MontageRenderer:
                     "key_encoding": ".",
                     "metadata": {
                         "zarr_format": 2,
-                        "shape": [montage_ht, montage_wd, 1, number_of_channels],
-                        "chunks": [tile_ht, tile_wd, 1, number_of_channels],
-                        "dtype": np.dtype(dtype).str,
                         "fill_value": fillval,
                         "compressor": {"id": "gzip", "level": 6}
                     },
-                    "open": True,
+                    "schema": schema,
+                    "open": False,
                     "create": True,
-                    "delete_existing": False
+                    "delete_existing": True
                 }
             elif driver == 'n5':
                 filenames = {
                     "driver": "n5",
                     "kvstore": prefix,
-                    "dtype": np.dtype(dtype).name,
                     "metadata": {
-                        "dimensions": [montage_ht, montage_wd, 1, number_of_channels],
-                        "blockSize": [tile_ht, tile_wd, 1, number_of_channels],
-                        "resolution": [self.resolution, self.resolution, general_settings().get('section_thickness', 30), 1],
-                        "units": ["nm", "nm", "nm", ""],
                         "compression": {"type": "gzip"}
                     },
-                    "open": True,
+                    "schema": schema,
+                    "open": False,
                     "create": True,
-                    "delete_existing": False
+                    "delete_existing": True
                 }
             elif driver == 'neuroglancer_precomputed':
-                read_chunck = [min(256, tile_ht), min(256, tile_wd)]
+                if tile_ht % 256 == 0:
+                    read_ht = 256
+                else:
+                    read_ht = tile_ht
+                if tile_wd % 256 == 0:
+                    read_wd = 256
+                else:
+                    read_wd = tile_wd
+                schema["codec"]= {
+                    "driver": "neuroglancer_precomputed",
+                    "encoding": "raw",
+                    "shard_data_encoding": "gzip"
+                }
+                schema['chunk_layout']["read_chunk"]["shape"] = [read_ht, read_wd, 1, number_of_channels]
                 filenames = {
                     "driver": "neuroglancer_precomputed",
                     "kvstore": prefix,
-                    "multiscale_metadata":{
-                        "type": "image",
-                        "data_type": np.dtype(dtype).name,
-                        "num_channels": number_of_channels
-                    },
-                    "scale_metadata": {
-                        "size": [montage_ht, montage_wd, 1],
-                        "chunk_size": [tile_ht, tile_wd, 1],
-                        "encoding": "raw",
-                        "resolution": [self.resolution, self.resolution, general_settings().get('section_thickness', 30)]
-                    },
-                    "open": True,
+                    "schema": schema,
+                    "open": False,
                     "create": True,
-                    "delete_existing": False
+                    "delete_existing": True
                 }
             else:
                 raise ValueError(f'{driver} not supported')
         hits = []
         bboxes = []
         for r, c in zip(rows, cols):
-            bbox = (c*tile_wd, r*tile_ht, (c+1)*tile_wd, (r+1)*tile_ht)
+            bbox = (c*tile_wd, r*tile_ht, min((c+1)*tile_wd, montage_wd), min((r+1)*tile_ht, montage_ht))
             if scale != 1:
                 bbox_hit = scale_coordinates(bbox, 1/scale)
             else:
