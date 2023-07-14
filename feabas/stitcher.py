@@ -1364,7 +1364,7 @@ class MontageRenderer:
                     "read_chunk": {"shape": [tile_ht, tile_wd, 1, number_of_channels]},
                     "write_chunk": {"shape": [tile_ht, tile_wd, 1, number_of_channels]},
                 },
-                "domiain":{
+                "domain":{
                     "exclusive_max": [montage_ht, montage_wd, 1, number_of_channels],
                     "inclusive_min": [0, 0, 0, 0],
                     "labels": ["y", "x", "z", "channel"]
