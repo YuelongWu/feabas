@@ -181,7 +181,7 @@ def create_thumbnail(src_dir, outname=None, downsample=4, highpass=True, **kwarg
         common.imwrite(outname, img)
 
 
-def generate_target_miplevel(metafile, mip=None, **kwargs):
+def generate_target_tensorstore_scale(metafile, mip=None, **kwargs):
     pass
 
 

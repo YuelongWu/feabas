@@ -110,6 +110,8 @@ def get_loader_from_json(json_info, loader_type=None, **kwargs):
         return MosaicLoader.from_json(json_obj)
     elif loader_type == 'StreamLoader':
         return StreamLoader.from_init_dict(json_obj)
+    elif loader_type == 'TensorStoreLoader':
+        return TensorStoreLoader.from_json(json_obj)
     else:
         raise ValueError
 
@@ -1057,7 +1059,10 @@ class TensorStoreLoader(AbstractImageLoader):
 
     @classmethod
     def from_json(cls, jsonname, **kwargs):
-        pass
+        settings, json_obj = cls._load_settings_from_json(jsonname)
+        settings.update(kwargs)
+        json_spec = json_obj['json_spec']
+        return cls.from_json_spec(json_spec, **settings)
 
 
     @classmethod
@@ -1082,7 +1087,9 @@ class TensorStoreLoader(AbstractImageLoader):
         
 
     def _export_dict(self, **kwargs):
-        pass
+        out = super()._settings_dict(**kwargs)
+        out['json_spec'] = self.dataset.spec().to_json()
+        return out
 
 
     def crop(self, bbox, return_empty=False, **kwargs):
