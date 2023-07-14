@@ -927,7 +927,10 @@ class SLM:
             else:
                 groupings = None
         A_diag = A.diagonal()
-        M = sparse.diags(1/(A_diag.clip(min(1.0, A_diag.max()/1000),None))) # Jacobi precondition
+        if A_diag.max() > 0:
+            M = sparse.diags(1/(A_diag.clip(min(1.0, A_diag.max()/1000),None))) # Jacobi precondition
+        else:
+            M = None
         # dd, _ = sparse.linalg.bicgstab(A, b, tol=tol, maxiter=maxiter, atol=atol, M=M)
         dd = bicgstab(A, b, tol=tol, maxiter=maxiter, atol=atol, M=M, **callback_settings)
         cost = (np.linalg.norm(b), np.linalg.norm(A.dot(dd) - b))

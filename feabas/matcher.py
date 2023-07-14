@@ -572,6 +572,8 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
         initialized = True
         if sp_indx < spacings.size:
             sp = spacings[sp_indx]
+    if len(opt.links) == 0:
+        return invalid_output
     link = opt.links[0]
     xy0 = link.xy0(gear=const.MESH_GEAR_INITIAL, use_mask=True, combine=True)
     xy1 = link.xy1(gear=const.MESH_GEAR_INITIAL, use_mask=True, combine=True)

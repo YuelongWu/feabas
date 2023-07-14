@@ -859,7 +859,7 @@ class Stitcher:
         A = sparse.csr_matrix((v, (idx0, idx1)), shape=(Neq+1, N_conn))
         overlaps_u, overlaps_inverse = np.unique(overlaps, return_inverse=True)
         overlaps_inverse = overlaps_inverse.reshape(overlaps.shape)
-        txy = np.array([self.meshes[s].estimate_translation(gear=gear) for s in overlaps_u])
+        txy = np.array([self.meshes[s].estimate_translation(gear=gear) for s in overlaps_u]).reshape(-1, 2)
         offset1 = txy[overlaps_inverse[:,0]] - txy[overlaps_inverse[:,1]]
         offset0 = self._init_offset[overlaps[:,0]] - self._init_offset[overlaps[:,1]]
         bxy = np.append(explode_factor * offset0 - offset1, [[0, 0]], axis=0)
@@ -1391,6 +1391,7 @@ class MontageRenderer:
                     "delete_existing": False
                 }
             elif driver == 'neuroglancer_precomputed':
+                read_chunck = [min(256, tile_ht), min(256, tile_wd)]
                 filenames = {
                     "driver": "neuroglancer_precomputed",
                     "kvstore": prefix,
