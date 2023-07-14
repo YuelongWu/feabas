@@ -351,6 +351,7 @@ def crop_image_from_bbox(img, bbox_img, bbox_out, **kwargs):
     """
     return_index = kwargs.get('return_index', False)
     return_empty = kwargs.get('return_empty', False)
+    flip_indx = kwargs.get('flip_indx', False)
     fillval = kwargs.get('fillval', 0)
     x0 = bbox_img[0]
     y0 = bbox_img[1]
@@ -372,7 +373,10 @@ def crop_image_from_bbox(img, bbox_img, bbox_out, **kwargs):
                 return imgout
             else:
                 return None
-    cropped = img[(ymin-y0):(ymax-y0), (xmin-x0):(xmax-x0), ...]
+    if flip_indx:
+        cropped = img[(xmin-x0):(xmax-x0), (ymin-y0):(ymax-y0), ...].transpose()
+    else:
+        cropped = img[(ymin-y0):(ymax-y0), (xmin-x0):(xmax-x0), ...]
     dimpad = len(img.shape) - 2
     indx = tuple([slice(ymin-bbox_out[1], ymax-bbox_out[1]), slice(xmin-bbox_out[0],xmax-bbox_out[0])] +
             [slice(0, None)] * dimpad)

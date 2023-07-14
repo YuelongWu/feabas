@@ -1384,9 +1384,9 @@ class MontageRenderer:
                         "compressor": {"id": "gzip", "level": 6}
                     },
                     "schema": schema,
-                    "open": False,
+                    "open": True,
                     "create": True,
-                    "delete_existing": True
+                    "delete_existing": False
                 }
             elif driver == 'n5':
                 filenames = {
@@ -1396,9 +1396,9 @@ class MontageRenderer:
                         "compression": {"type": "gzip"}
                     },
                     "schema": schema,
-                    "open": False,
+                    "open": True,
                     "create": True,
-                    "delete_existing": True
+                    "delete_existing": False
                 }
             elif driver == 'neuroglancer_precomputed':
                 if tile_ht % 256 == 0:
@@ -1419,9 +1419,9 @@ class MontageRenderer:
                     "driver": "neuroglancer_precomputed",
                     "kvstore": prefix,
                     "schema": schema,
-                    "open": False,
+                    "open": True,
                     "create": True,
-                    "delete_existing": True
+                    "delete_existing": False
                 }
             else:
                 raise ValueError(f'{driver} not supported')

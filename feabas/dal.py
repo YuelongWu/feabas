@@ -1100,7 +1100,7 @@ class TensorStoreLoader(AbstractImageLoader):
             slc = slc[..., 0]
         bbox_img = self.bounds
         slc_crp, indx = common.crop_image_from_bbox(slc, bbox_img, bbox,
-                                                    return_index=True)
+                                                    return_index=True, flip_indx=True)
         if (slc_crp is None) and (not return_empty):
             return None
         img_crp = slc_crp.read().result()
