@@ -1301,8 +1301,8 @@ class MontageRenderer:
                 xmin, ymin, _, _ = bbox
                 shp = imgt.shape
                 imght, imgwd = shp[0], shp[1]
-                data_view = dataset[ymin:(ymin+imght), xmin:(xmin+imgwd)]
-                data_view.write(imgt.reshape(data_view.shape)).result()
+                data_view = dataset[xmin:(xmin+imgwd), ymin:(ymin+imght)]
+                data_view.write(imgt.T.reshape(data_view.shape)).result()
                 rendered.append(tuple(bbox))
         self.image_loader.clear_cache()
         return rendered
@@ -1330,8 +1330,8 @@ class MontageRenderer:
         bounds = self.bounds
         if scale != 1:
             bounds = scale_coordinates(bounds, scale)
-        montage_wd = bounds[2]
-        montage_ht = bounds[3]
+        montage_wd = int(np.ceil(bounds[2]))
+        montage_ht = int(np.ceil(bounds[3]))
         Ncol = int(np.ceil(montage_wd / tile_wd))
         Nrow = int(np.ceil(montage_ht / tile_ht))
         cols, rows = np.meshgrid(np.arange(Ncol), np.arange(Nrow))
@@ -1361,13 +1361,13 @@ class MontageRenderer:
                 "chunk_layout":{
                     "grid_origin": [0, 0, 0, 0],
                     "inner_order": [3, 2, 1, 0],
-                    "read_chunk": {"shape": [tile_ht, tile_wd, 1, number_of_channels]},
-                    "write_chunk": {"shape": [tile_ht, tile_wd, 1, number_of_channels]},
+                    "read_chunk": {"shape": [tile_wd, tile_ht, 1, number_of_channels]},
+                    "write_chunk": {"shape": [tile_wd, tile_ht, 1, number_of_channels]},
                 },
                 "domain":{
-                    "exclusive_max": [montage_ht, montage_wd, 1, number_of_channels],
+                    "exclusive_max": [montage_wd, montage_ht, 1, number_of_channels],
                     "inclusive_min": [0, 0, 0, 0],
-                    "labels": ["y", "x", "z", "channel"]
+                    "labels": ["x", "y", "z", "channel"]
                 },
                 "dimension_units": [[self.resolution, "nm"], [self.resolution, "nm"], [general_settings().get('section_thickness', 30), "nm"], None],
                 "dtype": np.dtype(dtype).name,
@@ -1414,7 +1414,7 @@ class MontageRenderer:
                     "encoding": "raw",
                     "shard_data_encoding": "gzip"
                 }
-                schema['chunk_layout']["read_chunk"]["shape"] = [read_ht, read_wd, 1, number_of_channels]
+                schema['chunk_layout']["read_chunk"]["shape"] = [read_wd, read_ht, 1, number_of_channels]
                 filenames = {
                     "driver": "neuroglancer_precomputed",
                     "kvstore": prefix,
