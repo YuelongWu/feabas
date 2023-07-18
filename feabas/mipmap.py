@@ -1,11 +1,13 @@
 import cv2
 import glob
+import json
 import numpy as np
 from functools import partial
 from scipy.interpolate import interp1d
 import shapely.geometry as shpgeo
 from shapely.ops import unary_union
 import os
+import tensorstore as ts
 import time
 
 from feabas.dal import MosaicLoader
@@ -182,7 +184,43 @@ def create_thumbnail(src_dir, outname=None, downsample=4, highpass=True, **kwarg
 
 
 def generate_target_tensorstore_scale(metafile, mip=None, **kwargs):
-    pass
+    num_workers = kwargs.get('num_workers', 1)
+    write_to_file = False
+    if isinstance(metafile, str):
+        try:
+            json_obj = json.loads(metafile)
+        except ValueError:
+            write_to_file = True
+            if metafile.startswith('gs:'):
+                json_ts = ts.open({"driver": "json", "kvstore": metafile}).result()
+                s = json_ts.read().result()
+                json_obj = s.item()
+            else:
+                with open(metafile, 'r') as f:
+                    json_obj = json.load(f)
+    elif isinstance(metafile, dict):
+        json_obj = metafile
+    try:
+        mipmaps = {int(m): json_spec for m, json_spec in json_obj.items()}
+    except ValueError:
+        mipmaps = {0: json_obj}
+    rendered_mips = np.array([m for m in mipmaps])
+    if mip is None:
+        mip = rendered_mips.max() + 1
+    src_mip = rendered_mips[rendered_mips <= mip].max()
+    if src_mip == mip:
+        return None
+    src_spec = mipmaps[src_mip]
+    ts_src = ts.open(src_spec).result()
+    downsample_factors = [2**(mip - src_mip), 2**(mip - src_mip)] + ([1] * (ts_src.rank - 2))
+    ds_spec = {
+        "driver": "downsample",
+        "downsample_factors": downsample_factors,
+        "downsample_method": "mean",
+        "base": src_spec
+    }
+    ts_dsp = ts.open(ds_spec).result()
+
 
 
 def _max_entropy_scaling_one_side(img, **kwargs):

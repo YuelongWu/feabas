@@ -84,17 +84,23 @@ def _tile_divider_block(imght, imgwd, x0=0, y0=0, cache_block_size=0):
 
 def get_loader_from_json(json_info, loader_type=None, **kwargs):
     if isinstance(json_info, str):
-        if json_info.lower().endswith('.json'):
-            with open(json_info, 'r') as f:
-                json_obj = json.load(f)
-        elif json_info.lower().endswith('.txt'): # could use tab separated txt, not recommend
-            if loader_type == 'StaticImageLoader':
-                loader = StaticImageLoader.from_coordinate_file(json_info)
-            else:
-                loader = MosaicLoader.from_coordinate_file(json_info)
-            json_obj = loader.init_dict()
-        else:
+        try:
             json_obj = json.loads(json_info)
+        except ValueError:
+            if json_info.lower().endswith('.txt'): # could use tab separated txt, not recommend
+                if loader_type == 'StaticImageLoader':
+                    loader = StaticImageLoader.from_coordinate_file(json_info)
+                else:
+                    loader = MosaicLoader.from_coordinate_file(json_info)
+                json_obj = loader.init_dict()
+            else:
+                if json_info.startswith('gs:'):
+                    json_ts = ts.open({"driver": "json", "kvstore": json_info}).result()
+                    s = json_ts.read().result()
+                    json_obj = s.item()
+                else:
+                    with open(json_info, 'r') as f:
+                        json_obj = json.load(f)
     elif isinstance(json_info, dict):
         json_obj = json_info
     else:
