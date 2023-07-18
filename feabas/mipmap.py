@@ -200,6 +200,53 @@ def generate_target_tensorstore_scale(metafile, mip=None, **kwargs):
                     json_obj = json.load(f)
     elif isinstance(metafile, dict):
         json_obj = metafile
+    ds_spec, src_mip, mip, mipmaps = get_tensorstore_spec(json_obj, mip=mip)
+    if src_mip == mip:
+        return None
+    ts_dsp = ts.open(ds_spec).result()
+    ts_src = ts_dsp.base
+    src_spec = ts_src.spec().to_json()
+    tgt_spec = {}
+    driver = src_spec['driver']
+    tgt_spec['driver'] = driver
+    tgt_spec['kvstore'] = src_spec['kvstore']
+    if driver == 'neuroglancer_precomputed':
+        pass
+    elif driver == 'n5':
+        pth = tgt_spec['kvstore']['path']
+        pth = pth[::-1].replace(str(src_mip)+'s', str(mip)+'s', 1)[::-1]
+        tgt_spec['kvstore']['path'] = pth
+    elif driver == 'zarr':
+        pth = tgt_spec['kvstore']['path']
+        pth = pth[::-1].replace(str(src_mip), str(mip), 1)[::-1]
+        tgt_spec['kvstore']['path'] = pth
+    else:
+        raise ValueError(f'driver type {driver} not supported.')
+    tgt_schema = ts_src.schema.to_json()
+    ds_schema = ts_dsp.schema.to_json()
+    tgt_schema['domain'] = ds_schema['domain']
+    tgt_spec['schema'] = tgt_schema
+
+
+def _write_downsample_tensorstore(src_spec, tgt_spec, bboxes, **kwargs):
+    src_loader = dal.TensorStoreLoader.from_json_spec(src_spec, **kwargs)
+
+
+def get_tensorstore_spec(metafile, mip=None, **kwargs):
+    downsample_method = kwargs.get('downsample_method', 'mean')
+    if isinstance(metafile, str):
+        try:
+            json_obj = json.loads(metafile)
+        except ValueError:
+            if metafile.startswith('gs:'):
+                json_ts = ts.open({"driver": "json", "kvstore": metafile}).result()
+                s = json_ts.read().result()
+                json_obj = s.item()
+            else:
+                with open(metafile, 'r') as f:
+                    json_obj = json.load(f)
+    elif isinstance(metafile, dict):
+        json_obj = metafile
     try:
         mipmaps = {int(m): json_spec for m, json_spec in json_obj.items()}
     except ValueError:
@@ -208,19 +255,20 @@ def generate_target_tensorstore_scale(metafile, mip=None, **kwargs):
     if mip is None:
         mip = rendered_mips.max() + 1
     src_mip = rendered_mips[rendered_mips <= mip].max()
-    if src_mip == mip:
-        return None
     src_spec = mipmaps[src_mip]
     ts_src = ts.open(src_spec).result()
-    downsample_factors = [2**(mip - src_mip), 2**(mip - src_mip)] + ([1] * (ts_src.rank - 2))
-    ds_spec = {
-        "driver": "downsample",
-        "downsample_factors": downsample_factors,
-        "downsample_method": "mean",
-        "base": src_spec
-    }
-    ts_dsp = ts.open(ds_spec).result()
-
+    src_spec = ts_src.spec().to_json()
+    if src_mip == mip:
+        ds_spec = src_spec
+    else:
+        downsample_factors = [2**(mip - src_mip), 2**(mip - src_mip)] + ([1] * (ts_src.rank - 2))
+        ds_spec = {
+            "driver": "downsample",
+            "downsample_factors": downsample_factors,
+            "downsample_method": downsample_method,
+            "base": src_spec
+        }
+    return ds_spec, src_mip, mip, mipmaps
 
 
 def _max_entropy_scaling_one_side(img, **kwargs):

@@ -161,16 +161,14 @@ def render_one_section(tform_name, out_prefix, meta_name=None, **kwargs):
     else:
         resolution = renderer.resolution / scale
     render_settings['scale'] = scale
-    if use_tensorstore:
-        if driver == 'n5':
-            out_prefix = os.path.join(out_prefix, 's0')
-        elif driver == 'zarr':
-            out_prefix = os.path.join(out_prefix, '0')
-        out_prefix = out_prefix.replace('\\', '/')
+    out_prefix = out_prefix.replace('\\', '/')
     render_series = renderer.plan_render_series(tile_size, prefix=out_prefix,
         scale=scale, **kwargs)
     if use_tensorstore:
-        store = ts.open(render_series[1]).result()
+        # delete existing
+        out_spec = render_series[1].copy()
+        out_spec.update({'open': False, 'create': True, 'delete_existing': True})
+        store = ts.open(out_spec).result()
     if num_workers == 1:
         bboxes, filenames, _ = render_series
         metadata = renderer.render_series_to_file(bboxes, filenames, **render_settings)

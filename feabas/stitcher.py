@@ -1376,7 +1376,7 @@ class MontageRenderer:
             if driver == 'zarr':
                 filenames = {
                     "driver": "zarr",
-                    "kvstore": prefix,
+                    "kvstore": prefix + '0/',
                     "key_encoding": ".",
                     "metadata": {
                         "zarr_format": 2,
@@ -1391,7 +1391,7 @@ class MontageRenderer:
             elif driver == 'n5':
                 filenames = {
                     "driver": "n5",
-                    "kvstore": prefix,
+                    "kvstore": prefix + 's0/',
                     "metadata": {
                         "compression": {"type": "gzip"}
                     },
