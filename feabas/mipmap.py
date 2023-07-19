@@ -1,6 +1,9 @@
+from concurrent.futures.process import ProcessPoolExecutor
+from concurrent.futures import as_completed
 import cv2
 import glob
 import json
+from multiprocessing import get_context
 import numpy as np
 from functools import partial
 from scipy.interpolate import interp1d
@@ -185,6 +188,7 @@ def create_thumbnail(src_dir, outname=None, downsample=4, highpass=True, **kwarg
 
 def generate_target_tensorstore_scale(metafile, mip=None, **kwargs):
     num_workers = kwargs.get('num_workers', 1)
+    max_tile_per_job = kwargs.get('max_tile_per_job', 16)
     write_to_file = False
     if isinstance(metafile, str):
         try:
@@ -226,10 +230,66 @@ def generate_target_tensorstore_scale(metafile, mip=None, **kwargs):
     ds_schema = ts_dsp.schema.to_json()
     tgt_schema['domain'] = ds_schema['domain']
     tgt_spec['schema'] = tgt_schema
+    inclusive_min = ts_dsp.domain.inclusive_min
+    exclusive_max = ts_dsp.domain.exclusive_max
+    Xmin, Ymin = inclusive_min[1], inclusive_min[0]
+    Xmax, Ymax = exclusive_max[1], exclusive_max[0]
+    chunk_shape = ts_src.schema.chunk_layout.write_chunk.shape
+    tile_wd, tile_ht = chunk_shape[0], chunk_shape[1]
+    x1d = np.arange(Xmin, Xmax, tile_wd, dtype=np.int64)
+    y1d = np.arange(Ymin, Ymax, tile_ht, dtype=np.int64)
+    xmn, ymn = np.meshgrid(x1d, y1d)
+    xmn, ymn = xmn.ravel(), ymn.ravel()
+    idxz = common.z_order(np.stack((xmn // tile_wd, ymn // tile_ht), axis=-1))
+    xmn, ymn =  xmn[idxz], ymn[idxz]
+    xmx = (xmn + tile_wd).clip(Xmin, Xmax)
+    ymx = (ymn + tile_ht).clip(Ymin, Ymax)
+    bboxes = np.stack((xmn, ymn, xmx, ymx), axis=-1)
+    if num_workers == 1:
+        out_spec = _write_downsample_tensorstore(src_spec, tgt_spec, bboxes, **kwargs)
+    else:
+        n_tiles = xmn.size
+        num_tile_per_job = max(1, n_tiles // num_workers)
+        if max_tile_per_job is not None:
+            num_tile_per_job = min(num_tile_per_job, max_tile_per_job)
+        N_jobs = round(n_tiles / num_tile_per_job)
+        indices = np.round(np.linspace(0, n_tiles, num=N_jobs+1, endpoint=True))
+        indices = np.unique(indices).astype(np.uint32)
+        jobs = []
+        out_spec = None
+        with ProcessPoolExecutor(max_workers=num_workers, mp_context=get_context('spawn')) as executor:
+            for idx0, idx1 in zip(indices[:-1], indices[1:]):
+                idx0, idx1 = int(idx0), int(idx1)
+                bbox_t = bboxes[idx0:idx1]
+                job = executor.submit(_write_downsample_tensorstore, src_spec, tgt_spec, bbox_t, **kwargs)
+                jobs.append(job)
+            for job in as_completed(jobs):
+                out_spec = job.result()
+        mipmaps.update({mip: out_spec})
+        if write_to_file:
+            kv_headers = ('gs://', 'http://', 'https://', 'file://', 'memory://')
+            for kvh in kv_headers:
+                if metafile.startswith(kvh):
+                    break
+            else:
+                metafile = 'file://' + metafile
+            meta_ts = ts.open({"driver": "json", "kvstore": metafile}).result()
+            meta_ts.write(mipmaps).result()
+        return mipmaps
 
 
 def _write_downsample_tensorstore(src_spec, tgt_spec, bboxes, **kwargs):
     src_loader = dal.TensorStoreLoader.from_json_spec(src_spec, **kwargs)
+    tgt_spec.update({'open': True, 'create': True, 'delete_existing': False})
+    ts_out = ts.open(tgt_spec).result()
+    for bbox in bboxes:
+        img = src_loader.crop(bbox, return_empty=False, **kwargs)
+        if img is None:
+            continue
+        xmin, ymin, xmax, ymax = bbox
+        out_view = ts_out[xmin:xmax, ymin:ymax]
+        out_view.write(img.T.reshape(out_view.shape)).result()
+    return ts_out.spec().to_json()
 
 
 def get_tensorstore_spec(metafile, mip=None, **kwargs):
