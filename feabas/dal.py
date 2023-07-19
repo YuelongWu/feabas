@@ -1169,8 +1169,8 @@ class TensorStoreLoader(AbstractImageLoader):
         domain = self.dataset.domain
         inclusive_min = domain.inclusive_min
         exclusive_max = domain.exclusive_max
-        xmin, ymin = inclusive_min[1], inclusive_min[0]
-        xmax, ymax = exclusive_max[1], exclusive_max[0]
+        xmin, ymin = inclusive_min[0], inclusive_min[1]
+        xmax, ymax = exclusive_max[0], exclusive_max[1]
         return (xmin, ymin, xmax, ymax)
 
 

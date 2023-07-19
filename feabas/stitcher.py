@@ -1332,6 +1332,11 @@ class MontageRenderer:
             bounds = scale_coordinates(bounds, scale)
         montage_wd = int(np.ceil(bounds[2]))
         montage_ht = int(np.ceil(bounds[3]))
+        if driver != 'image':
+            while tile_ht > montage_ht:
+                tile_ht = tile_ht // 2
+            while tile_wd > montage_wd:
+                tile_wd = tile_wd // 2
         Ncol = int(np.ceil(montage_wd / tile_wd))
         Nrow = int(np.ceil(montage_ht / tile_ht))
         cols, rows = np.meshgrid(np.arange(Ncol), np.arange(Nrow))

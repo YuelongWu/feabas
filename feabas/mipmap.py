@@ -229,13 +229,26 @@ def generate_target_tensorstore_scale(metafile, mip=None, **kwargs):
     tgt_schema = ts_src.schema.to_json()
     ds_schema = ts_dsp.schema.to_json()
     tgt_schema['domain'] = ds_schema['domain']
-    tgt_spec['schema'] = tgt_schema
+    tgt_schema['dimension_units'] = ds_schema['dimension_units']
     inclusive_min = ts_dsp.domain.inclusive_min
     exclusive_max = ts_dsp.domain.exclusive_max
-    Xmin, Ymin = inclusive_min[1], inclusive_min[0]
-    Xmax, Ymax = exclusive_max[1], exclusive_max[0]
+    Xmin, Ymin = inclusive_min[0], inclusive_min[1]
+    Xmax, Ymax = exclusive_max[0], exclusive_max[1]
     chunk_shape = ts_src.schema.chunk_layout.write_chunk.shape
     tile_wd, tile_ht = chunk_shape[0], chunk_shape[1]
+    while tile_wd > (Xmax - Xmin):
+        tile_wd = tile_wd // 2
+    while tile_ht > (Ymax - Ymin):
+        tile_ht = tile_ht // 2
+    tgt_schema['chunk_layout']['write_chunk']['shape'][:2] = [tile_wd, tile_ht]
+    read_chunk_shape = ts_src.schema.chunk_layout.read_chunk.shape
+    read_wd, read_ht = read_chunk_shape[0], read_chunk_shape[1]
+    while read_wd > (Xmax - Xmin):
+        read_wd = read_wd // 2
+    while read_ht > (Ymax - Ymin):
+        read_ht = read_ht // 2
+    tgt_schema['chunk_layout']['read_chunk']['shape'][:2] = [read_wd, read_ht]
+    tgt_spec['schema'] = tgt_schema
     x1d = np.arange(Xmin, Xmax, tile_wd, dtype=np.int64)
     y1d = np.arange(Ymin, Ymax, tile_ht, dtype=np.int64)
     xmn, ymn = np.meshgrid(x1d, y1d)
@@ -246,7 +259,7 @@ def generate_target_tensorstore_scale(metafile, mip=None, **kwargs):
     ymx = (ymn + tile_ht).clip(Ymin, Ymax)
     bboxes = np.stack((xmn, ymn, xmx, ymx), axis=-1)
     if num_workers == 1:
-        out_spec = _write_downsample_tensorstore(src_spec, tgt_spec, bboxes, **kwargs)
+        out_spec = _write_downsample_tensorstore(ds_spec, tgt_spec, bboxes, **kwargs)
     else:
         n_tiles = xmn.size
         num_tile_per_job = max(1, n_tiles // num_workers)
@@ -261,21 +274,21 @@ def generate_target_tensorstore_scale(metafile, mip=None, **kwargs):
             for idx0, idx1 in zip(indices[:-1], indices[1:]):
                 idx0, idx1 = int(idx0), int(idx1)
                 bbox_t = bboxes[idx0:idx1]
-                job = executor.submit(_write_downsample_tensorstore, src_spec, tgt_spec, bbox_t, **kwargs)
+                job = executor.submit(_write_downsample_tensorstore, ds_spec, tgt_spec, bbox_t, **kwargs)
                 jobs.append(job)
             for job in as_completed(jobs):
                 out_spec = job.result()
-        mipmaps.update({mip: out_spec})
-        if write_to_file:
-            kv_headers = ('gs://', 'http://', 'https://', 'file://', 'memory://')
-            for kvh in kv_headers:
-                if metafile.startswith(kvh):
-                    break
-            else:
-                metafile = 'file://' + metafile
-            meta_ts = ts.open({"driver": "json", "kvstore": metafile}).result()
-            meta_ts.write(mipmaps).result()
-        return mipmaps
+    mipmaps.update({mip: out_spec})
+    if write_to_file:
+        kv_headers = ('gs://', 'http://', 'https://', 'file://', 'memory://')
+        for kvh in kv_headers:
+            if metafile.startswith(kvh):
+                break
+        else:
+            metafile = 'file://' + metafile
+        meta_ts = ts.open({"driver": "json", "kvstore": metafile}).result()
+        meta_ts.write(mipmaps).result()
+    return mipmaps
 
 
 def _write_downsample_tensorstore(src_spec, tgt_spec, bboxes, **kwargs):

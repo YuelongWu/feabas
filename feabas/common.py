@@ -355,8 +355,12 @@ def crop_image_from_bbox(img, bbox_img, bbox_out, **kwargs):
     fillval = kwargs.get('fillval', 0)
     x0 = bbox_img[0]
     y0 = bbox_img[1]
-    blkht = min(bbox_img[3] - bbox_img[1], img.shape[0])
-    blkwd = min(bbox_img[2] - bbox_img[0], img.shape[1])
+    if flip_indx:
+        imght, imgwd = img.shape[1], img.shape[0]
+    else:
+        imght, imgwd = img.shape[0], img.shape[1]
+    blkht = min(bbox_img[3] - bbox_img[1], imght)
+    blkwd = min(bbox_img[2] - bbox_img[0], imgwd)
     outht = bbox_out[3] - bbox_out[1]
     outwd = bbox_out[2] - bbox_out[0]
     xmin = max(x0, bbox_out[0])
