@@ -1483,7 +1483,7 @@ class MontageRenderer:
             return self._tile_sizes[indx]
 
 
-    def generate_roi_mask(self, scale, show_conn=False):
+    def generate_roi_mask(self, scale, show_conn=False, mask_erode=0):
         """
         generate low resolution roi mask that can fit in a single image.
         """
@@ -1502,6 +1502,21 @@ class MontageRenderer:
         for bbox, lb in zip(bboxes, lbls):
             xmin, ymin, xmax, ymax = bbox
             imgout[ymin:ymax, xmin:xmax] = lb
+        if mask_erode > 0:
+            mask = (imgout > 0).astype(np.uint8)
+            mask = cv2.erode(mask, np.ones((3,3), dtype=np.uint8), iterations=mask_erode)
+            mask[:mask_erode, :] = 0
+            mask[-mask_erode:, :] = 0
+            mask[:, :mask_erode] = 0
+            mask[:, -mask_erode:] = 0
+            imgout[mask == 0] = 0
+        if mask_erode < 0:
+            mask = (imgout == 0).astype(np.uint8)
+            D, L = cv2.distanceTransformWithLabels(mask,distanceType=cv2.DIST_L2,
+                                                   maskSize=5, labelType=cv2.DIST_LABEL_PIXEL)
+            M = imgout[mask==0]
+            imgout = M[L - 1]
+            imgout[D > -mask_erode] = 0
         return imgout
 
 

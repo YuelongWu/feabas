@@ -346,11 +346,11 @@ def get_tensorstore_spec(metafile, mip=None, **kwargs):
         mip = rendered_mips.max() + 1
     src_mip = rendered_mips[rendered_mips <= mip].max()
     src_spec = mipmaps[src_mip]
-    ts_src = ts.open(src_spec).result()
-    src_spec = ts_src.spec().to_json()
     if src_mip == mip:
         ds_spec = src_spec
     else:
+        ts_src = ts.open(src_spec).result()
+        src_spec = ts_src.spec().to_json()
         downsample_factors = [2**(mip - src_mip), 2**(mip - src_mip)] + ([1] * (ts_src.rank - 2))
         ds_spec = {
             "driver": "downsample",

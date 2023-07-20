@@ -133,8 +133,9 @@ def save_mask_for_one_sections(mesh_file, out_name, scale, **kwargs):
     from feabas import common
     img_dir = kwargs.get('img_dir', None)
     fillval = kwargs.get('fillval', 0)
+    mask_erode = kwargs.get('mask_erode', 0)
     rndr = MontageRenderer.from_h5(mesh_file)
-    img = 255 - rndr.generate_roi_mask(scale)
+    img = 255 - rndr.generate_roi_mask(scale, mask_erode=mask_erode)
     common.imwrite(out_name, img)
     if img_dir is not None:
         thumb_name = os.path.join(img_dir, os.path.basename(out_name))
@@ -153,10 +154,12 @@ def generate_thumbnail_masks(mesh_dir, out_dir, seclist=None, **kwargs):
     scale = kwargs.get('scale')
     img_dir = kwargs.get('img_dir', None)
     fillval = kwargs.get('fillval', 0)
+    mask_erode = kwargs.get('mask_erode', 0)
     logger_info = kwargs.get('logger', None)
     logger= logging.get_logger(logger_info)
     mesh_list = sorted(glob.glob(os.path.join(mesh_dir, '*.h5')))
-    target_func = partial(save_mask_for_one_sections, scale=scale, img_dir=img_dir, fillval=fillval)
+    target_func = partial(save_mask_for_one_sections, scale=scale, img_dir=img_dir,
+                          fillval=fillval, mask_erode=mask_erode)
     os.makedirs(out_dir, exist_ok=True)
     if num_workers == 1:
         for mname in mesh_list:
