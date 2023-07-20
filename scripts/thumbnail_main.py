@@ -47,12 +47,12 @@ def generate_stitched_mipmaps_tensorstore(meta_dir, tgt_mips, **kwargs):
     else:
         target_func = parallel_within_section(mipmap.generate_tensorstore_scales, mips=tgt_mips, **kwargs)
         jobs = []
-    with ProcessPoolExecutor(max_workers=num_workers, mp_context=get_context('spawn')) as executor:
-        for metafile in meta_list:
-            job = executor.submit(target_func, metafile)
-            jobs.append(job)
-        for job in jobs:
-            job.result()
+        with ProcessPoolExecutor(max_workers=num_workers, mp_context=get_context('spawn')) as executor:
+            for metafile in meta_list:
+                job = executor.submit(target_func, metafile)
+                jobs.append(job)
+            for job in jobs:
+                job.result()
     logger.info('mipmapping generated.')
 
 
@@ -264,7 +264,7 @@ if __name__ == '__main__':
         logger_info = logging.initialize_main_logger(logger_name='stitch_mipmap', mp=num_workers>1)
         thumbnail_configs['logger'] = logger_info[0]
         logger= logging.get_logger(logger_info[0])
-        align_mip = config.align_configs['matching']['working_mip_level']
+        align_mip = config.align_configs()['matching']['working_mip_level']
         stitch_conf = config.stitch_configs()['rendering']
         driver = stitch_conf.get('driver', 'image')
         if driver == 'image':
@@ -297,8 +297,6 @@ if __name__ == '__main__':
             mask_scale = 1 / (2 ** thumbnail_mip_lvl)
             generate_thumbnail_masks(stitch_tform_dir, mat_mask_dir, seclist=slist, scale=mask_scale,
                                     img_dir=img_dir, **thumbnail_configs)
-            logger.info('finished.')
-            logging.terminate_logger(*logger_info)
         else:
             stitch_dir = os.path.join(root_dir, 'stitch')
             src_dir = os.path.join(stitch_dir, 'ts_specs')
@@ -318,6 +316,8 @@ if __name__ == '__main__':
             generate_stitched_mipmaps_tensorstore(src_dir, tgt_mips, **thumbnail_configs)
             thumbnail_configs.setdefault('downsample', downsample)
             thumbnail_configs.setdefault('highpass', highpass)
+        logger.info('finished.')
+        logging.terminate_logger(*logger_info)
     elif mode == 'alignment':
         os.makedirs(match_dir, exist_ok=True)
         os.makedirs(manual_dir, exist_ok=True)

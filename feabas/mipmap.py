@@ -236,16 +236,14 @@ def generate_target_tensorstore_scale(metafile, mip=None, **kwargs):
     Xmax, Ymax = exclusive_max[0], exclusive_max[1]
     chunk_shape = ts_src.schema.chunk_layout.write_chunk.shape
     tile_wd, tile_ht = chunk_shape[0], chunk_shape[1]
-    while tile_wd > (Xmax - Xmin):
+    while tile_wd > (Xmax - Xmin) or tile_ht > (Ymax - Ymin):
         tile_wd = tile_wd // 2
-    while tile_ht > (Ymax - Ymin):
         tile_ht = tile_ht // 2
     tgt_schema['chunk_layout']['write_chunk']['shape'][:2] = [tile_wd, tile_ht]
     read_chunk_shape = ts_src.schema.chunk_layout.read_chunk.shape
     read_wd, read_ht = read_chunk_shape[0], read_chunk_shape[1]
-    while read_wd > (Xmax - Xmin):
+    while read_wd > (Xmax - Xmin) or read_ht > (Ymax - Ymin):
         read_wd = read_wd // 2
-    while read_ht > (Ymax - Ymin):
         read_ht = read_ht // 2
     tgt_schema['chunk_layout']['read_chunk']['shape'][:2] = [read_wd, read_ht]
     tgt_spec['schema'] = tgt_schema
