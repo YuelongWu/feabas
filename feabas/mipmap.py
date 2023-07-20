@@ -291,6 +291,22 @@ def generate_target_tensorstore_scale(metafile, mip=None, **kwargs):
     return mipmaps
 
 
+def generate_tensorstore_scales(metafile, mips, **kwargs):
+    logger_info = kwargs.pop('logger', None)
+    t0 = time.time()
+    logger = logging.get_logger(logger_info)
+    mips = np.sort(mips)
+    updated = False
+    for mip in mips:
+        specs = generate_target_tensorstore_scale(metafile, mip=mip, **kwargs)
+        if specs is not None:
+            updated = True
+    if updated:
+        sec_name = os.path.basename(metafile).replace('.json', '')
+        logger.info(f'{sec_name}: {(time.time()-t0)/60} min')
+    
+
+
 def _write_downsample_tensorstore(src_spec, tgt_spec, bboxes, **kwargs):
     src_loader = dal.TensorStoreLoader.from_json_spec(src_spec, **kwargs)
     tgt_spec.update({'open': True, 'create': True, 'delete_existing': False})
