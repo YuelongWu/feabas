@@ -72,7 +72,10 @@ def mip_one_level(src_dir, out_dir, **kwargs):
     tile_size = kwargs.pop('tile_size', None)
     downsample = kwargs.pop('downsample', 2)
     logger_info = kwargs.get('logger', None)
-    kwargs.setdefault('remap_interp', cv2.INTER_AREA)
+    downsample_method = kwargs.get('downsample_method', 'mean')
+    remap_interp_lookup = {'mean': cv2.INTER_AREA, 'stride': cv2.INTER_NEAREST,
+                           'nearest': cv2.INTER_NEAREST, 'linear': cv2.INTER_LINEAR}
+    kwargs.setdefault('remap_interp', remap_interp_lookup.get(downsample_method, cv2.INTER_AREA))
     kwargs.setdefault('cache_type', 'fifo')
     kwargs.setdefault('cache_size', downsample + 2)
     if (kwargs['remap_interp'] != cv2.INTER_NEAREST) and (downsample > 2):
@@ -204,7 +207,7 @@ def generate_target_tensorstore_scale(metafile, mip=None, **kwargs):
                     json_obj = json.load(f)
     elif isinstance(metafile, dict):
         json_obj = metafile
-    ds_spec, src_mip, mip, mipmaps = get_tensorstore_spec(json_obj, mip=mip)
+    ds_spec, src_mip, mip, mipmaps = get_tensorstore_spec(json_obj, mip=mip, return_mips=True, **kwargs)
     if src_mip == mip:
         return None
     ts_dsp = ts.open(ds_spec).result()
@@ -302,7 +305,6 @@ def generate_tensorstore_scales(metafile, mips, **kwargs):
     if updated:
         sec_name = os.path.basename(metafile).replace('.json', '')
         logger.info(f'{sec_name}: {(time.time()-t0)/60} min')
-    
 
 
 def _write_downsample_tensorstore(src_spec, tgt_spec, bboxes, **kwargs):
@@ -321,6 +323,7 @@ def _write_downsample_tensorstore(src_spec, tgt_spec, bboxes, **kwargs):
 
 def get_tensorstore_spec(metafile, mip=None, **kwargs):
     downsample_method = kwargs.get('downsample_method', 'mean')
+    return_mips = kwargs.get('return_mips', False)
     if isinstance(metafile, str):
         try:
             json_obj = json.loads(metafile)
@@ -355,7 +358,41 @@ def get_tensorstore_spec(metafile, mip=None, **kwargs):
             "downsample_method": downsample_method,
             "base": src_spec
         }
-    return ds_spec, src_mip, mip, mipmaps
+    if return_mips:
+        return ds_spec, src_mip, mip, mipmaps
+    else:
+        return ds_spec
+
+
+def create_thumbnail_tensorstore(metafile, mip, outname=None, highpass=True, **kwargs):
+    normalize_hist = kwargs.get('normalize_hist', True)
+    downsample_method = kwargs.get('downsample_method', 'mean')
+    if not highpass:
+        ds_spec = get_tensorstore_spec(metafile, mip=mip, downsample_method=downsample_method)
+        thumb_loader = dal.TensorStoreLoader.from_json_spec(ds_spec, **kwargs)
+        img = thumb_loader.crop(thumb_loader.bounds, **kwargs)
+        if normalize_hist:
+            img = _max_entropy_scaling_both_sides(img)
+    else:
+        inter_mip = kwargs.get('highpass_inter_mip_lvl', max(0, mip-2))
+        assert mip > inter_mip
+        ds_mip = mip - inter_mip
+        inter_spec = get_tensorstore_spec(metafile, mip=inter_mip, downsample_method='mean')
+        mx_spec = get_tensorstore_spec({0: inter_spec}, 1, downsample_method='max')
+        mn_spec = get_tensorstore_spec({0: inter_spec}, 1, downsample_method='min')
+        mx_spec = {'driver': 'cast', 'dtype': 'float32', 'base': mx_spec}
+        mn_spec = {'driver': 'cast', 'dtype': 'float32', 'base': mn_spec}
+        mx_spec = get_tensorstore_spec({1: mx_spec}, ds_mip, downsample_method='mean')
+        mn_spec = get_tensorstore_spec({1: mn_spec}, ds_mip, downsample_method='mean')
+        mx_loader = dal.TensorStoreLoader.from_json_spec(mx_spec, **kwargs)
+        mn_loader = dal.TensorStoreLoader.from_json_spec(mn_spec, **kwargs)
+        mx_img = mx_loader.crop(mx_loader.bounds, **kwargs)
+        mn_img = mn_loader.crop(mn_loader.bounds, **kwargs)
+        img = 255 - _max_entropy_scaling_one_side(mx_img - mn_img)
+    if outname is None:
+        return img
+    else:
+        common.imwrite(outname, img)
 
 
 def _max_entropy_scaling_one_side(img, **kwargs):

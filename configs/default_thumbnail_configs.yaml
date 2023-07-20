@@ -6,6 +6,7 @@ downsample:
     # max_mip: 5
     format: jpg
     thumbnail_highpass: true    # whether to use high-pass filter to enhance contrast when generating thumbnail.
+    highpass_inter_mip_lvl: 4
 
 
 alignment:

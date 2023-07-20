@@ -61,6 +61,7 @@ def generate_thumbnails(src_dir, out_dir, **kwargs):
     logger_info = kwargs.pop('logger', None)
     logger = logging.get_logger(logger_info)
     meta_list = sorted(glob.glob(os.path.join(src_dir, '**', 'metadata.txt'), recursive=True))
+    meta_list = meta_list[arg_indx]
     secnames = [os.path.basename(os.path.dirname(s)) for s in meta_list]
     target_func = partial(mipmap.create_thumbnail, **kwargs)
     os.makedirs(out_dir, exist_ok=True)
@@ -84,6 +85,41 @@ def generate_thumbnails(src_dir, out_dir, **kwargs):
                 updated.append(sname)
                 sdir = os.path.join(src_dir, sname)
                 job = executor.submit(target_func, sdir, outname=outname)
+                jobs.append(job)
+            for job in jobs:
+                job.result()
+        logger.info('thumbnails generated.')
+    return updated
+
+
+def generate_thumbnails_tensorstore(src_dir, out_dir, **kwargs):
+    num_workers = kwargs.pop('num_workers', 1)
+    logger_info = kwargs.pop('logger', None)
+    logger = logging.get_logger(logger_info)
+    meta_list = sorted(glob.glob(os.path.join(src_dir, '*.json')))
+    meta_list = meta_list[arg_indx]
+    target_func = partial(mipmap.create_thumbnail_tensorstore, **kwargs)
+    os.makedirs(out_dir, exist_ok=True)
+    updated = []
+    if num_workers == 1:
+        for meta_name in meta_list:
+            sname = os.path.basename(meta_name).replace('.json', '')
+            outname = os.path.join(out_dir, sname + '.png')
+            if os.path.isfile(outname):
+                continue
+            updated.append(sname)
+            img_out = target_func(meta_name)
+            common.imwrite(outname, img_out)
+    else:
+        jobs = []
+        with ProcessPoolExecutor(max_workers=num_workers, mp_context=get_context('spawn')) as executor:
+            for meta_name in meta_list:
+                sname = os.path.basename(meta_name).replace('.json', '')
+                outname = os.path.join(out_dir, sname + '.png')
+                if os.path.isfile(outname):
+                    continue
+                updated.append(sname)
+                job = executor.submit(target_func, meta_name, outname=outname)
                 jobs.append(job)
             for job in jobs:
                 job.result()
@@ -280,8 +316,10 @@ if __name__ == '__main__':
             generate_stitched_mipmaps(src_dir0, max_mip, **thumbnail_configs)
             if thumbnail_configs.get('thumbnail_highpass', True):
                 src_mip = max(0, thumbnail_mip_lvl-2)
-                src_dir = os.path.join(src_dir0, 'mip'+str(src_mip))
-                downsample = 2 ** (thumbnail_mip_lvl - src_mip)
+                highpass_inter_mip_lvl = thumbnail_configs.get('highpass_inter_mip_lvl', src_mip)
+                assert highpass_inter_mip_lvl < thumbnail_mip_lvl
+                src_dir = os.path.join(src_dir0, 'mip'+str(highpass_inter_mip_lvl))
+                downsample = 2 ** (thumbnail_mip_lvl - highpass_inter_mip_lvl)
                 if downsample >= 4:
                     highpass = True
                 else:
@@ -294,18 +332,18 @@ if __name__ == '__main__':
             thumbnail_configs.setdefault('downsample', downsample)
             thumbnail_configs.setdefault('highpass', highpass)
             slist = generate_thumbnails(src_dir, img_dir, **thumbnail_configs)
-            mask_scale = 1 / (2 ** thumbnail_mip_lvl)
-            generate_thumbnail_masks(stitch_tform_dir, mat_mask_dir, seclist=slist, scale=mask_scale,
-                                    img_dir=img_dir, **thumbnail_configs)
         else:
             stitch_dir = os.path.join(root_dir, 'stitch')
             src_dir = os.path.join(stitch_dir, 'ts_specs')
             tgt_mips = [align_mip]
             if thumbnail_configs.get('thumbnail_highpass', True):
-                if thumbnail_mip_lvl > 2:
+                highpass_inter_mip_lvl = thumbnail_configs.pop('highpass_inter_mip_lvl', max(0, thumbnail_mip_lvl-2))
+                assert highpass_inter_mip_lvl < thumbnail_mip_lvl
+                downsample = 2 ** (thumbnail_mip_lvl - highpass_inter_mip_lvl)
+                if downsample >= 4:
                     highpass = True
-                    tgt_mips.append(thumbnail_mip_lvl - 2)
-                    downsample = 4
+                    thumbnail_configs.setdefault('highpass_inter_mip_lvl', highpass_inter_mip_lvl)
+                    tgt_mips.append(highpass_inter_mip_lvl)
                 else:
                     highpass = False
                     tgt_mips.append(thumbnail_mip_lvl)
@@ -314,8 +352,12 @@ if __name__ == '__main__':
                 tgt_mips.append(thumbnail_mip_lvl)
                 downsample = 1
             generate_stitched_mipmaps_tensorstore(src_dir, tgt_mips, **thumbnail_configs)
-            thumbnail_configs.setdefault('downsample', downsample)
             thumbnail_configs.setdefault('highpass', highpass)
+            thumbnail_configs.setdefault('mip', thumbnail_mip_lvl)
+            slist = generate_thumbnails_tensorstore(src_dir, img_dir, **thumbnail_configs)
+        mask_scale = 1 / (2 ** thumbnail_mip_lvl)
+        generate_thumbnail_masks(stitch_tform_dir, mat_mask_dir, seclist=slist, scale=mask_scale,
+                                 img_dir=img_dir, **thumbnail_configs)
         logger.info('finished.')
         logging.terminate_logger(*logger_info)
     elif mode == 'alignment':
