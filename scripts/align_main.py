@@ -113,8 +113,13 @@ def match_main(match_list):
     stitch_config = config.stitch_configs().get('rendering', {})
     loader_config = {key: val for key, val in stitch_config.items() if key in ('pattern', 'one_based', 'fillval')}
     working_mip_level = align_config.get('working_mip_level', 2)
-    stitch_render_dir = config.stitch_render_dir()
-    stitched_image_dir = os.path.join(stitch_render_dir, 'mip'+str(working_mip_level))
+    stitch_render_driver = config.stitch_configs().get('rendering', {}).get('driver', 'image')
+    if stitch_render_driver == 'image':
+        stitch_render_dir = config.stitch_render_dir()
+        stitched_image_dir = os.path.join(stitch_render_dir, 'mip'+str(working_mip_level))
+    else:
+        stitch_dir = os.path.join(root_dir, 'stitch')
+        spec_dir = os.path.join(stitch_dir, 'ts_specs')
     logger_info = logging.initialize_main_logger(logger_name='align_matching', mp=False)
     logger = logging.get_logger(logger_info[0])
     if len(match_list) == 0:
@@ -127,7 +132,15 @@ def match_main(match_list):
         tname = os.path.basename(mname).replace('.h5', '')
         logger.info(f'start {tname}')
         secnames = os.path.splitext(os.path.basename(mname))[0].split(match_name_delimiter)
-        loaders = [get_image_loader(os.path.join(stitched_image_dir, s), **loader_config) for s in secnames]
+        if stitch_render_driver == 'image':
+            loaders = [get_image_loader(os.path.join(stitched_image_dir, s), **loader_config) for s in secnames]
+        else:
+            specs = [dal.get_tensorstore_spec(os.path.join(spec_dir, s+'.json'), mip=working_mip_level) for s in secnames]
+            loader0 = {'ImageLoaderType': 'TensorStoreLoader', 'json_spec': specs[0]}
+            loader1 = {'ImageLoaderType': 'TensorStoreLoader', 'json_spec': specs[1]}
+            loader0.update(loader_config)
+            loader1.update(loader_config)
+            loaders = [loader0, loader1]
         num_matches = match_section_from_initial_matches(mname, mesh_dir, loaders, match_dir, align_config)
         if num_matches is not None:
             if num_matches > 0:

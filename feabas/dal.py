@@ -105,6 +105,13 @@ def get_loader_from_json(json_info, loader_type=None, **kwargs):
         json_obj = json_info
     else:
         raise TypeError
+    if kwargs.get('mip', None) is not None:
+        if str(kwargs['mip']) in json_obj:
+             json_obj = json_obj[str(kwargs['mip'])]
+        elif kwargs['mip'] in json_obj:
+             json_obj = json_obj[kwargs['mip']]
+    if 'kvstore' in json_obj:
+        return TensorStoreLoader.from_json_spec(json_obj, **kwargs)
     json_obj.update(kwargs)
     if loader_type is None:
         loader_type = json_obj['ImageLoaderType']
@@ -1052,6 +1059,48 @@ class StreamLoader(AbstractImageLoader):
         return self.file_bboxes(margin=0)[0]
 
 
+def get_tensorstore_spec(metafile, mip=None, **kwargs):
+    downsample_method = kwargs.get('downsample_method', 'mean')
+    return_mips = kwargs.get('return_mips', False)
+    if isinstance(metafile, str):
+        try:
+            json_obj = json.loads(metafile)
+        except ValueError:
+            if metafile.startswith('gs:'):
+                json_ts = ts.open({"driver": "json", "kvstore": metafile}).result()
+                s = json_ts.read().result()
+                json_obj = s.item()
+            else:
+                with open(metafile, 'r') as f:
+                    json_obj = json.load(f)
+    elif isinstance(metafile, dict):
+        json_obj = metafile
+    try:
+        mipmaps = {int(m): json_spec for m, json_spec in json_obj.items()}
+    except ValueError:
+        mipmaps = {0: json_obj}
+    rendered_mips = np.array([m for m in mipmaps])
+    if mip is None:
+        mip = rendered_mips.max() + 1
+    src_mip = rendered_mips[rendered_mips <= mip].max()
+    src_spec = mipmaps[src_mip]
+    if src_mip == mip:
+        ds_spec = src_spec
+    else:
+        ts_src = ts.open(src_spec).result()
+        src_spec = ts_src.spec().to_json()
+        downsample_factors = [2**(mip - src_mip), 2**(mip - src_mip)] + ([1] * (ts_src.rank - 2))
+        ds_spec = {
+            "driver": "downsample",
+            "downsample_factors": downsample_factors,
+            "downsample_method": downsample_method,
+            "base": src_spec
+        }
+    if return_mips:
+        return ds_spec, src_mip, mip, mipmaps
+    else:
+        return ds_spec
+
 
 class TensorStoreLoader(AbstractImageLoader):
     """
@@ -1059,6 +1108,7 @@ class TensorStoreLoader(AbstractImageLoader):
     """
     def __init__(self, dataset, **kwargs):
         super().__init__(**kwargs)
+        self.resolution = dataset.schema.dimension_units[0].multiplier
         self._z = kwargs.get('z', 0)
         self.dataset = dataset
 

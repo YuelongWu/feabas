@@ -327,8 +327,8 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
             be matched. Note that the matching is operated at the resolution of
             the meshes, so it is important to adjust the resoltion of the meshes
             to allow desired scaling for template matching.
-        image_loader0, image_loader1 (feabas.dal.MosaicLoader or StreamLoader):
-            image loaders of the sections.
+        image_loader0, image_loader1 (feabas.dal.MosaicLoader or StreamLoader
+            or TensorStoreLoader):image loaders of the sections.
     Kwargs:
         sigma(float): if larger than 0, the cropped images for template matching
             will be pre-processed with DoG filter with sigma.
@@ -387,9 +387,11 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
         batch_size = max(1, batch_size / num_workers)
         if isinstance(image_loader0, dal.AbstractImageLoader):
             loader_dict0 = image_loader0.init_dict()
-            loader_dict1 = image_loader1.init_dict()
         else:
             loader_dict0 = image_loader0
+        if isinstance(image_loader1, dal.AbstractImageLoader):
+            loader_dict1 = image_loader1.init_dict()
+        else:
             loader_dict1 = image_loader1
     # if any spacing value smaller than 1, means they are relative to longer side
     spacings = np.array(spacings, copy=False)

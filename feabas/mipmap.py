@@ -13,7 +13,7 @@ import os
 import tensorstore as ts
 import time
 
-from feabas.dal import MosaicLoader
+from feabas.dal import MosaicLoader, get_tensorstore_spec
 from feabas import common, logging, dal
 from feabas.spatial import Geometry
 from feabas.mesh import Mesh
@@ -319,49 +319,6 @@ def _write_downsample_tensorstore(src_spec, tgt_spec, bboxes, **kwargs):
         out_view = ts_out[xmin:xmax, ymin:ymax]
         out_view.write(img.T.reshape(out_view.shape)).result()
     return ts_out.spec().to_json()
-
-
-def get_tensorstore_spec(metafile, mip=None, **kwargs):
-    downsample_method = kwargs.get('downsample_method', 'mean')
-    return_mips = kwargs.get('return_mips', False)
-    if isinstance(metafile, str):
-        try:
-            json_obj = json.loads(metafile)
-        except ValueError:
-            if metafile.startswith('gs:'):
-                json_ts = ts.open({"driver": "json", "kvstore": metafile}).result()
-                s = json_ts.read().result()
-                json_obj = s.item()
-            else:
-                with open(metafile, 'r') as f:
-                    json_obj = json.load(f)
-    elif isinstance(metafile, dict):
-        json_obj = metafile
-    try:
-        mipmaps = {int(m): json_spec for m, json_spec in json_obj.items()}
-    except ValueError:
-        mipmaps = {0: json_obj}
-    rendered_mips = np.array([m for m in mipmaps])
-    if mip is None:
-        mip = rendered_mips.max() + 1
-    src_mip = rendered_mips[rendered_mips <= mip].max()
-    src_spec = mipmaps[src_mip]
-    if src_mip == mip:
-        ds_spec = src_spec
-    else:
-        ts_src = ts.open(src_spec).result()
-        src_spec = ts_src.spec().to_json()
-        downsample_factors = [2**(mip - src_mip), 2**(mip - src_mip)] + ([1] * (ts_src.rank - 2))
-        ds_spec = {
-            "driver": "downsample",
-            "downsample_factors": downsample_factors,
-            "downsample_method": downsample_method,
-            "base": src_spec
-        }
-    if return_mips:
-        return ds_spec, src_mip, mip, mipmaps
-    else:
-        return ds_spec
 
 
 def create_thumbnail_tensorstore(metafile, mip, outname=None, highpass=True, **kwargs):
