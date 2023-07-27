@@ -7,11 +7,12 @@ import numpy as np
 import os
 import shapely.geometry as shpgeo
 from shapely.ops import unary_union
+import tensorstore as ts
 
 import feabas.constant as const
 from feabas.mesh import Mesh
 from feabas import common, spatial, dal
-from feabas.config import DEFAULT_RESOLUTION
+from feabas.config import DEFAULT_RESOLUTION, general_settings
 
 
 class MeshRenderer:
@@ -465,6 +466,7 @@ class MeshRenderer:
 
 
 def render_whole_mesh(mesh, image_loader, prefix, **kwargs):
+    driver = kwargs.get('driver', 'image')
     num_workers = kwargs.pop('num_workers', 1)
     max_tile_per_job = kwargs.pop('max_tile_per_job', None)
     canvas_bbox = kwargs.pop('canvas_bbox', None)
@@ -488,6 +490,12 @@ def render_whole_mesh(mesh, image_loader, prefix, **kwargs):
         gx_max = gx_max - gx_min
         gy_max = gy_max - gy_min
         gx_min, gy_min = 0, 0
+    if driver != 'image':
+        gx_max, gy_max = int(np.ceil(gx_max)), int(np.ceil(gy_max))
+        gx_min, gy_min = int(np.floor(gx_min)), int(np.floor(gy_min))
+        while tile_ht > gy_max or tile_wd > gx_max:
+            tile_ht = tile_ht // 2
+            tile_wd = tile_wd // 2
     tx_max = int(np.ceil(gx_max  / tilewd))
     ty_max = int(np.ceil(gy_max  / tileht))
     tx_min = int(np.floor(gx_min  / tilewd))
@@ -496,25 +504,122 @@ def render_whole_mesh(mesh, image_loader, prefix, **kwargs):
     cols, rows = cols.ravel(), rows.ravel()
     idxz = common.z_order(np.stack((rows, cols), axis=-1))
     cols, rows = cols[idxz], rows[idxz]
-    filenames = []
     bboxes = []
     region = mesh.shapely_regions(gear=const.MESH_GEAR_MOVING, offsetting=True)
-    for r, c in zip(rows, cols):
-        bbox = (c*tilewd + x0, r*tileht + y0, (c+1)*tilewd + x0, (r+1)*tileht + y0)
-        if not region.intersects(shpgeo.box(*bbox)):
-            continue
-        bboxes.append(bbox)
-        xmin, ymin, xmax, ymax = bbox
-        keyword_replaces = [str(r+one_based), str(c+one_based), str(xmin), str(ymin), str(xmax), str(ymax)]
-        fname = pattern
-        for kw, kwr in zip(keywords, keyword_replaces):
-            fname = fname.replace(kw, kwr)
-        filenames.append(prefix + fname)
-    rendered = {}
-    num_tiles = len(filenames)
+    if driver == 'image':
+        filenames = []
+        for r, c in zip(rows, cols):
+            bbox = (c*tilewd + x0, r*tileht + y0, (c+1)*tilewd + x0, (r+1)*tileht + y0)
+            if not region.intersects(shpgeo.box(*bbox)):
+                continue
+            bboxes.append(bbox)
+            xmin, ymin, xmax, ymax = bbox
+            keyword_replaces = [str(r+one_based), str(c+one_based), str(xmin), str(ymin), str(xmax), str(ymax)]
+            fname = pattern
+            for kw, kwr in zip(keywords, keyword_replaces):
+                fname = fname.replace(kw, kwr)
+            filenames.append(prefix + fname)
+        rendered = {}
+    else:
+        bboxes_out = []
+        if not prefix.endswith('/'):
+            prefix = prefix + '/'
+        kv_headers = ('gs://', 'http://', 'https://', 'file://', 'memory://')
+        for kvh in kv_headers:
+            if prefix.startswith(kvh):
+                break
+        else:
+            prefix = 'file://' + prefix
+        number_of_channels = image_loader.number_of_channels
+        dtype = kwargs.get('dtype_out', image_loader.dtype)
+        fillval = kwargs.get('fillval', image_loader.default_fillval)
+        schema = {
+            "chunk_layout":{
+                "grid_origin": [0, 0, 0, 0],
+                "inner_order": [3, 2, 1, 0],
+                "read_chunk": {"shape": [tile_wd, tile_ht, 1, number_of_channels]},
+                "write_chunk": {"shape": [tile_wd, tile_ht, 1, number_of_channels]},
+            },
+            "domain":{
+                "exclusive_max": [gx_max, gy_max, 1, number_of_channels],
+                "inclusive_min": [0, 0, 0, 0],
+                "labels": ["x", "y", "z", "channel"]
+            },
+            "dimension_units": [[mesh.resolution, "nm"], [mesh.resolution, "nm"], [general_settings().get('section_thickness', 30), "nm"], None],
+            "dtype": np.dtype(dtype).name,
+            "rank" : 4
+        }
+        mip_level_str = str(int(np.log(mesh.resolution/DEFAULT_RESOLUTION)/np.log(2)))
+        if driver == 'zarr':
+            ts_specs = {
+                "driver": "zarr",
+                "kvstore": prefix + mip_level_str + '/',
+                "key_encoding": ".",
+                "metadata": {
+                    "zarr_format": 2,
+                    "fill_value": fillval,
+                    "compressor": {"id": "gzip", "level": 6}
+                },
+                "schema": schema,
+                "open": True,
+                "create": True,
+                "delete_existing": False
+            }
+        elif driver == 'n5':
+            ts_specs = {
+                "driver": "n5",
+                "kvstore": prefix + 's' + mip_level_str + '/',
+                "metadata": {
+                    "compression": {"type": "gzip"}
+                },
+                "schema": schema,
+                "open": True,
+                "create": True,
+                "delete_existing": False
+            }
+        elif driver == 'neuroglancer_precomputed':
+            if tile_ht % 256 == 0:
+                read_ht = 256
+            else:
+                read_ht = tile_ht
+            if tile_wd % 256 == 0:
+                read_wd = 256
+            else:
+                read_wd = tile_wd
+            schema["codec"]= {
+                "driver": "neuroglancer_precomputed",
+                "encoding": "raw",
+                "shard_data_encoding": "gzip"
+            }
+            schema['chunk_layout']["read_chunk"]["shape"] = [read_wd, read_ht, 1, number_of_channels]
+            ts_specs = {
+                "driver": "neuroglancer_precomputed",
+                "kvstore": prefix,
+                "schema": schema,
+                "open": True,
+                "create": True,
+                "delete_existing": False
+            }
+        else:
+            raise ValueError(f'{driver} not supported')
+        for r, c in zip(rows, cols):
+            bbox = (c*tilewd + x0, r*tileht + y0, (c+1)*tilewd + x0, (r+1)*tileht + y0)
+            bbox_out = (c*tilewd, r*tileht, (c+1)*tilewd, (r+1)*tileht)
+            if not region.intersects(shpgeo.box(*bbox)):
+                continue
+            bboxes.append(bbox)
+            bboxes_out.append(bbox_out)
+        rendered  = []
+    num_tiles = len(bboxes)
     if num_tiles == 0:
-        pass
-    elif (num_workers > 1) and (num_tiles > 1):
+        return rendered
+    if isinstance(image_loader, dal.AbstractImageLoader):
+        image_loader = image_loader.init_dict()
+    if driver == 'image':
+        target_func = partial(subprocess_render_mesh_tiles, imgloader=image_loader, **kwargs)
+    else:
+        target_func = partial(subprocess_render_mesh_tiles, imgloader=image_loader, outnames=ts_specs, **kwargs)
+    if (num_workers > 1) and (num_tiles > 1):
         num_tile_per_job = max(1, num_tiles // num_workers)
         if max_tile_per_job is not None:
             num_tile_per_job = min(num_tile_per_job, max_tile_per_job)
@@ -522,33 +627,43 @@ def render_whole_mesh(mesh, image_loader, prefix, **kwargs):
         indices = np.round(np.linspace(0, num_tiles, num=N_jobs+1, endpoint=True))
         indices = np.unique(indices).astype(np.uint32)
         bboxes_list = []
+        bboxes_out_list = []
         filenames_list = []
         bbox_unions = []
         for idx0, idx1 in zip(indices[:-1], indices[1:]):
             idx0, idx1 = int(idx0), int(idx1)
             bbox_t = bboxes[idx0:idx1]
             bboxes_list.append(bbox_t)
-            filenames_list.append(filenames[idx0:idx1])
             bbox_unions.append(common.bbox_enlarge(common.bbox_union(bbox_t), tile_size[0]//2))
+            if driver == 'image':
+                filenames_list.append(filenames[idx0:idx1])
+            else:
+                bboxes_out_list.append(bboxes_out[idx0:idx1])
         submeshes = mesh.submeshes_from_bboxes(bbox_unions, save_material=True)
-        if isinstance(image_loader, dal.AbstractImageLoader):
-            image_loader = image_loader.init_dict()
-        target_func = partial(subprocess_render_mesh_tiles, image_loader, **kwargs)
         jobs = []
         with ProcessPoolExecutor(max_workers=num_workers, mp_context=get_context('spawn')) as executor:
-            for msh, bbox, fnames in zip(submeshes, bboxes_list, filenames_list):
-                msh_dict = msh.get_init_dict(save_material=True, vertex_flags=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING))
-                job = executor.submit(target_func, msh_dict, bbox, fnames)
-                jobs.append(job)
+            if driver == 'image':
+                for msh, bbox, fnames in zip(submeshes, bboxes_list, filenames_list):
+                    msh_dict = msh.get_init_dict(save_material=True, vertex_flags=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING))
+                    job = executor.submit(target_func, msh_dict, bbox, fnames)
+                    jobs.append(job)
+            else:
+                for msh, bbox, bbox_out in zip(submeshes, bboxes_list, bboxes_out_list):
+                    msh_dict = msh.get_init_dict(save_material=True, vertex_flags=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING))
+                    job = executor.submit(target_func, msh_dict, bbox, bboxes_out=bbox_out)
             for job in as_completed(jobs):
                 rendered.update(job.result())
     else:
-        rendered = subprocess_render_mesh_tiles(image_loader, mesh, bboxes, filenames, **kwargs)
+        if driver == 'image':
+            rendered = target_func(mesh, bboxes, filenames)
+        else:
+            rendered = target_func(mesh, bboxes, bboxes_out=bboxes_out)
     return rendered
 
 
 def subprocess_render_mesh_tiles(imgloader, mesh, bboxes, outnames, **kwargs):
     target_resolution = kwargs.pop('target_resolution')
+    bboxes_out = kwargs.pop('bboxes_out', bboxes)
     if isinstance(imgloader, (str, dict)):
         imgloader = dal.get_loader_from_json(imgloader)
     if isinstance(mesh, str):
@@ -558,16 +673,76 @@ def subprocess_render_mesh_tiles(imgloader, mesh, bboxes, outnames, **kwargs):
     else:
         M = mesh
     M.change_resolution(target_resolution)
+    if isinstance(outnames, (dict, ts.TensorStore)):
+        use_tensorstore = True
+    else:
+        use_tensorstore = False
     renderer = MeshRenderer.from_mesh(M, **kwargs)
     renderer.link_image_loader(imgloader)
     fillval = kwargs.get('fillval', renderer.default_fillval)
-    rendered = {}
-    for fname, bbox in zip(outnames, bboxes):
-        if os.path.isfile(fname):
-            rendered[fname] = bbox
-            continue
-        imgt = renderer.crop(bbox, **kwargs)
-        if (imgt is not None) and np.any(imgt != fillval, axis=None):
-            common.imwrite(fname, imgt)
-            rendered[fname] = bbox
+    if use_tensorstore:
+        rendered = []
+        if not isinstance(outnames, ts.TensorStore):
+            dataset = ts.open(outnames).result()
+        else:
+            dataset = outnames
+        driver = dataset.spec().to_json()['driver']
+        data_domain = dataset.domain
+        inclusive_min = data_domain.inclusive_min
+        exclusive_max = data_domain.exclusive_max
+        ts_xmin, ts_ymin = inclusive_min[0], inclusive_min[1]
+        ts_xmax, ts_ymax = exclusive_max[0], exclusive_max[1]
+        ts_bbox = (ts_xmin, ts_ymin, ts_xmax, ts_ymax)
+        if driver in ('neuroglancer_precomputed', 'n5'):
+            kwargs['fillval'] = 0
+        for bbox, bbox_out in zip(bboxes, bboxes_out):
+            imgt = renderer.crop(bbox, **kwargs)
+            if (imgt is not None) and np.any(imgt != fillval, axis=None):
+                img_crp, indx = common.crop_image_from_bbox(imgt, bbox_out, ts_bbox,
+                                                    return_index=True, flip_indx=True)
+                data_view = dataset[indx[1], indx[0]]
+                data_view.write(img_crp.T.reshape(data_view.shape)).result()
+                rendered.append(tuple(bbox))
+    else:
+        rendered = {}
+        for fname, bbox in zip(outnames, bboxes):
+            if os.path.isfile(fname):
+                rendered[fname] = bbox
+                continue
+            imgt = renderer.crop(bbox, **kwargs)
+            if (imgt is not None) and np.any(imgt != fillval, axis=None):
+                common.imwrite(fname, imgt)
+                rendered[fname] = bbox
     return rendered
+
+
+
+class VolumeRenderer:
+    """
+    A class to render Tensorstore Volume from mesh transformation.
+    Args:
+        mesh_mapper(dict): {z_indx: mesh path} mapping mesh files to their
+            z-index in 3d tensor store
+        loaders(list): list of loaders from rendering step in stitching
+        ts_spec(dict): json spec of output tensorstore 
+    Kwargs:
+        chunk_shape: shape of (write) chunks
+        read_chunk_shape: shape of read chunks
+        canvas_bbox: bounding box of the canvas
+    """
+    def __init__(self, mesh_mapper, loaders, ts_spec, **kwargs):
+        assert len(mesh_mapper) == len(loaders)
+        self._mesh_mapper = mesh_mapper
+        self._loaders = loaders
+        self._ts_spec = ts_spec
+        self._chunk_shape = kwargs.get('chunk_shape', [1024, 1024, 16])
+        self._read_chunk_shape = kwargs.get('read_chunk_shape', self._chunk_shape)
+        self._canvas_bbox = kwargs.get('canvas_bbox', None)
+        self._ts_verified = False
+
+
+    @property
+    def ts_spec(self):
+        if not self._ts_verified:
+            self._ts_verified = True
+        return self._ts_spec
