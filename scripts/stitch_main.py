@@ -201,7 +201,7 @@ def render_one_section(tform_name, out_prefix, meta_name=None, **kwargs):
             else:
                 meta_name = 'file://' + meta_name
             meta_ts = ts.open({"driver": "json", "kvstore": meta_name}).result()
-            meta_ts.write({0: store.spec().to_json()}).result()
+            meta_ts.write({0: store.spec(minimal_spec=True).to_json()}).result()
         else:
             fnames = sorted(list(metadata.keys()))
             bboxes = []

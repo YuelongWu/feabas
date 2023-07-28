@@ -1088,7 +1088,7 @@ def get_tensorstore_spec(metafile, mip=None, **kwargs):
         ds_spec = src_spec
     else:
         ts_src = ts.open(src_spec).result()
-        src_spec = ts_src.spec().to_json()
+        src_spec = ts_src.spec(minimal_spec=True).to_json()
         downsample_factors = [2**(mip - src_mip), 2**(mip - src_mip)] + ([1] * (ts_src.rank - 2))
         ds_spec = {
             "driver": "downsample",
@@ -1144,7 +1144,7 @@ class TensorStoreLoader(AbstractImageLoader):
 
     def _export_dict(self, **kwargs):
         out = super()._settings_dict(**kwargs)
-        out['json_spec'] = self.dataset.spec().to_json()
+        out['json_spec'] = self.dataset.spec(minimal_spec=True).to_json()
         return out
 
 

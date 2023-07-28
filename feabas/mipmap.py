@@ -212,7 +212,7 @@ def generate_target_tensorstore_scale(metafile, mip=None, **kwargs):
         return None
     ts_dsp = ts.open(ds_spec).result()
     ts_src = ts_dsp.base
-    src_spec = ts_src.spec().to_json()
+    src_spec = ts_src.spec(minimal_spec=True).to_json()
     tgt_spec = {}
     driver = src_spec['driver']
     tgt_spec['driver'] = driver
@@ -318,7 +318,7 @@ def _write_downsample_tensorstore(src_spec, tgt_spec, bboxes, **kwargs):
         xmin, ymin, xmax, ymax = bbox
         out_view = ts_out[xmin:xmax, ymin:ymax]
         out_view.write(img.T.reshape(out_view.shape)).result()
-    return ts_out.spec().to_json()
+    return ts_out.spec(minimal_spec=True).to_json()
 
 
 def create_thumbnail_tensorstore(metafile, mip, outname=None, highpass=True, **kwargs):

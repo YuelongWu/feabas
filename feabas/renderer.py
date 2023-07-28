@@ -729,20 +729,35 @@ class VolumeRenderer:
         chunk_shape: shape of (write) chunks
         read_chunk_shape: shape of read chunks
         canvas_bbox: bounding box of the canvas
+        resolution: resolution of the renderer
     """
     def __init__(self, mesh_mapper, loaders, ts_spec, **kwargs):
         assert len(mesh_mapper) == len(loaders)
         self._mesh_mapper = mesh_mapper
         self._loaders = loaders
         self._ts_spec = ts_spec
-        self._chunk_shape = kwargs.get('chunk_shape', [1024, 1024, 16])
+        self._chunk_shape = kwargs.get('chunk_shape', (1024, 1024, 16))
         self._read_chunk_shape = kwargs.get('read_chunk_shape', self._chunk_shape)
         self._canvas_bbox = kwargs.get('canvas_bbox', None)
         self._ts_verified = False
+        self.resolution = kwargs.get('resolution', DEFAULT_RESOLUTION)
 
 
     @property
     def ts_spec(self):
         if not self._ts_verified:
+            schema = {'dimension_units': [[self.resolution, "nm"], [self.resolution, "nm"], [general_settings().get('section_thickness', 30), "nm"], None]}
+            spec_copy = {key: val for key, val in self._ts_spec if key in ('driver', 'kvstore')}
+            spec_copy.update({'schema': schema, 'open': True, 'create': False, 'delete_existing': False})
+            try:
+                dataset = ts.open(spec_copy).result()
+                self._ts_spec = dataset.spec(minimal_spec=True).to_json()
+                self._read_chunk_shape = dataset.schema.chunk_layout.read_chunk.shape[:3]
+                self._chunk_shape = dataset.schema.chunk_layout.write_chunk.shape[:3]
+            except ValueError:
+                spec_copy = self._ts_spec.copy()
+                spec_copy.update({'create': True})
+                dataset = ts.open(spec_copy).result()
+                self._ts_spec = dataset.spec(minimal_spec=True).to_json()
             self._ts_verified = True
         return self._ts_spec
