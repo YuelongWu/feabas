@@ -721,43 +721,153 @@ class VolumeRenderer:
     """
     A class to render Tensorstore Volume from mesh transformation.
     Args:
-        mesh_mapper(dict): {z_indx: mesh path} mapping mesh files to their
-            z-index in 3d tensor store
+        meshes(list): mesh files of transformations
         loaders(list): list of loaders from rendering step in stitching
-        ts_spec(dict): json spec of output tensorstore 
+        kvstore(str): kvstore of the output tensorstore
+        z_indx: z indices of each section in the output tensorstore
     Kwargs:
+        driver: tensorstore driver type
         chunk_shape: shape of (write) chunks
         read_chunk_shape: shape of read chunks
-        canvas_bbox: bounding box of the canvas
+        canvas_bbox: bounding box of the canvas. Because its tensorstore, the
+            bounding box will not be offset to (0,0) in the output space, unlike
+            when rendering image tiles
         resolution: resolution of the renderer
     """
-    def __init__(self, mesh_mapper, loaders, ts_spec, **kwargs):
-        assert len(mesh_mapper) == len(loaders)
-        self._mesh_mapper = mesh_mapper
+    def __init__(self, meshes, loaders, kvstore, z_indx=None, **kwargs):
+        if z_indx is None:
+            z_indx = np.arange(len(meshes))
+        assert len(meshes) == len(loaders)
+        assert len(meshes) == len(z_indx)
+        self._meshes = meshes
+        self._zindx = z_indx
         self._loaders = loaders
-        self._ts_spec = ts_spec
-        self._chunk_shape = kwargs.get('chunk_shape', (1024, 1024, 16))
-        self._read_chunk_shape = kwargs.get('read_chunk_shape', self._chunk_shape)
+        driver = kwargs.get('driver', 'neuroglancer_precomputed')
         self._canvas_bbox = kwargs.get('canvas_bbox', None)
         self._ts_verified = False
         self.resolution = kwargs.get('resolution', DEFAULT_RESOLUTION)
+        self.mip = int(np.log2(self.resolution / DEFAULT_RESOLUTION))
+        self._number_of_channels = kwargs.get('number_of_channels', None)
+        self._dtype = kwargs.get('dtype', None)
+        self._chunk_shape = kwargs.get('chunk_shape', (1024, 1024, 16))
+        self._read_chunk_shape = kwargs.get('read_chunk_shape', self._chunk_shape)
+        schema = {'dimension_units': [[self.resolution, "nm"], [self.resolution, "nm"],
+                                      [general_settings().get('section_thickness', 30), "nm"], None]}
+        self._ts_spec = {'driver': driver, 'kvstore': kvstore, 'schema': schema}
+
+
+    @property
+    def canvas_box(self):
+        if self._canvas_box is None:
+            bbox_union = None
+            for msh in self._meshes:
+                M = VolumeRenderer._get_mesh(msh)
+                if M is None:
+                    continue
+                M.change_resolution(self.resolution)
+                bbox = M.bbox(gear=const.MESH_GEAR_MOVING, offsetting=True)
+                bbox[:2] = np.floor(bbox[:2])
+                bbox[-2:] = np.ceil(bbox[-2:])
+                bbox = bbox.astype(np.int64)
+                if bbox_union is None:
+                    bbox_union = bbox
+                else:
+                    bbox_union = common.bbox_union((bbox_union, bbox))
+            self._canvas_box = bbox_union
+        return self._canvas_bbox
 
 
     @property
     def ts_spec(self):
         if not self._ts_verified:
-            schema = {'dimension_units': [[self.resolution, "nm"], [self.resolution, "nm"], [general_settings().get('section_thickness', 30), "nm"], None]}
-            spec_copy = {key: val for key, val in self._ts_spec if key in ('driver', 'kvstore')}
-            spec_copy.update({'schema': schema, 'open': True, 'create': False, 'delete_existing': False})
+            spec_copy = self._ts_spec.copy()
+            spec_copy.update({'open': True, 'create': False, 'delete_existing': False})
+            xmin, ymin, xmax, ymax = self.canvas_box
+            zmin, zmax = np.min(self._zindx), np.max(self._zindx)
+            canvas_min = np.array((xmin, ymin, zmin))
+            canvas_max = np.array((xmax, ymax, zmax)) + 1
             try:
                 dataset = ts.open(spec_copy).result()
-                self._ts_spec = dataset.spec(minimal_spec=True).to_json()
+                inclusive_min = np.array(dataset.domain.inclusive_min)
+                exclusive_max = np.array(dataset.domain.exclusive_max)
+                if np.any(inclusive_min[:3] > canvas_min) or np.any(exclusive_max[:3] < canvas_max):
+                    inclusive_min[:3] = np.minimum(inclusive_min[:3], canvas_min)
+                    exclusive_max[:3] = np.maximum(exclusive_max[:3], canvas_max)
+                    dataset = dataset.resize(inclusive_min=inclusive_min, exclusive_max=exclusive_max,
+                                             resize_metadata_only=True, expand_only=True).result()
                 self._read_chunk_shape = dataset.schema.chunk_layout.read_chunk.shape[:3]
                 self._chunk_shape = dataset.schema.chunk_layout.write_chunk.shape[:3]
             except ValueError:
-                spec_copy = self._ts_spec.copy()
                 spec_copy.update({'create': True})
+                num_channels = self.number_of_channels
+                write_chunk = list(self._chunk_shape)
+                read_chunk = list(self._read_chunk_shape)
+                if len(write_chunk) < 4:
+                    write_chunk = write_chunk + [num_channels]
+                if len(read_chunk) < 4:
+                    read_chunk = read_chunk + [num_channels]
+                exclusive_max = list(canvas_max) + [num_channels]
+                inclusive_min = list(canvas_min) + [0]
+                schema_extra = {
+                    "chunk_layout":{
+                        "grid_origin": [0, 0, 0, 0],
+                        "inner_order": [3, 2, 1, 0],
+                        "read_chunk": {"shape": read_chunk},
+                        "write_chunk": {"shape": write_chunk},
+                    },
+                    "domain":{
+                        "exclusive_max": exclusive_max,
+                        "inclusive_min": inclusive_min,
+                        "labels": ["x", "y", "z", "channel"]
+                    },
+                    "dtype": np.dtype(self.dtype).name,
+                    "rank" : 4
+                }
+                spec_copy['schema'].update(schema_extra)
                 dataset = ts.open(spec_copy).result()
-                self._ts_spec = dataset.spec(minimal_spec=True).to_json()
             self._ts_verified = True
         return self._ts_spec
+
+
+    @property
+    def number_of_channels(self):
+        if self._number_of_channels is None:
+            loader = VolumeRenderer._get_loader(self._loaders[0], mip=self.mip)
+            self._number_of_channels = loader.number_of_channels
+            if self._dtype is None:
+                self._dtype = loader.dtype
+        return self._number_of_channels
+
+
+    @property
+    def dtype(self):
+        if self._dtype is None:
+            loader = VolumeRenderer._get_loader(self._loaders[0], mip=self.mip)
+            self._dtype = loader.dtype
+            if self._number_of_channels is None:
+                self._number_of_channels = loader.number_of_channels
+        return self._dtype
+
+
+    @staticmethod
+    def _get_mesh(msh):
+        if isinstance(msh, Mesh):
+            M = msh
+        elif isinstance(msh, dict):
+            M = Mesh(**msh)
+        elif isinstance(msh, str) and os.path.isfile(msh):
+            M = Mesh.from_h5(msh)
+        else:
+            M = None
+        return M
+
+
+    @staticmethod
+    def _get_loader(ldr, **kwargs):
+        if isinstance(ldr, dal.AbstractImageLoader):
+            loader = ldr
+        else:
+            loader = dal.get_loader_from_json(ldr, **kwargs)
+        return loader
+
+
