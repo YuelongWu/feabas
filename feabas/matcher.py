@@ -491,6 +491,8 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
                 conf = []
                 with ProcessPoolExecutor(max_workers=num_workers, mp_context=get_context('spawn')) as executor:
                     for m0_p, m1_p, bboxes0_p, bboxes1_p in zip(submeshes0, submeshes1, batched_bboxes0, batched_bboxes1):
+                        if (m0_p is None) or (m1_p is None):
+                            continue
                         m0dict = m0_p.get_init_dict(vertex_flags=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING))
                         m1dict = m1_p.get_init_dict(vertex_flags=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING))
                         job = executor.submit(target_func, m0dict, m1dict, loader_dict0, loader_dict1, bboxes0_p, bboxes1_p)

@@ -620,7 +620,10 @@ class Mesh:
         submeshes = []
         for bbox in bboxes:
             idx = np.unique(list(tree.intersection(bbox, objects=False)))
-            submeshes.append(self.submesh(idx, save_material=save_material, append_name=append_name, **kwargs))
+            if idx.size == 0:
+                submeshes.append(None)
+            else:
+                submeshes.append(self.submesh(idx, save_material=save_material, append_name=append_name, **kwargs))
         return submeshes
 
 

@@ -1,3 +1,4 @@
+from collections import defaultdict
 from concurrent.futures.process import ProcessPoolExecutor
 from concurrent.futures import as_completed
 from functools import partial
@@ -644,11 +645,15 @@ def render_whole_mesh(mesh, image_loader, prefix, **kwargs):
         with ProcessPoolExecutor(max_workers=num_workers, mp_context=get_context('spawn')) as executor:
             if driver == 'image':
                 for msh, bbox, fnames in zip(submeshes, bboxes_list, filenames_list):
+                    if msh is None:
+                        continue
                     msh_dict = msh.get_init_dict(save_material=True, vertex_flags=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING))
                     job = executor.submit(target_func, msh_dict, bbox, fnames)
                     jobs.append(job)
             else:
                 for msh, bbox, bbox_out in zip(submeshes, bboxes_list, bboxes_out_list):
+                    if msh is None:
+                        continue
                     msh_dict = msh.get_init_dict(save_material=True, vertex_flags=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING))
                     job = executor.submit(target_func, msh_dict, bbox, bboxes_out=bbox_out)
             for job in as_completed(jobs):
@@ -700,6 +705,8 @@ def subprocess_render_mesh_tiles(imgloader, mesh, bboxes, outnames, **kwargs):
             if (imgt is not None) and np.any(imgt != fillval, axis=None):
                 img_crp, indx = common.crop_image_from_bbox(imgt, bbox_out, ts_bbox,
                                                     return_index=True, flip_indx=True)
+                if img_crp is None:
+                    continue
                 data_view = dataset[indx[1], indx[0]]
                 data_view.write(img_crp.T.reshape(data_view.shape)).result()
                 rendered.append(tuple(bbox))
@@ -733,7 +740,7 @@ class VolumeRenderer:
             bounding box will not be offset to (0,0) in the output space, unlike
             when rendering image tiles
         resolution: resolution of the renderer
-        region_lut: dict mapping z_index to its shapely region
+        out_offset: xy offset of the output space
     """
     def __init__(self, meshes, loaders, kvstore, z_indx=None, **kwargs):
         if z_indx is None:
@@ -744,8 +751,10 @@ class VolumeRenderer:
         self._zindx = z_indx
         self._loaders = loaders
         driver = kwargs.get('driver', 'neuroglancer_precomputed')
+        self.flag_dir = kwargs.get('flag_dir', None)
+        self._offset = kwargs.get('out_offset', np.zeros((1,2), dtype=np.int64))
         self._canvas_bbox = kwargs.get('canvas_bbox', None)
-        self._region_lut = kwargs.get('region_lut', {})
+        self._region_lut = None
         self._ts_verified = False
         self.resolution = kwargs.get('resolution', DEFAULT_RESOLUTION)
         self.mip = int(np.log2(self.resolution / DEFAULT_RESOLUTION))
@@ -758,60 +767,28 @@ class VolumeRenderer:
         self._ts_spec = {'driver': driver, 'kvstore': kvstore, 'schema': schema}
 
 
-    @property
-    def ts_spec(self):
-        if not self._ts_verified:
-            spec_copy = self._ts_spec.copy()
-            spec_copy.update({'open': True, 'create': False, 'delete_existing': False})
-            try:
-                dataset = ts.open(spec_copy).result()
-                # inclusive_min = np.array(dataset.domain.inclusive_min)
-                # exclusive_max = np.array(dataset.domain.exclusive_max)
-                # if np.any(inclusive_min[:3] > canvas_min) or np.any(exclusive_max[:3] < canvas_max):
-                #     inclusive_min[:3] = np.minimum(inclusive_min[:3], canvas_min)
-                #     exclusive_max[:3] = np.maximum(exclusive_max[:3], canvas_max)
-                #     dataset = dataset.resize(inclusive_min=inclusive_min, exclusive_max=exclusive_max,
-                #                              resize_metadata_only=True, expand_only=True).result()
-                self._read_chunk_shape = dataset.schema.chunk_layout.read_chunk.shape[:3]
-                self._chunk_shape = dataset.schema.chunk_layout.write_chunk.shape[:3]
-            except ValueError:
-                spec_copy.update({'create': True})
-                xmin, ymin, xmax, ymax = self.canvas_box
-                zmin, zmax = np.min(self._zindx), np.max(self._zindx)
-                canvas_min = np.array((xmin, ymin, zmin))
-                canvas_max = np.array((xmax, ymax, zmax)) + 1
-                num_channels = self.number_of_channels
-                write_chunk = list(self._chunk_shape)
-                read_chunk = list(self._read_chunk_shape)
-                if len(write_chunk) < 4:
-                    write_chunk = write_chunk + [num_channels]
-                if len(read_chunk) < 4:
-                    read_chunk = read_chunk + [num_channels]
-                exclusive_max = list(canvas_max) + [num_channels]
-                inclusive_min = list(canvas_min) + [0]
-                schema_extra = {
-                    "chunk_layout":{
-                        "grid_origin": [0, 0, 0, 0],
-                        "inner_order": [3, 2, 1, 0],
-                        "read_chunk": {"shape": read_chunk},
-                        "write_chunk": {"shape": write_chunk},
-                    },
-                    "domain":{
-                        "exclusive_max": exclusive_max,
-                        "inclusive_min": inclusive_min,
-                        "labels": ["x", "y", "z", "channel"]
-                    },
-                    "dtype": np.dtype(self.dtype).name,
-                    "rank" : 4
-                }
-                spec_copy['schema'].update(schema_extra)
-                dataset = ts.open(spec_copy).result()
-            self._ts_verified = True
-        return self._ts_spec
 
-
-    def plan_render_series(self):
-        pass
+    def render_one_slab(self, z_start=0, **kwargs):
+        num_workers = kwargs.pop('num_workers', 1)
+        rendered_chunk_num = 0
+        chunk_x, chunk_y, chunk_z = self.chunk_shape
+        z_ind = z_start // chunk_z
+        zz = np.arange(z_ind * chunk_z, (z_ind+1) * chunk_z)
+        zz = zz[(zz >= np.min(self._zindx)) & (zz <= np.max(self._zindx))]
+        if zz.size == 0:
+            return rendered_chunk_num
+        xmin, ymin, xmax, ymax = self.canvas_box
+        x0_mn = np.arange((xmin//chunk_x) * chunk_x, xmax, chunk_x)
+        y0_mn = np.arange((ymin//chunk_y) * chunk_y, ymax, chunk_y)
+        xx_mn, yy_mn = np.meshgrid(x0_mn, y0_mn)
+        xx_mn, yy_mn = xx_mn.ravel(), yy_mn.ravel()
+        idxz = common.z_order(np.stack((xx_mn//chunk_x, yy_mn//chunk_y), axis=-1))
+        xx_mn, yy_mn = xx_mn[idxz], yy_mn[idxz]
+        xx_mx, yy_mx = xx_mn + chunk_x, yy_mn + chunk_y
+        xx_mn, yy_mn = xx_mn.clip(xmin, None), yy_mn.clip(ymin, None)
+        xx_mx, yy_mx = xx_mx.clip(None, xmax), yy_mx.clip(None, ymax)
+        regions = self.region_lut(indx=zz)
+        out_ts = self.ts_spec
 
 
     @property
@@ -823,7 +800,7 @@ class VolumeRenderer:
                     continue
                 bbox = np.array(rr.bounds)
                 bbox[:2] = np.floor(bbox[:2])
-                bbox[-2:] = np.ceil(bbox[-2:])
+                bbox[-2:] = np.ceil(bbox[-2:]) + 1
                 bbox = bbox.astype(np.int64)
                 if bbox_union is None:
                     bbox_union = bbox
@@ -852,12 +829,16 @@ class VolumeRenderer:
 
     @property
     def mesh_lut(self):
-        return {z: msh for z, msh in zip(self._zindx, self._meshes)}
+        if not hasattr(self, '_mesh_lut'):
+            self._mesh_lut = {z: msh for z, msh in zip(self._zindx, self._meshes)}
+        return self._mesh_lut
 
 
     @property
     def loader_lut(self):
-        return {z: ldr for z, ldr in zip(self._zindx, self._loaders)}
+        if not hasattr(self, '_loader_lut'):
+            self._loader_lut = {z: ldr for z, ldr in zip(self._zindx, self._loaders)}
+        return self._loader_lut
 
 
     @property
@@ -890,6 +871,78 @@ class VolumeRenderer:
         return self._dtype
 
 
+    def _verify_ts(self):
+        if not self._ts_verified:
+            spec_copy = self._ts_spec.copy()
+            spec_copy.update({'open': True, 'create': False, 'delete_existing': False})
+            try:
+                dataset = ts.open(spec_copy).result()
+                # inclusive_min = np.array(dataset.domain.inclusive_min)
+                # exclusive_max = np.array(dataset.domain.exclusive_max)
+                # if np.any(inclusive_min[:3] > canvas_min) or np.any(exclusive_max[:3] < canvas_max):
+                #     inclusive_min[:3] = np.minimum(inclusive_min[:3], canvas_min)
+                #     exclusive_max[:3] = np.maximum(exclusive_max[:3], canvas_max)
+                #     dataset = dataset.resize(inclusive_min=inclusive_min, exclusive_max=exclusive_max,
+                #                              resize_metadata_only=True, expand_only=True).result()
+                self._read_chunk_shape = dataset.schema.chunk_layout.read_chunk.shape[:3]
+                self._chunk_shape = dataset.schema.chunk_layout.write_chunk.shape[:3]
+            except ValueError:
+                spec_copy.update({'create': True})
+                xmin, ymin, xmax, ymax = self.canvas_box
+                zmin, zmax = np.min(self._zindx), np.max(self._zindx) + 1
+                canvas_min = np.array((xmin, ymin, zmin))
+                canvas_max = np.array((xmax, ymax, zmax))
+                num_channels = self.number_of_channels
+                write_chunk = list(self._chunk_shape)
+                read_chunk = list(self._read_chunk_shape)
+                if len(write_chunk) < 3:
+                    write_chunk = write_chunk + [1]
+                if len(write_chunk) < 4:
+                    write_chunk = write_chunk + [num_channels]
+                if len(read_chunk) < 3:
+                    read_chunk = read_chunk + [1]
+                if len(read_chunk) < 4:
+                    read_chunk = read_chunk + [num_channels]
+                exclusive_max = list(canvas_max) + [num_channels]
+                inclusive_min = list(canvas_min) + [0]
+                schema_extra = {
+                    "chunk_layout":{
+                        "grid_origin": [0, 0, 0, 0],
+                        "inner_order": [3, 2, 1, 0],
+                        "read_chunk": {"shape": read_chunk},
+                        "write_chunk": {"shape": write_chunk},
+                    },
+                    "domain":{
+                        "exclusive_max": exclusive_max,
+                        "inclusive_min": inclusive_min,
+                        "labels": ["x", "y", "z", "channel"]
+                    },
+                    "dtype": np.dtype(self.dtype).name,
+                    "rank" : 4
+                }
+                spec_copy['schema'].update(schema_extra)
+                dataset = ts.open(spec_copy).result()
+            self._ts_verified = True
+
+
+    @property
+    def ts_spec(self):
+        self._verify_ts()
+        return self._ts_spec
+
+
+    @property
+    def chunk_shape(self):
+        self._verify_ts()
+        return self._chunk_shape
+
+
+    @property
+    def read_chunk_shape(self):
+        self._verify_ts()
+        return self._read_chunk_shape
+
+
     @staticmethod
     def _get_mesh(msh):
         if isinstance(msh, Mesh):
@@ -915,3 +968,67 @@ class VolumeRenderer:
             except Exception:
                 loader = None
         return loader
+
+
+def subprocess_render_partial_ts_slab(loaders, meshes, bboxes, out_ts, **kwargs):
+    target_resolution = kwargs.pop('target_resolution')
+    bboxes_out = kwargs.pop('bboxes_out', bboxes)
+    rendered0 = kwargs.pop('rendered', {})
+    rendered0 = {int(z): [tuple(s) for s in val] for z, val in rendered0.items()}
+    rendered = defaultdict(list)
+    rendered.update(rendered0)
+    updated = 0
+    loaders = {int(z): VolumeRenderer._get_loader(ldr) for z, ldr in loaders.items()}
+    meshes = {int(z): VolumeRenderer._get_mesh(msh) for z, msh in meshes.items()}
+    zindx = set(loaders.keys()).intersection(set(meshes.keys))
+    renderers = {}
+    to_skip = True
+    for z in zindx:
+        ldr = loaders[z]
+        msh = meshes[z]
+        if (ldr is None) or (msh is None):
+            rndr = None
+        else:
+            msh.change_resolution(target_resolution)
+            rndr = MeshRenderer.from_mesh(msh, **kwargs)
+            rndr.link_image_loader(ldr)
+            if to_skip:
+                fillval = kwargs.get('fillval', rndr.default_fillval)
+                to_skip = False
+        renderers[z] = rndr
+    if to_skip:
+        return rendered, updated
+    if not isinstance(out_ts, ts.Tensorstore):
+        out_ts = ts.open(out_ts).result()
+    inclusive_min = out_ts.domain.inclusive_min
+    exclusive_max = out_ts.domain.exclusive_max
+    ts_xmin, ts_ymin = inclusive_min[0], inclusive_min[1]
+    ts_xmax, ts_ymax = exclusive_max[0], exclusive_max[1]
+    ts_bbox = (ts_xmin, ts_ymin, ts_xmax, ts_ymax)
+    for bbox, bbox_out in zip(bboxes, bboxes_out):
+        updated_b = False
+        rendered_b = []
+        for z in zindx:
+            if (bbox_out[0], bbox_out[1]) in rendered[z]:
+                continue
+            rndr = renderers[z]
+            if rndr is None:
+                continue
+            imgt = rndr.crop(bbox, **kwargs)
+            if (imgt is not None) and np.any(imgt != fillval, axis=None):
+                img_crp, indx = common.crop_image_from_bbox(imgt, bbox_out, ts_bbox,
+                                                    return_index=True, flip_indx=True)
+                if img_crp is None:
+                    continue
+                if not updated_b:
+                    txn = ts.Transaction()
+                    updated_b = True
+                data_view = out_ts[indx[1], indx[0], z]
+                data_view.with_transaction(txn).write(img_crp.T.reshape(data_view.shape))
+                rendered_b.append((bbox_out[0], bbox_out[1], z))
+        if updated_b:
+            txn.commit_async().result()
+            for rx, ry, rz in rendered_b:
+                rendered[rz].append((rx, ry))
+            updated += 1
+    return rendered, updated
