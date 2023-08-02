@@ -733,6 +733,7 @@ class VolumeRenderer:
             bounding box will not be offset to (0,0) in the output space, unlike
             when rendering image tiles
         resolution: resolution of the renderer
+        region_lut: dict mapping z_index to its shapely region
     """
     def __init__(self, meshes, loaders, kvstore, z_indx=None, **kwargs):
         if z_indx is None:
@@ -744,6 +745,7 @@ class VolumeRenderer:
         self._loaders = loaders
         driver = kwargs.get('driver', 'neuroglancer_precomputed')
         self._canvas_bbox = kwargs.get('canvas_bbox', None)
+        self._region_lut = kwargs.get('region_lut', {})
         self._ts_verified = False
         self.resolution = kwargs.get('resolution', DEFAULT_RESOLUTION)
         self.mip = int(np.log2(self.resolution / DEFAULT_RESOLUTION))
@@ -757,48 +759,27 @@ class VolumeRenderer:
 
 
     @property
-    def canvas_box(self):
-        if self._canvas_box is None:
-            bbox_union = None
-            for msh in self._meshes:
-                M = VolumeRenderer._get_mesh(msh)
-                if M is None:
-                    continue
-                M.change_resolution(self.resolution)
-                bbox = M.bbox(gear=const.MESH_GEAR_MOVING, offsetting=True)
-                bbox[:2] = np.floor(bbox[:2])
-                bbox[-2:] = np.ceil(bbox[-2:])
-                bbox = bbox.astype(np.int64)
-                if bbox_union is None:
-                    bbox_union = bbox
-                else:
-                    bbox_union = common.bbox_union((bbox_union, bbox))
-            self._canvas_box = bbox_union
-        return self._canvas_bbox
-
-
-    @property
     def ts_spec(self):
         if not self._ts_verified:
             spec_copy = self._ts_spec.copy()
             spec_copy.update({'open': True, 'create': False, 'delete_existing': False})
-            xmin, ymin, xmax, ymax = self.canvas_box
-            zmin, zmax = np.min(self._zindx), np.max(self._zindx)
-            canvas_min = np.array((xmin, ymin, zmin))
-            canvas_max = np.array((xmax, ymax, zmax)) + 1
             try:
                 dataset = ts.open(spec_copy).result()
-                inclusive_min = np.array(dataset.domain.inclusive_min)
-                exclusive_max = np.array(dataset.domain.exclusive_max)
-                if np.any(inclusive_min[:3] > canvas_min) or np.any(exclusive_max[:3] < canvas_max):
-                    inclusive_min[:3] = np.minimum(inclusive_min[:3], canvas_min)
-                    exclusive_max[:3] = np.maximum(exclusive_max[:3], canvas_max)
-                    dataset = dataset.resize(inclusive_min=inclusive_min, exclusive_max=exclusive_max,
-                                             resize_metadata_only=True, expand_only=True).result()
+                # inclusive_min = np.array(dataset.domain.inclusive_min)
+                # exclusive_max = np.array(dataset.domain.exclusive_max)
+                # if np.any(inclusive_min[:3] > canvas_min) or np.any(exclusive_max[:3] < canvas_max):
+                #     inclusive_min[:3] = np.minimum(inclusive_min[:3], canvas_min)
+                #     exclusive_max[:3] = np.maximum(exclusive_max[:3], canvas_max)
+                #     dataset = dataset.resize(inclusive_min=inclusive_min, exclusive_max=exclusive_max,
+                #                              resize_metadata_only=True, expand_only=True).result()
                 self._read_chunk_shape = dataset.schema.chunk_layout.read_chunk.shape[:3]
                 self._chunk_shape = dataset.schema.chunk_layout.write_chunk.shape[:3]
             except ValueError:
                 spec_copy.update({'create': True})
+                xmin, ymin, xmax, ymax = self.canvas_box
+                zmin, zmax = np.min(self._zindx), np.max(self._zindx)
+                canvas_min = np.array((xmin, ymin, zmin))
+                canvas_max = np.array((xmax, ymax, zmax)) + 1
                 num_channels = self.number_of_channels
                 write_chunk = list(self._chunk_shape)
                 read_chunk = list(self._read_chunk_shape)
@@ -829,10 +810,65 @@ class VolumeRenderer:
         return self._ts_spec
 
 
+    def plan_render_series(self):
+        pass
+
+
+    @property
+    def canvas_box(self):
+        if self._canvas_box is None:
+            bbox_union = None
+            for rr in self.region_lut().values():
+                if rr is None:
+                    continue
+                bbox = np.array(rr.bounds)
+                bbox[:2] = np.floor(bbox[:2])
+                bbox[-2:] = np.ceil(bbox[-2:])
+                bbox = bbox.astype(np.int64)
+                if bbox_union is None:
+                    bbox_union = bbox
+                else:
+                    bbox_union = common.bbox_union((bbox_union, bbox))
+            self._canvas_box = bbox_union
+        return self._canvas_bbox
+
+
+    def region_lut(self, indx=None):
+        if indx is None:
+            indx = self._zindx
+        mesh_lut = self.mesh_lut
+        for z in indx:
+            if z not in self._zindx:
+                M = VolumeRenderer._get_mesh(mesh_lut.get(z, None))
+                if M is None:
+                    self._region_lut[z] = None
+                else:
+                    M.change_resolution(self.resolution)
+                    msk = M.triangle_mask_for_render(cache=False)
+                    R = M.shapely_regions(gear=const.MESH_GEAR_MOVING, tri_mask=msk, offsetting=True)
+                    self._region_lut[z] = R
+        return {z: self._region_lut[z] for z in indx}
+
+
+    @property
+    def mesh_lut(self):
+        return {z: msh for z, msh in zip(self._zindx, self._meshes)}
+
+
+    @property
+    def loader_lut(self):
+        return {z: ldr for z, ldr in zip(self._zindx, self._loaders)}
+
+
     @property
     def number_of_channels(self):
         if self._number_of_channels is None:
-            loader = VolumeRenderer._get_loader(self._loaders[0], mip=self.mip)
+            for ldr in self._loaders:
+                loader = VolumeRenderer._get_loader(ldr, mip=self.mip)
+                if loader is not None:
+                    break
+            else:
+                raise RuntimeError('no valid loader found')
             self._number_of_channels = loader.number_of_channels
             if self._dtype is None:
                 self._dtype = loader.dtype
@@ -842,7 +878,12 @@ class VolumeRenderer:
     @property
     def dtype(self):
         if self._dtype is None:
-            loader = VolumeRenderer._get_loader(self._loaders[0], mip=self.mip)
+            for ldr in self._loaders:
+                loader = VolumeRenderer._get_loader(ldr, mip=self.mip)
+                if loader is not None:
+                    break
+            else:
+                raise RuntimeError('no valid loader found')
             self._dtype = loader.dtype
             if self._number_of_channels is None:
                 self._number_of_channels = loader.number_of_channels
@@ -866,8 +907,11 @@ class VolumeRenderer:
     def _get_loader(ldr, **kwargs):
         if isinstance(ldr, dal.AbstractImageLoader):
             loader = ldr
+        elif ldr is None:
+            loader = None
         else:
-            loader = dal.get_loader_from_json(ldr, **kwargs)
+            try:
+                loader = dal.get_loader_from_json(ldr, **kwargs)
+            except Exception:
+                loader = None
         return loader
-
-
