@@ -375,7 +375,7 @@ if __name__ == '__main__':
         thumbnail_configs.setdefault('feature_match_dir', feature_match_dir)
         imglist = sorted(glob.glob(os.path.join(img_dir, '*.png')))
         section_order_file = os.path.join(root_dir, 'section_order.txt')
-        imglist = common.rearrange_section_order(imglist, section_order_file)
+        imglist = common.rearrange_section_order(imglist, section_order_file)[0]
         bname_list = [os.path.basename(s) for s in imglist]
         region_labels = []
         material_table_file = config.material_table_file()

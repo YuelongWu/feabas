@@ -751,6 +751,8 @@ class VolumeRenderer:
         assert len(meshes) == len(z_indx)
         self._meshes = meshes
         self._zindx = z_indx
+        self._zmin = kwargs.get('z_min', None)
+        self._zmax = kwargs.get('z_max', None)
         self._loaders = loaders
         driver = kwargs.get('driver', 'neuroglancer_precomputed')
         self.flag_dir = kwargs.get('flag_dir', None)
@@ -849,13 +851,15 @@ class VolumeRenderer:
         return render_seriers
 
 
-    def render_volume(self, **kwargs):
+    def render_volume(self, skip_indx=None , **kwargs):
         num_workers = kwargs.pop('num_workers', 1)
         max_tile_per_job = kwargs.pop('max_tile_per_job', None)
         logger_info = kwargs.pop('logger', None)
         logger = logging.get_logger(logger_info)
         chunk_z = self.chunk_shape[2]
         z_starts = np.unique(self._zindx // chunk_z) * chunk_z
+        if skip_indx is not None:
+            z_starts = z_starts[skip_indx]
         if self.flag_dir is not None:
             out_data = ts.open(self.ts_spec).result()
         for z_stt in z_starts:
@@ -865,6 +869,9 @@ class VolumeRenderer:
             render_seriers = self.plan_one_slab(z_start=z_stt,
                                                 num_workers=num_workers,
                                                 max_tile_per_job=max_tile_per_job)
+            if len(render_seriers) == 0:
+                continue
+            logger.info(f'start block from z={z_stt}')
             actual_num_workers = min(num_workers, len(render_seriers))
             if actual_num_workers > 1:
                 jobs = []
@@ -893,6 +900,7 @@ class VolumeRenderer:
                             if flg_name.startswith(kvh):
                                 break
                         else:
+                            os.makedirs(self.flag_dir, exist_ok=True)
                             flg_name = 'file://' + flg_name
                         flg_ts = out_data[:,:,zz].spec(minimal_spec=True).to_json()
                         json_ts = ts.open({"driver": "json", "kvstore": flg_name}).result()
@@ -998,6 +1006,10 @@ class VolumeRenderer:
                 spec_copy.update({'create': True})
                 xmin, ymin, xmax, ymax = self.canvas_box
                 zmin, zmax = np.min(self._zindx), np.max(self._zindx) + 1
+                if (self._zmin is not None) and zmin > self._zmin:
+                    zmin = self._zmin
+                if (self._zmax is not None) and zmax < self._zmax:
+                    zmax = self._zmax
                 canvas_min = np.array((xmin, ymin, zmin))
                 canvas_max = np.array((xmax, ymax, zmax))
                 num_channels = self.number_of_channels

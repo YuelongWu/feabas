@@ -128,12 +128,34 @@ def stitch_render_dir():
 def align_render_dir():
     config_file = align_config_file()
     with open(config_file, 'r') as f:        
-        stitch_configs = yaml.safe_load(f)
-    render_settings = stitch_configs.get('rendering', {})
+        align_configs = yaml.safe_load(f)
+    render_settings = align_configs.get('rendering', {})
     outdir = render_settings.get('out_dir', None)
     if outdir is None:
         work_dir = get_work_dir()
         outdir = os.path.join(work_dir, 'aligned_stack')
+    return outdir
+
+
+@lru_cache(maxsize=1)
+def tensorstore_render_dir():
+    config_file = align_config_file()
+    with open(config_file, 'r') as f:        
+        align_configs = yaml.safe_load(f)
+    render_settings = align_configs.get('tensorstore_rendering', {})
+    outdir = render_settings.get('out_dir', None)
+    if outdir is None:
+        work_dir = get_work_dir()
+        outdir = os.path.join(work_dir, 'aligned_tensorstore')
+    outdir = outdir.replace('\\', '/')
+    if not outdir.endswith('/'):
+        outdir = outdir + '/'
+    kv_headers = ('gs://', 'http://', 'https://', 'file://', 'memory://')
+    for kvh in kv_headers:
+        if outdir.startswith(kvh):
+            break
+    else:
+        outdir = 'file://' + outdir
     return outdir
 
 

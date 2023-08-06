@@ -163,7 +163,7 @@ class Stack:
             else:
                 raise RuntimeError('no section found.')
             section_order_file = kwargs.get('section_order_file', os.path.join(self._mesh_dir, 'section_order.txt'))
-            section_list = rearrange_section_order(section_list, section_order_file)
+            section_list = rearrange_section_order(section_list, section_order_file)[0]
         assert len(section_list) == len(set(section_list))
         self.section_list = tuple(section_list)
         self._mesh_cache_size = kwargs.get('mesh_cache_size', self.num_sections)

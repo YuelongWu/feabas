@@ -374,6 +374,13 @@ if __name__ == '__main__':
         if num_workers > num_cpus:
             num_workers = num_cpus
             align_config['num_workers'] = num_workers
+    elif args.mode.lower().startswith('tensor'):
+        align_config = align_config['tensorstore_rendering']
+        mode = 'tensorstore_rendering'
+        num_workers = align_config.get('num_workers', 1)
+        if num_workers > num_cpus:
+            num_workers = num_cpus
+            align_config['num_workers'] = num_workers
     else:
         raise RuntimeError(f'{args.mode} not supported mode.')
     nthreads = max(1, math.floor(num_cpus / num_workers))
@@ -383,7 +390,7 @@ if __name__ == '__main__':
     from feabas.mesh import Mesh
     from feabas.mipmap import get_image_loader, mip_map_one_section
     from feabas.aligner import match_section_from_initial_matches
-    from feabas.renderer import render_whole_mesh
+    from feabas.renderer import render_whole_mesh, VolumeRenderer
     import numpy as np
 
     align_dir = os.path.join(root_dir, 'align')
@@ -393,9 +400,11 @@ if __name__ == '__main__':
     thumbnail_dir = os.path.join(root_dir, 'thumbnail_align')
     thumb_match_dir = os.path.join(thumbnail_dir, 'matches')
     render_dir = config.align_render_dir()
+    tensorstore_render_dir = config.tensorstore_render_dir()
+    ts_flag_dir = os.path.join(align_dir, 'ts_spec')
     thumbnail_configs = config.thumbnail_configs()
     match_name_delimiter = thumbnail_configs.get('alignment', {}).get('match_name_delimiter', '__to__')
-    
+
     stt_idx, stp_idx, step = args.start, args.stop, args.step
     if stp_idx == 0:
         stp_idx = None
@@ -431,10 +440,10 @@ if __name__ == '__main__':
         if align_config.pop('prefix_z_number', True):
             seclist = sorted(glob.glob(os.path.join(mesh_dir, '*.h5')))
             section_order_file = os.path.join(root_dir, 'section_order.txt')
-            seclist = common.rearrange_section_order(seclist, section_order_file, merge=True)
+            seclist, z_indx = common.rearrange_section_order(seclist, section_order_file)
             digit_num = math.ceil(math.log10(len(seclist)))
             z_prefix.update({os.path.basename(s): str(k).rjust(digit_num, '0')+'_'
-                             for k, s in enumerate(seclist)})
+                             for k, s in zip(z_indx, seclist)})
         render_main(tform_list, z_prefix)
     elif mode == 'downsample':
         max_mip = align_config.pop('max_mip', 8)
@@ -443,3 +452,25 @@ if __name__ == '__main__':
         if args.reverse:
             meta_list = meta_list[::-1]
         generate_aligned_mipmaps(render_dir, max_mip=max_mip, meta_list=meta_list, min_mip=min_mip, **align_config)
+    elif mode == 'tensorstore_rendering':
+        logger_info = logging.initialize_main_logger(logger_name='tensorstore_render', mp=num_workers>1)
+        logger = logging.get_logger(logger_info[0])
+        mip_level = align_config.pop('mip_level', 0)
+        align_config.pop('outdir', None)
+        driver = align_config.get('driver', 'neuroglancer_precomputed')
+        if driver == 'zarr':
+            tensorstore_render_dir = tensorstore_render_dir + '0/'
+        elif driver == 'n5':
+            tensorstore_render_dir = tensorstore_render_dir + 's0/'
+        tform_list = sorted(glob.glob(os.path.join(tform_dir, '*.h5')))
+        section_order_file = os.path.join(root_dir, 'section_order.txt')
+        tform_list, z_indx = common.rearrange_section_order(tform_list, section_order_file)
+        stitch_dir = os.path.join(root_dir, 'stitch')
+        loader_dir = os.path.join(stitch_dir, 'ts_specs')
+        loader_list = [os.path.join(loader_dir, os.path.basename(s).replace('.h5', '.json')) for s in tform_list]
+        resolution = config.DEFAULT_RESOLUTION * (2 ** mip_level)
+        vol_renderer = VolumeRenderer(tform_list, loader_list, tensorstore_render_dir,
+                                      z_indx = z_indx, resolution=resolution,
+                                      flag_dir = ts_flag_dir, **align_config)
+        vol_renderer.render_volume(skip_indx=indx, logger=logger_info[0], **align_config)
+        logger.info('finished')

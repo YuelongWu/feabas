@@ -68,13 +68,14 @@ downsample:
     format: jpg
 
 
-tensorstore_render: # render to tensorstore volume
+tensorstore_rendering: # render to tensorstore volume
     num_workers: 10
     mip_level: 0
     z_min: null
     z_max: null
     driver: neuroglancer_precomputed
-    write_chunk_shape: [1024, 1024, 16]
+    outdir: null
+    chunk_shape: [1024, 1024, 16]
     read_chunk_shape: [128, 128, 16]
     canvas_bbox: null
     max_tile_per_job: 320

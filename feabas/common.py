@@ -583,22 +583,43 @@ def parse_coordinate_files(filename, **kwargs):
     return imgpaths, bboxes, root_dir, resolution
 
 
-def rearrange_section_order(section_list, section_order_file, merge=False):
+def rearrange_section_order(section_list, section_order_file, order_file_only=True, merge=False):
     if os.path.isfile(section_order_file):
         with open(section_order_file, 'r') as f:
-            section_orders = f.readlines()
-        section_orders = [s.strip() for s in section_orders]
+            section_orders0 = f.readlines()
+        section_orders = []
+        z_lut = {}
+        for k, s in enumerate(section_orders0):
+            s = s.strip()
+            if '\t' in s:
+                secname = s.split('\t')[1]
+                section_orders.append(secname)
+                z_lut[secname] = int(s.split('\t')[0])
+            else:
+                section_orders.append(s)
+                z_lut[s] = k
         assert len(section_orders) == len(set(section_orders))
+        secnames = [os.path.splitext(os.path.basename(fname))[0] for fname in section_list]
+        section_lut = {secname:fname for secname, fname in zip(secnames, section_list)}
+        section_orders = [s for s in section_orders if s in secnames]
+        if order_file_only:
+            section_orders = [section_lut[s] for s in section_orders if s in section_lut]
+            z_indices = [z_lut[s] for s in section_orders if s in section_lut]
+            return section_orders, np.array(z_indices)
         if merge:
-            section_list = sorted(list(set(section_list + section_orders)))
-        section_lut = {os.path.splitext(os.path.basename(secname))[0]:k 
-                    for k, secname in enumerate(section_list)}
-        section_ids0 = np.array([section_lut.get(s, -1) for s in section_orders])
-        section_ids0 = section_ids0[section_ids0 >= 0]
-        section_ids1 = np.sort(section_ids0)
-        section_list_out = section_list.copy()
-        for sid0, sid1 in zip(section_ids0, section_ids1):
-            section_list_out[sid1] = section_list[sid0]
-        return section_list_out
+            secnames = sorted(list(set(secnames + section_orders)))
+        section_orders_set = set(section_orders)
+        sec_keys = []
+        order_cnt = 0
+        z_indices = np.arange(len(secnames))
+        for k, s in enumerate(secnames):
+            if s in section_orders_set:
+                secname = section_orders[order_cnt]
+                sec_keys.append(secname)
+                z_indices[k] = z_lut[secname]
+                order_cnt += 1
+            else:
+                sec_keys.append(s)
+        return [section_lut.get(s, None) for s in sec_keys], z_indices
     else:
-        return section_list
+        return section_list, np.arange(len(section_list))
