@@ -6,13 +6,15 @@ from multiprocessing import get_context
 import matplotlib.tri
 import numpy as np
 import os
+import shapely
 import shapely.geometry as shpgeo
 from shapely.ops import unary_union
 import tensorstore as ts
+import time
 
 import feabas.constant as const
 from feabas.mesh import Mesh
-from feabas import common, spatial, dal
+from feabas import common, spatial, dal, logging
 from feabas.config import DEFAULT_RESOLUTION, general_settings
 
 
@@ -754,7 +756,6 @@ class VolumeRenderer:
         self.flag_dir = kwargs.get('flag_dir', None)
         self._offset = kwargs.get('out_offset', np.zeros((1,2), dtype=np.int64))
         self._canvas_bbox = kwargs.get('canvas_bbox', None)
-        self._region_lut = None
         self._ts_verified = False
         self.resolution = kwargs.get('resolution', DEFAULT_RESOLUTION)
         self.mip = int(np.log2(self.resolution / DEFAULT_RESOLUTION))
@@ -768,15 +769,23 @@ class VolumeRenderer:
 
 
 
-    def render_one_slab(self, z_start=0, **kwargs):
+    def plan_one_slab(self, z_start=0, **kwargs):
         num_workers = kwargs.pop('num_workers', 1)
-        rendered_chunk_num = 0
+        max_tile_per_job = kwargs.pop('max_tile_per_job', None)
+        render_seriers = []
         chunk_x, chunk_y, chunk_z = self.chunk_shape
         z_ind = z_start // chunk_z
         zz = np.arange(z_ind * chunk_z, (z_ind+1) * chunk_z)
+        if self.flag_dir is not None:
+            z_to_render = []
+            for z in zz:
+                flg_name = os.path.join(self.flag_dir, str(z)+'.json')
+                if not os.path.isfile(flg_name):
+                    z_to_render.append(z)
+            zz = np.array(z_to_render)
         zz = zz[(zz >= np.min(self._zindx)) & (zz <= np.max(self._zindx))]
         if zz.size == 0:
-            return rendered_chunk_num
+            return render_seriers
         xmin, ymin, xmax, ymax = self.canvas_box
         x0_mn = np.arange((xmin//chunk_x) * chunk_x, xmax, chunk_x)
         y0_mn = np.arange((ymin//chunk_y) * chunk_y, ymax, chunk_y)
@@ -787,15 +796,116 @@ class VolumeRenderer:
         xx_mx, yy_mx = xx_mn + chunk_x, yy_mn + chunk_y
         xx_mn, yy_mn = xx_mn.clip(xmin, None), yy_mn.clip(ymin, None)
         xx_mx, yy_mx = xx_mx.clip(None, xmax), yy_mx.clip(None, ymax)
-        regions = self.region_lut(indx=zz)
+        bboxes = np.stack((xx_mn, yy_mn, xx_mx, yy_mx), axis=-1)
+        bboxes_tree = shapely.STRtree([shpgeo.box(*bbox) for bbox in bboxes])
+        hit_counts = np.zeros(bboxes.shape[0])
+        full_meshes = {}
+        loaders = {}
+        for z, rm in zip(zz, self.region_generator(indx=zz)):
+            rr = rm[0]
+            if rr is None:
+                continue
+            idxt = bboxes_tree.query(rr, predicate='intersects')
+            if idxt.size > 0:
+                np.add.at(hit_counts, idxt, 1)
+            full_meshes[z] = rm[1]
+            loaders[z] = self.loader_lut.get(z, None)
+        if len(full_meshes) == 0:
+            return render_seriers
+        bboxes = bboxes[hit_counts > 0]
+        bboxes_out = bboxes + np.tile(self._offset, 2).reshape(4, 1)
+        hit_counts = hit_counts[hit_counts > 0]
+        hit_counts_acc = np.insert(np.cumsum(hit_counts), 0, 0)
+        num_tiles = hit_counts_acc[-1]
+        num_tile_per_job = max(1, num_tiles // num_workers)
+        if max_tile_per_job is not None:
+            num_tile_per_job = min(num_tile_per_job, max_tile_per_job)
+        N_jobs = round(num_tiles / num_tile_per_job)
+        indices_tile = np.round(np.linspace(0, num_tiles, num=N_jobs+1, endpoint=True))
+        indices_chunk = np.searchsorted(hit_counts_acc, indices_tile, side='left')
+        indices_chunk = np.unique(indices_chunk).astype(np.uint32)
         out_ts = self.ts_spec
+        bboxes_unions = []
+        for idx0, idx1 in zip(indices_chunk[:-1], indices_chunk[1:]):
+            idx0, idx1 = int(idx0), int(idx1)
+            bbox_b = bboxes[idx0:idx1]
+            bbox_out_b = bboxes_out[idx0:idx1]
+            if bbox_b.size == 0:
+                continue
+            bkw = {'loaders': loaders,
+                    'meshes': {},
+                    'bboxes': bbox_b,
+                    'out_ts': out_ts,
+                    'target_resolution': self.resolution,
+                    'mip': self.mip,
+                    'bboxes_out': bbox_out_b}
+            render_seriers.append(bkw)
+            bboxes_unions.append(common.bbox_enlarge(common.bbox_union(bbox_b), max(chunk_x, chunk_y)//2))
+        for z, mesh in full_meshes.items():
+            submeshes = mesh.submeshes_from_bboxes(bboxes_unions, save_material=True)
+            for msh, bkw in zip(submeshes, render_seriers):
+                msh_dict = msh.get_init_dict(save_material=True, vertex_flags=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING))
+                bkw['meshes'][z] = msh_dict
+        return render_seriers
+
+
+    def render_volume(self, **kwargs):
+        num_workers = kwargs.pop('num_workers', 1)
+        max_tile_per_job = kwargs.pop('max_tile_per_job', None)
+        logger_info = kwargs.pop('logger', None)
+        logger = logging.get_logger(logger_info)
+        chunk_z = self.chunk_shape[2]
+        z_starts = np.unique(self._zindx // chunk_z) * chunk_z
+        if self.flag_dir is not None:
+            out_data = ts.open(self.ts_spec).result()
+        for z_stt in z_starts:
+            t0 = time.time()
+            rendered = defaultdict(int)
+            num_chunks = 0
+            render_seriers = self.plan_one_slab(z_start=z_stt,
+                                                num_workers=num_workers,
+                                                max_tile_per_job=max_tile_per_job)
+            actual_num_workers = min(num_workers, len(render_seriers))
+            if actual_num_workers > 1:
+                jobs = []
+                with ProcessPoolExecutor(max_workers=actual_num_workers, mp_context=get_context('spawn')) as executor:
+                    for bkw in render_seriers:
+                        bkw.update(kwargs)
+                        job = executor.submit(subprocess_render_partial_ts_slab, **bkw)
+                        jobs.append(job)
+                    for job in as_completed(jobs):
+                        z_chunks = job.result()
+                        for zz, nn in z_chunks.items():
+                            num_chunks += nn
+                            rendered[zz] += nn
+            else:
+                for bkw in render_seriers:
+                    bkw.update(kwargs)
+                    num_chunks = subprocess_render_partial_ts_slab(**bkw)
+                    for zz, nn in num_chunks.items():
+                        rendered[zz] += nn
+            if self.flag_dir is not None:
+                for zz, nn in rendered.items():
+                    if nn > 0:
+                        flg_name = os.path.join(self.flag_dir, str(zz)+'.json')
+                        kv_headers = ('gs://', 'http://', 'https://', 'file://', 'memory://')
+                        for kvh in kv_headers:
+                            if flg_name.startswith(kvh):
+                                break
+                        else:
+                            flg_name = 'file://' + flg_name
+                        flg_ts = out_data[:,:,zz].spec(minimal_spec=True).to_json()
+                        json_ts = ts.open({"driver": "json", "kvstore": flg_name}).result()
+                        json_ts.write(flg_ts).result()
+            logger.info(f'blocks from z={z_stt}: {num_chunks} chunks | {(time.time()-t0)/60} min')
 
 
     @property
     def canvas_box(self):
         if self._canvas_box is None:
             bbox_union = None
-            for rr in self.region_lut().values():
+            for rm in self.region_generator():
+                rr = rm[0]
                 if rr is None:
                     continue
                 bbox = np.array(rr.bounds)
@@ -810,21 +920,19 @@ class VolumeRenderer:
         return self._canvas_bbox
 
 
-    def region_lut(self, indx=None):
+    def region_generator(self, indx=None):
         if indx is None:
             indx = self._zindx
         mesh_lut = self.mesh_lut
         for z in indx:
-            if z not in self._zindx:
-                M = VolumeRenderer._get_mesh(mesh_lut.get(z, None))
-                if M is None:
-                    self._region_lut[z] = None
-                else:
-                    M.change_resolution(self.resolution)
-                    msk = M.triangle_mask_for_render(cache=False)
-                    R = M.shapely_regions(gear=const.MESH_GEAR_MOVING, tri_mask=msk, offsetting=True)
-                    self._region_lut[z] = R
-        return {z: self._region_lut[z] for z in indx}
+            M = VolumeRenderer._get_mesh(mesh_lut.get(z, None))
+            if M is None:
+                yield None, None
+            else:
+                M.change_resolution(self.resolution)
+                msk = M.triangle_mask_for_render(cache=False)
+                R = M.shapely_regions(gear=const.MESH_GEAR_MOVING, tri_mask=msk, offsetting=True)
+                yield R, M
 
 
     @property
@@ -973,12 +1081,10 @@ class VolumeRenderer:
 def subprocess_render_partial_ts_slab(loaders, meshes, bboxes, out_ts, **kwargs):
     target_resolution = kwargs.pop('target_resolution')
     bboxes_out = kwargs.pop('bboxes_out', bboxes)
-    rendered0 = kwargs.pop('rendered', {})
-    rendered0 = {int(z): [tuple(s) for s in val] for z, val in rendered0.items()}
-    rendered = defaultdict(list)
-    rendered.update(rendered0)
-    updated = 0
-    loaders = {int(z): VolumeRenderer._get_loader(ldr) for z, ldr in loaders.items()}
+    mip = kwargs.pop('mip', None)
+    loader_config = kwargs.pop('loader_config', {})
+    num_chunks = {}
+    loaders = {int(z): VolumeRenderer._get_loader(ldr, mip=mip) for z, ldr in loaders.items()}
     meshes = {int(z): VolumeRenderer._get_mesh(msh) for z, msh in meshes.items()}
     zindx = set(loaders.keys()).intersection(set(meshes.keys))
     renderers = {}
@@ -990,14 +1096,14 @@ def subprocess_render_partial_ts_slab(loaders, meshes, bboxes, out_ts, **kwargs)
             rndr = None
         else:
             msh.change_resolution(target_resolution)
-            rndr = MeshRenderer.from_mesh(msh, **kwargs)
+            rndr = MeshRenderer.from_mesh(msh, **loader_config)
             rndr.link_image_loader(ldr)
             if to_skip:
                 fillval = kwargs.get('fillval', rndr.default_fillval)
                 to_skip = False
         renderers[z] = rndr
     if to_skip:
-        return rendered, updated
+        return num_chunks
     if not isinstance(out_ts, ts.Tensorstore):
         out_ts = ts.open(out_ts).result()
     inclusive_min = out_ts.domain.inclusive_min
@@ -1006,11 +1112,8 @@ def subprocess_render_partial_ts_slab(loaders, meshes, bboxes, out_ts, **kwargs)
     ts_xmax, ts_ymax = exclusive_max[0], exclusive_max[1]
     ts_bbox = (ts_xmin, ts_ymin, ts_xmax, ts_ymax)
     for bbox, bbox_out in zip(bboxes, bboxes_out):
-        updated_b = False
-        rendered_b = []
+        updated = False
         for z in zindx:
-            if (bbox_out[0], bbox_out[1]) in rendered[z]:
-                continue
             rndr = renderers[z]
             if rndr is None:
                 continue
@@ -1020,15 +1123,12 @@ def subprocess_render_partial_ts_slab(loaders, meshes, bboxes, out_ts, **kwargs)
                                                     return_index=True, flip_indx=True)
                 if img_crp is None:
                     continue
-                if not updated_b:
+                if not updated:
                     txn = ts.Transaction()
-                    updated_b = True
+                    updated = True
                 data_view = out_ts[indx[1], indx[0], z]
                 data_view.with_transaction(txn).write(img_crp.T.reshape(data_view.shape))
-                rendered_b.append((bbox_out[0], bbox_out[1], z))
-        if updated_b:
+                num_chunks[z] = num_chunks.get(z, 0) + 1
+        if updated:
             txn.commit_async().result()
-            for rx, ry, rz in rendered_b:
-                rendered[rz].append((rx, ry))
-            updated += 1
-    return rendered, updated
+    return num_chunks

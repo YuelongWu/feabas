@@ -110,7 +110,7 @@ def get_loader_from_json(json_info, loader_type=None, **kwargs):
              json_obj = json_obj[str(kwargs['mip'])]
         elif kwargs['mip'] in json_obj:
              json_obj = json_obj[kwargs['mip']]
-    if 'kvstore' in json_obj:
+    if ('kvstore' in json_obj) or ('base' in json_obj):
         return TensorStoreLoader.from_json_spec(json_obj, **kwargs)
     json_obj.update(kwargs)
     if loader_type is None:
