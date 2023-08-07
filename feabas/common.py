@@ -603,9 +603,9 @@ def rearrange_section_order(section_list, section_order_file, order_file_only=Tr
         section_lut = {secname:fname for secname, fname in zip(secnames, section_list)}
         section_orders = [s for s in section_orders if s in secnames]
         if order_file_only:
-            section_orders = [section_lut[s] for s in section_orders if s in section_lut]
+            section_list_out = [section_lut[s] for s in section_orders if s in section_lut]
             z_indices = [z_lut[s] for s in section_orders if s in section_lut]
-            return section_orders, np.array(z_indices)
+            return section_list_out, np.array(z_indices)
         if merge:
             secnames = sorted(list(set(secnames + section_orders)))
         section_orders_set = set(section_orders)
