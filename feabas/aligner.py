@@ -108,11 +108,9 @@ def match_section_from_initial_matches(match_name, meshes, loaders, out_dir, con
     if isinstance(loaders, (tuple, list)):
         loader0, loader1 = loaders
         if not isinstance(loader0, dal.AbstractImageLoader):
-            loader0 = dal.get_loader_from_json(loader0, loader_type='MosaicLoader',
-                                               mip=working_mip_level, **loader_config)
+            loader0 = dal.get_loader_from_json(loader0, mip=working_mip_level, **loader_config)
         if not isinstance(loader1, dal.AbstractImageLoader):
-            loader1 = dal.get_loader_from_json(loader1, loader_type='MosaicLoader',
-                                               mip=working_mip_level, **loader_config)
+            loader1 = dal.get_loader_from_json(loader1, mip=working_mip_level, **loader_config)
     else:
         raise TypeError('loader input type not supported.')
     mesh0.change_resolution(resolution)
