@@ -815,7 +815,7 @@ class VolumeRenderer:
         if len(full_meshes) == 0:
             return render_seriers
         bboxes = bboxes[hit_counts > 0]
-        bboxes_out = bboxes + np.tile(self._offset, 2).reshape(4, 1)
+        bboxes_out = bboxes + np.tile(self._offset, 2).reshape(1, 4)
         hit_counts = hit_counts[hit_counts > 0]
         hit_counts_acc = np.insert(np.cumsum(hit_counts), 0, 0)
         num_tiles = hit_counts_acc[-1]
@@ -846,8 +846,11 @@ class VolumeRenderer:
         for z, mesh in full_meshes.items():
             submeshes = mesh.submeshes_from_bboxes(bboxes_unions, save_material=True)
             for msh, bkw in zip(submeshes, render_seriers):
-                msh_dict = msh.get_init_dict(save_material=True, vertex_flags=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING))
-                bkw['meshes'][z] = msh_dict
+                if msh is None:
+                    bkw['meshes'][z] = None
+                else:
+                    msh_dict = msh.get_init_dict(save_material=True, vertex_flags=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING))
+                    bkw['meshes'][z] = msh_dict
         return render_seriers
 
 
@@ -910,7 +913,7 @@ class VolumeRenderer:
 
     @property
     def canvas_box(self):
-        if self._canvas_box is None:
+        if self._canvas_bbox is None:
             bbox_union = None
             for rm in self.region_generator():
                 rr = rm[0]
@@ -1040,6 +1043,12 @@ class VolumeRenderer:
                     "dtype": np.dtype(self.dtype).name,
                     "rank" : 4
                 }
+                if np.any(np.array(read_chunk) != np.array(write_chunk)):
+                    schema_extra["codec"]= {
+                        "driver": "neuroglancer_precomputed",
+                        "encoding": "raw",
+                        "shard_data_encoding": "gzip"
+                    }
                 spec_copy['schema'].update(schema_extra)
                 dataset = ts.open(spec_copy).result()
             self._ts_verified = True
@@ -1098,7 +1107,7 @@ def subprocess_render_partial_ts_slab(loaders, meshes, bboxes, out_ts, **kwargs)
     num_chunks = {}
     loaders = {int(z): VolumeRenderer._get_loader(ldr, mip=mip) for z, ldr in loaders.items()}
     meshes = {int(z): VolumeRenderer._get_mesh(msh) for z, msh in meshes.items()}
-    zindx = set(loaders.keys()).intersection(set(meshes.keys))
+    zindx = set(loaders.keys()).intersection(set(meshes.keys()))
     renderers = {}
     to_skip = True
     for z in zindx:
@@ -1116,7 +1125,7 @@ def subprocess_render_partial_ts_slab(loaders, meshes, bboxes, out_ts, **kwargs)
         renderers[z] = rndr
     if to_skip:
         return num_chunks
-    if not isinstance(out_ts, ts.Tensorstore):
+    if not isinstance(out_ts, ts.TensorStore):
         out_ts = ts.open(out_ts).result()
     inclusive_min = out_ts.domain.inclusive_min
     exclusive_max = out_ts.domain.exclusive_max
@@ -1139,7 +1148,7 @@ def subprocess_render_partial_ts_slab(loaders, meshes, bboxes, out_ts, **kwargs)
                     txn = ts.Transaction()
                     updated = True
                 data_view = out_ts[indx[1], indx[0], z]
-                data_view.with_transaction(txn).write(img_crp.T.reshape(data_view.shape))
+                data_view.with_transaction(txn).write(img_crp.reshape(data_view.shape)).result()
                 num_chunks[z] = num_chunks.get(z, 0) + 1
         if updated:
             txn.commit_async().result()

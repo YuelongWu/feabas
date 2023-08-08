@@ -474,3 +474,4 @@ if __name__ == '__main__':
                                       flag_dir = ts_flag_dir, **align_config)
         vol_renderer.render_volume(skip_indx=indx, logger=logger_info[0], **align_config)
         logger.info('finished')
+        logging.terminate_logger(*logger_info)

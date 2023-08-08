@@ -65,6 +65,8 @@ if __name__ == '__main__':
         outname = os.path.join(out_dir, tname_noext+'.jpg')
         if os.path.isfile(outname):
             continue
+        if (len(prev_lut[tname_noext]) == 0) and (len(post_lut[tname_noext]) == 0):
+            continue
         img = imread(tname, flag=cv2.IMREAD_GRAYSCALE)
         mask0 = np.zeros_like(img)
         mask1 = np.zeros_like(img)
