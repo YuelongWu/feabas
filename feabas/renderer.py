@@ -886,17 +886,30 @@ class VolumeRenderer:
                     for job in as_completed(jobs):
                         z_chunks = job.result()
                         for zz, nn in z_chunks.items():
-                            num_chunks += nn
-                            rendered[zz] += nn
+                            if rendered[zz] is None:
+                                continue
+                            if nn is None:
+                                rendered[zz] = None
+                                logger.error(f'error: z={zz}')
+                            else:
+                                num_chunks += nn
+                                rendered[zz] += nn
             else:
                 for bkw in render_seriers:
                     bkw.update(kwargs)
-                    num_chunks = subprocess_render_partial_ts_slab(**bkw)
-                    for zz, nn in num_chunks.items():
-                        rendered[zz] += nn
+                    z_chunks = subprocess_render_partial_ts_slab(**bkw)
+                    for zz, nn in z_chunks.items():
+                        if rendered[zz] is None:
+                            continue
+                        if nn is None:
+                            rendered[zz] = None
+                            logger.error(f'error: z={zz}')
+                        else:
+                            num_chunks += nn
+                            rendered[zz] += nn
             if self.flag_dir is not None:
                 for zz, nn in rendered.items():
-                    if nn > 0:
+                    if (nn is not None) and (nn > 0):
                         flg_name = os.path.join(self.flag_dir, str(zz)+'.json')
                         kv_headers = ('gs://', 'http://', 'https://', 'file://', 'memory://')
                         for kvh in kv_headers:
@@ -1133,23 +1146,27 @@ def subprocess_render_partial_ts_slab(loaders, meshes, bboxes, out_ts, **kwargs)
     ts_xmax, ts_ymax = exclusive_max[0], exclusive_max[1]
     ts_bbox = (ts_xmin, ts_ymin, ts_xmax, ts_ymax)
     for bbox, bbox_out in zip(bboxes, bboxes_out):
-        updated = False
-        for z in zindx:
-            rndr = renderers[z]
-            if rndr is None:
-                continue
-            imgt = rndr.crop(bbox, **kwargs)
-            if (imgt is not None) and np.any(imgt != fillval, axis=None):
-                img_crp, indx = common.crop_image_from_bbox(imgt, bbox_out, ts_bbox,
-                                                    return_index=True, flip_indx=True)
-                if img_crp is None:
+        try:    # http error may crash the program
+            updated = False
+            for z in zindx:
+                rndr = renderers[z]
+                if rndr is None:
                     continue
-                if not updated:
-                    txn = ts.Transaction()
-                    updated = True
-                data_view = out_ts[indx[1], indx[0], z]
-                data_view.with_transaction(txn).write(img_crp.reshape(data_view.shape)).result()
-                num_chunks[z] = num_chunks.get(z, 0) + 1
-        if updated:
-            txn.commit_async().result()
+                imgt = rndr.crop(bbox, **kwargs)
+                if (imgt is not None) and np.any(imgt != fillval, axis=None):
+                    img_crp, indx = common.crop_image_from_bbox(imgt, bbox_out, ts_bbox,
+                                                        return_index=True, flip_indx=True)
+                    if img_crp is None:
+                        continue
+                    if not updated:
+                        txn = ts.Transaction()
+                        updated = True
+                    data_view = out_ts[indx[1], indx[0], z]
+                    data_view.with_transaction(txn).write(img_crp.reshape(data_view.shape)).result()
+                    num_chunks[z] = num_chunks.get(z, 0) + 1
+            if updated:
+                txn.commit_async().result()
+        except Exception:
+            num_chunks = {z: None for z in zindx}
+            break
     return num_chunks
