@@ -352,6 +352,7 @@ if __name__ == '__main__':
                     tgt_mips.append(thumbnail_mip_lvl)
                     downsample = 1
             else:
+                highpass = False
                 tgt_mips.append(thumbnail_mip_lvl)
                 downsample = 1
             generate_stitched_mipmaps_tensorstore(src_dir, tgt_mips, **thumbnail_configs)
