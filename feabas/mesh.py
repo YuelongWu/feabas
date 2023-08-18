@@ -1660,6 +1660,7 @@ class Mesh:
         extrapolate = kwargs.get('extrapolate', False)
         inner_cache = kwargs.get('inner_cache', None)
         asymmetry = kwargs.get('asymmetry', True)
+        render_weight_threshold = kwargs.get('render_weight_threshold', 0.5)
         if gear is None:
             gear = self._current_gear
         tri_info = self.tri_info(gear=gear, tri_mask=tri_mask, include_flipped=include_flipped, contigeous=contigeous, cache=inner_cache, asymmetry=asymmetry)
@@ -1735,6 +1736,9 @@ class Mesh:
             nearest_segs = seg_tree.nearest(epts_list)
             etids = seg_tids[nearest_segs]
             tid_out[tid_out == -1] = etids
+        if (not extrapolate) and (render_weight_threshold > 0):
+            render_weight = self.weight_multiplier_for_render()[tid_out]
+            tid_out[render_weight<=render_weight_threshold] = -1
         return tid_out
 
 

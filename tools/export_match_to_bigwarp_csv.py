@@ -38,16 +38,16 @@ if __name__ == '__main__':
     args = parse_args()
 
     match_dir = args.match_dir
+    out_dir = args.out_dir
+    resolution = args.resolution
     if match_dir.lower() == 'null':
         root_dir = config.get_work_dir()
         thumbnail_dir = os.path.join(root_dir, 'thumbnail_align')
         match_dir = os.path.join(thumbnail_dir, 'matches')
-    out_dir = args.out_dir
     if out_dir.lower() == 'null':
         root_dir = config.get_work_dir()
         thumbnail_dir = os.path.join(root_dir, 'thumbnail_align')
         out_dir = os.path.join(thumbnail_dir, 'manual_matches')
-    resolution = args.resolution
     if resolution <= 0:
         thumbnail_configs = config.thumbnail_configs()
         thumbnail_mip_lvl = thumbnail_configs.get('thumbnail_mip_level', 6)
