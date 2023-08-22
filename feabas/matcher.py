@@ -279,6 +279,12 @@ def section_matcher(mesh0, mesh1, image_loader0, image_loader1, **kwargs):
     kwargs.setdefault('batch_size', 100)
     kwargs.setdefault('continue_on_flip', True)
     kwargs.setdefault('distributor', 'cartesian_region')
+    render_weight_threshold = kwargs.get('render_weight_threshold', 0.5)
+    if render_weight_threshold > 0:
+        idx0 = mesh0.triangle_mask_for_render(render_weight_threshold=render_weight_threshold)
+        mesh0 = mesh0.submesh(idx0)
+        idx1 = mesh1.triangle_mask_for_render(render_weight_threshold=render_weight_threshold)
+        mesh1 = mesh1.submesh(idx1)
     if (initial_matches is None) or (mesh0.connected_triangles()[0] == 1 and mesh1.connected_triangles()[0] == 1):
         xy0, xy1, weight, _ = iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1,
             spacings=spacings, initial_matches=initial_matches, compute_strain=False,
@@ -622,8 +628,13 @@ def bboxes_mesh_renderer_matcher(mesh0, mesh1, image_loader0, image_loader1, bbo
         for bidx0, bidx1 in zip(batch_indices[:-1], batch_indices[1:]):
             batched_block_indices0.append(bboxes0[bidx0:bidx1])
             batched_block_indices1.append(bboxes1[bidx0:bidx1])
-    render0 = MeshRenderer.from_mesh(mesh0, image_loader=image_loader0)
-    render1 = MeshRenderer.from_mesh(mesh1, image_loader=image_loader1)
+    render0 = MeshRenderer.from_mesh(mesh0, image_loader=image_loader0, render_weight_threshold=render_weight_threshold)
+    render1 = MeshRenderer.from_mesh(mesh1, image_loader=image_loader1, render_weight_threshold=render_weight_threshold)
+    if (render0 is None) or (render1 is None):
+        xy0 = np.empty((0,2))
+        xy1 = np.empty((0,2))
+        conf = np.empty(0)
+        return xy0, xy1, conf
     xy0 = []
     xy1 = []
     conf = []
@@ -647,6 +658,8 @@ def bboxes_mesh_renderer_matcher(mesh0, mesh1, image_loader0, image_loader1, bbo
             wd0, ht0 = bbox0[2] - bbox0[0], bbox0[3] - bbox0[1]
             wd1, ht1 = bbox1[2] - bbox1[0], bbox1[3] - bbox1[1]
             wt_ratio.append((wd0 / (wd0 + wd1), ht0 / (ht0 + ht1)))
+        if (len(stack0) == 0) or (len(stack1) == 0):
+            continue
         dx, dy, conf_b = xcorr_fft(np.stack(stack0, axis=0), np.stack(stack1, axis=0),
             conf_mode=conf_mode, pad=pad)
         xy_ctr0 = np.array(xy_ctr0)
@@ -664,7 +677,7 @@ def bboxes_mesh_renderer_matcher(mesh0, mesh1, image_loader0, image_loader1, bbo
         conf = np.concatenate(conf, axis=0)
     else:
         xy0 = np.empty((0,2))
-        xy0 = np.empty((0,2))
+        xy1 = np.empty((0,2))
         conf = np.empty(0)
     return xy0, xy1, conf
 

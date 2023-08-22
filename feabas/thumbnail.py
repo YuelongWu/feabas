@@ -375,6 +375,8 @@ def match_two_thumbnails_LRadon(img0, img1, mask0=None, mask1=None, **kwargs):
         if match_list is None:
             break
         for mtch in match_list:
+            if mtch.num_points == 0:
+                continue
             optm.clear_links()
             optm.add_link_from_coordinates(0.0, 1.0, mtch.xy0, mtch.xy1,
                                            check_duplicates=False,

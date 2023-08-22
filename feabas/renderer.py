@@ -42,12 +42,15 @@ class MeshRenderer:
         include_flipped = kwargs.get('include_flipped', False)
         weight_params = kwargs.pop('weight_params', const.MESH_TRIFINDER_INNERMOST)
         local_cache = kwargs.get('cache', False)
+        render_weight_threshold = kwargs.get('render_weight_threshold', 0)
         msh_wt = srcmesh.weight_multiplier_for_render
         if np.any(msh_wt != 1):
             weighted_material = True
         else:
             weighted_material = False
-        render_mask = srcmesh.triangle_mask_for_render()
+        render_mask = srcmesh.triangle_mask_for_render(render_weight_threshold=render_weight_threshold)
+        if not np.any(render_mask):
+            return None
         collisions = srcmesh.triangle_collisions(gear=gear[0], tri_mask=render_mask)
         if (collisions.size == 0):
             weight_params = const.MESH_TRIFINDER_WHATEVER
@@ -685,6 +688,11 @@ def subprocess_render_mesh_tiles(imgloader, mesh, bboxes, outnames, **kwargs):
     else:
         use_tensorstore = False
     renderer = MeshRenderer.from_mesh(M, **kwargs)
+    if renderer is None:
+        if use_tensorstore:
+            return []
+        else:
+            return {}
     renderer.link_image_loader(imgloader)
     fillval = kwargs.get('fillval', renderer.default_fillval)
     if use_tensorstore:
@@ -1131,10 +1139,11 @@ def subprocess_render_partial_ts_slab(loaders, meshes, bboxes, out_ts, **kwargs)
         else:
             msh.change_resolution(target_resolution)
             rndr = MeshRenderer.from_mesh(msh, **loader_config)
-            rndr.link_image_loader(ldr)
-            if to_skip:
-                fillval = kwargs.get('fillval', rndr.default_fillval)
-                to_skip = False
+            if rndr is not None:
+                rndr.link_image_loader(ldr)
+                if to_skip:
+                    fillval = kwargs.get('fillval', rndr.default_fillval)
+                    to_skip = False
         renderers[z] = rndr
     if to_skip:
         return num_chunks

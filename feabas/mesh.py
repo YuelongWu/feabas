@@ -810,7 +810,7 @@ class Mesh:
             indx = np.full(to_keep.size, -1, dtype=self.triangles.dtype)
             indx[to_keep] = np.arange(np.sum(to_keep))
             triangles = indx[self.triangles]
-            tidx = np.any(triangles < 0, axis=-1, keepdims=False)
+            tidx = ~np.any(triangles < 0, axis=-1, keepdims=False)
             self.triangles = triangles[tidx]
             if isinstance(self._stiffness_multiplier, np.ndarray):
                 self._stiffness_multiplier = self._stiffness_multiplier[tidx]
@@ -823,6 +823,109 @@ class Mesh:
         """remove vertices not included in any triangles"""
         connected = np.isin(np.arange(self.num_vertices), self.triangles)
         self.delete_vertices(~connected)
+
+
+    def carve_region(self, t_indx, **kwargs):
+        """
+        cut a region along the mid-line
+        """
+        sep_ratio = kwargs.get('sep_ratio', 0.01)
+        if (not np.any(t_indx)) or np.all(t_indx):
+            return self
+        segments_attch = np.sort(self.segments(tri_mask=~t_indx), axis=-1)
+        segments_attch_cmplx = segments_attch[:,0] + 1j * segments_attch[:,1]
+        vtx_attch = np.unique(segments_attch)
+        vtx_attch_set = set(vtx_attch)
+        tr_tgt = self.triangles[t_indx]
+        stiff_tgt = self.stiffness_multiplier[t_indx]
+        matid_tgt = self.material_ids[t_indx]
+        edges_tgt = Mesh.triangle2edge(tr_tgt, directional=False)
+        edges_tgt_cmplx = edges_tgt[:,0] + 1j * edges_tgt[:,1]
+        filtr_indx = (~np.isin(edges_tgt_cmplx, segments_attch_cmplx, assume_unique=True)) \
+            & np.any(np.isin(edges_tgt, vtx_attch), axis=-1)
+        edges_tgt = edges_tgt[filtr_indx]
+        N_vtx0 = self.num_vertices
+        N_edge_tgt = edges_tgt.shape[0]
+        initial_vertices = self.initial_vertices
+        for gear, v in self._vertices.items():
+            if v is not None:
+                vtx = v[edges_tgt]
+                v1 = vtx[:,0,:] * (0.5+sep_ratio) + vtx[:,1,:] * (0.5-sep_ratio)
+                v2 = vtx[:,0,:] * (0.5-sep_ratio) + vtx[:,1,:] * (0.5+sep_ratio)
+                v = np.concatenate((v, v1, v2), axis=0)
+                self._vertices[gear] = v
+        edges_mid_lut = {}
+        for k, ee in enumerate(edges_tgt):
+            edges_mid_lut[tuple(ee)] = N_vtx0 + k
+            edges_mid_lut[tuple(ee[::-1])] = N_vtx0 + N_edge_tgt + k
+        new_triangles = []
+        new_stiffness = []
+        new_matid = []
+        for vidx, ss, mm in zip(tr_tgt, stiff_tgt, matid_tgt):
+            cnt = 0
+            trapezoid_completed = False
+            mid_idx = {s: edges_mid_lut[(vidx[s[0]], vidx[s[1]])]
+                       for s in ((0,1),(1,2),(2,0),(1,0),(2,1),(0,2))
+                       if (vidx[s[0]], vidx[s[1]]) in edges_mid_lut}
+            for k0 in range(3):
+                vid0 = vidx[k0]
+                k1 = (k0 + 1) % 3
+                k2 = (k0 + 2) % 3
+                if (vid0 not in vtx_attch_set) or (len(mid_idx) == 0):
+                    continue
+                if ((k0, k1) in mid_idx) and ((k0, k2) in mid_idx):
+                    vid1 = mid_idx[(k0, k1)]
+                    vid2 = mid_idx[(k0, k2)]
+                    new_triangles.append([vid0, vid1, vid2])
+                    cnt += 1
+                elif (len(mid_idx) == 2) and ((k1, k2) in mid_idx):
+                    new_triangles.append([vid0, vidx[k1], mid_idx[(k1, k2)]])
+                    new_triangles.append([vid0, mid_idx[(k2, k1)], vidx[k2]])
+                    cnt += 2
+                    break
+                elif len(mid_idx) == 4:
+                    if trapezoid_completed:
+                        continue
+                    len12 = np.sum((initial_vertices[vidx[k1]] - initial_vertices[vidx[k2]]) ** 2)
+                    len01 = np.sum((initial_vertices[vidx[k0]] - initial_vertices[vidx[k1]]) ** 2)
+                    len20 = np.sum((initial_vertices[vidx[k1]] - initial_vertices[vidx[k0]]) ** 2)
+                    if (k0, k1) in mid_idx:
+                        if len12 > len01:
+                            new_triangles.append([vid0, mid_idx[(k0, k1)], mid_idx[(k2, k1)]])
+                            new_triangles.append([vid0, mid_idx[(k2, k1)], vidx[k2]])
+                        else:
+                            new_triangles.append([vid0, mid_idx[(k0, k1)], vidx[k2]])
+                            new_triangles.append([mid_idx[(k0, k1)], mid_idx[(k2, k1)], vidx[k2]])
+                    else:
+                        if len12 > len20:
+                            new_triangles.append([vid0, mid_idx[(k0, k2)], mid_idx[(k1, k2)]])
+                            new_triangles.append([vid0, mid_idx[(k1, k2)], vidx[k1]])
+                        else:
+                            new_triangles.append([vid0, mid_idx[(k0, k2)], vidx[k1]])
+                            new_triangles.append([mid_idx[(k0, k2)], mid_idx[(k1, k2)], vidx[k1]])
+                    cnt+=2
+                    trapezoid_completed = True
+            if cnt == 0:
+                continue
+            new_stiffness.append(np.full(cnt, ss))
+            new_matid.append(np.full(cnt, mm))
+        new_triangles = np.array(new_triangles)
+        new_stiffness = np.concatenate(new_stiffness, axis=None)
+        new_matid = np.concatenate(new_matid, axis=None)
+        triangles = np.concatenate([self.triangles[~t_indx], new_triangles], axis=0)
+        if self._stiffness_multiplier is not None:
+            stiffness_multiplier =  np.concatenate([self._stiffness_multiplier[~t_indx], new_stiffness], axis=0)
+        else:
+            stiffness_multiplier = None
+        if self._material_ids is not None:
+            material_ids =  np.concatenate([self.material_ids[~t_indx], new_matid], axis=0)
+        else:
+            material_ids = None
+        self.triangles = triangles
+        self._stiffness_multiplier = stiffness_multiplier
+        self._material_ids = material_ids
+        self.delete_orphaned_vertices()
+        return self
 
 
     def change_resolution(self, resolution):
@@ -1250,6 +1353,9 @@ class Mesh:
 
     @property
     def material_ids(self):
+        if self._material_ids is None:
+            default_mat = self._material_table['default']
+            self._material_ids = np.full(self.num_triangles, default_mat.uid, dtype=np.int8)
         return self._material_ids
 
 
@@ -1492,10 +1598,13 @@ class Mesh:
 
 
     @config_cache(const.MESH_GEAR_INITIAL)
-    def triangle_mask_for_render(self):
+    def triangle_mask_for_render(self, **kwargs):
+        render_weight_threshold = kwargs.get('render_weight_threshold', 0)
         mid_norender = []
         for _, m in self._material_table:
             if not m.render:
+                mid_norender.append(m.uid)
+            elif m.render_weight < render_weight_threshold:
                 mid_norender.append(m.uid)
         if len(mid_norender) > 0:
             mask = ~np.isin(self.material_ids, mid_norender)
@@ -1660,7 +1769,7 @@ class Mesh:
         extrapolate = kwargs.get('extrapolate', False)
         inner_cache = kwargs.get('inner_cache', None)
         asymmetry = kwargs.get('asymmetry', True)
-        render_weight_threshold = kwargs.get('render_weight_threshold', 0.5)
+        render_weight_threshold = kwargs.get('render_weight_threshold', 0)
         if gear is None:
             gear = self._current_gear
         tri_info = self.tri_info(gear=gear, tri_mask=tri_mask, include_flipped=include_flipped, contigeous=contigeous, cache=inner_cache, asymmetry=asymmetry)
