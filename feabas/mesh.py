@@ -898,11 +898,11 @@ class Mesh:
                             new_triangles.append([mid_idx[(k0, k1)], mid_idx[(k2, k1)], vidx[k2]])
                     else:
                         if len12 > len20:
-                            new_triangles.append([vid0, mid_idx[(k0, k2)], mid_idx[(k1, k2)]])
-                            new_triangles.append([vid0, mid_idx[(k1, k2)], vidx[k1]])
+                            new_triangles.append([vid0, mid_idx[(k1, k2)], mid_idx[(k0, k2)]])
+                            new_triangles.append([vid0, vidx[k1], mid_idx[(k1, k2)]])
                         else:
-                            new_triangles.append([vid0, mid_idx[(k0, k2)], vidx[k1]])
-                            new_triangles.append([mid_idx[(k0, k2)], mid_idx[(k1, k2)], vidx[k1]])
+                            new_triangles.append([vid0,  vidx[k1], mid_idx[(k0, k2)]])
+                            new_triangles.append([mid_idx[(k0, k2)], vidx[k1], mid_idx[(k1, k2)]])
                     cnt+=2
                     trapezoid_completed = True
             if cnt == 0:

@@ -5,6 +5,9 @@ mlist = getFileList(match_dir);
 for (i=0; i<mlist.length; i++) {
 	name_ext = split(mlist[i], '.');
 	section_names = split(name_ext[0], delimiter);
+	if (lengthOf(section_names) < 2){
+		continue;
+	};
 	section_file0 = section_names[0] + ".png";
 	section_file1 = section_names[1] + ".png";
 	open(thumb_dir + "/" + section_file0);

@@ -404,7 +404,7 @@ def match_two_thumbnails_LRadon(img0, img1, mask0=None, mask1=None, **kwargs):
                         xy0_t_list.append(xy0_t)
                         xy1_t_list.append(xy1_t)
                         lnk.eliminate_zero_weight()
-                if ((valid_num / mtch.num_points) < 0.9) or (valid_num < 3):
+                if ((valid_num / mtch.num_points) < 0.5) or (valid_num < 3):
                     break
             else:
                 xy0_t_list = [mtch.xy0]
