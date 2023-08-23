@@ -825,7 +825,7 @@ class Mesh:
         self.delete_vertices(~connected)
 
 
-    def carve_region(self, t_indx, **kwargs):
+    def incise_region(self, t_indx, **kwargs):
         """
         cut a region along the mid-line
         """
@@ -913,11 +913,11 @@ class Mesh:
         new_stiffness = np.concatenate(new_stiffness, axis=None)
         new_matid = np.concatenate(new_matid, axis=None)
         triangles = np.concatenate([self.triangles[~t_indx], new_triangles], axis=0)
-        if self._stiffness_multiplier is not None:
+        if isinstance(self._stiffness_multiplier, np.ndarray):
             stiffness_multiplier =  np.concatenate([self._stiffness_multiplier[~t_indx], new_stiffness], axis=0)
         else:
             stiffness_multiplier = None
-        if self._material_ids is not None:
+        if isinstance(self._material_ids, np.ndarray):
             material_ids =  np.concatenate([self.material_ids[~t_indx], new_matid], axis=0)
         else:
             material_ids = None
