@@ -60,6 +60,10 @@ def generate_mesh_from_mask(mask_names, outname, **kwargs):
     PSLG = G.PSLG(region_tol=region_tols,  roi_tol=0, area_thresh=area_thresh)
     M = mesh.Mesh.from_PSLG(**PSLG, material_table=material_table, mesh_size=mesh_size, min_mesh_angle=20)
     M.change_resolution(target_resolution)
+    if ('split' in material_table.named_table):
+        mid = material_table.named_table['split'].uid
+        m_indx = M.material_ids == mid
+        M.incise_region(m_indx)
     mshname = os.path.splitext(os.path.basename(mask_name))[0]
     M.save_to_h5(outname, save_material=True, override_dict={'name': mshname})
 

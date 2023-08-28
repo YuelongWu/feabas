@@ -43,7 +43,7 @@ class MeshRenderer:
         weight_params = kwargs.pop('weight_params', const.MESH_TRIFINDER_INNERMOST)
         local_cache = kwargs.get('cache', False)
         render_weight_threshold = kwargs.get('render_weight_threshold', 0)
-        msh_wt = srcmesh.weight_multiplier_for_render
+        msh_wt = srcmesh.weight_multiplier_for_render()
         if np.any(msh_wt != 1):
             weighted_material = True
         else:
@@ -93,6 +93,7 @@ class MeshRenderer:
                     mpl_tri.get_trifinder()
                 except RuntimeError:
                     mpl_tri = mattri
+                    hitidx = tidx
                 if weight_params == const.MESH_TRIFINDER_INNERMOST:
                     cx = mpl_tri.x
                     cy = mpl_tri.y
@@ -107,7 +108,7 @@ class MeshRenderer:
                     weight_generator.append((mpl_tri.get_trifinder(), wt))
                 else:
                     raise ValueError
-                if weighted_material:
+                if not weighted_material:
                     weight_multiplier.append(None)
                 else:
                     wt = msh_wt[hitidx]
