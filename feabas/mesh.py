@@ -881,7 +881,8 @@ class Mesh:
                 elif (len(mid_idx) == 2) and ((k1, k2) in mid_idx):
                     new_triangles.append([vid0, vidx[k1], mid_idx[(k1, k2)]])
                     new_triangles.append([vid0, mid_idx[(k2, k1)], vidx[k2]])
-                    cnt += 2
+                    new_triangles.append([vid0, mid_idx[(k1, k2)], mid_idx[(k2, k1)]])
+                    cnt += 3
                     break
                 elif len(mid_idx) == 4:
                     if trapezoid_completed:
