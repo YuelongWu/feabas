@@ -7,6 +7,7 @@ import math
 from functools import partial
 import os
 import time
+import tensorstore as ts
 
 import feabas
 from feabas import config, logging, dal
@@ -142,12 +143,13 @@ def optmization_main(match_list, out_dir, **kwargs):
 
 def render_one_section(tform_name, out_prefix, meta_name=None, **kwargs):
     num_workers = kwargs.get('num_workers', 1)
-    tile_size = kwargs.get('tile_size', [4096, 4096])
-    scale = kwargs.get('scale', 1.0)
+    tile_size = kwargs.pop('tile_size', [4096, 4096])
+    scale = kwargs.pop('scale', 1.0)
     resolution = kwargs.pop('resolution', None)
     loader_settings = kwargs.get('loader_settings', {})
     render_settings = kwargs.get('render_settings', {}).copy()
-    filename_settings = kwargs.get('filename_settings', {})
+    driver = kwargs.get('driver', 'image')
+    use_tensorstore = driver != 'image'
     if loader_settings.get('cache_size', None) is not None:
         loader_settings = loader_settings.copy()
         loader_settings['cache_size'] = loader_settings['cache_size'] // num_workers
@@ -159,15 +161,24 @@ def render_one_section(tform_name, out_prefix, meta_name=None, **kwargs):
     else:
         resolution = renderer.resolution / scale
     render_settings['scale'] = scale
+    out_prefix = out_prefix.replace('\\', '/')
     render_series = renderer.plan_render_series(tile_size, prefix=out_prefix,
-        scale=scale, **filename_settings)
+        scale=scale, **kwargs)
+    if use_tensorstore:
+        # delete existing
+        out_spec = render_series[1].copy()
+        out_spec.update({'open': False, 'create': True, 'delete_existing': True})
+        store = ts.open(out_spec).result()
     if num_workers == 1:
         bboxes, filenames, _ = render_series
         metadata = renderer.render_series_to_file(bboxes, filenames, **render_settings)
     else:
         bboxes_list, filenames_list, hits_list = renderer.divide_render_jobs(render_series,
             num_workers=num_workers, max_tile_per_job=20)
-        metadata = {}
+        if use_tensorstore:
+            metadata = []
+        else:
+            metadata = {}
         jobs = []
         target_func = partial(MontageRenderer.subprocess_render_montages, **render_settings)
         with ProcessPoolExecutor(max_workers=num_workers, mp_context=get_context('spawn')) as executor:
@@ -176,31 +187,56 @@ def render_one_section(tform_name, out_prefix, meta_name=None, **kwargs):
                 job = executor.submit(target_func, init_args, bboxes, filenames)
                 jobs.append(job)
             for job in as_completed(jobs):
-                metadata.update(job.result())
+                if use_tensorstore:
+                    metadata.extend(job.result())
+                else:
+                    metadata.update(job.result())
     if (meta_name is not None) and (len(metadata) > 0):
-        fnames = sorted(list(metadata.keys()))
-        bboxes = []
-        for fname in fnames:
-            bboxes.append(metadata[fname])
-        out_loader = dal.StaticImageLoader(fnames, bboxes=bboxes, resolution=resolution)
-        out_loader.to_coordinate_file(meta_name)
+        if use_tensorstore:
+            meta_name = meta_name.replace('\\', '/')
+            kv_headers = ('gs://', 'http://', 'https://', 'file://', 'memory://')
+            for kvh in kv_headers:
+                if meta_name.startswith(kvh):
+                    break
+            else:
+                meta_name = 'file://' + meta_name
+            meta_ts = ts.open({"driver": "json", "kvstore": meta_name}).result()
+            meta_ts.write({0: store.spec(minimal_spec=True).to_json()}).result()
+        else:
+            fnames = sorted(list(metadata.keys()))
+            bboxes = []
+            for fname in fnames:
+                bboxes.append(metadata[fname])
+            out_loader = dal.StaticImageLoader(fnames, bboxes=bboxes, resolution=resolution)
+            out_loader.to_coordinate_file(meta_name)
     return len(metadata)
 
 
 def render_main(tform_list, out_dir, **kwargs):
     logger_info = logging.initialize_main_logger(logger_name='stitch_rendering', mp=False)
     logger = logger_info[0]
+    driver = kwargs.get('driver', 'image')
+    use_tensorstore = driver != 'image'
+    if use_tensorstore:
+        meta_dir = kwargs['meta_dir']
+        os.makedirs(meta_dir, exist_ok=True)
     for tname in tform_list:
         t0 = time.time()
         sec_name = os.path.basename(tname).replace('.h5', '')
         try:
             sec_outdir = os.path.join(out_dir, sec_name)
-            meta_name = os.path.join(sec_outdir, 'metadata.txt')
+            if use_tensorstore:
+                meta_name = os.path.join(meta_dir, sec_name+'.json')
+            else:
+                meta_name = os.path.join(sec_outdir, 'metadata.txt')
             if os.path.isfile(meta_name):
                 continue
             logger.info(f'{sec_name}: start')
-            os.makedirs(sec_outdir, exist_ok=True)
-            out_prefix = os.path.join(sec_outdir, sec_name)
+            if use_tensorstore:
+                out_prefix = sec_outdir
+            else:
+                os.makedirs(sec_outdir, exist_ok=True)
+                out_prefix = os.path.join(sec_outdir, sec_name)
             num_rendered = render_one_section(tname, out_prefix, meta_name=meta_name, **kwargs)
             logger.info(f'{sec_name}: {num_rendered} tiles | {(time.time()-t0)/60} min')
         except Exception as err:
@@ -229,8 +265,12 @@ if __name__ == '__main__':
     stitch_configs = config.stitch_configs()
     if args.mode.lower().startswith('r'):
         stitch_configs = stitch_configs['rendering']
-        stitch_configs.pop('out_dir')
+        stitch_configs.pop('out_dir', '')
         mode = 'rendering'
+        image_outdir = config.stitch_render_dir()
+        driver = stitch_configs.get('driver', 'image')
+        if driver == 'image':
+            image_outdir = os.path.join(image_outdir, 'mip0')
     elif args.mode.lower().startswith('o'):
         stitch_configs = stitch_configs['optimization']
         mode = 'optimization'
@@ -251,8 +291,7 @@ if __name__ == '__main__':
     coord_dir = os.path.join(stitch_dir, 'stitch_coord')
     match_dir = os.path.join(stitch_dir, 'match_h5')
     mesh_dir = os.path.join(stitch_dir, 'tform')
-    image_outdir = config.stitch_render_dir()
-    image_outdir = os.path.join(image_outdir, 'mip0')
+    render_meta_dir = os.path.join(stitch_dir, 'ts_specs')
     stt_idx, stp_idx, step = args.start, args.stop, args.step
     if stp_idx == 0:
         stp_idx = None
@@ -263,7 +302,7 @@ if __name__ == '__main__':
         tform_list = tform_list[indx]
         if args.reverse:
             tform_list = tform_list[::-1]
-        os.makedirs(image_outdir, exist_ok=True)
+        stitch_configs.setdefault('meta_dir', render_meta_dir)
         render_main(tform_list, image_outdir, **stitch_configs)
     elif mode == 'optimization':
         match_list = sorted(glob.glob(os.path.join(match_dir, '*.h5')))

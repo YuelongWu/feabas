@@ -249,6 +249,9 @@ class Material:
             modifier = self._stiffness_func(J)
             K = K * modifier.reshape(-1,1,1)
             P = P * modifier.reshape(-1,1,1)
+        if self._stiffness_multiplier != 1:
+            K = self._stiffness_multiplier * K
+            P = self._stiffness_multiplier * P
         return K, P, flipped
 
 

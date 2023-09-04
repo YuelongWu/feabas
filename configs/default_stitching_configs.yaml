@@ -51,6 +51,7 @@ optimization:
 
 rendering:
     out_dir: null # directory to save the stitched images. if set to null, default to working_directory/stitched_sections
+    driver: image   # image(PNG tiles), zarr, n5, neuroglancer_precomputed
     num_workers: 5
     tile_size: [4096, 4096] # output tile size
     scale: 1.0

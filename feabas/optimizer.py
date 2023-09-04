@@ -43,6 +43,7 @@ class Link:
                          **kwargs):
         if xy0.size == 0:
             return None, None
+        kwargs.setdefault('render_weight_threshold', 0.5)
         tid0, B0 = mesh0.cart2bary(xy0, gear[0], tid=None, **kwargs)
         indx0 = tid0 >= 0
         if not np.any(indx0):
@@ -927,7 +928,10 @@ class SLM:
             else:
                 groupings = None
         A_diag = A.diagonal()
-        M = sparse.diags(1/(A_diag.clip(min(1.0, A_diag.max()/1000),None))) # Jacobi precondition
+        if A_diag.max() > 0:
+            M = sparse.diags(1/(A_diag.clip(min(1.0, A_diag.max()/1000),None))) # Jacobi precondition
+        else:
+            M = None
         # dd, _ = sparse.linalg.bicgstab(A, b, tol=tol, maxiter=maxiter, atol=atol, M=M)
         dd = bicgstab(A, b, tol=tol, maxiter=maxiter, atol=atol, M=M, **callback_settings)
         cost = (np.linalg.norm(b), np.linalg.norm(A.dot(dd) - b))
@@ -1465,3 +1469,41 @@ def transform_mesh(mesh_unlocked, mesh_locked, **kwargs):
         return mesh_unlocked, flag
     else:
         return mesh_unlocked
+
+
+def relax_mesh(M, free_vertices=None, free_triangles=None, **kwargs):
+    gear = kwargs.get('gear', (const.MESH_GEAR_FIXED, const.MESH_GEAR_MOVING))
+    maxiter = kwargs.get('maxiter', None)
+    tol = kwargs.get('tol', 1e-7)
+    atol = kwargs.get('atol', None)
+    callback_settings = kwargs.get('callback_settings', {}).copy()
+    modified = False
+    if free_vertices is not None:
+        vindx = free_vertices
+    elif free_triangles is not None:
+        T = M.triangles[~free_triangles]
+        vindx = ~np.isin(np.arange(M.num_vertices), np.unique(T))
+    else:
+        return modified
+    vmask = np.zeros(M.num_vertices, dtype=bool)
+    vmask[vindx] = True
+    if not np.any(vmask):
+        return modified 
+    vmask_pad = np.repeat(vmask, 2)
+    M.anneal(gear=gear[::-1],  mode=const.ANNEAL_CONNECTED_RIGID)
+    M._vertices_changed(gear=gear[0])
+    stiff_M, stress_v = M.stiffness_matrix(gear=gear, continue_on_flip=True, cache=False)
+    A = stiff_M[vmask_pad][:,vmask_pad]
+    b = -stress_v[vmask_pad]
+    A_diag = A.diagonal()
+    if A_diag.max() > 0:
+        cond = sparse.diags(1/(A_diag.clip(min(1.0, A_diag.max()/1000),None))) # Jacobi precondition
+    else:
+        cond = None
+    dd = bicgstab(A, b, tol=tol, maxiter=maxiter, atol=atol, M=cond, **callback_settings)
+    cost = (np.linalg.norm(b), np.linalg.norm(A.dot(dd) - b))
+    if (cost[1] < cost[0]) and np.any(dd != 0):
+        modified = True
+        M.apply_field(dd.reshape(-1,2), gear[-1], vtx_mask=vmask)
+    return modified
+        

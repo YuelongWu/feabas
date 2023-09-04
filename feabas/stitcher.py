@@ -14,6 +14,7 @@ from scipy.interpolate import interp1d
 from scipy.ndimage import gaussian_filter, binary_dilation
 from scipy import sparse
 import scipy.sparse.csgraph as csgraph
+import tensorstore as ts
 
 from feabas.dal import StaticImageLoader
 from feabas import logging
@@ -23,7 +24,7 @@ from feabas.optimizer import SLM
 from feabas import common, caching
 from feabas.spatial import scale_coordinates
 import feabas.constant as const
-from feabas.config import DEFAULT_RESOLUTION
+from feabas.config import DEFAULT_RESOLUTION, general_settings
 
 class Stitcher:
     """
@@ -858,7 +859,7 @@ class Stitcher:
         A = sparse.csr_matrix((v, (idx0, idx1)), shape=(Neq+1, N_conn))
         overlaps_u, overlaps_inverse = np.unique(overlaps, return_inverse=True)
         overlaps_inverse = overlaps_inverse.reshape(overlaps.shape)
-        txy = np.array([self.meshes[s].estimate_translation(gear=gear) for s in overlaps_u])
+        txy = np.array([self.meshes[s].estimate_translation(gear=gear) for s in overlaps_u]).reshape(-1, 2)
         offset1 = txy[overlaps_inverse[:,0]] - txy[overlaps_inverse[:,1]]
         offset0 = self._init_offset[overlaps[:,0]] - self._init_offset[overlaps[:,1]]
         bxy = np.append(explode_factor * offset0 - offset1, [[0, 0]], axis=0)
@@ -1263,22 +1264,46 @@ class MontageRenderer:
 
 
     def render_series_to_file(self, bboxes, filenames, **kwargs):
-        rendered = {}
+        if isinstance(filenames, (dict, ts.TensorStore)):
+            use_tensorstore = True
+            rendered = []
+        else:
+            use_tensorstore = False
+            rendered = {}
         scale = kwargs.get('scale', 1.0)
         if scale > 0.33:
             self.image_loader._preprocess = None
         else:
             ksz = round(0.5/scale) * 2 - 1
             self.image_loader._preprocess = partial(cv2.blur, ksize=(ksz, ksz))
-        for bbox, filename in zip(bboxes, filenames):
-            if os.path.isfile(filename):
+        if not use_tensorstore: # render as image tiles
+            for bbox, filename in zip(bboxes, filenames):
+                if os.path.isfile(filename):
+                    rendered[filename] = bbox
+                    continue
+                imgt = self.crop(bbox, **kwargs)
+                if imgt is None:
+                    continue
+                common.imwrite(filename, imgt)
                 rendered[filename] = bbox
-                continue
-            imgt = self.crop(bbox, **kwargs)
-            if imgt is None:
-                continue
-            common.imwrite(filename, imgt)
-            rendered[filename] = bbox
+        else: # use tensorstore
+            if not isinstance(filenames, ts.TensorStore):
+                dataset = ts.open(filenames).result()
+            else:
+                dataset = filenames
+            driver = dataset.spec().to_json()['driver']
+            if driver in ('neuroglancer_precomputed', 'n5'):
+                kwargs['fillval'] = 0
+            for bbox in bboxes:
+                imgt = self.crop(bbox, **kwargs)
+                if imgt is None:
+                    continue
+                xmin, ymin, _, _ = bbox
+                shp = imgt.shape
+                imght, imgwd = shp[0], shp[1]
+                data_view = dataset[xmin:(xmin+imgwd), ymin:(ymin+imght)]
+                data_view.write(imgt.T.reshape(data_view.shape)).result()
+                rendered.append(tuple(bbox))
         self.image_loader.clear_cache()
         return rendered
 
@@ -1296,10 +1321,8 @@ class MontageRenderer:
             {Y_MAX}: maximum of y coordinates
         e.g. pattern: Section001_tr{ROW_IND}_tc{COL_IND}.png
         """
-        pattern = kwargs.get('pattern', 'tr{ROW_IND}_tc{COL_IND}.png')
+        driver = kwargs.get('driver', 'image')
         scale = kwargs.get('scale', 1)
-        one_based = kwargs.get('one_based', False)
-        keywords = ['{ROW_IND}', '{COL_IND}', '{X_MIN}', '{Y_MIN}', '{X_MAX}', '{Y_MAX}']
         if not hasattr(tile_size, '__len__'):
             tile_ht, tile_wd = tile_size, tile_size
         else:
@@ -1307,19 +1330,109 @@ class MontageRenderer:
         bounds = self.bounds
         if scale != 1:
             bounds = scale_coordinates(bounds, scale)
-        montage_wd = bounds[2]
-        montage_ht = bounds[3]
+        montage_wd = int(np.ceil(bounds[2]))
+        montage_ht = int(np.ceil(bounds[3]))
+        if driver != 'image':
+            while tile_ht > montage_ht or tile_wd > montage_wd:
+                tile_ht = tile_ht // 2
+                tile_wd = tile_wd // 2
         Ncol = int(np.ceil(montage_wd / tile_wd))
         Nrow = int(np.ceil(montage_ht / tile_ht))
         cols, rows = np.meshgrid(np.arange(Ncol), np.arange(Nrow))
         cols, rows = cols.ravel(), rows.ravel()
         idxz = common.z_order(np.stack((rows, cols), axis=-1))
         cols, rows =  cols[idxz], rows[idxz]
+        if driver == 'image':
+            montage_ht, montage_wd = Nrow * tile_ht, Ncol * tile_wd
+            filename_settings = kwargs.get('filename_settings', {})
+            pattern = filename_settings.get('pattern', 'tr{ROW_IND}_tc{COL_IND}.png')
+            one_based = filename_settings.get('one_based', False)
+            keywords = ['{ROW_IND}', '{COL_IND}', '{X_MIN}', '{Y_MIN}', '{X_MAX}', '{Y_MAX}']
+            filenames = []
+        else:
+            if not prefix.endswith('/'):
+                prefix = prefix + '/'
+            kv_headers = ('gs://', 'http://', 'https://', 'file://', 'memory://')
+            for kvh in kv_headers:
+                if prefix.startswith(kvh):
+                    break
+            else:
+                prefix = 'file://' + prefix
+            number_of_channels = self.number_of_channels
+            dtype = self.dtype
+            fillval = self.default_fillval
+            schema = {
+                "chunk_layout":{
+                    "grid_origin": [0, 0, 0, 0],
+                    "inner_order": [3, 2, 1, 0],
+                    "read_chunk": {"shape": [tile_wd, tile_ht, 1, number_of_channels]},
+                    "write_chunk": {"shape": [tile_wd, tile_ht, 1, number_of_channels]},
+                },
+                "domain":{
+                    "exclusive_max": [montage_wd, montage_ht, 1, number_of_channels],
+                    "inclusive_min": [0, 0, 0, 0],
+                    "labels": ["x", "y", "z", "channel"]
+                },
+                "dimension_units": [[self.resolution, "nm"], [self.resolution, "nm"], [general_settings().get('section_thickness', 30), "nm"], None],
+                "dtype": np.dtype(dtype).name,
+                "rank" : 4
+            }
+            if driver == 'zarr':
+                filenames = {
+                    "driver": "zarr",
+                    "kvstore": prefix + '0/',
+                    "key_encoding": ".",
+                    "metadata": {
+                        "zarr_format": 2,
+                        "fill_value": fillval,
+                        "compressor": {"id": "gzip", "level": 6}
+                    },
+                    "schema": schema,
+                    "open": True,
+                    "create": True,
+                    "delete_existing": False
+                }
+            elif driver == 'n5':
+                filenames = {
+                    "driver": "n5",
+                    "kvstore": prefix + 's0/',
+                    "metadata": {
+                        "compression": {"type": "gzip"}
+                    },
+                    "schema": schema,
+                    "open": True,
+                    "create": True,
+                    "delete_existing": False
+                }
+            elif driver == 'neuroglancer_precomputed':
+                if tile_ht % 256 == 0:
+                    read_ht = 256
+                else:
+                    read_ht = tile_ht
+                if tile_wd % 256 == 0:
+                    read_wd = 256
+                else:
+                    read_wd = tile_wd
+                schema["codec"]= {
+                    "driver": "neuroglancer_precomputed",
+                    "encoding": "raw",
+                    "shard_data_encoding": "gzip"
+                }
+                schema['chunk_layout']["read_chunk"]["shape"] = [read_wd, read_ht, 1, number_of_channels]
+                filenames = {
+                    "driver": "neuroglancer_precomputed",
+                    "kvstore": prefix,
+                    "schema": schema,
+                    "open": True,
+                    "create": True,
+                    "delete_existing": False
+                }
+            else:
+                raise ValueError(f'{driver} not supported')
         hits = []
         bboxes = []
-        filenames = []
         for r, c in zip(rows, cols):
-            bbox = (c*tile_wd, r*tile_ht, (c+1)*tile_wd, (r+1)*tile_ht)
+            bbox = (c*tile_wd, r*tile_ht, min((c+1)*tile_wd, montage_wd), min((r+1)*tile_ht, montage_ht))
             if scale != 1:
                 bbox_hit = scale_coordinates(bbox, 1/scale)
             else:
@@ -1329,19 +1442,20 @@ class MontageRenderer:
                 continue
             hits.append(hit)
             bboxes.append(bbox)
-            xmin, ymin, xmax, ymax = bbox
-            keyword_replaces = [str(r+one_based), str(c+one_based), str(xmin), str(ymin), str(xmax), str(ymax)]
-            fname = pattern
-            for kw, kwr in zip(keywords, keyword_replaces):
-                fname = fname.replace(kw, kwr)
-            filenames.append(prefix + fname)
+            if driver == 'image':
+                xmin, ymin, xmax, ymax = bbox
+                keyword_replaces = [str(r+one_based), str(c+one_based), str(xmin), str(ymin), str(xmax), str(ymax)]
+                fname = pattern
+                for kw, kwr in zip(keywords, keyword_replaces):
+                    fname = fname.replace(kw, kwr)
+                filenames.append(prefix + fname)
         return bboxes, filenames, hits
 
 
     def divide_render_jobs(self, render_series, num_workers=1, **kwargs):
         max_tile_per_job = kwargs.get('max_tile_per_job', None)
         bboxes, filenames, hits = render_series
-        num_tiles = len(filenames)
+        num_tiles = len(bboxes)
         num_tile_per_job = max(1, num_tiles // num_workers)
         if max_tile_per_job is not None:
             num_tile_per_job = min(num_tile_per_job, max_tile_per_job)
@@ -1354,7 +1468,10 @@ class MontageRenderer:
         for idx0, idx1 in zip(indices[:-1], indices[1:]):
             idx0, idx1 = int(idx0), int(idx1)
             bboxes_list.append(bboxes[idx0:idx1])
-            filenames_list.append(filenames[idx0:idx1])
+            if isinstance(filenames, dict):
+                filenames_list.append(filenames)
+            else:
+                filenames_list.append(filenames[idx0:idx1])
             hits_list.append(set(s for hit in hits[idx0:idx1] for s in hit))
         return bboxes_list, filenames_list, hits_list
 
@@ -1366,7 +1483,7 @@ class MontageRenderer:
             return self._tile_sizes[indx]
 
 
-    def generate_roi_mask(self, scale, show_conn=False):
+    def generate_roi_mask(self, scale, show_conn=False, mask_erode=0):
         """
         generate low resolution roi mask that can fit in a single image.
         """
@@ -1385,6 +1502,21 @@ class MontageRenderer:
         for bbox, lb in zip(bboxes, lbls):
             xmin, ymin, xmax, ymax = bbox
             imgout[ymin:ymax, xmin:xmax] = lb
+        if mask_erode > 0:
+            mask = (imgout > 0).astype(np.uint8)
+            mask = cv2.erode(mask, np.ones((3,3), dtype=np.uint8), iterations=mask_erode)
+            mask[:mask_erode, :] = 0
+            mask[-mask_erode:, :] = 0
+            mask[:, :mask_erode] = 0
+            mask[:, -mask_erode:] = 0
+            imgout[mask == 0] = 0
+        if mask_erode < 0:
+            mask = (imgout == 0).astype(np.uint8)
+            D, L = cv2.distanceTransformWithLabels(mask,distanceType=cv2.DIST_L2,
+                                                   maskSize=5, labelType=cv2.DIST_LABEL_PIXEL)
+            M = imgout[mask==0]
+            imgout = M[L - 1]
+            imgout[D > -mask_erode] = 0
         return imgout
 
 

@@ -10,7 +10,7 @@ from skimage.feature import peak_local_max
 from itertools import combinations
 
 from feabas import common, logging
-from feabas.spatial import fit_affine, Geometry
+from feabas.spatial import fit_affine, Geometry, scale_coordinates
 from feabas.mesh import Mesh
 from feabas.optimizer import SLM
 import feabas.constant as const
@@ -278,38 +278,58 @@ def prepare_image(img, mask=None, **kwargs):
     detect_settings = kwargs.get('detect_settings', {}).copy()
     extract_settings = kwargs.get('extract_settings', {}).copy()
     mesh_size = kwargs.get('mesh_size', DEFAULT_FEATURE_SPACING * 2)
-    out = {'image': img, 'mask': mask}
-    regions = {}
-    if mask is None:
-        imght, imgwd = img.shape[:2]
-        regions[1] = shpgeo.box(0,0,imgwd, imght)
-        mesh = Mesh.from_bbox((0,0,imgwd, imght), cartesian=True,
-                                mesh_size=mesh_size, uid=uid)
+    scale = kwargs.get('scale', 1.0)
+    if isinstance(img, dict):
+        out = img
+        img = out['image']
+        mask = out['mask']
     else:
-        meshes_stg = []
-        for lb in np.unique(mask[mask>0]):
-            G0 = Geometry.from_image_mosaic(255 - 255 * (mask == lb).astype(np.uint8),
-                                            region_names={'default':0, 'exclude': 255})
-            G0.simplify(region_tol={'exclude':1.5}, inplace=True)
-            regions[lb] = G0.region_default
-            meshes_stg.append(Mesh.from_PSLG(**G0.PSLG(), mesh_size=mesh_size,
-                                             min_mesh_angle=20, uid=-1.0))
-        mesh = Mesh.combine_mesh(meshes_stg, uid=uid)
-    out['regions'] = regions
-    out['mesh'] = mesh
-    if compute_keypoints:
+        out = {'image': img, 'mask': mask}
+    if scale not in out:
+        if scale != 1:
+            img = cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+            if mask is not None:
+                mask_dtype = mask.dtype
+                if mask_dtype == np.dtype('bool'):
+                    mask = mask.astype(np.uint8)
+                mask = cv2.resize(mask, None, fx=scale, fy=scale, interpolation=cv2.INTER_NEAREST)
+                mask = mask.astype(mask_dtype, copy=False)
+        scale_info = {'image': img, 'mask': mask}
+        regions = {}
+        if mask is None:
+            imght, imgwd = img.shape[:2]
+            regions[1] = shpgeo.box(0,0,imgwd, imght)
+            mesh = Mesh.from_bbox((0,0,imgwd, imght), cartesian=True,
+                                    mesh_size=mesh_size, uid=uid)
+        else:
+            meshes_stg = []
+            for lb in np.unique(mask[mask>0]):
+                G0 = Geometry.from_image_mosaic(255 - 255 * (mask == lb).astype(np.uint8),
+                                                region_names={'default':0, 'exclude': 255})
+                G0.simplify(region_tol={'exclude':1.5}, inplace=True)
+                regions[lb] = G0.region_default
+                meshes_stg.append(Mesh.from_PSLG(**G0.PSLG(), mesh_size=mesh_size,
+                                                min_mesh_angle=20, uid=-1.0))
+            mesh = Mesh.combine_mesh(meshes_stg, uid=uid)
+        scale_info['regions'] = regions
+        scale_info['mesh'] = mesh
+        out[scale] = scale_info
+    if compute_keypoints and ('kps' not in out[scale]):
+        img = out[scale]['image']
+        mask = out[scale]['mask']
         if (mask is not None) and not (np.all(mask>0, axis=None)):
             mm = np.mean(img[mask>0])
             img = (img * (mask > 0) + mm * (mask == 0)).astype(img.dtype)
         kps = detect_extrema_log(img, mask=mask, **detect_settings)
         kps = extract_LRadon_feature(img, kps, **extract_settings)
-        out['kps'] = kps
+        out[scale]['kps'] = kps
     return out
             
 
 
 def match_two_thumbnails_LRadon(img0, img1, mask0=None, mask1=None, **kwargs):
     affine_only = kwargs.get('affine_only', False)
+    scale = kwargs.get('scale', 1.0)
     detect_settings = kwargs.get('detect_settings', {}).copy()
     matching_settings = kwargs.get('matching_settings', {}).copy()
     feature_spacing = detect_settings.get('min_spacing', DEFAULT_FEATURE_SPACING)
@@ -318,17 +338,11 @@ def match_two_thumbnails_LRadon(img0, img1, mask0=None, mask1=None, **kwargs):
     matchnum_thresh = kwargs.get('matchnum_thresh', 64)
     elastic_dis_tol = kwargs.get('elastic_dis_tol', feature_spacing / 5)
     ransac_filter_settings.setdefault('dis_tol',feature_spacing / 3)
-    if not isinstance(img0, dict):
-        img0 = prepare_image(img0, mask=mask0, **kwargs)
-        mesh0 = img0['mesh']
-    else:
-        mesh0 = img0['mesh'].copy()
-    if not isinstance(img1, dict):
-        img1 = prepare_image(img1, mask=mask1, **kwargs)
-        mesh1 = img1['mesh']
-    else:
-        mesh1 = img1['mesh'].copy()
-    kps0, kps1 = img0['kps'], img1['kps']
+    info0 = prepare_image(img0, mask=mask0, **kwargs)[scale]
+    mesh0 = info0['mesh'].copy()
+    info1 = prepare_image(img1, mask=mask1, **kwargs)[scale]
+    mesh1 = info1['mesh'].copy()
+    kps0, kps1 = info0['kps'], info1['kps']
     mesh0.uid = 0.0
     mesh1.uid = 1.0
     optm = SLM([mesh0, mesh1], stiffness_lambda=1.0)
@@ -361,6 +375,8 @@ def match_two_thumbnails_LRadon(img0, img1, mask0=None, mask1=None, **kwargs):
         if match_list is None:
             break
         for mtch in match_list:
+            if mtch.num_points == 0:
+                continue
             optm.clear_links()
             optm.add_link_from_coordinates(0.0, 1.0, mtch.xy0, mtch.xy1,
                                            check_duplicates=False,
@@ -388,7 +404,7 @@ def match_two_thumbnails_LRadon(img0, img1, mask0=None, mask1=None, **kwargs):
                         xy0_t_list.append(xy0_t)
                         xy1_t_list.append(xy1_t)
                         lnk.eliminate_zero_weight()
-                if ((valid_num / mtch.num_points) < 0.9) or (valid_num < 3):
+                if ((valid_num / mtch.num_points) < 0.5) or (valid_num < 3):
                     break
             else:
                 xy0_t_list = [mtch.xy0]
@@ -417,10 +433,10 @@ def match_two_thumbnails_LRadon(img0, img1, mask0=None, mask1=None, **kwargs):
             if affine_only:
                 A0 = fit_affine(mtch.xy0, mtch.xy1, avoid_flip=True)
                 A0_m = np.concatenate((A0[:2,:2].T, A0[-1,:2]), axis=None)
-                cg0 = affine_transform(img1['regions'][cid1], A0_m)
+                cg0 = affine_transform(info1['regions'][cid1], A0_m)
                 A1 = np.linalg.inv(A0)
                 A1_m = np.concatenate((A1[:2,:2].T, A1[-1,:2]), axis=None)
-                cg1 = affine_transform(img0['regions'][cid0], A1_m)
+                cg1 = affine_transform(info0['regions'][cid0], A1_m)
             else:
                 cg0 = concave_hull(MultiPoint(mtch.xy0), ratio=0.25).buffer(0.5*feature_spacing)
                 cg1 = concave_hull(MultiPoint(mtch.xy1), ratio=0.25).buffer(0.5*feature_spacing)
@@ -433,7 +449,7 @@ def match_two_thumbnails_LRadon(img0, img1, mask0=None, mask1=None, **kwargs):
             if cid1 not in covered_region1:
                 covered_region1[cid1] = cg1
             else:
-                covered_region1[cid1] = covered_region0[cid1].union(cg1)
+                covered_region1[cid1] = covered_region1[cid1].union(cg1)
         fidx = np.ones(kps0.num_points, dtype=bool)
         for cid0, cg0 in covered_region0.items():
             cidx_t = kps0.class_id == cid0
@@ -458,8 +474,8 @@ def match_two_thumbnails_LRadon(img0, img1, mask0=None, mask1=None, **kwargs):
     if len(xy0) == 0:
         return None
     else:
-        xy0 = np.concatenate(xy0, axis=0)
-        xy1 = np.concatenate(xy1, axis=0)
+        xy0 = scale_coordinates(np.concatenate(xy0, axis=0), 1 / scale)
+        xy1 = scale_coordinates(np.concatenate(xy1, axis=0), 1 / scale)
         weight = np.ones(xy0.shape[0], dtype=np.float32)
         return common.Match(xy0, xy1, weight)
 
@@ -467,27 +483,35 @@ def match_two_thumbnails_LRadon(img0, img1, mask0=None, mask1=None, **kwargs):
 
 def match_two_thumbnails_pmcc(img0, img1, mask0=None, mask1=None, **kwargs):
     sigma = kwargs.pop('sigma', 3)
-    if not isinstance(img0, dict):
-        img0 = prepare_image(img0, mask=mask0, compute_keypoints=False, **kwargs)
-        mesh0 = img0['mesh']
-    else:
-        mesh0 = img0['mesh'].copy()
-    if not isinstance(img1, dict):
-        img1 = prepare_image(img1, mask=mask1, compute_keypoints=False, **kwargs)
-        mesh1 = img1['mesh']
-    else:
-        mesh1 = img1['mesh'].copy()
+    scale = kwargs.get('scale', 1.0)
+    info0 = prepare_image(img0, mask=mask0, compute_keypoints=False, **kwargs)[scale]
+    mesh0 = info0['mesh'].copy()
+    info1 = prepare_image(img1, mask=mask1, compute_keypoints=False, **kwargs)[scale]
+    mesh1 = info1['mesh'].copy()
     mesh0.uid = 0.0
     mesh1.uid = 1.0
-    if not 'dog_image' in img0:
-        img0['dog_image'] = common.masked_dog_filter(img0['image'], sigma=sigma, mask=img0['mask'])
-    if not 'dog_image' in img1:
-        img1['dog_image'] = common.masked_dog_filter(img1['image'], sigma=sigma, mask=img1['mask'])
-    loader0 = StreamLoader(img0['dog_image'])
-    loader1 = StreamLoader(img1['dog_image'])
+    if not 'dog_image' in info0:
+        info0['dog_image'] = common.masked_dog_filter(info0['image'], sigma=sigma, mask=info0['mask'])
+    if not 'dog_image' in info1:
+        info1['dog_image'] = common.masked_dog_filter(info1['image'], sigma=sigma, mask=info1['mask'])
+    loader0 = StreamLoader(info0['dog_image'])
+    loader1 = StreamLoader(info1['dog_image'])
     xy0, xy1, weight = section_matcher(mesh0, mesh1, loader0, loader1, **kwargs)
     if xy0 is None:
         return None
+    xy0 = scale_coordinates(xy0, 1 / scale)
+    xy1 = scale_coordinates(xy1, 1 / scale)
+    return common.Match(xy0, xy1, weight)
+
+
+
+def _scale_matches(match, scale):
+    scale = np.atleast_1d(scale)
+    if (match is None) or np.all(scale == 1):
+        return match
+    xy0, xy1, weight = match
+    xy0 = scale_coordinates(xy0, scale[0])
+    xy1 = scale_coordinates(xy1, scale[-1])
     return common.Match(xy0, xy1, weight)
 
 
@@ -524,6 +548,8 @@ def align_two_thumbnails(img0, img1, outname, mask0=None, mask1=None, **kwargs):
                 f.create_dataset('xy1', data=xy1, compression="gzip")
                 f.create_dataset('weight', data=weight, compression="gzip")
                 f.create_dataset('resolution', data=resolution)
+    pmcc_scale = np.full(2, block_match_settings.get('scale', 1.0))
+    mtch0 = _scale_matches(mtch0, pmcc_scale)
     mtch1 = match_two_thumbnails_pmcc(img0, img1, mask0=mask0, mask1=mask1,
                                       initial_matches=mtch0, **block_match_settings)
     if mtch1 is None:
@@ -559,6 +585,8 @@ def detect_extrema_log(img, mask=None, offset=(0,0), **kwargs):
     xy = peak_local_max(np.abs(img), min_distance=min_spacing,
                         threshold_rel=intensity_thresh, labels=mask,
                         num_peaks=num_features)[:,::-1]
+    if num_features <= 0:
+        num_features = np.inf
     response = img[xy[:,1], xy[:,0]]
     sidx = np.argsort(np.abs(response))[::-1]
     xy = xy[sidx] + np.array(offset)
@@ -657,11 +685,13 @@ def match_LRadon_feature(kps0, kps1, D=None, exclude_class=None, **kwargs):
             des0 = kps0.reset_angle()
             des1 = kps1.reset_angle()
             norm_fact = 1 / (des0.shape[-1] * des0.shape[-2])
-            F0 = rfft(des0, n=des0.shape[-1], axis=-1)
-            F1 = rfft(des1, n=des1.shape[-1], axis=-1)
-            F = np.einsum('mjk,njk->mnk', F0, np.conj(F1), optimize=True)
-            D0 = irfft(F, n=des0.shape[-1], axis=-1)
-            D = norm_fact * D0.max(axis=-1)
+            D = np.full_like(des0, fill_value=-1, shape=(des0.shape[0], des1.shape[0]))
+            des1_t = des1
+            for _ in range(des1.shape[-1]):
+                des1_t = np.roll(des1_t, 1, axis=-1)
+                D_t = des0.reshape(des0.shape[0], -1) @ des1_t.reshape(des1.shape[0], -1).T
+                D = np.maximum(D, D_t)
+            D = norm_fact * D
         else:
             des0 = kps0.align_angle()
             des1 = kps1.align_angle()

@@ -2,6 +2,7 @@ import math
 import os
 import yaml
 from feabas import constant
+from functools import lru_cache
 
 if os.path.isfile(os.path.join(os.getcwd(), 'configs', 'general_configs.yaml')):
     _default_configuration_folder = os.path.join(os.getcwd(), 'configs')
@@ -11,6 +12,7 @@ else:
     _default_configuration_folder = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'configs')
 
 
+@lru_cache(maxsize=1)
 def general_settings():
     config_file = os.path.join(_default_configuration_folder, 'general_configs.yaml')
     if os.path.isfile(config_file):
@@ -27,12 +29,14 @@ def general_settings():
 DEFAULT_RESOLUTION = general_settings().get('full_resolution', constant.DEFAULT_RESOLUTION)
 
 
+@lru_cache(maxsize=1)
 def get_work_dir():
     conf = general_settings()
     work_dir = conf.get('working_directory', './work_dir')
     return work_dir
 
 
+@lru_cache(maxsize=1)
 def get_log_dir():
     conf = general_settings()
     log_dir = conf.get('logging_directory', None)
@@ -42,6 +46,7 @@ def get_log_dir():
     return log_dir
 
 
+@lru_cache(maxsize=1)
 def stitch_config_file():
     work_dir = get_work_dir()
     config_file = os.path.join(work_dir, 'configs', 'stitching_configs.yaml')
@@ -51,11 +56,14 @@ def stitch_config_file():
     return config_file
 
 
+@lru_cache(maxsize=1)
 def stitch_configs():
     with open(stitch_config_file(), 'r') as f:
         conf = yaml.safe_load(f)
     return conf
 
+
+@lru_cache(maxsize=1)
 def material_table_file():
     work_dir = get_work_dir()
     mt_file = os.path.join(work_dir, 'configs', 'material_table.json')
@@ -64,6 +72,7 @@ def material_table_file():
     return mt_file
 
 
+@lru_cache(maxsize=1)
 def align_config_file():
     work_dir = get_work_dir()
     config_file = os.path.join(work_dir, 'configs', 'alignment_configs.yaml')
@@ -73,6 +82,7 @@ def align_config_file():
     return config_file
 
 
+@lru_cache(maxsize=1)
 def align_configs():
     with open(align_config_file(), 'r') as f:
         conf = yaml.safe_load(f)
@@ -84,6 +94,7 @@ def align_configs():
     return conf
 
 
+@lru_cache(maxsize=1)
 def thumbnail_config_file():
     work_dir = get_work_dir()
     config_file = os.path.join(work_dir, 'configs', 'thumbnail_configs.yaml')
@@ -93,12 +104,14 @@ def thumbnail_config_file():
     return config_file
 
 
+@lru_cache(maxsize=1)
 def thumbnail_configs():
     with open(thumbnail_config_file(), 'r') as f:
         conf = yaml.safe_load(f)
     return conf
 
 
+@lru_cache(maxsize=1)
 def stitch_render_dir():
     config_file = stitch_config_file()
     with open(config_file, 'r') as f:        
@@ -111,15 +124,38 @@ def stitch_render_dir():
     return outdir
 
 
+@lru_cache(maxsize=1)
 def align_render_dir():
     config_file = align_config_file()
     with open(config_file, 'r') as f:        
-        stitch_configs = yaml.safe_load(f)
-    render_settings = stitch_configs.get('rendering', {})
+        align_configs = yaml.safe_load(f)
+    render_settings = align_configs.get('rendering', {})
     outdir = render_settings.get('out_dir', None)
     if outdir is None:
         work_dir = get_work_dir()
         outdir = os.path.join(work_dir, 'aligned_stack')
+    return outdir
+
+
+@lru_cache(maxsize=1)
+def tensorstore_render_dir():
+    config_file = align_config_file()
+    with open(config_file, 'r') as f:        
+        align_configs = yaml.safe_load(f)
+    render_settings = align_configs.get('tensorstore_rendering', {})
+    outdir = render_settings.get('out_dir', None)
+    if outdir is None:
+        work_dir = get_work_dir()
+        outdir = os.path.join(work_dir, 'aligned_tensorstore')
+    outdir = outdir.replace('\\', '/')
+    if not outdir.endswith('/'):
+        outdir = outdir + '/'
+    kv_headers = ('gs://', 'http://', 'https://', 'file://', 'memory://')
+    for kvh in kv_headers:
+        if outdir.startswith(kvh):
+            break
+    else:
+        outdir = 'file://' + outdir
     return outdir
 
 

@@ -16,11 +16,55 @@ Match = namedtuple('Match', ('xy0', 'xy1', 'weight'))
 
 def imread(path, **kwargs):
     flag = kwargs.get('flag', cv2.IMREAD_UNCHANGED)
-    return cv2.imread(path, flag)
+    if path.startswith('gs://'):
+        if path.lower().endswith('.png'):
+            driver = 'png'
+        elif path.lower().endswith('.bmp'):
+            driver = 'bmp'
+        elif path.lower().endswith('.tif') or path.lower().endswith('.tiff'):
+            driver = 'tiff'
+        elif path.lower().endswith('.jpg') or path.lower().endswith('.jpeg'):
+            driver = 'jpeg'
+        elif path.lower().endswith('.avif'):
+            driver = 'avif'
+        elif path.lower().endswith('.webp'):
+            driver = 'webp'
+        else:
+            raise ValueError(f'format not supported: {path}')
+        import tensorstore as ts
+        js_spec = {'driver': driver, 'kvstore': path}
+        try:
+            ts_data = ts.open(js_spec).result()
+            img = ts_data.read().result()
+            if len(img.shape) < 3:
+                num_channels = 1
+            else:
+                num_channels = img.shape[-1]
+            if flag == cv2.IMREAD_GRAYSCALE and num_channels != 1:
+                img = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+            elif flag == cv2.IMREAD_COLOR and num_channels == 1:
+                img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
+        except ValueError:
+            img = None
+    else:
+        img = cv2.imread(path, flag)
+    return img
 
 
 def imwrite(path, image):
-    return cv2.imwrite(path, image)
+    if path.startswith('gs://'):
+        from google.cloud import storage
+        plist = path.replace('gs://', '').split('/')
+        plist = [s for s in plist if s]
+        bucket = plist[0]
+        relpath = '/'.join(plist[1:])
+        _, encoded_img = cv2.imencode('.PNG', image)
+        client = storage.Client()
+        bucket = client.get_bucket(bucket)
+        blob = bucket.blob(relpath)
+        blob.upload_from_string(encoded_img.tobytes(), content_type='image/png')
+    else:
+        return cv2.imwrite(path, image)
 
 
 def inverse_image(img, dtype=np.uint8):
@@ -138,7 +182,8 @@ def render_by_subregions(map_x, map_y, mask, img_loader, fileid=None,  **kwargs)
             imgtt = cv2.remap(img0, map_xt.astype(np.float32), map_yt.astype(np.float32),
                 interpolation=rintp, borderMode=cv2.BORDER_CONSTANT, borderValue=fillval)
             if multichannel:
-                mskt3 = np.stack((mskt, )*imgtt.shape[-1], axis=-1)
+                mskt3 = np.stack((mskt, )*num_channel, axis=-1)
+                imgtt = imgtt.reshape(mskt3.shape)
                 imgt[mskt3] = imgtt[mskt3]
             else:
                 imgt[mskt] = imgtt[mskt]
@@ -306,11 +351,16 @@ def crop_image_from_bbox(img, bbox_img, bbox_out, **kwargs):
     """
     return_index = kwargs.get('return_index', False)
     return_empty = kwargs.get('return_empty', False)
+    flip_indx = kwargs.get('flip_indx', False)
     fillval = kwargs.get('fillval', 0)
     x0 = bbox_img[0]
     y0 = bbox_img[1]
-    blkht = min(bbox_img[3] - bbox_img[1], img.shape[0])
-    blkwd = min(bbox_img[2] - bbox_img[0], img.shape[1])
+    if flip_indx:
+        imght, imgwd = img.shape[1], img.shape[0]
+    else:
+        imght, imgwd = img.shape[0], img.shape[1]
+    blkht = min(bbox_img[3] - bbox_img[1], imght)
+    blkwd = min(bbox_img[2] - bbox_img[0], imgwd)
     outht = bbox_out[3] - bbox_out[1]
     outwd = bbox_out[2] - bbox_out[0]
     xmin = max(x0, bbox_out[0])
@@ -327,7 +377,10 @@ def crop_image_from_bbox(img, bbox_img, bbox_out, **kwargs):
                 return imgout
             else:
                 return None
-    cropped = img[(ymin-y0):(ymax-y0), (xmin-x0):(xmax-x0), ...]
+    if flip_indx:
+        cropped = img[(xmin-x0):(xmax-x0), (ymin-y0):(ymax-y0), ...].transpose()
+    else:
+        cropped = img[(ymin-y0):(ymax-y0), (xmin-x0):(xmax-x0), ...]
     dimpad = len(img.shape) - 2
     indx = tuple([slice(ymin-bbox_out[1], ymax-bbox_out[1]), slice(xmin-bbox_out[0],xmax-bbox_out[0])] +
             [slice(0, None)] * dimpad)
@@ -530,22 +583,43 @@ def parse_coordinate_files(filename, **kwargs):
     return imgpaths, bboxes, root_dir, resolution
 
 
-def rearrange_section_order(section_list, section_order_file, merge=False):
+def rearrange_section_order(section_list, section_order_file, order_file_only=True, merge=False):
     if os.path.isfile(section_order_file):
         with open(section_order_file, 'r') as f:
-            section_orders = f.readlines()
-        section_orders = [s.strip() for s in section_orders]
+            section_orders0 = f.readlines()
+        section_orders = []
+        z_lut = {}
+        for k, s in enumerate(section_orders0):
+            s = s.strip()
+            if '\t' in s:
+                secname = s.split('\t')[1]
+                section_orders.append(secname)
+                z_lut[secname] = int(s.split('\t')[0])
+            else:
+                section_orders.append(s)
+                z_lut[s] = k
         assert len(section_orders) == len(set(section_orders))
+        secnames = [os.path.splitext(os.path.basename(fname))[0] for fname in section_list]
+        section_lut = {secname:fname for secname, fname in zip(secnames, section_list)}
+        section_orders = [s for s in section_orders if s in secnames]
+        if order_file_only:
+            section_list_out = [section_lut[s] for s in section_orders if s in section_lut]
+            z_indices = [z_lut[s] for s in section_orders if s in section_lut]
+            return section_list_out, np.array(z_indices)
         if merge:
-            section_list = sorted(list(set(section_list + section_orders)))
-        section_lut = {os.path.splitext(os.path.basename(secname))[0]:k 
-                    for k, secname in enumerate(section_list)}
-        section_ids0 = np.array([section_lut.get(s, -1) for s in section_orders])
-        section_ids0 = section_ids0[section_ids0 >= 0]
-        section_ids1 = np.sort(section_ids0)
-        section_list_out = section_list.copy()
-        for sid0, sid1 in zip(section_ids0, section_ids1):
-            section_list_out[sid1] = section_list[sid0]
-        return section_list_out
+            secnames = sorted(list(set(secnames + section_orders)))
+        section_orders_set = set(section_orders)
+        sec_keys = []
+        order_cnt = 0
+        z_indices = np.arange(len(secnames))
+        for k, s in enumerate(secnames):
+            if s in section_orders_set:
+                secname = section_orders[order_cnt]
+                sec_keys.append(secname)
+                z_indices[k] = z_lut[secname]
+                order_cnt += 1
+            else:
+                sec_keys.append(s)
+        return [section_lut.get(s, None) for s in sec_keys], z_indices
     else:
-        return section_list
+        return section_list, np.arange(len(section_list))

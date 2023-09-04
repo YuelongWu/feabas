@@ -6,6 +6,7 @@ downsample:
     # max_mip: 5
     format: jpg
     thumbnail_highpass: true    # whether to use high-pass filter to enhance contrast when generating thumbnail.
+    highpass_inter_mip_lvl: 4
 
 
 alignment:
@@ -16,9 +17,11 @@ alignment:
     match_name_delimiter: __to__    # so that the match file follows the patern sec0{delimieter}sec2.h5
     feature_matching:
         affine_only: false
+        scale: 1.0
         detect_settings:
             sigma: 3.5
             min_spacing: 10
+            num_features: -1    # non-positive values mean no limitation on keypoint numbers
         extract_settings:
             proj_num: 6
             beam_num: 8
@@ -36,6 +39,7 @@ alignment:
             dis_tol: 4
     block_matching:
         sigma: 3.5
+        scale: 1.0
         conf_thresh: 0.35
         pad: True
         spacings: [150, 50]

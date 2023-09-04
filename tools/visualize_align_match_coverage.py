@@ -6,7 +6,7 @@ import glob
 import os
 from functools import lru_cache
 
-from feabas.common import numpy_to_str_ascii
+from feabas.common import numpy_to_str_ascii, imread
 from feabas.spatial import scale_coordinates
 from feabas import config
 
@@ -65,7 +65,9 @@ if __name__ == '__main__':
         outname = os.path.join(out_dir, tname_noext+'.jpg')
         if os.path.isfile(outname):
             continue
-        img = cv2.imread(tname, cv2.IMREAD_GRAYSCALE)
+        if (len(prev_lut[tname_noext]) == 0) and (len(post_lut[tname_noext]) == 0):
+            continue
+        img = imread(tname, flag=cv2.IMREAD_GRAYSCALE)
         mask0 = np.zeros_like(img)
         mask1 = np.zeros_like(img)
         imght = img.shape[0]

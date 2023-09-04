@@ -66,3 +66,21 @@ downsample:
     parallel_within_section: true   # whether to parallel among tiles within a section, or among sections
     max_mip: 7
     format: jpg
+
+
+tensorstore_rendering: # render to tensorstore volume
+    num_workers: 10
+    mip_level: 0
+    z_min: null
+    z_max: null
+    driver: neuroglancer_precomputed
+    outdir: null
+    chunk_shape: [1024, 1024, 16]
+    read_chunk_shape: [128, 128, 16]
+    canvas_bbox: null
+    max_tile_per_job: 320
+    remap_interp: LANCZOS # LANCZOS | CUBIC | LINEAR | NEAREST
+    loader_config:
+        cache_size: 0
+        fillval: 0
+        apply_CLAHE: false  # should already be applied during stitching 

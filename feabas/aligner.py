@@ -73,6 +73,8 @@ def match_section_from_initial_matches(match_name, meshes, loaders, out_dir, con
     secnames = os.path.splitext(os.path.basename(match_name))[0].split(match_name_delimiter)
     if 'cache_size' in loader_config and loader_config['cache_size'] is not None:
         loader_config['cache_size'] = loader_config['cache_size'] // (2 * matcher_config.get('num_workers',1))
+    if 'cache_capacity' in loader_config and loader_config['cache_capacity'] is not None:
+        loader_config['cache_capacity'] = loader_config['cache_capacity'] // (2 * matcher_config.get('num_workers',1))
     if isinstance(meshes, str):
         meshes = (os.path.join(meshes, secnames[0]+'.h5'), os.path.join(meshes, secnames[1]+'.h5'))
     if isinstance(meshes, (tuple, list)):
@@ -106,9 +108,9 @@ def match_section_from_initial_matches(match_name, meshes, loaders, out_dir, con
     if isinstance(loaders, (tuple, list)):
         loader0, loader1 = loaders
         if not isinstance(loader0, dal.AbstractImageLoader):
-            loader0 = dal.get_loader_from_json(loader0, loader_type='MosaicLoader', **loader_config)
+            loader0 = dal.get_loader_from_json(loader0, mip=working_mip_level, **loader_config)
         if not isinstance(loader1, dal.AbstractImageLoader):
-            loader1 = dal.get_loader_from_json(loader1, loader_type='MosaicLoader', **loader_config)
+            loader1 = dal.get_loader_from_json(loader1, mip=working_mip_level, **loader_config)
     else:
         raise TypeError('loader input type not supported.')
     mesh0.change_resolution(resolution)
@@ -159,7 +161,7 @@ class Stack:
             else:
                 raise RuntimeError('no section found.')
             section_order_file = kwargs.get('section_order_file', os.path.join(self._mesh_dir, 'section_order.txt'))
-            section_list = rearrange_section_order(section_list, section_order_file)
+            section_list = rearrange_section_order(section_list, section_order_file)[0]
         assert len(section_list) == len(set(section_list))
         self.section_list = tuple(section_list)
         self._mesh_cache_size = kwargs.get('mesh_cache_size', self.num_sections)

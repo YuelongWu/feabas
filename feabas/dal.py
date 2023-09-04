@@ -10,6 +10,7 @@ import re
 import cv2
 import numpy as np
 from rtree import index
+import tensorstore as ts
 
 from feabas import common, caching
 from feabas.config import DEFAULT_RESOLUTION
@@ -83,21 +84,34 @@ def _tile_divider_block(imght, imgwd, x0=0, y0=0, cache_block_size=0):
 
 def get_loader_from_json(json_info, loader_type=None, **kwargs):
     if isinstance(json_info, str):
-        if json_info.lower().endswith('.json'):
-            with open(json_info, 'r') as f:
-                json_obj = json.load(f)
-        elif json_info.lower().endswith('.txt'): # could use tab separated txt, not recommend
-            if loader_type == 'StaticImageLoader':
-                loader = StaticImageLoader.from_coordinate_file(json_info)
-            else:
-                loader = MosaicLoader.from_coordinate_file(json_info)
-            json_obj = loader.init_dict()
-        else:
+        try:
             json_obj = json.loads(json_info)
+        except ValueError:
+            if json_info.lower().endswith('.txt'): # could use tab separated txt, not recommend
+                if loader_type == 'StaticImageLoader':
+                    loader = StaticImageLoader.from_coordinate_file(json_info)
+                else:
+                    loader = MosaicLoader.from_coordinate_file(json_info)
+                json_obj = loader.init_dict()
+            else:
+                if json_info.startswith('gs:'):
+                    json_ts = ts.open({"driver": "json", "kvstore": json_info}).result()
+                    s = json_ts.read().result()
+                    json_obj = s.item()
+                else:
+                    with open(json_info, 'r') as f:
+                        json_obj = json.load(f)
     elif isinstance(json_info, dict):
         json_obj = json_info
     else:
         raise TypeError
+    if kwargs.get('mip', None) is not None:
+        if str(kwargs['mip']) in json_obj:
+             json_obj = json_obj[str(kwargs['mip'])]
+        elif kwargs['mip'] in json_obj:
+             json_obj = json_obj[kwargs['mip']]
+    if ('kvstore' in json_obj) or ('base' in json_obj):
+        return TensorStoreLoader.from_json_spec(json_obj, **kwargs)
     json_obj.update(kwargs)
     if loader_type is None:
         loader_type = json_obj['ImageLoaderType']
@@ -109,6 +123,8 @@ def get_loader_from_json(json_info, loader_type=None, **kwargs):
         return MosaicLoader.from_json(json_obj)
     elif loader_type == 'StreamLoader':
         return StreamLoader.from_init_dict(json_obj)
+    elif loader_type == 'TensorStoreLoader':
+        return TensorStoreLoader.from_json(json_obj)
     else:
         raise ValueError
 
@@ -374,10 +390,13 @@ class AbstractImageLoader(ABC):
             raise RuntimeError(f'Image file {imgpath} not valid!')
         if dtype is None:
             dtype = img.dtype
-        if (number_of_channels == 1) and (len(img.shape) > 2) and (img.shape[-1] > 1):
-            img = img.mean(axis=-1).astype(dtype)
+        while (len(img.shape) > 2) and (img.shape[-1] == 1):
+            img = img[..., 0]
+        if (number_of_channels == 1):
+            while (len(img.shape) > 2):
+                img = img.mean(axis=-1).astype(dtype)
         if apply_CLAHE:
-            if len(img.shape) > 2:
+            if (len(img.shape) > 2) and (img.shape[-1] == 3):
                 img = cv2.cvtColor(img, cv2.COLOR_RGB2Lab)
                 img[:,:,0] = self._CLAHE.apply(img[:,:,0])
                 img = cv2.cvtColor(img, cv2.COLOR_Lab2RGB)
@@ -1039,6 +1058,170 @@ class StreamLoader(AbstractImageLoader):
     def bounds(self):
         return self.file_bboxes(margin=0)[0]
 
+
+def get_tensorstore_spec(metafile, mip=None, **kwargs):
+    downsample_method = kwargs.get('downsample_method', 'mean')
+    return_mips = kwargs.get('return_mips', False)
+    if isinstance(metafile, str):
+        try:
+            json_obj = json.loads(metafile)
+        except ValueError:
+            if metafile.startswith('gs:'):
+                json_ts = ts.open({"driver": "json", "kvstore": metafile}).result()
+                s = json_ts.read().result()
+                json_obj = s.item()
+            else:
+                with open(metafile, 'r') as f:
+                    json_obj = json.load(f)
+    elif isinstance(metafile, dict):
+        json_obj = metafile
+    try:
+        mipmaps = {int(m): json_spec for m, json_spec in json_obj.items()}
+    except ValueError:
+        mipmaps = {0: json_obj}
+    rendered_mips = np.array([m for m in mipmaps])
+    if mip is None:
+        mip = rendered_mips.max() + 1
+    src_mip = rendered_mips[rendered_mips <= mip].max()
+    src_spec = mipmaps[src_mip]
+    if src_mip == mip:
+        ds_spec = src_spec
+    else:
+        ts_src = ts.open(src_spec).result()
+        src_spec = ts_src.spec(minimal_spec=True).to_json()
+        downsample_factors = [2**(mip - src_mip), 2**(mip - src_mip)] + ([1] * (ts_src.rank - 2))
+        ds_spec = {
+            "driver": "downsample",
+            "downsample_factors": downsample_factors,
+            "downsample_method": downsample_method,
+            "base": src_spec
+        }
+    if return_mips:
+        return ds_spec, src_mip, mip, mipmaps
+    else:
+        return ds_spec
+
+
+class TensorStoreLoader(AbstractImageLoader):
+    """
+    Loader class for image saved by tensorstore. Mirrors the APIs of MosaicLoader.
+    """
+    def __init__(self, dataset, **kwargs):
+        super().__init__(**kwargs)
+        self.resolution = dataset.schema.dimension_units[0].multiplier
+        self._z = kwargs.get('z', 0)
+        self.dataset = dataset
+
+
+    @classmethod
+    def from_json(cls, jsonname, **kwargs):
+        settings, json_obj = cls._load_settings_from_json(jsonname)
+        settings.update(kwargs)
+        json_spec = json_obj['json_spec']
+        return cls.from_json_spec(json_spec, **settings)
+
+
+    @classmethod
+    def from_json_spec(cls, js_spec, **kwargs):
+        if kwargs.get('cache_capacity', None) is not None:
+            total_bytes_limit = kwargs['cache_capacity'] * 1_000_000
+        elif kwargs.get('cache_size', None) is not None:
+            # assume 4k tiles
+            total_bytes_limit = kwargs['cache_size'] * 4096 * 4096
+        elif ('cache_capacity' not in kwargs) and ('cache_size' not in kwargs):
+            total_bytes_limit = -1
+        else:
+            total_bytes_limit = np.inf
+        if total_bytes_limit >= 0:
+            cntx = {'cache_pool': {'total_bytes_limit': total_bytes_limit}}
+            js_spec = js_spec.copy()
+            js_spec.update({'context': cntx})
+        dataset = ts.open(js_spec).result()
+        if js_spec['driver'] in ('neuroglancer_precomputed', 'n5'):
+            kwargs['fillval'] = 0
+        return cls(dataset, **kwargs)
+        
+
+    def _export_dict(self, **kwargs):
+        out = super()._settings_dict(**kwargs)
+        out['json_spec'] = self.dataset.spec(minimal_spec=True).to_json()
+        return out
+
+
+    def crop(self, bbox, return_empty=False, **kwargs):
+        fillval = kwargs.get('fillval', self._default_fillval)
+        apply_CLAHE = kwargs.get('apply_CLAHE', self._apply_CLAHE)
+        dtype = kwargs.get('dtype', self.dtype)
+        number_of_channels = kwargs.get('number_of_channels', self.number_of_channels)
+        inverse = kwargs.get('inverse', self._inverse)
+        rnk = self.dataset.rank
+        if rnk > 2:
+            slc = self.dataset[:, :, self._z, ...]
+        else:
+            slc = self.dataset
+        while slc.rank > 2 and slc.shape[-1] == 1:
+            slc = slc[..., 0]
+        bbox_img = self.bounds
+        slc_crp, indx = common.crop_image_from_bbox(slc, bbox_img, bbox,
+                                                    return_index=True, flip_indx=True)
+        if (slc_crp is None) and (not return_empty):
+            return None
+        img_crp = slc_crp.read().result()
+        if np.all(img_crp == fillval) and (not return_empty):
+            return None
+        if dtype is None:
+            dtype = img_crp.dtype
+        if number_of_channels is not None:
+            if (number_of_channels > 1) and len(img_crp.shape) < 3:
+                img_crp = np.tile(img_crp[..., np.newaxis], (1,1,number_of_channels))
+            elif (number_of_channels == 1):
+                while len(img_crp.shape) > 2:
+                    img_crp = img_crp.mean(axis=-1).astype(img_crp.dtype)
+        if apply_CLAHE:
+            if (len(img_crp.shape) > 2) and (img_crp.shape[-1] == 3):
+                img_crp = cv2.cvtColor(img_crp, cv2.COLOR_RGB2Lab)
+                img_crp[:,:,0] = self._CLAHE.apply(img_crp[:,:,0])
+                img_crp = cv2.cvtColor(img_crp, cv2.COLOR_Lab2RGB)
+            else:
+                img_crp = self._CLAHE.apply(img_crp)
+        if self._preprocess is not None:
+            img_crp = self._preprocess(img_crp)
+        if inverse:
+            img = common.inverse_image(img, dtype)
+        outht = bbox[3] - bbox[1]
+        outwd = bbox[2] - bbox[0]
+        outsz = [outht, outwd] + list(img_crp.shape)[2:]
+        imgout = np.full_like(img_crp, fillval, shape=outsz)
+        imgout[indx] = img_crp
+        return imgout.astype(dtype, copy=False)
+
+
+    @property
+    def dtype(self):
+        if self._dtype is None:
+            self._dtype = np.dtype(self.dataset.dtype.name)
+        return self._dtype
+
+
+    @property
+    def number_of_channels(self):
+        if self._number_of_channels is None:
+            shp = self.dataset.shape
+            if len(shp) < 4:
+                self._number_of_channels = 1
+            else:
+                self._number_of_channels = shp[-1]
+        return self._number_of_channels
+
+
+    @property
+    def bounds(self):
+        domain = self.dataset.domain
+        inclusive_min = domain.inclusive_min
+        exclusive_max = domain.exclusive_max
+        xmin, ymin = inclusive_min[0], inclusive_min[1]
+        xmax, ymax = exclusive_max[0], exclusive_max[1]
+        return (xmin, ymin, xmax, ymax)
 
 
 class MultiResolutionImageLoader:

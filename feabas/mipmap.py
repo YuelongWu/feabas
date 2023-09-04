@@ -1,14 +1,19 @@
+from concurrent.futures.process import ProcessPoolExecutor
+from concurrent.futures import as_completed
 import cv2
 import glob
+import json
+from multiprocessing import get_context
 import numpy as np
 from functools import partial
 from scipy.interpolate import interp1d
 import shapely.geometry as shpgeo
 from shapely.ops import unary_union
 import os
+import tensorstore as ts
 import time
 
-from feabas.dal import MosaicLoader
+from feabas.dal import MosaicLoader, get_tensorstore_spec
 from feabas import common, logging, dal
 from feabas.spatial import Geometry
 from feabas.mesh import Mesh
@@ -67,7 +72,10 @@ def mip_one_level(src_dir, out_dir, **kwargs):
     tile_size = kwargs.pop('tile_size', None)
     downsample = kwargs.pop('downsample', 2)
     logger_info = kwargs.get('logger', None)
-    kwargs.setdefault('remap_interp', cv2.INTER_AREA)
+    downsample_method = kwargs.get('downsample_method', 'mean')
+    remap_interp_lookup = {'mean': cv2.INTER_AREA, 'stride': cv2.INTER_NEAREST,
+                           'nearest': cv2.INTER_NEAREST, 'linear': cv2.INTER_LINEAR}
+    kwargs.setdefault('remap_interp', remap_interp_lookup.get(downsample_method, cv2.INTER_AREA))
     kwargs.setdefault('cache_type', 'fifo')
     kwargs.setdefault('cache_size', downsample + 2)
     if (kwargs['remap_interp'] != cv2.INTER_NEAREST) and (downsample > 2):
@@ -175,6 +183,169 @@ def create_thumbnail(src_dir, outname=None, downsample=4, highpass=True, **kwarg
         img = rndr.crop(out_bbox, **kwargs)
         if normalize_hist:
             img = _max_entropy_scaling_both_sides(img)
+    if outname is None:
+        return img
+    else:
+        common.imwrite(outname, img)
+
+
+def generate_target_tensorstore_scale(metafile, mip=None, **kwargs):
+    num_workers = kwargs.get('num_workers', 1)
+    max_tile_per_job = kwargs.get('max_tile_per_job', 16)
+    write_to_file = False
+    if isinstance(metafile, str):
+        try:
+            json_obj = json.loads(metafile)
+        except ValueError:
+            write_to_file = True
+            if metafile.startswith('gs:'):
+                json_ts = ts.open({"driver": "json", "kvstore": metafile}).result()
+                s = json_ts.read().result()
+                json_obj = s.item()
+            else:
+                with open(metafile, 'r') as f:
+                    json_obj = json.load(f)
+    elif isinstance(metafile, dict):
+        json_obj = metafile
+    ds_spec, src_mip, mip, mipmaps = get_tensorstore_spec(json_obj, mip=mip, return_mips=True, **kwargs)
+    if src_mip == mip:
+        return None
+    ts_dsp = ts.open(ds_spec).result()
+    ts_src = ts_dsp.base
+    src_spec = ts_src.spec(minimal_spec=True).to_json()
+    tgt_spec = {}
+    driver = src_spec['driver']
+    tgt_spec['driver'] = driver
+    tgt_spec['kvstore'] = src_spec['kvstore']
+    if driver == 'neuroglancer_precomputed':
+        pass
+    elif driver == 'n5':
+        pth = tgt_spec['kvstore']['path']
+        pth = pth[::-1].replace(str(src_mip)+'s', str(mip)+'s', 1)[::-1]
+        tgt_spec['kvstore']['path'] = pth
+    elif driver == 'zarr':
+        pth = tgt_spec['kvstore']['path']
+        pth = pth[::-1].replace(str(src_mip), str(mip), 1)[::-1]
+        tgt_spec['kvstore']['path'] = pth
+    else:
+        raise ValueError(f'driver type {driver} not supported.')
+    tgt_schema = ts_src.schema.to_json()
+    ds_schema = ts_dsp.schema.to_json()
+    tgt_schema['domain'] = ds_schema['domain']
+    tgt_schema['dimension_units'] = ds_schema['dimension_units']
+    inclusive_min = ts_dsp.domain.inclusive_min
+    exclusive_max = ts_dsp.domain.exclusive_max
+    Xmin, Ymin = inclusive_min[0], inclusive_min[1]
+    Xmax, Ymax = exclusive_max[0], exclusive_max[1]
+    chunk_shape = ts_src.schema.chunk_layout.write_chunk.shape
+    tile_wd, tile_ht = chunk_shape[0], chunk_shape[1]
+    while tile_wd > (Xmax - Xmin) or tile_ht > (Ymax - Ymin):
+        tile_wd = tile_wd // 2
+        tile_ht = tile_ht // 2
+    tgt_schema['chunk_layout']['write_chunk']['shape'][:2] = [tile_wd, tile_ht]
+    read_chunk_shape = ts_src.schema.chunk_layout.read_chunk.shape
+    read_wd, read_ht = read_chunk_shape[0], read_chunk_shape[1]
+    while read_wd > (Xmax - Xmin) or read_ht > (Ymax - Ymin):
+        read_wd = read_wd // 2
+        read_ht = read_ht // 2
+    tgt_schema['chunk_layout']['read_chunk']['shape'][:2] = [read_wd, read_ht]
+    tgt_spec['schema'] = tgt_schema
+    x1d = np.arange(Xmin, Xmax, tile_wd, dtype=np.int64)
+    y1d = np.arange(Ymin, Ymax, tile_ht, dtype=np.int64)
+    xmn, ymn = np.meshgrid(x1d, y1d)
+    xmn, ymn = xmn.ravel(), ymn.ravel()
+    idxz = common.z_order(np.stack((xmn // tile_wd, ymn // tile_ht), axis=-1))
+    xmn, ymn =  xmn[idxz], ymn[idxz]
+    xmx = (xmn + tile_wd).clip(Xmin, Xmax)
+    ymx = (ymn + tile_ht).clip(Ymin, Ymax)
+    bboxes = np.stack((xmn, ymn, xmx, ymx), axis=-1)
+    if num_workers == 1:
+        out_spec = _write_downsample_tensorstore(ds_spec, tgt_spec, bboxes, **kwargs)
+    else:
+        n_tiles = xmn.size
+        num_tile_per_job = max(1, n_tiles // num_workers)
+        if max_tile_per_job is not None:
+            num_tile_per_job = min(num_tile_per_job, max_tile_per_job)
+        N_jobs = round(n_tiles / num_tile_per_job)
+        indices = np.round(np.linspace(0, n_tiles, num=N_jobs+1, endpoint=True))
+        indices = np.unique(indices).astype(np.uint32)
+        jobs = []
+        out_spec = None
+        with ProcessPoolExecutor(max_workers=num_workers, mp_context=get_context('spawn')) as executor:
+            for idx0, idx1 in zip(indices[:-1], indices[1:]):
+                idx0, idx1 = int(idx0), int(idx1)
+                bbox_t = bboxes[idx0:idx1]
+                job = executor.submit(_write_downsample_tensorstore, ds_spec, tgt_spec, bbox_t, **kwargs)
+                jobs.append(job)
+            for job in as_completed(jobs):
+                out_spec = job.result()
+    mipmaps.update({mip: out_spec})
+    if write_to_file:
+        kv_headers = ('gs://', 'http://', 'https://', 'file://', 'memory://')
+        for kvh in kv_headers:
+            if metafile.startswith(kvh):
+                break
+        else:
+            metafile = 'file://' + metafile
+        meta_ts = ts.open({"driver": "json", "kvstore": metafile}).result()
+        meta_ts.write(mipmaps).result()
+    return mipmaps
+
+
+def generate_tensorstore_scales(metafile, mips, **kwargs):
+    logger_info = kwargs.pop('logger', None)
+    t0 = time.time()
+    logger = logging.get_logger(logger_info)
+    mips = np.sort(mips)
+    updated = False
+    for mip in mips:
+        specs = generate_target_tensorstore_scale(metafile, mip=mip, **kwargs)
+        if specs is not None:
+            updated = True
+    if updated:
+        sec_name = os.path.basename(metafile).replace('.json', '')
+        logger.info(f'{sec_name}: {(time.time()-t0)/60} min')
+
+
+def _write_downsample_tensorstore(src_spec, tgt_spec, bboxes, **kwargs):
+    src_loader = dal.TensorStoreLoader.from_json_spec(src_spec, **kwargs)
+    tgt_spec.update({'open': True, 'create': True, 'delete_existing': False})
+    ts_out = ts.open(tgt_spec).result()
+    for bbox in bboxes:
+        img = src_loader.crop(bbox, return_empty=False, **kwargs)
+        if img is None:
+            continue
+        xmin, ymin, xmax, ymax = bbox
+        out_view = ts_out[xmin:xmax, ymin:ymax]
+        out_view.write(img.T.reshape(out_view.shape)).result()
+    return ts_out.spec(minimal_spec=True).to_json()
+
+
+def create_thumbnail_tensorstore(metafile, mip, outname=None, highpass=True, **kwargs):
+    normalize_hist = kwargs.get('normalize_hist', True)
+    downsample_method = kwargs.get('downsample_method', 'mean')
+    if not highpass:
+        ds_spec = get_tensorstore_spec(metafile, mip=mip, downsample_method=downsample_method)
+        thumb_loader = dal.TensorStoreLoader.from_json_spec(ds_spec, **kwargs)
+        img = thumb_loader.crop(thumb_loader.bounds, **kwargs)
+        if normalize_hist:
+            img = _max_entropy_scaling_both_sides(img)
+    else:
+        inter_mip = kwargs.get('highpass_inter_mip_lvl', max(0, mip-2))
+        assert mip > inter_mip
+        ds_mip = mip - inter_mip
+        inter_spec = get_tensorstore_spec(metafile, mip=inter_mip, downsample_method='mean')
+        mx_spec = get_tensorstore_spec({0: inter_spec}, 1, downsample_method='max')
+        mn_spec = get_tensorstore_spec({0: inter_spec}, 1, downsample_method='min')
+        mx_spec = {'driver': 'cast', 'dtype': 'float32', 'base': mx_spec}
+        mn_spec = {'driver': 'cast', 'dtype': 'float32', 'base': mn_spec}
+        mx_spec = get_tensorstore_spec({1: mx_spec}, ds_mip, downsample_method='mean')
+        mn_spec = get_tensorstore_spec({1: mn_spec}, ds_mip, downsample_method='mean')
+        mx_loader = dal.TensorStoreLoader.from_json_spec(mx_spec, **kwargs)
+        mn_loader = dal.TensorStoreLoader.from_json_spec(mn_spec, **kwargs)
+        mx_img = mx_loader.crop(mx_loader.bounds, **kwargs)
+        mn_img = mn_loader.crop(mn_loader.bounds, **kwargs)
+        img = 255 - _max_entropy_scaling_one_side(mx_img - mn_img)
     if outname is None:
         return img
     else:

@@ -1,6 +1,6 @@
 from setuptools import setup, find_packages
 
-VERSION = '1.0.1'
+VERSION = '1.1.0'
 
 def readme():
     with open('README.md') as f:
@@ -19,6 +19,7 @@ setup(
     include_package_data=True,
     license='MIT',
     install_requires=[
+        'google-cloud-storage',
         'h5py',
         'matplotlib',
         'numpy',
@@ -29,7 +30,8 @@ setup(
         'scikit-image',
         'scipy',
         'shapely>=2.0.0',
-        'triangle'
+        'tensorstore',
+        'triangle',
     ],
     classifiers=[
         'Development Status :: 4 - Beta',

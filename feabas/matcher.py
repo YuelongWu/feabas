@@ -279,6 +279,12 @@ def section_matcher(mesh0, mesh1, image_loader0, image_loader1, **kwargs):
     kwargs.setdefault('batch_size', 100)
     kwargs.setdefault('continue_on_flip', True)
     kwargs.setdefault('distributor', 'cartesian_region')
+    render_weight_threshold = kwargs.get('render_weight_threshold', 0.5)
+    if render_weight_threshold > 0:
+        idx0 = mesh0.triangle_mask_for_render(render_weight_threshold=render_weight_threshold)
+        mesh0 = mesh0.submesh(idx0)
+        idx1 = mesh1.triangle_mask_for_render(render_weight_threshold=render_weight_threshold)
+        mesh1 = mesh1.submesh(idx1)
     if (initial_matches is None) or (mesh0.connected_triangles()[0] == 1 and mesh1.connected_triangles()[0] == 1):
         xy0, xy1, weight, _ = iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1,
             spacings=spacings, initial_matches=initial_matches, compute_strain=False,
@@ -327,8 +333,8 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
             be matched. Note that the matching is operated at the resolution of
             the meshes, so it is important to adjust the resoltion of the meshes
             to allow desired scaling for template matching.
-        image_loader0, image_loader1 (feabas.dal.MosaicLoader or StreamLoader):
-            image loaders of the sections.
+        image_loader0, image_loader1 (feabas.dal.MosaicLoader or StreamLoader
+            or TensorStoreLoader):image loaders of the sections.
     Kwargs:
         sigma(float): if larger than 0, the cropped images for template matching
             will be pre-processed with DoG filter with sigma.
@@ -387,9 +393,11 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
         batch_size = max(1, batch_size / num_workers)
         if isinstance(image_loader0, dal.AbstractImageLoader):
             loader_dict0 = image_loader0.init_dict()
-            loader_dict1 = image_loader1.init_dict()
         else:
             loader_dict0 = image_loader0
+        if isinstance(image_loader1, dal.AbstractImageLoader):
+            loader_dict1 = image_loader1.init_dict()
+        else:
             loader_dict1 = image_loader1
     # if any spacing value smaller than 1, means they are relative to longer side
     spacings = np.array(spacings, copy=False)
@@ -489,6 +497,8 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
                 conf = []
                 with ProcessPoolExecutor(max_workers=num_workers, mp_context=get_context('spawn')) as executor:
                     for m0_p, m1_p, bboxes0_p, bboxes1_p in zip(submeshes0, submeshes1, batched_bboxes0, batched_bboxes1):
+                        if (m0_p is None) or (m1_p is None):
+                            continue
                         m0dict = m0_p.get_init_dict(vertex_flags=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING))
                         m1dict = m1_p.get_init_dict(vertex_flags=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING))
                         job = executor.submit(target_func, m0dict, m1dict, loader_dict0, loader_dict1, bboxes0_p, bboxes1_p)
@@ -572,6 +582,8 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
         initialized = True
         if sp_indx < spacings.size:
             sp = spacings[sp_indx]
+    if len(opt.links) == 0:
+        return invalid_output
     link = opt.links[0]
     xy0 = link.xy0(gear=const.MESH_GEAR_INITIAL, use_mask=True, combine=True)
     xy1 = link.xy1(gear=const.MESH_GEAR_INITIAL, use_mask=True, combine=True)
@@ -618,6 +630,11 @@ def bboxes_mesh_renderer_matcher(mesh0, mesh1, image_loader0, image_loader1, bbo
             batched_block_indices1.append(bboxes1[bidx0:bidx1])
     render0 = MeshRenderer.from_mesh(mesh0, image_loader=image_loader0)
     render1 = MeshRenderer.from_mesh(mesh1, image_loader=image_loader1)
+    if (render0 is None) or (render1 is None):
+        xy0 = np.empty((0,2))
+        xy1 = np.empty((0,2))
+        conf = np.empty(0)
+        return xy0, xy1, conf
     xy0 = []
     xy1 = []
     conf = []
@@ -641,6 +658,8 @@ def bboxes_mesh_renderer_matcher(mesh0, mesh1, image_loader0, image_loader1, bbo
             wd0, ht0 = bbox0[2] - bbox0[0], bbox0[3] - bbox0[1]
             wd1, ht1 = bbox1[2] - bbox1[0], bbox1[3] - bbox1[1]
             wt_ratio.append((wd0 / (wd0 + wd1), ht0 / (ht0 + ht1)))
+        if (len(stack0) == 0) or (len(stack1) == 0):
+            continue
         dx, dy, conf_b = xcorr_fft(np.stack(stack0, axis=0), np.stack(stack1, axis=0),
             conf_mode=conf_mode, pad=pad)
         xy_ctr0 = np.array(xy_ctr0)
@@ -658,7 +677,7 @@ def bboxes_mesh_renderer_matcher(mesh0, mesh1, image_loader0, image_loader1, bbo
         conf = np.concatenate(conf, axis=0)
     else:
         xy0 = np.empty((0,2))
-        xy0 = np.empty((0,2))
+        xy1 = np.empty((0,2))
         conf = np.empty(0)
     return xy0, xy1, conf
 
