@@ -775,7 +775,8 @@ def distributor_intersect_triangulation(mesh0, mesh1, spacing, **kwargs):
     reg_crx = region0.intersection(region1)
     if min_boundary_distance > 0:
         reg_crx = reg_crx.simplify(min_boundary_distance/3, preserve_topology=True)
-        reg_crx = reg_crx.buffer(-min_boundary_distance * 0.8, join_style=2)
+        reg_crx = reg_crx.buffer(-min_boundary_distance, join_style=2)
+        reg_crx = reg_crx.buffer(min_boundary_distance*0.2, join_style=2)
     if reg_crx.area == 0:
         return None, None
     roi = reg_crx
