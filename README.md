@@ -62,7 +62,7 @@ Tile_0005.tif	3686	3686
 Tile_0006.tif	3686	3686
 ```
 
-It describes a section whose raw image tiles from the microscopy are saved under the directory `/home/feabas/my_project/raw_data/s0001`. It contains 6 images of size 4096x4096 pixels, arranged on a 2-rows-by-3-columns grid with 10% overlaps. Note that in general the images do not necessarily need to be arranged in a rectilinear pattern and the image files can have arbitrary names, as long as the coordinates are as accurate as possible. Also, make sure that the fields in the coordinate files are separated by Horizontal Tab `\t`, other delimiters are currently not supported.  
+It describes a section whose raw image tiles from the microscopy are saved under the directory `/home/feabas/my_project/raw_data/s0001`. It contains 6 images of size 4096x4096 pixels, arranged on a 2-rows-by-3-columns grid with 10% overlaps. Note that in general the images do not necessarily need to be arranged in a rectilinear pattern and the image files can have arbitrary names, as long as the coordinates are as accurate as possible. Also, make sure that the fields in the coordinate files are separated by Horizontal Tab `\t`, other delimiters are currently not supported.
 
 #### section order file (optional)
 The filenames of the stitch coordinate text files define the name of the sections. By default, FEABAS assumes the order of sections in the final aligned stack can be reconstructed by sorting the section name alphabetically. If that's not the case, the user can define the right section order by providing an optional `section_order.txt` file directly under the working directory. In the file, each line is a section name corresponding to the stitch coordinate filenames (without `.txt` extension), and their positions in the file define their position in the aligned stack.
@@ -118,7 +118,7 @@ To launch the rendering step, navigate to the FEABAS root directory, and run:
 python scripts/stitch_main.py --mode rendering
 ```
 
-It reads the transformation files in `(work_dir)/stitch/tform` folder, and renders the stitched section in the form of non-overlapping PNG tiles. The user can control the rendering process (like the output tile size, whether to use [CLAHE](https://en.wikipedia.org/wiki/Adaptive_histogram_equalization#Contrast_Limited_AHE) etc.) by manipulating the `rendering` element in the *working directory*'s `configs/stitching_configs.yaml` file. By default, FEABAS will render the images to the *working directory*. If the user would like to keep the *working directory* lightweight and put the stitched images elsewhere, it can be achieved by defining the target path to `rendering: out_dir` field in the stitching configuration file.
+It reads the transformation files in `(work_dir)/stitch/tform` folder, and renders the stitched section in the form of non-overlapping PNG tiles or [TensorStore](https://google.github.io/tensorstore/python/api/index.html) datasets (e.g. Neuroglancer precomputed format). The user can control the rendering process (like the output tile size, whether to use [CLAHE](https://en.wikipedia.org/wiki/Adaptive_histogram_equalization#Contrast_Limited_AHE) etc.) by manipulating the `rendering` element in the *working directory*'s `configs/stitching_configs.yaml` file. By default, FEABAS will render the images to the *working directory*. If the user would like to keep the *working directory* lightweight and put the stitched images elsewhere, it can be achieved by defining the target path (currently supporting local storage or [Google Cloud Storage](https://cloud.google.com/storage)) to `rendering: out_dir` field in the stitching configuration file
 
 ### Thumbnail Alignment
 
@@ -143,12 +143,12 @@ The downsampled thumbnails will be written to `(work_dir)/thumbnail_align/thumbn
 To find the matching points between neighboring thumbnails, navigate to the FEABAS root directory, and run:
 
 ```bash
-python scripts/thumbnail_main.py --mode alignment
+python scripts/thumbnail_main.py --mode match
 ```
 
 It will save the files containing the rough matching points to `(work_dir)/thumbnail_align/matches` folder.
 
-This is the most error-prone step in the entire pipeline, so we'd like to advise the user to pay special attention to the warning log files in `(work_dir)/logs` folder if they are generated during the step. In our experience, the most common failure mode was when the targeting of the microscope is not sufficiently accurate, the ROIs of some neighboring sections are completely off and there are little to no overlaps. In that case, the user should plan to retake the images.
+This is the most error-prone step in the entire pipeline, so we'd like to advise the user to pay special attention to the warning log files in `(work_dir)/logs` folder if they are generated during the step. In our experience, the most common failure mode is when the targeting of the microscope is not sufficiently accurate, the ROIs of some neighboring sections are completely off and there are little to no overlaps. In that case, the user should plan to retake the images.
 
 As a last resort when thumbnail matching fails, FEABAS allows the user to manually define matching points via Fiji [BigWarp](https://imagej.net/plugins/bigwarp). First, load the failed pair of thumbnails from `(work_dir)/thumbnail_align/thumbnails` into [Fiji](https://imagej.net/software/fiji/), launch BigWarp, and select the first section as the `moving image` and the second section as the `target image`. Manually mark some corresponding points, preferably covering most of the overlapping regions, and export the landmarks as `(section_name_0)__to__(section_name_1).csv` file to `(work_dir)/thumbnail_align/manual_matches` folder. Navigate to the FEABAS root directory, then run `python tools/convert_manual_thumbnail_matches.py`, which will convert the manually defined matches and incorporate them into the downstream process.
 
@@ -199,7 +199,16 @@ To render the aligned stack, navigate to the FEABAS root directory, and run:
 python scripts/align_main.py --mode rendering
 ```
 
-Again, the user can control the details of the rendering process via `alignment_configs.yaml`. As with the rendering step in the stitching workflow earlier, the output images can be directed to another storage location other than the *working directory* by providing the path to `rendering: out_dir` field in the configuration file. 
+Again, the user can control the details of the rendering process via `rendering` settings in `alignment_configs.yaml`. As with the rendering step in the stitching workflow earlier, the output images can be directed to another storage location other than the *working directory* by providing the path to `rendering: out_dir` field in the configuration file.
+
+Alternatively, the aligned stack can also be rendered as a [TensorStore](https://google.github.io/tensorstore/python/api/index.html) volume, instead by running:
+
+```bash
+python scripts/align_main.py --mode tensorstore_render
+```
+
+The details of the rendering process are controlled by the `tensorstore_rendering` settings in `alignment_configs.yaml`. Note that currently the `rendering` settings and `tensorstore_rendering` are independent, i.e. change to one will not affect the behavior of the other alternative rendering format. The TensorStore rendering supports both local storage and Google Cloud storage destinations.
+
 
 #### generate mipmaps for VAST
 
@@ -209,6 +218,20 @@ The user can also run:
 python scripts/align_main.py --mode downsample
 ```
 to generate the mipmaps of the aligned stack for visualization in [VAST](https://lichtman.rc.fas.harvard.edu/vast/).
+
+If in the previous step, the aligned stack was rendered as a Tensorstore Volume, FEABAS currently does not provide a convenient way to create mipmaps. But this can easily achieved from existing third-party tools, e.g. [igneous](https://github.com/seung-lab/igneous#downsampling-downsampletask).
+
+
+### distribute works on different machines
+
+Most of the FEABAS commands (except the alignment meshing and optimization steps) support arguments `--start`, `--stop`, `--step` to constrain the procedure on a subset of the dataset. For example:
+
+```bash
+python scripts/stitch_main.py --mode rendering --start 5 --stop 20 --step 3
+```
+will only render every third section, starting from section #5 until section #20.
+
+This becomes handy for distributing works on multiple machines in e.g. an production environment managed by [Slurm](https://slurm.schedmd.com/documentation.html)
 
 
 ### Advanced Topic: Non-Smooth Transformation in Alignment

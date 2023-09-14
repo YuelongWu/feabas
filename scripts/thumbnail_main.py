@@ -158,6 +158,7 @@ def generate_thumbnail_masks(mesh_dir, out_dir, seclist=None, **kwargs):
     logger_info = kwargs.get('logger', None)
     logger= logging.get_logger(logger_info)
     mesh_list = sorted(glob.glob(os.path.join(mesh_dir, '*.h5')))
+    mesh_list = mesh_list[arg_indx]
     target_func = partial(save_mask_for_one_sections, scale=scale, img_dir=img_dir,
                           fillval=fillval, mask_erode=mask_erode)
     os.makedirs(out_dir, exist_ok=True)
@@ -264,7 +265,7 @@ if __name__ == '__main__':
     if args.mode.lower().startswith('d'):
         thumbnail_configs = thumbnail_configs['downsample']
         mode = 'downsample'
-    elif args.mode.lower().startswith('a'):
+    elif args.mode.lower().startswith('a') or args.mode.lower().startswith('m'):
         thumbnail_configs = thumbnail_configs['alignment']
         mode = 'alignment'
     else:
@@ -362,6 +363,8 @@ if __name__ == '__main__':
         mask_scale = 1 / (2 ** thumbnail_mip_lvl)
         generate_thumbnail_masks(stitch_tform_dir, mat_mask_dir, seclist=slist, scale=mask_scale,
                                  img_dir=img_dir, **thumbnail_configs)
+        generate_thumbnail_masks(stitch_tform_dir, mat_mask_dir, seclist=None, scale=mask_scale,
+                                 img_dir=img_dir, **thumbnail_configs)
         logger.info('finished.')
         logging.terminate_logger(*logger_info)
     elif mode == 'alignment':
@@ -390,6 +393,7 @@ if __name__ == '__main__':
             for k in range(len(bname_list)-stp):
                 pairnames.append((bname_list[k], bname_list[k+stp]))
         pairnames.sort()
+        pairnames = pairnames[arg_indx]
         target_func = partial(align_thumbnail_pairs, image_dir=img_dir, out_dir=match_dir,
                               material_mask_dir=mat_mask_dir, region_mask_dir=reg_mask_dir,
                               **thumbnail_configs)
