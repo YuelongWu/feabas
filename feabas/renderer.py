@@ -470,8 +470,6 @@ class MeshRenderer:
                 self._default_fillval = 0
         return self._default_fillval
 
-
-
 def render_whole_mesh(mesh, image_loader, prefix, **kwargs):
     driver = kwargs.get('driver', 'image')
     num_workers = kwargs.pop('num_workers', 1)
@@ -623,9 +621,9 @@ def render_whole_mesh(mesh, image_loader, prefix, **kwargs):
     if isinstance(image_loader, dal.AbstractImageLoader):
         image_loader = image_loader.init_dict()
     if driver == 'image':
-        target_func = partial(subprocess_render_mesh_tiles, imgloader=image_loader, **kwargs)
+        target_func = partial(subprocess_render_mesh_tiles, image_loader, **kwargs)
     else:
-        target_func = partial(subprocess_render_mesh_tiles, imgloader=image_loader, outnames=ts_specs, **kwargs)
+        target_func = partial(subprocess_render_mesh_tiles, image_loader, outnames=ts_specs, **kwargs)
     if (num_workers > 1) and (num_tiles > 1):
         num_tile_per_job = max(1, num_tiles // num_workers)
         if max_tile_per_job is not None:

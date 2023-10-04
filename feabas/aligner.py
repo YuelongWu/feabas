@@ -155,11 +155,12 @@ class Stack:
         if section_list is None:
             if self._mesh_dir is None:
                 raise RuntimeError('mesh_dir not defined.')
-            slist = glob.glob(os.path.join(self._mesh_dir, '*.h5'))
+            mesh_regex = os. path. abspath(os.path.join(self._mesh_dir, '*.h5'))
+            slist = glob.glob(mesh_regex)
             if bool(slist):
                 section_list = sorted([os.path.basename(s).replace('.h5', '') for s in slist])
             else:
-                raise RuntimeError('no section found.')
+                raise RuntimeError(f'no section found. looked in {mesh_regex}')
             section_order_file = kwargs.get('section_order_file', os.path.join(self._mesh_dir, 'section_order.txt'))
             section_list = rearrange_section_order(section_list, section_order_file)[0]
         assert len(section_list) == len(set(section_list))

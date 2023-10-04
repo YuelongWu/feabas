@@ -162,6 +162,7 @@ def render_one_section(tform_name, out_prefix, meta_name=None, **kwargs):
         resolution = renderer.resolution / scale
     render_settings['scale'] = scale
     out_prefix = out_prefix.replace('\\', '/')
+    print(f"out_prefix {out_prefix}")
     render_series = renderer.plan_render_series(tile_size, prefix=out_prefix,
         scale=scale, **kwargs)
     if use_tensorstore:
@@ -298,21 +299,28 @@ if __name__ == '__main__':
     indx = slice(stt_idx, stp_idx, step)
 
     if mode == 'rendering':
-        tform_list = sorted(glob.glob(os.path.join(mesh_dir, '*.h5')))
+        tform_regex = os.path.abspath(os.path.join(mesh_dir, '*.h5'))
+        tform_list = sorted(glob.glob(tform_regex))
+        assert len(tform_list)>0, f"tform list empty, didn't find any h5 files in {tform_regex}"
         tform_list = tform_list[indx]
         if args.reverse:
             tform_list = tform_list[::-1]
         stitch_configs.setdefault('meta_dir', render_meta_dir)
+        print(f"image_outdir {image_outdir}")
         render_main(tform_list, image_outdir, **stitch_configs)
     elif mode == 'optimization':
-        match_list = sorted(glob.glob(os.path.join(match_dir, '*.h5')))
+        match_regex = os.path.abspath(os.path.join(match_dir, '*.h5'))
+        match_list = sorted(glob.glob(match_regex))
+        assert len(match_list) > 0, f"match list couldn't find any h5 files {match_regex}"
         match_list = match_list[indx]
         if args.reverse:
             match_list = match_list[::-1]
         os.makedirs(mesh_dir, exist_ok=True)
         optmization_main(match_list, mesh_dir, **stitch_configs)
     else:
-        coord_list = sorted(glob.glob(os.path.join(coord_dir, '*.txt')))
+        coord_regex = os.path.abspath(os.path.join(coord_dir, '*.txt'))
+        coord_list = sorted(glob.glob(coord_regex))
+        assert len(coord_list) > 0, f"didn't find any txt coord files {coord_regex}"
         coord_list = coord_list[indx]
         if args.reverse:
             coord_list = coord_list[::-1]

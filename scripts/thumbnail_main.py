@@ -15,7 +15,9 @@ def generate_stitched_mipmaps(img_dir, max_mip, **kwargs):
     parallel_within_section = kwargs.pop('parallel_within_section', True)
     logger_info = kwargs.get('logger', None)
     logger = logging.get_logger(logger_info)
-    meta_list = sorted(glob.glob(os.path.join(img_dir, 'mip'+str(min_mip), '**', 'metadata.txt'), recursive=True))
+    meta_dir = os.path.join(img_dir, 'mip'+str(min_mip), '**', 'metadata.txt')
+    meta_list = sorted(glob.glob(meta_dir, recursive=True))
+    assert len(meta_list)>0, f"did not find any metadata.txt files in {os.path.abspath(meta_dir)}"
     meta_list = meta_list[arg_indx]
     secnames = [os.path.basename(os.path.dirname(s)) for s in meta_list]
     if parallel_within_section or (num_workers == 1):
@@ -39,7 +41,9 @@ def generate_stitched_mipmaps_tensorstore(meta_dir, tgt_mips, **kwargs):
     parallel_within_section = kwargs.pop('parallel_within_section', True)
     logger_info = kwargs.get('logger', None)
     logger = logging.get_logger(logger_info)
-    meta_list = sorted(glob.glob(os.path.join(meta_dir,'*.json')))
+    meta_regex = os.path.join(meta_dir,'*.json')
+    meta_list = sorted(glob.glob(meta_regex))
+    assert len(meta_list) > 0, f"did not find any json files in {os.path.abspath(meta_regex)}"
     meta_list = meta_list[arg_indx]
     if parallel_within_section or num_workers == 1:
         for metafile in meta_list:
@@ -60,7 +64,9 @@ def generate_thumbnails(src_dir, out_dir, **kwargs):
     num_workers = kwargs.pop('num_workers', 1)
     logger_info = kwargs.pop('logger', None)
     logger = logging.get_logger(logger_info)
-    meta_list = sorted(glob.glob(os.path.join(src_dir, '**', 'metadata.txt'), recursive=True))
+    meta_regex = os.path.join(src_dir, '**', 'metadata.txt')
+    meta_list = sorted(glob.glob(meta_regex, recursive=True))
+    assert len(meta_list)>0, f"couldn't find any metadata.txt files in {meta_regex}"
     meta_list = meta_list[arg_indx]
     secnames = [os.path.basename(os.path.dirname(s)) for s in meta_list]
     target_func = partial(mipmap.create_thumbnail, **kwargs)
@@ -157,7 +163,9 @@ def generate_thumbnail_masks(mesh_dir, out_dir, seclist=None, **kwargs):
     mask_erode = kwargs.get('mask_erode', 0)
     logger_info = kwargs.get('logger', None)
     logger= logging.get_logger(logger_info)
-    mesh_list = sorted(glob.glob(os.path.join(mesh_dir, '*.h5')))
+    mesh_regex = os.path.abspath(os.path.join(mesh_dir, '*.h5'))
+    mesh_list = sorted(glob.glob(mesh_regex))
+    assert len(mesh_list)>0, f"could not find an h5 files in mesh dir: mesh_regex {mesh_regex}"
     mesh_list = mesh_list[arg_indx]
     target_func = partial(save_mask_for_one_sections, scale=scale, img_dir=img_dir,
                           fillval=fillval, mask_erode=mask_erode)
@@ -365,7 +373,7 @@ if __name__ == '__main__':
                                  img_dir=img_dir, **thumbnail_configs)
         generate_thumbnail_masks(stitch_tform_dir, mat_mask_dir, seclist=None, scale=mask_scale,
                                  img_dir=img_dir, **thumbnail_configs)
-        logger.info('finished.')
+        logger.info('finished thumbnail downsample.')
         logging.terminate_logger(*logger_info)
     elif mode == 'alignment':
         os.makedirs(match_dir, exist_ok=True)
@@ -377,7 +385,9 @@ if __name__ == '__main__':
         resolution = config.DEFAULT_RESOLUTION * (2 ** thumbnail_mip_lvl)
         thumbnail_configs.setdefault('resolution', resolution)
         thumbnail_configs.setdefault('feature_match_dir', feature_match_dir)
-        imglist = sorted(glob.glob(os.path.join(img_dir, '*.png')))
+        img_regex = os.path.abspath(os.path.join(img_dir, '*.png'))
+        imglist = sorted(glob.glob(img_regex))
+        assert len(imglist)>0, f"couldn't find any png files in {img_regex}"
         section_order_file = os.path.join(root_dir, 'section_order.txt')
         imglist = common.rearrange_section_order(imglist, section_order_file)[0]
         bname_list = [os.path.basename(s) for s in imglist]
@@ -413,5 +423,5 @@ if __name__ == '__main__':
                     jobs.append(job)
                 for job in jobs:
                     job.result()
-        logger.info('finished.')
+        logger.info('finished thumbnail alignment.')
         logging.terminate_logger(*logger_info)

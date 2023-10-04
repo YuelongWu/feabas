@@ -32,7 +32,7 @@ The user needs to first create a dedicated *working directory* for each dataset 
  │   ├── stitching_configs.yaml (optional)
  │   ├── thumbnail_configs.yaml (optional)
  │   ├── alignment_configs.yaml (optional)
- │   └── material_table.json (optional)
+ │   └── material_table.json    (optional)
  ├── stitch
  │   └── stitch_coord
  │       ├── (section_name_0).txt
@@ -59,7 +59,7 @@ Tile_0002.tif	3686	0
 Tile_0003.tif	7373	0
 Tile_0004.tif	0	3686
 Tile_0005.tif	3686	3686
-Tile_0006.tif	3686	3686
+Tile_0006.tif	7373	3686
 ```
 
 It describes a section whose raw image tiles from the microscopy are saved under the directory `/home/feabas/my_project/raw_data/s0001`. It contains 6 images of size 4096x4096 pixels, arranged on a 2-rows-by-3-columns grid with 10% overlaps. Note that in general the images do not necessarily need to be arranged in a rectilinear pattern and the image files can have arbitrary names, as long as the coordinates are as accurate as possible. Also, make sure that the fields in the coordinate files are separated by Horizontal Tab `\t`, other delimiters are currently not supported.

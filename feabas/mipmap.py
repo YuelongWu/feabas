@@ -118,6 +118,7 @@ def mip_one_level(src_dir, out_dir, **kwargs):
             out_loader.to_coordinate_file(out_meta_file)
     except Exception as err:
         logger.error(f'{src_dir}: {err}')
+        raise err
         return None
     return len(rendered)
 

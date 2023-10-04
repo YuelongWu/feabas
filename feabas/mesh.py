@@ -90,7 +90,10 @@ def config_cache(gear):
                 if 'gear' in kwargs:
                     cgear = kwargs['gear']
                 else:
-                    argspec = inspect.getargspec(func)
+                    if not hasattr(inspect, 'getargspec'):
+                        argspec =  inspect.getfullargspec(func)
+                    else:
+                        argspec = inspect.getargspec(func)
                     nd = len(argspec.args) - len(argspec.defaults)
                     kwnm = argspec.args[nd:]
                     if 'gear' in kwnm:

@@ -76,6 +76,7 @@ def generate_mesh_main():
     thumbnail_resolution = config.DEFAULT_RESOLUTION * (2 ** thumbnail_mip_lvl)
     thumbnail_mask_dir = os.path.join(thumbnail_dir, 'material_masks')
     match_list = glob.glob(os.path.join(thumb_match_dir, '*.h5'))
+    assert len(match_list)>0, f"must find more than one match in {os.path.abspath(thumb_match_dir)}"
     match_names = [os.path.basename(s).replace('.h5', '').split(match_name_delimiter) for s in match_list]
     secnames = set([s for pp in match_names for s in pp])
     alt_mask_dir = mesh_config.get('mask_dir', None)
@@ -421,6 +422,7 @@ if __name__ == '__main__':
         os.makedirs(match_dir, exist_ok=True)
         generate_mesh_main()
         match_list = sorted(glob.glob(os.path.join(thumb_match_dir, '*.h5')))
+        assert len(match_list)>0, f"must find more than one match in {os.path.abspath(thumb_match_dir)}"
         match_list = match_list[indx]
         if args.reverse:
             match_list = match_list[::-1]
