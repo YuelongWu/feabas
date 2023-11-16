@@ -240,7 +240,12 @@ def render_one_section(h5name, z_prefix='', **kwargs):
     stitch_render_dir = config.stitch_render_dir()
     stitched_image_dir = os.path.join(stitch_render_dir, 'mip'+str(mip_level))
     loader_config['resolution'] = resolution
-    loader = get_image_loader(os.path.join(stitched_image_dir, secname), **loader_config)
+    if stitch_config.get('driver', 'image') == 'image':
+        loader = get_image_loader(os.path.join(stitched_image_dir, secname), **loader_config)
+    else:
+        stitch_dir = os.path.join(root_dir, 'stitch')
+        loader_dir = os.path.join(stitch_dir, 'ts_specs', secname + '.json')
+        loader = VolumeRenderer._get_loader(loader_dir, mip=mip_level)
     M = Mesh.from_h5(h5name)
     M.change_resolution(resolution)
     if offset is not None:

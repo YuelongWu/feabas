@@ -582,11 +582,11 @@ def detect_extrema_log(img, mask=None, offset=(0,0), **kwargs):
         img = common.masked_dog_filter(img, sigma, mask=(mask>0))
     if np.ptp(img, axis=None) == 0:
         return KeyPoints()
+    if num_features <= 0:
+        num_features = np.inf
     xy = peak_local_max(np.abs(img), min_distance=min_spacing,
                         threshold_rel=intensity_thresh, labels=mask,
                         num_peaks=num_features)[:,::-1]
-    if num_features <= 0:
-        num_features = np.inf
     response = img[xy[:,1], xy[:,0]]
     sidx = np.argsort(np.abs(response))[::-1]
     xy = xy[sidx] + np.array(offset)

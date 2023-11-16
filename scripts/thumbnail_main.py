@@ -245,7 +245,7 @@ def align_thumbnail_pairs(pairnames, image_dir, out_dir, **kwargs):
 
 def parse_args(args=None):
     parser = argparse.ArgumentParser(description="Align thumbnails")
-    parser.add_argument("--mode", metavar="mode", type=str, default='downsample')
+    parser.add_argument("--mode", metavar="mode", type=str, default='match')
     parser.add_argument("--start", metavar="start", type=int, default=0)
     parser.add_argument("--step", metavar="step", type=int, default=1)
     parser.add_argument("--stop", metavar="stop", type=int, default=0)

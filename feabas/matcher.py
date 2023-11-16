@@ -392,14 +392,14 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
     callback_settings = kwargs.get('callback_settings', {'early_stop_thresh': 0.1, 'chances':10, 'eval_step': 5})
     if num_workers > 1 and batch_size is not None:
         batch_size = max(1, batch_size / num_workers)
-        if isinstance(image_loader0, dal.AbstractImageLoader):
-            loader_dict0 = image_loader0.init_dict()
-        else:
-            loader_dict0 = image_loader0
-        if isinstance(image_loader1, dal.AbstractImageLoader):
-            loader_dict1 = image_loader1.init_dict()
-        else:
-            loader_dict1 = image_loader1
+    if isinstance(image_loader0, dal.AbstractImageLoader):
+        loader_dict0 = image_loader0.init_dict()
+    else:
+        loader_dict0 = image_loader0
+    if isinstance(image_loader1, dal.AbstractImageLoader):
+        loader_dict1 = image_loader1.init_dict()
+    else:
+        loader_dict1 = image_loader1
     # if any spacing value smaller than 1, means they are relative to longer side
     spacings = np.array(spacings, copy=False)
     linear_system = mesh0.is_linear and mesh1.is_linear
