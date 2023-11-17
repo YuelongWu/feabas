@@ -14,12 +14,6 @@ cd feabas
 pip install -e .
 ```
 
-Alternatively, you can directly install FEABAS from [PyPI](https://pypi.org/project/feabas/):
-
-```bash
-pip install feabas
-```
-
 ## Usage
 
 ### Preparation
@@ -28,41 +22,43 @@ The user needs to first create a dedicated *working directory* for each dataset 
 
 ```
 (working directory)
- ├── configs
- │   ├── stitching_configs.yaml (optional)
- │   ├── thumbnail_configs.yaml (optional)
- │   ├── alignment_configs.yaml (optional)
- │   └── material_table.json (optional)
- ├── stitch
- │   └── stitch_coord
- │       ├── (section_name_0).txt
- │       ├── (section_name_1).txt
- │       ├── (section_name_2).txt
- │       └── ...
- └── section_order.txt (optional)
+ |-- configs
+ |   |-- stitching_configs.yaml (optional)
+ |   |-- thumbnail_configs.yaml (optional)
+ |   |-- alignment_configs.yaml (optional)
+ |   |-- material_table.json (optional)
+ |
+ |-- stitch
+ |   |-- stitch_coord
+ |       |-- (section_name_0).txt
+ |       |-- (section_name_1).txt
+ |       |-- (section_name_2).txt
+ |       |-- ...
+ |
+ |-- section_order.txt (optional)
 ```
 
 #### configuration files
 The `configs` folder in the *working directory* contains project-specific configuration files that override the default settings. If any of these files don't exist, FEABAS will use the corresponding default configuration files in the `configs` folder under the repository root directory (NOT the *working directory*) with the same file names but prefixed by `default_`, e.g. `default_stitching_configs.yaml`. The user can copy these default configuration files to their *working directory* `configs` folder, remove the prefix in the filename, and adjust the file contents accordingly based on the specific needs of their dataset.
 
 #### stitch coordinate files
-The .txt files in the `stitch\stitch_coord` folder are user-created [TSV](https://en.wikipedia.org/wiki/Tab-separated_values) files specifying the approximate tile arrangement for each section. They are the inputs to the stitcher pipeline of FEABAS and usually can be derived from the metadata from the microscopy. In one coordinate file, it first defines some metadata info like the root directory of the images, the pixel resolution (in nanometers), and the size of each image tile (in pixels). Following the metadata is a table of all the image tiles associated with that section, with the first column giving the relative path of each image file relative to the root directory, and the second and the third column defining the x and y coordinates (in pixels) of the images. An example stitch coordinate text file looks like this:
+The .txt files in the `stitch/stitch_coord` folder are user-created [TSV](https://en.wikipedia.org/wiki/Tab-separated_values) files specifying the approximate tile arrangement for each section. They are the inputs to the stitcher pipeline of FEABAS and usually can be derived from the metadata from the microscopy. In one coordinate file, it first defines some metadata info like the root directory of the images, the pixel resolution (in nanometers), and the size of each image tile (height followed by width, in pixels). Following the metadata is a table of all the image tiles associated with that section, with the first column giving the relative path of each image file relative to the root directory, and the second and the third column defining the x and y coordinates (in pixels) of the images. An example stitch coordinate text file looks like this:
 
 <div><code><ins>s0001.txt</ins></code></div>
 
 ```
 {ROOT_DIR}	/home/feabas/my_project/raw_data/s0001
 {RESOLUTION}	4.0
-{TILE_SIZE}	4096	4096
+{TILE_SIZE}	3000	4000
 Tile_0001.tif	0	0
-Tile_0002.tif	3686	0
-Tile_0003.tif	7373	0
-Tile_0004.tif	0	3686
-Tile_0005.tif	3686	3686
-Tile_0006.tif	3686	3686
+Tile_0002.tif	3600	0
+Tile_0003.tif	7200	0
+Tile_0004.tif	0	2700
+Tile_0005.tif	3600	2700
+Tile_0006.tif	7200	2700
 ```
 
-It describes a section whose raw image tiles from the microscopy are saved under the directory `/home/feabas/my_project/raw_data/s0001`. It contains 6 images of size 4096x4096 pixels, arranged on a 2-rows-by-3-columns grid with 10% overlaps. Note that in general the images do not necessarily need to be arranged in a rectilinear pattern and the image files can have arbitrary names, as long as the coordinates are as accurate as possible. Also, make sure that the fields in the coordinate files are separated by Horizontal Tab `\t`, other delimiters are currently not supported.
+It describes a section whose raw image tiles from the microscopy are saved under the directory `/home/feabas/my_project/raw_data/s0001`. It contains 6 images with height of 3000 pixels and width of 4000 pixels, arranged on a 2-rows-by-3-columns grid with 10% overlaps. Note that in general the images do not necessarily need to be arranged in a rectilinear pattern and the image files can have arbitrary names, as long as the coordinates are as accurate as possible. Also, make sure that the fields in the coordinate files are separated by Horizontal Tab `\t`, other delimiters are currently not supported.
 
 #### section order file (optional)
 The filenames of the stitch coordinate text files define the name of the sections. By default, FEABAS assumes the order of sections in the final aligned stack can be reconstructed by sorting the section name alphabetically. If that's not the case, the user can define the right section order by providing an optional `section_order.txt` file directly under the working directory. In the file, each line is a section name corresponding to the stitch coordinate filenames (without `.txt` extension), and their positions in the file define their position in the aligned stack.

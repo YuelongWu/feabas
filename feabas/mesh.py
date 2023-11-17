@@ -2080,7 +2080,7 @@ class Mesh:
         if mode in (const.ANNEAL_GLOBAL_RIGID, const.ANNEAL_GLOBAL_AFFINE):
             v0 = self.vertices_w_offset(gear=gear[0])
             v1 = self.vertices_w_offset(gear=gear[1])
-            if mode == const.ANNEAL_CONNECTED_RIGID:
+            if mode == const.ANNEAL_GLOBAL_RIGID:
                 _, R = spatial.fit_affine(v0, v1, return_rigid=True)
                 self.apply_affine(R, gear[1])
             else:

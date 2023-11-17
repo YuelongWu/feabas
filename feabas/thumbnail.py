@@ -117,7 +117,7 @@ class KeyPoints:
         proj_num = self.des.shape[-1]
         F = rfft(self.des, n=proj_num, axis=-1)
         omega = np.linspace(0, proj_num, num=proj_num, endpoint=False)
-        angle_offset = self._angle.reshape(-1,1) * omega *1j
+        angle_offset = self.angle.reshape(-1,1) * omega *1j
         F = F * np.exp(angle_offset.reshape(-1, 1, proj_num))[:,:,:F.shape[-1]]
         self.des = irfft(F, n=proj_num, axis=-1)
         self.angle_aligned = True
@@ -125,7 +125,7 @@ class KeyPoints:
 
 
     def reset_angle(self):
-        if (self.angle_aligned) or (self.des is None):
+        if (not self.angle_aligned) or (self.des is None):
             return self.des
         proj_num = self.des.shape[-1]
         F = rfft(self.des, n=proj_num, axis=-1)

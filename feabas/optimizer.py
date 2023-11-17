@@ -43,7 +43,7 @@ class Link:
                          **kwargs):
         if xy0.size == 0:
             return None, None
-        kwargs.setdefault('render_weight_threshold', 0.5)
+        kwargs.setdefault('render_weight_threshold', 0.1)
         tid0, B0 = mesh0.cart2bary(xy0, gear[0], tid=None, **kwargs)
         indx0 = tid0 >= 0
         if not np.any(indx0):

@@ -279,7 +279,7 @@ def section_matcher(mesh0, mesh1, image_loader0, image_loader1, **kwargs):
     kwargs.setdefault('batch_size', 100)
     kwargs.setdefault('continue_on_flip', True)
     kwargs.setdefault('distributor', 'cartesian_region')
-    render_weight_threshold = kwargs.get('render_weight_threshold', 0.5)
+    render_weight_threshold = kwargs.get('render_weight_threshold', 0.1)
     if render_weight_threshold > 0:
         idx0 = mesh0.triangle_mask_for_render(render_weight_threshold=render_weight_threshold)
         mesh0 = mesh0.submesh(idx0)
@@ -290,7 +290,7 @@ def section_matcher(mesh0, mesh1, image_loader0, image_loader1, **kwargs):
             spacings=spacings, initial_matches=initial_matches, compute_strain=False,
             **kwargs)
     else:
-        opt = optimizer.SLM([mesh0, mesh1])
+        opt = optimizer.SLM([mesh0, mesh1], stiffness_lambda=0.2)
         xy0, xy1, weight = initial_matches
         opt.add_link_from_coordinates(mesh0.uid, mesh1.uid, xy0, xy1,
             gear=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_INITIAL), weight=weight,

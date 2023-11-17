@@ -221,6 +221,12 @@ def align_thumbnail_pairs(pairnames, image_dir, out_dir, **kwargs):
                     _, mask0 = cv2.connectedComponents(mask_t, connectivity=4, ltype=cv2.CV_16U)
                 else:
                     mask0 = None
+                if hasattr(mask0, 'shape') and ((mask0.shape[0] != img0.shape[0]) or (mask0.shape[1] != img0.shape[1])):
+                    ht0 = min(mask0.shape[0], img0.shape[0])
+                    wd0 = min(mask0.shape[1], img0.shape[1])
+                    mask_t = np.zeros_like(mask0, shape=img0.shape)
+                    mask_t[:ht0, :wd0] = mask0[:ht0, :wd0]
+                    mask0 = mask_t
                 minfo0 = thumbnail.prepare_image(img0, mask=mask0, **feature_match_settings)
                 prepared_cache[sname0] = minfo0
             if sname1 in prepared_cache:
@@ -235,6 +241,12 @@ def align_thumbnail_pairs(pairnames, image_dir, out_dir, **kwargs):
                     _, mask1 = cv2.connectedComponents(mask_t, connectivity=4, ltype=cv2.CV_16U)
                 else:
                     mask1 = None
+                if hasattr(mask1, 'shape') and ((mask1.shape[0] != img1.shape[0]) or (mask1.shape[1] != img1.shape[1])):
+                    ht1 = min(mask1.shape[0], img1.shape[0])
+                    wd1 = min(mask1.shape[1], img1.shape[1])
+                    mask_t = np.zeros_like(mask1, shape=img1.shape)
+                    mask_t[:ht1, :wd1] = mask1[:ht1, :wd1]
+                    mask1 = mask_t
                 minfo1 = thumbnail.prepare_image(img1, mask=mask1, **feature_match_settings)
                 prepared_cache[sname1] = minfo1
             thumbnail.align_two_thumbnails(minfo0, minfo1, outname, **kwargs)
