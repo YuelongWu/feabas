@@ -733,7 +733,15 @@ def filter_match_pairwise_strain(matches, **kwargs):
     shear_limit = kwargs.get('shear_limit', 45)
     sample_ratio = kwargs.get('sample_ratio', 0.05)
     inlier_thresh = kwargs.get('inlier_thresh', 0.5)
+    min_output_num = kwargs.get('min_output_num', None)
     if (strain_limit is None) and (shear_limit is None):
+        return matches, None
+    if min_output_num is None:
+        if inlier_thresh < 1:
+            min_output_num = 20
+        else:
+            min_output_num = inlier_thresh
+    if matches.num_points < min_output_num:
         return matches, None
     num_samples = max(25, int(matches.num_points*sample_ratio))
     dis0, rot0 = _pairwise_distance_rotation(matches.xy0)
@@ -744,24 +752,31 @@ def filter_match_pairwise_strain(matches, **kwargs):
     rot0 = np.take_along_axis(rot0, sindx, axis=-1)
     rot1 = np.take_along_axis(rot1, sindx, axis=-1)
     valid_pairs = np.ones_like(sindx, dtype=bool)
+    strain = np.abs(np.log(dis0.clip(1.0e-9, None) / dis1.clip(1.0e-9, None)))
     if strain_limit is not None:
-        strain = np.abs(np.log(dis0.clip(1.0e-9, None) / dis1.clip(1.0e-9, None)))
         valid_pairs = (strain < strain_limit) & valid_pairs
     if shear_limit is not None:
         shear_limit = shear_limit * np.pi / 180
         rot = rot0 - rot1
+        not_all_bad = np.any(valid_pairs, axis=-1, keepdims=True)
+        rot[(~valid_pairs) & (not_all_bad)] = np.nan
         crot = np.cos(rot)
         srot = np.sin(rot)
-        rot_med = np.arctan2(np.median(srot), np.median(crot))
-        rot_err = rot - rot_med
+        rot_med = np.arctan2(np.nanmedian(srot, axis=-1), np.nanmedian(crot, axis=-1))
+        rot_err = rot - rot_med.reshape(-1,1)
         rot_err_wrap = rot_err - np.round(rot_err / (2*np.pi)) * (2*np.pi)
         valid_pairs = (np.abs(rot_err_wrap) < shear_limit) & valid_pairs
     valid_num = np.sum(valid_pairs, axis=-1)
     if inlier_thresh < 1:
         kindx = valid_num > (inlier_thresh * np.max(valid_num))
     else:
-        qt = np.quantile(valid_num, max(0, (valid_num.size - valid_num) / valid_num.size))
-        kindx = valid_num > qt
+        qt = np.quantile(valid_num, max(0, (valid_num.size - inlier_thresh) / valid_num.size))
+        kindx = valid_num >= qt
+    if np.sum(kindx) < min_output_num:
+        accum_strain = 1 / np.sum(1/strain.clip(1e-3, None)**2, axis=-1)
+        accum_strain[kindx] = 0
+        tindx = np.argsort(accum_strain)
+        kindx[tindx[:min_output_num]] = 1
     if np.all(kindx):
         discarded = None
     else:

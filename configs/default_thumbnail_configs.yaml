@@ -16,12 +16,12 @@ alignment:
     save_feature_match: false
     match_name_delimiter: __to__    # so that the match file follows the patern sec0{delimieter}sec2.h5
     feature_matching:
-        affine_only: false
+        affine_only: true
         scale: 1.0
         detect_settings:
             sigma: 3.5
             min_spacing: 10
-            num_features: -1    # non-positive values mean no limitation on keypoint numbers
+            num_features: 5000    # non-positive values mean no limitation on keypoint numbers
         extract_settings:
             proj_num: 6
             beam_num: 8
