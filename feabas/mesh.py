@@ -1626,11 +1626,25 @@ class Mesh:
         else:
             vertices = self.vertices(gear=gear)
         polygons = []
+        seg_valid = self.check_segment_collision(gear=gear, tri_mask=tri_mask)
         for chains in grouped_chains:
-            P0 = shpgeo.Polygon(vertices[chains[0]]).buffer(0)
-            for hole in chains[1:]:
-                P0 = P0.difference(shpgeo.Polygon(vertices[hole]).buffer(0))
-            polygons.append(P0)
+            if (seg_valid) or (len(chains) < 2):
+                P0 = shpgeo.Polygon(vertices[chains[0]]).buffer(0)
+                for hole in chains[1:]:
+                    P0 = P0.difference(shpgeo.Polygon(vertices[hole]).buffer(0))
+                polygons.append(P0)
+            else:
+                Ls = [shpgeo.LinearRing(vertices[s]) for s in chains]
+                Ps = list(polygonize(unary_union(Ls)))
+                if shapely.__version__ >= '2.0.0':
+                    Lt = [s.buffer(self._epsilon, join_style=2, single_sided=True) for s in Ls]
+                else:
+                    Lt = [s.parallel_offset(self._epsilon, 'left', join_style=2) for s in Ls]
+                    Lt = [s.buffer(-self._epsilon, single_sided=True, join_style=2) for s in Lt]
+                Lt = unary_union(Lt)
+                for pp in Ps:
+                    if Lt.intersection(pp).area > 0:
+                        polygons.append(pp)   
         return unary_union(polygons)
 
 
@@ -2170,6 +2184,14 @@ class Mesh:
             if not p.is_valid:
                 valid = False
                 break
+            if holes is not None:
+                out_ccw = shpgeo.LinearRing(outL).is_ccw
+                for h in holes:
+                    if shpgeo.LinearRing(h).is_ccw == out_ccw:
+                        valid = False
+                        break
+                if not valid:
+                    break
             if covered is None:
                 covered = p
             elif p.intersects(covered):
