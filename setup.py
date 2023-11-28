@@ -1,10 +1,31 @@
 from setuptools import setup, find_packages
+import platform
 
 VERSION = '2.0.1'
 
 def readme():
     with open('README.md') as f:
         return f.read()
+
+install_requires = [
+    'google-cloud-storage',
+    'h5py',
+    'numpy',
+    'opencv-python',
+    'psutil',
+    'pyyaml',
+    'rtree',
+    'scikit-image',
+    'scipy',
+    'shapely>=2.0.0',
+    'tensorstore',
+    'triangle',
+]
+
+if (platform.python_version() < '3.12') and (platform.system() == 'Windows'):
+    install_requires.append('matplotlib<3.8')
+else:
+    install_requires.append('matplotlib')
 
 setup(
     name='feabas',
@@ -18,21 +39,7 @@ setup(
     packages=find_packages(),
     include_package_data=True,
     license='MIT',
-    install_requires=[
-        'google-cloud-storage',
-        'h5py',
-        'matplotlib',
-        'numpy',
-        'opencv-python',
-        'psutil',
-        'pyyaml',
-        'rtree',
-        'scikit-image',
-        'scipy',
-        'shapely>=2.0.0',
-        'tensorstore',
-        'triangle',
-    ],
+    install_requires=install_requires,
     classifiers=[
         'Development Status :: 4 - Beta',
         'Intended Audience :: Science/Research',
