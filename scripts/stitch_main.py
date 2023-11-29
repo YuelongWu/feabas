@@ -235,6 +235,8 @@ def render_main(tform_list, out_dir, **kwargs):
             if use_tensorstore:
                 out_prefix = sec_outdir
             else:
+                if  sec_outdir.startswith('file://'):
+                    sec_outdir = sec_outdir.replace('file://', '')
                 os.makedirs(sec_outdir, exist_ok=True)
                 out_prefix = os.path.join(sec_outdir, sec_name)
             num_rendered = render_one_section(tname, out_prefix, meta_name=meta_name, **kwargs)
