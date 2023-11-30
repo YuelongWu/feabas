@@ -1,7 +1,7 @@
 from setuptools import setup, find_packages
 import platform
 
-VERSION = '2.0.1'
+VERSION = '2.0.2'
 
 def readme():
     with open('README.md') as f:

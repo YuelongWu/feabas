@@ -401,9 +401,17 @@ if __name__ == '__main__':
                 region_labels.append(mat.mask_label)
         thumbnail_configs.setdefault('region_labels', region_labels)
         pairnames = []
+        match_name_delimiter = thumbnail_configs.get('match_name_delimiter', '__to__')
         for stp in range(1, compare_distance+1):
             for k in range(len(bname_list)-stp):
-                pairnames.append((bname_list[k], bname_list[k+stp]))
+                sname0_ext = bname_list[k]
+                sname1_ext = bname_list[k+stp]
+                sname0 = os.path.splitext(sname0_ext)[0]
+                sname1 = os.path.splitext(sname1_ext)[0]
+                outname = os.path.join(match_dir, sname0 + match_name_delimiter + sname1 + '.h5')
+                if os.path.isfile(outname):
+                    continue
+                pairnames.append((sname0_ext, sname1_ext))
         pairnames.sort()
         pairnames = pairnames[arg_indx]
         target_func = partial(align_thumbnail_pairs, image_dir=img_dir, out_dir=match_dir,
