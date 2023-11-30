@@ -279,6 +279,7 @@ def section_matcher(mesh0, mesh1, image_loader0, image_loader1, **kwargs):
     kwargs.setdefault('batch_size', 100)
     kwargs.setdefault('continue_on_flip', True)
     kwargs.setdefault('distributor', 'cartesian_region')
+    kwargs.setdefault('link_weight_decay', 0.3)
     render_weight_threshold = kwargs.get('render_weight_threshold', 0.1)
     if render_weight_threshold > 0:
         idx0 = mesh0.triangle_mask_for_render(render_weight_threshold=render_weight_threshold)
@@ -363,6 +364,13 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
         render_mode: the rendering mode when generating the blocks for template-
             matching.
         allow_dwell(int): number of times each spacing settings can be repeated.
+        allow_enlarge(bool): whether to allow the spacing to increase to value
+            larger than the largest among the preset values, if the first-round
+            residue is very large after mesh relaxation indicating excessive
+            error in initial estimation.
+        link_weight_decay(float): the weight applied to the links belong to
+            older spacing setting for each step. Set to 0.0 to start fresh for
+            each new spacing setting.
         compute_strain(bool): whether to caculate the largest strain in
             the final relaxed meshes. Could be an indicator of how "crazy" the
             matching points are
@@ -383,11 +391,13 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
     boundary_tolerance = kwargs.get('boundary_tolerance', None)
     shrink_factor = kwargs.get('shrink_factor', 1)
     allow_dwell = kwargs.get('allow_dwell', 0)
+    allow_enlarge = kwargs.get('allow_enlarge', True)
+    link_weight_decay = kwargs.get('link_weight_decay', 0.0)
     compute_strain = kwargs.get('compute_strain', True)
     batch_size = kwargs.pop('batch_size', None)
     initial_matches = kwargs.get('initial_matches', None)
     to_pad = kwargs.pop('pad', None)
-    max_spacing_skip = kwargs.get('max_spacing_skip', 1)
+    max_spacing_skip = kwargs.get('max_spacing_skip', 0)
     continue_on_flip = kwargs.get('continue_on_flip', True)
     callback_settings = kwargs.get('callback_settings', {'early_stop_thresh': 0.1, 'chances':10, 'eval_step': 5})
     if num_workers > 1 and batch_size is not None:
@@ -416,7 +426,7 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
         ht0 = bbox[3] - bbox[1]
         lside = max(wd0, ht0)
         spacings[spacings < 1] *= lside
-    opt = optimizer.SLM([mesh0, mesh1])
+    opt = optimizer.SLM([mesh0, mesh1], stiffness_lambda=0.2)
     if initial_matches is not None:
         xy0, xy1, weight = initial_matches
         opt.add_link_from_coordinates(mesh0.uid, mesh1.uid, xy0, xy1,
@@ -432,7 +442,7 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
     sp = np.max(spacings)
     sp_indx = 0
     initialized = False
-    spacing_enlarged = False
+    spacing_enlarged = not allow_enlarge
     dwelled = 0
     if to_pad is None:
         pad = True
@@ -523,7 +533,11 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
                 return invalid_output
             else:
                 break
-        opt.clear_links()
+        if link_weight_decay == 0:
+            opt.clear_links()
+        else:
+            for lnk in opt.links:
+                lnk._weight = lnk._weight * link_weight_decay
         xy0 = xy0[conf > conf_thresh]
         xy1 = xy1[conf > conf_thresh]
         wt = conf[conf > conf_thresh]
@@ -535,6 +549,7 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
         min_block_size = min_block_size_multiplier * max_dis
         next_pos = np.searchsorted(-spacings, -min_block_size) - 1
         if (not spacing_enlarged) and (next_pos < 0):
+            sp_indx = -1
             spacing_enlarged = True
             sp = np.ceil(min_block_size)
             if to_pad is None:
@@ -581,11 +596,11 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
                     else:
                         opt.optimize_Newton_Raphson(maxepoch=3, tol=opt_tol_t, batch_num_matches=np.inf, continue_on_flip=continue_on_flip, callback_settings=callback_settings)
         initialized = True
-        if sp_indx < spacings.size:
+        if (sp_indx < spacings.size) and (sp_indx >= 0):
             sp = spacings[sp_indx]
     if len(opt.links) == 0:
         return invalid_output
-    link = opt.links[0]
+    link = opt.links[-1]
     xy0 = link.xy0(gear=const.MESH_GEAR_INITIAL, use_mask=True, combine=True)
     xy1 = link.xy1(gear=const.MESH_GEAR_INITIAL, use_mask=True, combine=True)
     weight = link.weight(use_mask=True)
