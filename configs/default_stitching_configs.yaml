@@ -58,7 +58,8 @@ rendering:
     resolution: null    # if null, use the intrinsic image resolution; otherwise scale to this resolution
     loader_settings: # see dal.AbstractImageLoader for details
         cache_size: 150
-        apply_CLAHE: true # opencv clahe not properly working for 16-bit
+        apply_CLAHE: true
+        CLAHE_cliplimit: 2.0   # counterintuitively, probably need larger value for 16-bit
         inverse: true
         fillval: 0
         dtype: null # can be uint8, uint16 etc. to use the src dtype, set to null 

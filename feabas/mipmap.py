@@ -42,7 +42,7 @@ def get_image_loader(src_dir, **kwargs):
     if os.path.isfile(meta_file):
         image_loader = MosaicLoader.from_coordinate_file(meta_file, **kwargs)
     else:
-        pattern0 = pattern.replace('{', '({').replace('}', '}\d+)')
+        pattern0 = pattern.replace('{', '({').replace('}', r'}\d+)')
         if one_based:
             tile_offset = (-1, -1)
         else:
@@ -87,6 +87,8 @@ def mip_one_level(src_dir, out_dir, **kwargs):
         return -n_img
     rendered = {}
     try:
+        if ext_out == 'jpg':
+            kwargs.setdefault('dtype', np.uint8)
         image_loader = get_image_loader(src_dir, pattern=pattern, tile_size=tile_size, **kwargs)
         if image_loader is None:
             return 0

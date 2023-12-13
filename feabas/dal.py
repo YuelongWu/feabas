@@ -151,7 +151,8 @@ class AbstractImageLoader(ABC):
         self._dtype = kwargs.get('dtype', None)
         self._number_of_channels = kwargs.get('number_of_channels', None)
         self._apply_CLAHE = kwargs.get('apply_CLAHE', False)
-        self._CLAHE = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+        clahe_clip_limit = kwargs.get('CLAHE_cliplimit', 2.0)
+        self._CLAHE = cv2.createCLAHE(clipLimit=clahe_clip_limit, tileGridSize=(8,8))
         self._inverse = kwargs.get('inverse', False)
         self._default_fillval = kwargs.get('fillval', 0)
         self._cache_size = kwargs.get('cache_size', 0)
@@ -406,6 +407,8 @@ class AbstractImageLoader(ABC):
             img = self._preprocess(img)
         if inverse:
             img = common.inverse_image(img, dtype)
+        if (img.dtype == np.uint16) and (np.dtype(dtype) == np.uint8):
+            img = img / 255
         return img.astype(dtype, copy=False)
 
 
@@ -804,7 +807,7 @@ class MosaicLoader(StaticImageLoader):
 
 
     @classmethod
-    def from_filepath(cls, imgpaths, pattern='_tr({ROW_IND}\d+)-tc({COL_IND}\d+)', **kwargs):
+    def from_filepath(cls, imgpaths, pattern=r'_tr({ROW_IND}\d+)-tc({COL_IND}\d+)', **kwargs):
         """
         pattern: See MosaicLoader._filename_parser
         tile_size: Size of the tile. If not provide, read-in the first image.
@@ -897,7 +900,7 @@ class MosaicLoader(StaticImageLoader):
         each keyword should only appear once and has one-to-one correspondance
         with a group in regexp.
         e.g. feabas_tr1_is_not_a_pokemon_tc2.png can be parsed with pattern:
-            _tr({ROW_IND}\d+)\w+_tc({COL_IND}\d+)
+            _tr({ROW_IND}\\d+)\w+_tc({COL_IND}\\d+)
         """
         keywords = ['{ROW_IND}','{COL_IND}','{X_MIN}','{Y_MIN}','{X_MAX}','{Y_MAX}']
         pos = np.array([pattern.find(s) for s in keywords])
