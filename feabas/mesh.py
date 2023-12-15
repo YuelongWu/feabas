@@ -1433,7 +1433,7 @@ class Mesh:
 
 
     @config_cache('TBD')
-    def _vertex_distances(self, gear=const.MESH_GEAR_INITIAL, vtx_mask=None, tri_mask=None):
+    def vertex_distances(self, gear=const.MESH_GEAR_INITIAL, vtx_mask=None, tri_mask=None):
         """sparse matrix storing lengths of the edges."""
         if Mesh._masked_all(vtx_mask):
             vertices = self.vertices(gear=gear)
@@ -1444,7 +1444,7 @@ class Mesh:
             D = sparse.csr_matrix((edges_len, (idx0, idx1)), shape=(Npt, Npt))
             return D
         else:
-            D = self._vertex_distances(gear=gear, vtx_mask=None, tri_mask=tri_mask)
+            D = self.vertex_distances(gear=gear, vtx_mask=None, tri_mask=tri_mask)
             return D[vtx_mask][:, vtx_mask]
 
 

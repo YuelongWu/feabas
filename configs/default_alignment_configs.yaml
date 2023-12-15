@@ -14,8 +14,9 @@ matching:
         num_workers: 12
         batch_size: 100 # number of cropped regions to do fft at the same time
         conf_thresh: 0.35    # cross-correlations with confidence value smaller than this will be rejected
-        sigma: 3.5
-        pad: true
+        sigma: 3.5  # sigma of DoG filter applied to image before matching
+        geodesic_mask: false # whether to mask out image subregions with large geodesic distance from the center of the patches to match
+        pad: true   # whether to double the fft points. more compute but useful when initial placements is off
         distributor: cartesian_region   # cartesian_region/intersect_triangulation
         spacings: [400, 100]    # distance between grid points at each coarse-to-fine level
         shrink_factor: 0.7  # the size of the cropped fft tiles compared to the spacings

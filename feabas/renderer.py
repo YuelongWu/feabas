@@ -6,12 +6,14 @@ from multiprocessing import get_context
 import matplotlib.tri
 import numpy as np
 import os
+from scipy.sparse import csgraph
 import shapely
 import shapely.geometry as shpgeo
 from shapely.ops import unary_union
 import tensorstore as ts
 import time
 
+from feabas.caching import CacheFIFO
 import feabas.constant as const
 from feabas.mesh import Mesh
 from feabas import common, spatial, dal, logging
@@ -35,6 +37,8 @@ class MeshRenderer:
         self.resolution = kwargs.get('resolution', DEFAULT_RESOLUTION)
         self._default_fillval = kwargs.get('fillval', None)
         self._dtype = kwargs.get('dtype', None)
+        self._geodesic_mask = kwargs.get('geodesic_mask', False)
+        self._geodesic_info = kwargs.get('geodesic_info', None)
 
 
     @classmethod
@@ -43,6 +47,7 @@ class MeshRenderer:
         weight_params = kwargs.pop('weight_params', const.MESH_TRIFINDER_INNERMOST)
         local_cache = kwargs.get('cache', False)
         render_weight_threshold = kwargs.get('render_weight_threshold', 0)
+        geodesic_mask = kwargs.get('geodesic_mask', False)
         msh_wt = srcmesh.weight_multiplier_for_render()
         if np.any(msh_wt != 1):
             weighted_material = True
@@ -69,6 +74,16 @@ class MeshRenderer:
         tidx_list = tri_info['triangle_index']
         vidx_list = tri_info['vertex_index']
         vertices_img = srcmesh.vertices_w_offset(gear=gear[-1])
+        if geodesic_mask:
+            geodesic_info = {}
+            geodesic_info['vertex_adjacency'] = srcmesh.vertex_distances(gear=gear[0], tri_mask=render_mask, cache=False)
+            geodesic_info['region_tri'] = mattri_list
+            geodesic_info['region_vindx'] = vidx_list
+            vtx0 = srcmesh.vertices(gear=gear[0])
+            segs = srcmesh.segments(tri_mask=render_mask)
+            geodesic_info['seg_line'] = unary_union([shpgeo.LineString(vtx0[s]) for s in segs])
+        else:
+            geodesic_info = None
         interpolators = []
         weight_generator = []
         collision_region = []
@@ -122,6 +137,7 @@ class MeshRenderer:
             weight_params=weight_params, weight_generator=weight_generator,
             weight_multiplier=weight_multiplier,
             collision_region=collision_region, resolution=resolution,
+            geodesic_info=geodesic_info,
             **kwargs)
 
 
@@ -220,7 +236,7 @@ class MeshRenderer:
         """
         compute the deformation field and their weight given a bounding box.
         Args:
-            bbox: bounding box (xmin, xmax, ymin, ymax) in the output space,
+            bbox: bounding box (xmin, ymin, xmax, ymax) in the output space,
                 left/top included & right/bottom excluded
         Kwargs:
             region_id: which region to use when selecting the interpolator. If
@@ -242,14 +258,15 @@ class MeshRenderer:
         compute_wt =  kwargs.get('compute_wt', True)
         out_resolution = kwargs.get('out_resolution', None)
         offsetting = kwargs.get('offsetting', True)
+        invalid_output = (None, None, None)
         bbox0 = np.array(bbox, copy=False).reshape(4)
         if offsetting:
             bbox0 = bbox0 - np.tile(self._offset.ravel(), 2)
+        bcntr = ((bbox0[0] + bbox0[2] - 1)/2, (bbox0[1] + bbox0[3] - 1)/2)
         if region_id is None:
-            bcntr = ((bbox0[0] + bbox0[2] - 1)/2, (bbox0[1] + bbox0[3] - 1)/2)
             region_id = self.region_finder_for_points(bcntr, offsetting=False).item()
         if region_id == -1:
-            return None, None, None
+            return invalid_output
         interpX, interpY = self._interpolators[region_id]
         xs = np.linspace(bbox0[0], bbox0[2], num=round(bbox0[2]-bbox0[0]), endpoint=False, dtype=float)
         ys = np.linspace(bbox0[1], bbox0[3], num=round(bbox0[3]-bbox0[1]), endpoint=False, dtype=float)
@@ -262,34 +279,69 @@ class MeshRenderer:
         map_y = interpY(xx, yy)
         mask = map_x.mask | map_y.mask
         if np.all(mask, axis=None):
-            return None, None, None
+            return invalid_output
         x_field = np.nan_to_num(map_x.data, copy=False)
         y_field = np.nan_to_num(map_y.data, copy=False)
         weight = 1 - mask.astype(np.float32)
-        weight_generator = self.weight_generator[region_id]
-        weight_multiplier = self.weight_multiplier[region_id]
-        if compute_wt and (weight_generator is not None):
-            if self._weight_params == const.MESH_TRIFINDER_INNERMOST:
-                wt = weight_generator(xx, yy)
-                if not np.all(wt.mask, axis=None):
-                    wtmx = wt.max()
-                    weight = weight * np.nan_to_num(wt.data, copy=False, nan=wtmx)
-            elif self._weight_params == const.MESH_TRIFINDER_LEAST_DEFORM:
-                trfd, wt0 = weight_generator
+        if self._geodesic_mask and (self._geodesic_info is not None):
+            if self._geodesic_info['seg_line'].intersects(shpgeo.box(*bbox0)):
+                if not hasattr(self, '_cached_geodesic_distance'):
+                    self._cached_geodesic_distance = CacheFIFO(maxlen=5)
+                if bcntr in self._cached_geodesic_distance:
+                    dis_g0 = self._cached_geodesic_distance[bcntr]
+                else:
+                    hit_id = self.region_finder_for_points(bcntr, offsetting=False).item()
+                    if hit_id == -1:
+                        return invalid_output
+                    hit_mtri = self._geodesic_info['region_tri'][hit_id]
+                    t_finder = hit_mtri.get_trifinder()
+                    hit_tidx = t_finder(bcntr[0], bcntr[1]).item()
+                    if hit_tidx == -1:
+                        return invalid_output
+                    hit_vidx_loc = hit_mtri.triangles[hit_tidx]
+                    hit_dis = ((hit_mtri.x[hit_vidx_loc] - bcntr[0]) ** 2 + (hit_mtri.y[hit_vidx_loc] - bcntr[1]) ** 2) ** 0.5
+                    hit_vidx_glob = self._geodesic_info['region_vindx'][hit_id][hit_vidx_loc]
+                    dis_t = csgraph.shortest_path(self._geodesic_info['vertex_adjacency'],
+                                                  directed=False, return_predecessors=False,
+                                                  unweighted=False, overwrite=False,
+                                                  indices=hit_vidx_glob)
+                    dis_t = dis_t + hit_dis.reshape(3, 1)
+                    dis_g0 = np.min(dis_t, axis=0)
+                    self._cached_geodesic_distance[bcntr] = dis_g0
+                mtri = self._geodesic_info['region_tri'][region_id]
+                vidx = self._geodesic_info['region_vindx'][region_id]
+                dis_g = dis_g0[vidx]
+                dis_e = ((mtri.x - bcntr[0])**2 + (mtri.y - bcntr[1])**2)**0.5
+                with np.errstate(divide='ignore', invalid='ignore'):
+                    dis_ratio = np.nan_to_num(dis_e/dis_g, nan=1)
+                ginterp = matplotlib.tri.LinearTriInterpolator(mtri, dis_ratio)
+                wt = np.nan_to_num(ginterp(xx, yy).data, nan=0)
+                weight = weight * wt.clip(0,1)
+        else:
+            weight_generator = self.weight_generator[region_id]
+            weight_multiplier = self.weight_multiplier[region_id]
+            if compute_wt and (weight_generator is not None):
+                if self._weight_params == const.MESH_TRIFINDER_INNERMOST:
+                    wt = weight_generator(xx, yy)
+                    if not np.all(wt.mask, axis=None):
+                        wtmx = wt.max()
+                        weight = weight * np.nan_to_num(wt.data, copy=False, nan=wtmx)
+                elif self._weight_params == const.MESH_TRIFINDER_LEAST_DEFORM:
+                    trfd, wt0 = weight_generator
+                    tid = trfd(xx, yy)
+                    omask = tid < 0
+                    if not np.all(tid < 0, axis=None):
+                        wt = wt0[tid]
+                        wt[omask] = 1
+                        weight = weight * wt
+            if compute_wt and (weight_multiplier is not None):
+                trfd, wt0 = weight_multiplier
                 tid = trfd(xx, yy)
                 omask = tid < 0
                 if not np.all(tid < 0, axis=None):
                     wt = wt0[tid]
                     wt[omask] = 1
                     weight = weight * wt
-        if compute_wt and (weight_multiplier is not None):
-            trfd, wt0 = weight_multiplier
-            tid = trfd(xx, yy)
-            omask = tid < 0
-            if not np.all(tid < 0, axis=None):
-                wt = wt0[tid]
-                wt[omask] = 1
-                weight = weight * wt
         return x_field, y_field, weight
 
 
@@ -415,6 +467,8 @@ class MeshRenderer:
             mask = weight > 0
         else:
             raise ValueError
+        if self._geodesic_mask:
+            mask = weight
         return x_field, y_field, mask
 
 
@@ -424,6 +478,9 @@ class MeshRenderer:
         if image_loader is None:
             raise RuntimeError('Image loader not defined.')
         x_field, y_field, mask = self.crop_field(bbox, **kwargs)
+        if self._geodesic_mask:
+            weight = mask
+            mask = weight > 0
         if image_loader.resolution != self.resolution:
             scale = self.resolution / image_loader.resolution
             x_field = spatial.scale_coordinates(x_field, scale)
@@ -435,6 +492,11 @@ class MeshRenderer:
             imgt = common.masked_dog_filter(imgt, log_sigma, mask=mask)
             if len(imgt.shape) > 2:
                 imgt = np.moveaxis(imgt, 0, -1)
+        if self._geodesic_info:
+            dtp = imgt.dtype
+            kk = 2
+            weight = (np.arctan((weight - 0.5)*2*kk*np.pi) + np.arctan(kk*np.pi)) / (2*np.arctan(kk*np.pi))
+            imgt = (imgt * weight).astype(dtp)
         return imgt
 
 

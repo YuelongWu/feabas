@@ -617,6 +617,7 @@ def bboxes_mesh_renderer_matcher(mesh0, mesh1, image_loader0, image_loader1, bbo
     batch_size = kwargs.get('batch_size', None)
     sigma = kwargs.get('sigma', 0.0)
     render_mode = kwargs.get('render_mode', const.RENDER_FULL)
+    geodesic_mask = kwargs.get('geodesic_mask', False)
     conf_mode = kwargs.get('conf_mode', const.FFT_CONF_MIRROR)
     pad = kwargs.get('pad', True)
     if isinstance(mesh0, dict):
@@ -644,8 +645,8 @@ def bboxes_mesh_renderer_matcher(mesh0, mesh1, image_loader0, image_loader1, bbo
         for bidx0, bidx1 in zip(batch_indices[:-1], batch_indices[1:]):
             batched_block_indices0.append(bboxes0[bidx0:bidx1])
             batched_block_indices1.append(bboxes1[bidx0:bidx1])
-    render0 = MeshRenderer.from_mesh(mesh0, image_loader=image_loader0)
-    render1 = MeshRenderer.from_mesh(mesh1, image_loader=image_loader1)
+    render0 = MeshRenderer.from_mesh(mesh0, image_loader=image_loader0, geodesic_mask=geodesic_mask)
+    render1 = MeshRenderer.from_mesh(mesh1, image_loader=image_loader1, geodesic_mask=geodesic_mask)
     if (render0 is None) or (render1 is None):
         xy0 = np.empty((0,2))
         xy1 = np.empty((0,2))
