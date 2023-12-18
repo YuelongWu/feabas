@@ -48,6 +48,22 @@ def dynamic_typing_decorator(func):
 
 
 def plot_mesh(M, show_mat=False, show_conn=False, show_group=False, gear=const.MESH_GEAR_MOVING, show=False, colors=('b', 'k')):
+    """
+    Visualize the triangulation of feabas.mesh.Mesh object.
+    Args:
+        M (feabas.mesh.Mesh): mesh object.
+    Kwargs:
+        show_mat (bool): display triangles of different material types with
+            different color.
+        show_conn (bool): display triangles belong to different connected
+            components with different color.
+        show_group (bool): show the partitions of the mesh with no
+            self-intersection. Mostly for debugging.
+        gear (int): set of vertices to show.
+            0 for fixed vertices, 1 for moving vertices.
+        show (bool):  whether to call plt.show() after leaving the function.
+        colors (tuple): interior color followed by boundary color.
+    """
     if isinstance(M, (list, tuple)):
         for m in M:
             plot_mesh(m, show_mat=show_mat, show_conn=show_conn, show_group=show_group, gear=gear, show=False)
@@ -80,6 +96,16 @@ def plot_mesh(M, show_mat=False, show_conn=False, show_group=False, gear=const.M
 
 
 def plot_montage(M, bbox_only=False):
+    """
+    Visualize the triangulation of feabas.stitcher.Stitcher object after
+    optimization step.
+    Args:
+        M (feabas.stitcher.Stitcher): montage object. Can be initialized from
+        Stitcher.from_h5(H5_FILES_AFTER_OPTIMIZATION)
+    Kwargs:
+        bbox_only (bool): Set to True to plot each tile as a rectangle (faster).
+            Otherwise, plot the deformed outline of each tile.
+    """
     if M._connected_subsystem is not None:
         lbls = M._connected_subsystem
     else:
@@ -139,6 +165,9 @@ def plot_polygons(polygons, **kwargs):
 
 @dynamic_typing_decorator
 def plot_geometries(geo_obj, **kwargs):
+    """
+    visualize shapely.Geometry objects.
+    """
     if hasattr(geo_obj, 'is_empty') and geo_obj.is_empty:
         pass
     elif isinstance(geo_obj, shpgeo.Polygon):
