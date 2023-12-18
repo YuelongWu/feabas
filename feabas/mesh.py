@@ -1617,6 +1617,20 @@ class Mesh:
         return mask
 
 
+    @config_cache(const.MESH_GEAR_INITIAL)
+    def triangle_mask_for_stiffness(self, ** kwargs):
+        stiffness_multiplier_threshold = kwargs.get('stiffness_multiplier_threshold', 0)
+        mid_disrd = []
+        for _, m in self._material_table:
+            if m.stiffness_multiplier < stiffness_multiplier_threshold:
+                mid_disrd.append(m.uid)
+        if len(mid_disrd) > 0:
+            mask = ~np.isin(self.material_ids, mid_disrd)
+        else:
+            mask = np.ones(self.num_triangles, dtype=bool)
+        return mask
+
+
     def shapely_regions(self, gear=None, tri_mask=None, offsetting=True):
         """
         return the shapely (Multi)Polygon that cover the region of the triangles.

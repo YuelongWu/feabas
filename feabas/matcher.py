@@ -280,11 +280,12 @@ def section_matcher(mesh0, mesh1, image_loader0, image_loader1, **kwargs):
     kwargs.setdefault('continue_on_flip', True)
     kwargs.setdefault('distributor', 'cartesian_region')
     kwargs.setdefault('link_weight_decay', 0.3)
-    render_weight_threshold = kwargs.get('render_weight_threshold', 0.1)
-    if render_weight_threshold > 0:
-        idx0 = mesh0.triangle_mask_for_render(render_weight_threshold=render_weight_threshold)
+    stiffness_multiplier_threshold = kwargs.get('stiffness_multiplier_threshold', 0.5)
+    kwargs.setdefault('render_weight_threshold', 0.1)
+    if stiffness_multiplier_threshold > 0:
+        idx0 = mesh0.triangle_mask_for_stiffness(stiffness_multiplier_threshold=stiffness_multiplier_threshold)
         mesh0 = mesh0.submesh(idx0)
-        idx1 = mesh1.triangle_mask_for_render(render_weight_threshold=render_weight_threshold)
+        idx1 = mesh1.triangle_mask_for_stiffness(stiffness_multiplier_threshold=stiffness_multiplier_threshold)
         mesh1 = mesh1.submesh(idx1)
     if (initial_matches is None) or (mesh0.connected_triangles()[0] == 1 and mesh1.connected_triangles()[0] == 1):
         xy0, xy1, weight, _ = iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1,
@@ -400,6 +401,7 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
     max_spacing_skip = kwargs.get('max_spacing_skip', 0)
     continue_on_flip = kwargs.get('continue_on_flip', True)
     callback_settings = kwargs.get('callback_settings', {'early_stop_thresh': 0.1, 'chances':10, 'eval_step': 5})
+    render_weight_threshold = kwargs.get('render_weight_threshold', 0)
     if num_workers > 1 and batch_size is not None:
         batch_size = max(1, batch_size / num_workers)
     if isinstance(image_loader0, dal.AbstractImageLoader):
@@ -431,7 +433,7 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
         xy0, xy1, weight = initial_matches
         opt.add_link_from_coordinates(mesh0.uid, mesh1.uid, xy0, xy1,
             gear=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_INITIAL), weight=weight,
-            check_duplicates=False)
+            check_duplicates=False, render_weight_threshold=render_weight_threshold)
         opt.optimize_affine_cascade(start_gear=const.MESH_GEAR_INITIAL, target_gear=const.MESH_GEAR_FIXED, svd_clip=(1,1))
         opt.anneal(gear=(const.MESH_GEAR_FIXED, const.MESH_GEAR_MOVING), mode=const.ANNEAL_COPY_EXACT)
         if linear_system:
@@ -459,15 +461,15 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
         elif distributor == 'cartesian_region':
             bboxes0, bboxes1 = distributor_cartesian_region(mesh0, mesh1, sp,
                 min_boundary_distance=min_boundary_distance, shrink_factor=shrink_factor,
-                zorder=True)
+                zorder=True, render_weight_threshold=render_weight_threshold)
         elif distributor == 'intersect_triangulation':
             bboxes0, bboxes1 = distributor_intersect_triangulation(mesh0, mesh1, sp,
                 min_boundary_distance=min_boundary_distance, shrink_factor=shrink_factor,
-                zorder=True)
+                zorder=True, render_weight_threshold=render_weight_threshold)
         elif distributor == 'oneway_triangulation':
             bboxes0, bboxes1 = distributor_oneway_triangulation(mesh0, mesh1, sp,
                 boundary_tolerance=boundary_tolerance, shrink_factor=shrink_factor,
-                zorder=True)
+                zorder=True, render_weight_threshold=render_weight_threshold)
         else:
             raise ValueError
         if bboxes0 is None:
@@ -576,7 +578,7 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
             dwelled += 1
         opt.add_link_from_coordinates(mesh0.uid, mesh1.uid, xy0, xy1,
                         gear=(const.MESH_GEAR_MOVING, const.MESH_GEAR_MOVING), weight=wt,
-                        check_duplicates=False)
+                        check_duplicates=False, render_weight_threshold=render_weight_threshold)
         if max_dis > 0.1:
             if linear_system:
                 opt.optimize_linear(tol=opt_tol_t, batch_num_matches=np.inf, continue_on_flip=continue_on_flip, callback_settings=callback_settings)
@@ -620,6 +622,7 @@ def bboxes_mesh_renderer_matcher(mesh0, mesh1, image_loader0, image_loader1, bbo
     geodesic_mask = kwargs.get('geodesic_mask', False)
     conf_mode = kwargs.get('conf_mode', const.FFT_CONF_MIRROR)
     pad = kwargs.get('pad', True)
+    render_weight_threshold = kwargs.get('render_weight_threshold', 0)
     if isinstance(mesh0, dict):
         mesh0 = Mesh(**mesh0)
     elif isinstance(mesh0, str):
@@ -645,8 +648,8 @@ def bboxes_mesh_renderer_matcher(mesh0, mesh1, image_loader0, image_loader1, bbo
         for bidx0, bidx1 in zip(batch_indices[:-1], batch_indices[1:]):
             batched_block_indices0.append(bboxes0[bidx0:bidx1])
             batched_block_indices1.append(bboxes1[bidx0:bidx1])
-    render0 = MeshRenderer.from_mesh(mesh0, image_loader=image_loader0, geodesic_mask=geodesic_mask)
-    render1 = MeshRenderer.from_mesh(mesh1, image_loader=image_loader1, geodesic_mask=geodesic_mask)
+    render0 = MeshRenderer.from_mesh(mesh0, image_loader=image_loader0, geodesic_mask=geodesic_mask, render_weight_threshold=render_weight_threshold)
+    render1 = MeshRenderer.from_mesh(mesh1, image_loader=image_loader1, geodesic_mask=geodesic_mask, render_weight_threshold=render_weight_threshold)
     if (render0 is None) or (render1 is None):
         xy0 = np.empty((0,2))
         xy1 = np.empty((0,2))
@@ -734,6 +737,12 @@ def distributor_cartesian_region(mesh0, mesh1, spacing, **kwargs):
     shrink_factor = kwargs.get('shrink_factor', 1)
     min_boundary_distance = kwargs.get('min_boundary_distance', 0)
     zorder = kwargs.get('zorder', False)
+    render_weight_threshold = kwargs.get('render_weight_threshold', 0)
+    if render_weight_threshold > 0:
+        idx0 = mesh0.triangle_mask_for_render(render_weight_threshold=render_weight_threshold)
+        mesh0 = mesh0.submesh(idx0)
+        idx1 = mesh1.triangle_mask_for_render(render_weight_threshold=render_weight_threshold)
+        mesh1 = mesh1.submesh(idx1)
     region0 = mesh0.shapely_regions(gear=gear)
     region1 = mesh1.shapely_regions(gear=gear)
     if not hasattr(shrink_factor, '__len__'):
@@ -787,6 +796,12 @@ def distributor_intersect_triangulation(mesh0, mesh1, spacing, **kwargs):
     shrink_factor = kwargs.get('shrink_factor', 1)
     min_boundary_distance = kwargs.get('min_boundary_distance', 0)
     zorder = kwargs.get('zorder', False)
+    render_weight_threshold = kwargs.get('render_weight_threshold', 0)
+    if render_weight_threshold > 0:
+        idx0 = mesh0.triangle_mask_for_render(render_weight_threshold=render_weight_threshold)
+        mesh0 = mesh0.submesh(idx0)
+        idx1 = mesh1.triangle_mask_for_render(render_weight_threshold=render_weight_threshold)
+        mesh1 = mesh1.submesh(idx1)
     region0 = mesh0.shapely_regions(gear=gear)
     region1 = mesh1.shapely_regions(gear=gear)
     reg_crx = region0.intersection(region1)
@@ -827,6 +842,12 @@ def distributor_oneway_triangulation(mesh0, mesh1, spacing, **kwargs):
     shrink_factor = kwargs.get('shrink_factor', 1)
     boundary_tolerance = kwargs.get('boundary_tolerance', None)
     zorder = kwargs.get('zorder', False)
+    render_weight_threshold = kwargs.get('render_weight_threshold', 0)
+    if render_weight_threshold > 0:
+        idx0 = mesh0.triangle_mask_for_render(render_weight_threshold=render_weight_threshold)
+        mesh0 = mesh0.submesh(idx0)
+        idx1 = mesh1.triangle_mask_for_render(render_weight_threshold=render_weight_threshold)
+        mesh1 = mesh1.submesh(idx1)
     region0 = mesh0.shapely_regions(gear=gear)
     region1 = mesh1.shapely_regions(gear=gear)
     if (region0.area / mesh0.num_triangles) > (region1.area / mesh1.num_triangles):
