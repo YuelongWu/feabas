@@ -1195,7 +1195,7 @@ class MontageRenderer:
             mask = weight > 0
             if not np.any(mask, axis=None):
                 continue
-            expand_image = partial(common.expand_image, target_size=(ht0, wd0), slices=(slc_y, slc_x))
+            expand_image = partial(common.expand_image, target_size=(y0.size, x0.size), slices=(slc_y, slc_x))
             imgt = common.render_by_subregions(x_field, y_field, mask, self.image_loader, fileid=indx, **kwargs)
             if blend is None:
                 image_hp = expand_image(imgt)
@@ -1323,6 +1323,7 @@ class MontageRenderer:
         """
         driver = kwargs.get('driver', 'image')
         scale = kwargs.get('scale', 1)
+        resolution = self.resolution / scale
         if not hasattr(tile_size, '__len__'):
             tile_ht, tile_wd = tile_size, tile_size
         else:
@@ -1373,7 +1374,7 @@ class MontageRenderer:
                     "inclusive_min": [0, 0, 0, 0],
                     "labels": ["x", "y", "z", "channel"]
                 },
-                "dimension_units": [[self.resolution, "nm"], [self.resolution, "nm"], [general_settings().get('section_thickness', 30), "nm"], None],
+                "dimension_units": [[resolution, "nm"], [resolution, "nm"], [general_settings().get('section_thickness', 30), "nm"], None],
                 "dtype": np.dtype(dtype).name,
                 "rank" : 4
             }
