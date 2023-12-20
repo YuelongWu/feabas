@@ -7,7 +7,7 @@ matching:   # see stitcher.Stitcher.subprocess_match_list_of_overlaps for detail
     loader_config:  # see dal.AbstractImageLoader for details
         cache_size: 150     # total number of images allowed to cache in RAM
     matcher_config: # see matcher.stitching_matcher for details
-        spacing: null   # the spacing between grid points. null to decide dynamically
+        spacings: null   # the spacing between grid points. null to decide dynamically
         conf_thresh: 0.33   # cross-correlations with confidence value smaller than this will be rejected
         pad: true
         sigma: 2.5          # sigma of DoG filter applied to the images before matching
@@ -54,7 +54,6 @@ rendering:
     driver: image   # image(PNG tiles), zarr, n5, neuroglancer_precomputed
     num_workers: 5
     tile_size: [4096, 4096] # output tile size
-    scale: 1.0
     resolution: null    # if null, use the intrinsic image resolution; otherwise scale to this resolution
     loader_settings: # see dal.AbstractImageLoader for details
         cache_size: 150
