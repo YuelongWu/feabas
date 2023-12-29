@@ -265,6 +265,11 @@ class Material:
 
 
     @property
+    def stiffness_multiplier(self):
+        return self._stiffness_multiplier
+
+
+    @property
     def is_linear(self):
         return (self._type == const.MATERIAL_MODEL_ENG) and (self._stiffness_func is None)
 
