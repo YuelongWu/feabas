@@ -859,7 +859,7 @@ class VolumeRenderer:
         zz = zz[(zz >= np.min(self._zindx)) & (zz <= np.max(self._zindx))]
         if zz.size == 0:
             return render_seriers
-        xmin, ymin, xmax, ymax = self.canvas_box
+        xmin, ymin, xmax, ymax = self.canvas_bbox
         x0_mn = np.arange((xmin//chunk_x) * chunk_x, xmax, chunk_x)
         y0_mn = np.arange((ymin//chunk_y) * chunk_y, ymax, chunk_y)
         xx_mn, yy_mn = np.meshgrid(x0_mn, y0_mn)
@@ -996,7 +996,7 @@ class VolumeRenderer:
 
 
     @property
-    def canvas_box(self):
+    def canvas_bbox(self):
         if self._canvas_bbox is None:
             bbox_union = None
             for rm in self.region_generator():
@@ -1011,7 +1011,8 @@ class VolumeRenderer:
                     bbox_union = bbox
                 else:
                     bbox_union = common.bbox_union((bbox_union, bbox))
-            self._canvas_box = bbox_union
+            self._canvas_bbox = bbox_union
+            self._offset = -bbox_union[:2]
         return self._canvas_bbox
 
 
@@ -1091,7 +1092,8 @@ class VolumeRenderer:
                 self._chunk_shape = dataset.schema.chunk_layout.write_chunk.shape[:3]
             except ValueError:
                 spec_copy.update({'create': True})
-                xmin, ymin, xmax, ymax = self.canvas_box
+                xmin, ymin, xmax, ymax = self.canvas_bbox
+                xmin, ymin, xmax, ymax = xmin + self._offset[0], ymin + self._offset[1], xmax + self._offset[0], ymax + self._offset[1]
                 zmin, zmax = np.min(self._zindx), np.max(self._zindx) + 1
                 if (self._zmin is not None) and zmin > self._zmin:
                     zmin = self._zmin
