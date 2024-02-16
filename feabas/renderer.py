@@ -1012,7 +1012,7 @@ class VolumeRenderer:
                 else:
                     bbox_union = common.bbox_union((bbox_union, bbox))
             self._canvas_bbox = bbox_union
-            self._offset = -bbox_union[:2]
+            self._offset = -bbox_union[:2].reshape(1,2)
         return self._canvas_bbox
 
 
@@ -1093,7 +1093,8 @@ class VolumeRenderer:
             except ValueError:
                 spec_copy.update({'create': True})
                 xmin, ymin, xmax, ymax = self.canvas_bbox
-                xmin, ymin, xmax, ymax = xmin + self._offset[0], ymin + self._offset[1], xmax + self._offset[0], ymax + self._offset[1]
+                _offset = self._offset.ravel()
+                xmin, ymin, xmax, ymax = xmin + _offset[0], ymin + _offset[1], xmax + _offset[0], ymax + _offset[1]
                 zmin, zmax = np.min(self._zindx), np.max(self._zindx) + 1
                 if (self._zmin is not None) and zmin > self._zmin:
                     zmin = self._zmin
