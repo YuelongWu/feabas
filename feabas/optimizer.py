@@ -958,18 +958,18 @@ class SLM:
         """
         optimize the non linear system using newton-raphson method.
         kwargs:
-            maxepoch: maximum number of linear steps to use.
-            maxiter: maximum number of iterations for each linear step. None if
+            max_newtonstep: maximum number of Newton steps to use.
+            maxiter: maximum number of iterations for each Newton step. None if
                 no limit.
-            tol: the relative stopping tolerance for each linear step.
-            atol: the absolute stopping tolerance for each linear step.
+            tol: the relative stopping tolerance for each Newton step.
+            atol: the absolute stopping tolerance for each Newton step.
             residue_mode: the method to adjust crosslink weight accordint to
                 the residues. Could be 'hard'(hard threshold), 'huber', or None.
             residue_len: characteristic length of residue used to dynamically
                 adjust link weights.
             anneal_mode: mode used to anneal the meshes.
-            stiffness_lambda: stiffness term multipliers for each linear step.
-            crosslink_lambda: crosslink term multiplier for each linear step.
+            stiffness_lambda: stiffness term multipliers for each Newton step.
+            crosslink_lambda: crosslink term multiplier for each Newton step.
             inner_cache: the cache to store intermediate attributes.
             continue_on_flip(bool): whether to continue with flipped triangles
                 detected.
@@ -982,17 +982,17 @@ class SLM:
                 constructing the incremental sparse matrices. Larger number
                 needs more RAM but faster
         """
-        maxepoch = kwargs.get('maxepoch', 5)
+        max_newtonstep = kwargs.get('max_newtonstep', 5)
         tol = kwargs.get('tol', 1e-7)
         atol = kwargs.get('atol', None)
-        maxiter = SLM.expand_to_list(kwargs.get('maxiter', None), maxepoch)
-        step_tol = SLM.expand_to_list(kwargs.get('step_tol', tol), maxepoch)
-        step_atol = SLM.expand_to_list(kwargs.get('step_atol', atol), maxepoch)
-        stiffness_lambda = SLM.expand_to_list(kwargs.get('stiffness_lambda', self._stiffness_lambda), maxepoch)
-        crosslink_lambda = SLM.expand_to_list(kwargs.get('crosslink_lambda', self._crosslink_lambda), maxepoch)
-        residue_mode = SLM.expand_to_list(kwargs.get('residue_mode', None), maxepoch)
-        residue_len = SLM.expand_to_list(kwargs.get('residue_len', 0), maxepoch)
-        anneal_mode = SLM.expand_to_list(kwargs.get('anneal_mode', None), maxepoch)
+        maxiter = SLM.expand_to_list(kwargs.get('maxiter', None), max_newtonstep)
+        step_tol = SLM.expand_to_list(kwargs.get('step_tol', tol), max_newtonstep)
+        step_atol = SLM.expand_to_list(kwargs.get('step_atol', atol), max_newtonstep)
+        stiffness_lambda = SLM.expand_to_list(kwargs.get('stiffness_lambda', self._stiffness_lambda), max_newtonstep)
+        crosslink_lambda = SLM.expand_to_list(kwargs.get('crosslink_lambda', self._crosslink_lambda), max_newtonstep)
+        residue_mode = SLM.expand_to_list(kwargs.get('residue_mode', None), max_newtonstep)
+        residue_len = SLM.expand_to_list(kwargs.get('residue_len', 0), max_newtonstep)
+        anneal_mode = SLM.expand_to_list(kwargs.get('anneal_mode', None), max_newtonstep)
         inner_cache = kwargs.get('inner_cache', self._shared_cache)
         cont_on_flip = kwargs.get('continue_on_flip', False)
         crosslink_shrink = kwargs.get('crosslink_shrink', 0.25)
@@ -1025,10 +1025,10 @@ class SLM:
             tol0 = cost0 * tol
         else:
             tol0 = min(cost0 * tol, atol)
-        ke = 0 # epoch counter
+        ke = 0 # newton step counter
         kshrk = 0 # crosslink_shrink counter
         cshrink = 1
-        while ke < maxepoch:
+        while ke < max_newtonstep:
             step_cost = self.optimize_linear(maxiter=maxiter[ke],
                 tol=step_tol[ke], atol=step_atol[ke],
                 shape_gear=shape_gear, start_gear=start_gear, target_gear=target_gear,
