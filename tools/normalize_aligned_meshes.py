@@ -29,7 +29,7 @@ if __name__ == '__main__':
         if regions is None:
             regions = R
         else:
-            regions.union(R)
+            regions = regions.union(R)
     bbox = shapely.minimum_rotated_rectangle(regions)
     corner_xy = np.array(bbox.boundary.coords)
     corner_dxy = np.diff(corner_xy, axis=0)
