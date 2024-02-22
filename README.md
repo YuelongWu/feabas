@@ -13,6 +13,8 @@ git clone https://github.com/YuelongWu/feabas.git
 cd feabas
 pip install -e .
 ```
+Note: on Apple silicon, you may need to manually install [triangle](https://github.com/drufat/triangle) from git repo `pip install git+https://github.com/drufat/triangle.git` due to missing wheels.
+
 
 ## Usage
 
