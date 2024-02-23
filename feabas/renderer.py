@@ -492,7 +492,7 @@ class MeshRenderer:
             imgt = common.masked_dog_filter(imgt, log_sigma, mask=mask)
             if len(imgt.shape) > 2:
                 imgt = np.moveaxis(imgt, 0, -1)
-        if self._geodesic_info:
+        if (self._geodesic_info) and (imgt is not None):
             dtp = imgt.dtype
             kk = 2
             weight = (np.arctan((weight - 0.5)*2*kk*np.pi) + np.arctan(kk*np.pi)) / (2*np.arctan(kk*np.pi))
