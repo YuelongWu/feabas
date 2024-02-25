@@ -42,6 +42,7 @@ def xcorr_fft(img0, img1, conf_mode=const.FFT_CONF_MIRROR, **kwargs):
     mask0 = kwargs.get('mask0', None)
     mask1 = kwargs.get('mask1', None)
     normalize = kwargs.get('normalize', False)
+    subpixel = kwargs.get('subpixel', True)
     pad = kwargs.get('pad', True)
     if len(img0.shape) > 3:
         img0 = np.moveaxis(img0, -1, 1)
@@ -77,6 +78,29 @@ def xcorr_fft(img0, img1, conf_mode=const.FFT_CONF_MIRROR, **kwargs):
         C = C / NC
     indx = np.argmax(C, axis=-1)
     dy, dx = np.unravel_index(indx, fftshp)
+    if subpixel:
+        ddx, ddy = np.meshgrid((-1,0,1),(-1,0,1))
+        cy = (dy.reshape(-1,1) + ddy.reshape(1,-1)) % fftshp[0]
+        cx = (dx.reshape(-1,1) + ddx.reshape(1,-1)) % fftshp[1]
+        indx2 = np.ravel_multi_index((cy, cx), fftshp)
+        z_ind = np.tile(np.arange(indx2.shape[0]).reshape(-1,1),(1, indx2.shape[1]))
+        Ct = C[z_ind, indx2]
+        tx = (Ct[:,5] - Ct[:,3]) / 2
+        ty = (Ct[:,7] - Ct[:,1]) / 2
+        txx = Ct[:,3] + Ct[:,5] - 2 * Ct[:,4]
+        tyy = Ct[:,7] + Ct[:,1] - 2 * Ct[:,4]
+        txy = (Ct[:,0] + Ct[:,8] - Ct[:,2] - Ct[:,6]) / 4
+        det = txx * tyy - txy * txy
+        ox = np.zeros_like(dx, dtype=np.float32)
+        oy = np.zeros_like(dy, dtype=np.float32)
+        nz_idx = det > 0
+        ixx = tyy[nz_idx] / det[nz_idx]
+        ixy = -txy[nz_idx] / det[nz_idx]
+        iyy =  txx[nz_idx] / det[nz_idx]
+        ox[nz_idx] = -ixx * tx[nz_idx] - ixy * ty[nz_idx]
+        oy[nz_idx] = -ixy * tx[nz_idx] - iyy * ty[nz_idx]
+        dx = dx + ox.clip(-0.5,0.5)
+        dy = dy + oy.clip(-0.5,0.5)
     dy = dy + (imgshp0[0] - imgshp1[0]) / 2
     dx = dx + (imgshp0[1] - imgshp1[1]) / 2
     dy = dy - np.round(dy / fftshp[0]) * fftshp[0]
@@ -279,7 +303,7 @@ def section_matcher(mesh0, mesh1, image_loader0, image_loader1, **kwargs):
     kwargs.setdefault('batch_size', 100)
     kwargs.setdefault('continue_on_flip', True)
     kwargs.setdefault('distributor', 'cartesian_region')
-    kwargs.setdefault('link_weight_decay', 0.3)
+    kwargs.setdefault('link_weight_decay', 0.0)
     stiffness_multiplier_threshold = kwargs.get('stiffness_multiplier_threshold', 0.5)
     kwargs.setdefault('render_weight_threshold', 0.1)
     if stiffness_multiplier_threshold > 0:
@@ -398,6 +422,7 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
     batch_size = kwargs.pop('batch_size', None)
     initial_matches = kwargs.get('initial_matches', None)
     to_pad = kwargs.pop('pad', None)
+    do_subpixel = kwargs.pop('subpixel', None)
     max_spacing_skip = kwargs.get('max_spacing_skip', 0)
     continue_on_flip = kwargs.get('continue_on_flip', True)
     callback_settings = kwargs.get('callback_settings', {'early_stop_thresh': 0.1, 'chances':10, 'eval_step': 5})
@@ -453,8 +478,16 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
     while sp_indx < spacings.size:
         if sp == spacings[-1]:
             mnb = min_num_blocks
+            if do_subpixel is None:
+                subpixel = True
+            else:
+                subpixel = do_subpixel
         else:
             mnb = 1
+            if do_subpixel is None:
+                subpixel = False
+            else:
+                subpixel = do_subpixel
         if distributor == 'cartesian_bbox':
             bboxes0, bboxes1 = distributor_cartesian_bbox(mesh0, mesh1, sp,
                 min_num_blocks=mnb, shrink_factor=shrink_factor, zorder=True)
@@ -488,7 +521,7 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
             if num_batchs == 1:
                 xy0, xy1, conf = bboxes_mesh_renderer_matcher(mesh0, mesh1,
                     image_loader0, image_loader1, bboxes0, bboxes1,
-                    batch_size=batch_size, pad=pad, **kwargs)
+                    batch_size=batch_size, pad=pad, subpixel=subpixel, **kwargs)
             else:
                 batch_indices = np.linspace(0, num_blocks, num=num_batchs+1, endpoint=True)
                 batch_indices = np.unique(batch_indices.astype(np.int32))
@@ -501,7 +534,7 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
                     batched_bboxes1.append(bboxes1[bidx0:bidx1])
                     batched_bboxes_union0.append(common.bbox_union(bboxes0[bidx0:bidx1]))
                     batched_bboxes_union1.append(common.bbox_union(bboxes1[bidx0:bidx1]))
-                target_func = partial(bboxes_mesh_renderer_matcher, pad=pad, **kwargs)
+                target_func = partial(bboxes_mesh_renderer_matcher, pad=pad, subpixel=subpixel, **kwargs)
                 submeshes0 = mesh0.submeshes_from_bboxes(batched_bboxes_union0)
                 submeshes1 = mesh1.submeshes_from_bboxes(batched_bboxes_union1)
                 jobs = []
@@ -529,7 +562,7 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
         else:
             xy0, xy1, conf = bboxes_mesh_renderer_matcher(mesh0, mesh1,
                 image_loader0, image_loader1, bboxes0, bboxes1,
-                batch_size=batch_size, pad=pad, **kwargs)
+                batch_size=batch_size, pad=pad, subpixel=subpixel, **kwargs)
         if np.all(conf <= conf_thresh):
             if not initialized:
                 return invalid_output
@@ -622,6 +655,7 @@ def bboxes_mesh_renderer_matcher(mesh0, mesh1, image_loader0, image_loader1, bbo
     geodesic_mask = kwargs.get('geodesic_mask', False)
     conf_mode = kwargs.get('conf_mode', const.FFT_CONF_MIRROR)
     pad = kwargs.get('pad', True)
+    subpixel = kwargs.get('subpixel', False)
     render_weight_threshold = kwargs.get('render_weight_threshold', 0)
     if isinstance(mesh0, dict):
         mesh0 = Mesh(**mesh0)
@@ -681,7 +715,7 @@ def bboxes_mesh_renderer_matcher(mesh0, mesh1, image_loader0, image_loader1, bbo
         if (len(stack0) == 0) or (len(stack1) == 0):
             continue
         dx, dy, conf_b = xcorr_fft(np.stack(stack0, axis=0), np.stack(stack1, axis=0),
-            conf_mode=conf_mode, pad=pad)
+            conf_mode=conf_mode, pad=pad, subpixel=subpixel)
         xy_ctr0 = np.array(xy_ctr0)
         xy_ctr1 = np.array(xy_ctr1)
         wt_ratio = np.array(wt_ratio)
