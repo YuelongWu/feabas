@@ -929,6 +929,7 @@ class Mesh:
         self._stiffness_multiplier = stiffness_multiplier
         self._material_ids = material_ids
         self.delete_orphaned_vertices()
+        self._vertices_changed(gear=const.MESH_GEAR_INITIAL)
         return self
 
 

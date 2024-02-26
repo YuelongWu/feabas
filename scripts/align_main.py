@@ -12,6 +12,7 @@ import gc
 from feabas import config, logging
 import feabas.constant as const
 
+os.environ["OPENCV_IO_MAX_IMAGE_PIXELS"] = str(pow(2,40)) # for large masks in meshing
 
 def generate_mesh_from_mask(mask_names, outname, **kwargs):
     if os.path.isfile(outname):
