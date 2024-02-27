@@ -42,7 +42,7 @@ def xcorr_fft(img0, img1, conf_mode=const.FFT_CONF_MIRROR, **kwargs):
     mask0 = kwargs.get('mask0', None)
     mask1 = kwargs.get('mask1', None)
     normalize = kwargs.get('normalize', False)
-    subpixel = kwargs.get('subpixel', True)
+    subpixel = kwargs.get('subpixel', False)
     pad = kwargs.get('pad', True)
     if len(img0.shape) > 3:
         img0 = np.moveaxis(img0, -1, 1)
