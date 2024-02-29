@@ -1,3 +1,5 @@
+section_thickness: null # section thickness. If null, use the number in general_configs.yaml
+
 matching:   # see stitcher.Stitcher.subprocess_match_list_of_overlaps for details
     num_workers: 15
     min_overlap_width: 25   # overlaps thinner than this will be skipped

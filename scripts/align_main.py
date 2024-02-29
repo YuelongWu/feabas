@@ -19,7 +19,7 @@ def generate_mesh_from_mask(mask_names, outname, **kwargs):
         return
     from feabas import material, dal, spatial, mesh
     material_table = kwargs.get('material_table', material.MaterialTable())
-    target_resolution = kwargs.get('target_resolution', config.DEFAULT_RESOLUTION)
+    target_resolution = kwargs.get('target_resolution', config.montage_resolution())
     mesh_size = kwargs.get('mesh_size', 600)
     simplify_tol = kwargs.get('simplify_tol', 2)
     area_thresh = kwargs.get('area_thresh', 0)
@@ -56,7 +56,7 @@ def generate_mesh_from_mask(mask_names, outname, **kwargs):
     if loader is None:
         logger.warning(f'{secname}: mask does not exist.')
         return
-    mesh_size = mesh_size * config.DEFAULT_RESOLUTION / src_resolution
+    mesh_size = mesh_size * config.montage_resolution() / src_resolution
     G = spatial.Geometry.from_image_mosaic(loader, material_table=material_table, resolution=src_resolution)
     PSLG = G.PSLG(region_tol=region_tols,  roi_tol=0, area_thresh=area_thresh)
     M = mesh.Mesh.from_PSLG(**PSLG, material_table=material_table, mesh_size=mesh_size, min_mesh_angle=20)
@@ -74,14 +74,14 @@ def generate_mesh_main():
     mesh_config['logger'] = logger_info[0]
     logger = logging.get_logger(logger_info[0])
     thumbnail_mip_lvl = thumbnail_configs.get('thumbnail_mip_level', 6)
-    thumbnail_resolution = config.DEFAULT_RESOLUTION * (2 ** thumbnail_mip_lvl)
+    thumbnail_resolution = config.montage_resolution() * (2 ** thumbnail_mip_lvl)
     thumbnail_mask_dir = os.path.join(thumbnail_dir, 'material_masks')
     match_list = glob.glob(os.path.join(thumb_match_dir, '*.h5'))
     match_names = [os.path.basename(s).replace('.h5', '').split(match_name_delimiter) for s in match_list]
     secnames = set([s for pp in match_names for s in pp])
     alt_mask_dir = mesh_config.get('mask_dir', None)
     alt_mask_mip_level = mesh_config.get('mask_mip_level', 4)
-    alt_mask_resolution = config.DEFAULT_RESOLUTION * (2 ** alt_mask_mip_level)
+    alt_mask_resolution = config.montage_resolution() * (2 ** alt_mask_mip_level)
     if alt_mask_dir is None:
         alt_mask_dir = os.path.join(align_dir, 'material_masks')
     material_table_file = config.material_table_file()
@@ -207,7 +207,7 @@ def offset_bbox_main():
     bbox_union = None
     for tname in tform_list:
         M = Mesh.from_h5(tname)
-        M.change_resolution(config.DEFAULT_RESOLUTION)
+        M.change_resolution(config.montage_resolution())
         bbox = M.bbox(gear=const.MESH_GEAR_MOVING, offsetting=True)
         if bbox_union is None:
             bbox_union = bbox
@@ -229,7 +229,7 @@ def render_one_section(h5name, z_prefix='', **kwargs):
     offset = kwargs.pop('offset', None)
     secname = os.path.splitext(os.path.basename(h5name))[0]
     outdir = os.path.join(render_dir, 'mip'+str(mip_level), z_prefix+secname)
-    resolution = config.DEFAULT_RESOLUTION * (2 ** mip_level)
+    resolution = config.montage_resolution() * (2 ** mip_level)
     meta_name = os.path.join(outdir, 'metadata.txt')
     if os.path.isfile(meta_name):
         return None
@@ -250,7 +250,7 @@ def render_one_section(h5name, z_prefix='', **kwargs):
     M = Mesh.from_h5(h5name)
     M.change_resolution(resolution)
     if offset is not None:
-        M.apply_translation(offset * config.DEFAULT_RESOLUTION/resolution, gear=const.MESH_GEAR_MOVING)
+        M.apply_translation(offset * config.montage_resolution()/resolution, gear=const.MESH_GEAR_MOVING)
     os.makedirs(outdir, exist_ok=True)
     prefix = os.path.join(outdir, secname)
     rendered = render_whole_mesh(M, loader, prefix, **kwargs)
@@ -478,7 +478,7 @@ if __name__ == '__main__':
         stitch_dir = os.path.join(root_dir, 'stitch')
         loader_dir = os.path.join(stitch_dir, 'ts_specs')
         loader_list = [os.path.join(loader_dir, os.path.basename(s).replace('.h5', '.json')) for s in tform_list]
-        resolution = config.DEFAULT_RESOLUTION * (2 ** mip_level)
+        resolution = config.montage_resolution() * (2 ** mip_level)
         vol_renderer = VolumeRenderer(tform_list, loader_list, tensorstore_render_dir,
                                       z_indx = z_indx, resolution=resolution,
                                       flag_dir = ts_flag_dir, **align_config)

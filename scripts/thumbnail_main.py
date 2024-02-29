@@ -51,7 +51,7 @@ def generate_stitched_mipmaps_tensorstore(meta_dir, tgt_mips, **kwargs):
             s = mipmap.generate_tensorstore_scales(metafile, tgt_mips, num_workers=num_workers, **kwargs)
             update_status.update(s)
     else:
-        target_func = parallel_within_section(mipmap.generate_tensorstore_scales, mips=tgt_mips, **kwargs)
+        target_func = partial(mipmap.generate_tensorstore_scales, mips=tgt_mips, **kwargs)
         jobs = []
         with ProcessPoolExecutor(max_workers=num_workers, mp_context=get_context('spawn')) as executor:
             for metafile in meta_list:
@@ -175,7 +175,7 @@ def generate_thumbnails_tensorstore(src_dir, out_dir, seclist=None, **kwargs):
     return updated
 
 
-def save_mask_for_one_sections(mesh_file, out_name, scale, **kwargs):
+def save_mask_for_one_sections(mesh_file, out_name, resolution, **kwargs):
     from feabas.stitcher import MontageRenderer
     import numpy as np
     from feabas import common
@@ -183,7 +183,7 @@ def save_mask_for_one_sections(mesh_file, out_name, scale, **kwargs):
     fillval = kwargs.get('fillval', 0)
     mask_erode = kwargs.get('mask_erode', 0)
     rndr = MontageRenderer.from_h5(mesh_file)
-    img = 255 - rndr.generate_roi_mask(scale, mask_erode=mask_erode)
+    img = 255 - rndr.generate_roi_mask(resolution, mask_erode=mask_erode)
     common.imwrite(out_name, img)
     if img_dir is not None:
         thumb_name = os.path.join(img_dir, os.path.basename(out_name))
@@ -199,7 +199,7 @@ def save_mask_for_one_sections(mesh_file, out_name, scale, **kwargs):
 
 def generate_thumbnail_masks(mesh_dir, out_dir, seclist=None, **kwargs):
     num_workers = kwargs.get('num_workers', 1)
-    scale = kwargs.get('scale')
+    resolution = kwargs.get('resolution')
     img_dir = kwargs.get('img_dir', None)
     fillval = kwargs.get('fillval', 0)
     mask_erode = kwargs.get('mask_erode', 0)
@@ -207,7 +207,7 @@ def generate_thumbnail_masks(mesh_dir, out_dir, seclist=None, **kwargs):
     logger= logging.get_logger(logger_info)
     mesh_list = sorted(glob.glob(os.path.join(mesh_dir, '*.h5')))
     mesh_list = mesh_list[arg_indx]
-    target_func = partial(save_mask_for_one_sections, scale=scale, img_dir=img_dir,
+    target_func = partial(save_mask_for_one_sections, resolution=resolution, img_dir=img_dir,
                           fillval=fillval, mask_erode=mask_erode)
     os.makedirs(out_dir, exist_ok=True)
     if num_workers == 1:
@@ -337,7 +337,7 @@ if __name__ == '__main__':
         thumbnail_configs = thumbnail_configs['alignment']
         mode = 'alignment'
     else:
-        raise ValueError
+        raise ValueError(f'{args.mode} not supported mode.')
 
     num_workers = thumbnail_configs.get('num_workers', 1)
     if num_workers > num_cpus:
@@ -428,11 +428,9 @@ if __name__ == '__main__':
             thumbnail_configs.setdefault('highpass', highpass)
             thumbnail_configs.setdefault('mip', thumbnail_mip_lvl)
             slist = generate_thumbnails_tensorstore(src_dir, img_dir, seclist=slist, **thumbnail_configs)
-        mask_scale = 1 / (2 ** thumbnail_mip_lvl)
-        generate_thumbnail_masks(stitch_tform_dir, mat_mask_dir, seclist=slist, scale=mask_scale,
+        mask_resolution = config.montage_resolution() * (2 ** thumbnail_mip_lvl)
+        generate_thumbnail_masks(stitch_tform_dir, mat_mask_dir, seclist=slist, resolution=mask_resolution,
                                  img_dir=img_dir, **thumbnail_configs)
-        # generate_thumbnail_masks(stitch_tform_dir, mat_mask_dir, seclist=None, scale=mask_scale,
-        #                          img_dir=img_dir, **thumbnail_configs)
         logger.info('finished.')
         logging.terminate_logger(*logger_info)
     elif mode == 'alignment':
@@ -442,7 +440,7 @@ if __name__ == '__main__':
         logger_info = logging.initialize_main_logger(logger_name='thumbnail_align', mp=num_workers>1)
         thumbnail_configs['logger'] = logger_info[0]
         logger= logging.get_logger(logger_info[0])
-        resolution = config.DEFAULT_RESOLUTION * (2 ** thumbnail_mip_lvl)
+        resolution = config.montage_resolution() * (2 ** thumbnail_mip_lvl)
         thumbnail_configs.setdefault('resolution', resolution)
         thumbnail_configs.setdefault('feature_match_dir', feature_match_dir)
         imglist = sorted(glob.glob(os.path.join(img_dir, '*.png')))

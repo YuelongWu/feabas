@@ -18,7 +18,7 @@ install_requires = [
     'scikit-image',
     'scipy',
     'shapely>=2.0.0',
-    'tensorstore',
+    'tensorstore<=0.1.51',
     'triangle',
 ]
 

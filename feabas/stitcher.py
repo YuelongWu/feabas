@@ -24,7 +24,7 @@ from feabas.optimizer import SLM
 from feabas import common, caching
 from feabas.spatial import scale_coordinates
 import feabas.constant as const
-from feabas.config import DEFAULT_RESOLUTION, general_settings
+from feabas.config import DEFAULT_RESOLUTION, SECTION_THICKNESS, data_resolution
 
 class Stitcher:
     """
@@ -69,6 +69,8 @@ class Stitcher:
     @classmethod
     def from_coordinate_file(cls, filename, **kwargs):
         imgpaths, bboxes, root_dir, resolution = common.parse_coordinate_files(filename, **kwargs)
+        if resolution is None:
+            resolution = data_resolution()
         return cls(imgpaths, bboxes, root_dir=root_dir, resolution=resolution)
 
 
@@ -93,7 +95,7 @@ class Stitcher:
             if 'resolution' in f:
                 resolution = f['resolution'][()]
             else:
-                resolution = DEFAULT_RESOLUTION
+                resolution = data_resolution()
         if selected is not None:
             imgpaths = [s for k, s in enumerate(imgpaths) if k in selected]
             bboxes = bboxes[selected]
@@ -1034,7 +1036,7 @@ class MontageRenderer:
             root directory.
     """
     def __init__(self, imgpaths, mesh_info, tile_sizes, **kwargs):
-        self.resolution = kwargs.get('resolution', DEFAULT_RESOLUTION)
+        self.resolution = kwargs.get('resolution', data_resolution())
         self._loader_settings = kwargs.get('loader_settings', {}).copy()
         self._connected_subsystem = kwargs.get('connected_subsystem', None)
         if bool(kwargs.get('root_dir', None)):
@@ -1374,7 +1376,7 @@ class MontageRenderer:
                     "inclusive_min": [0, 0, 0, 0],
                     "labels": ["x", "y", "z", "channel"]
                 },
-                "dimension_units": [[resolution, "nm"], [resolution, "nm"], [general_settings().get('section_thickness', 30), "nm"], None],
+                "dimension_units": [[resolution, "nm"], [resolution, "nm"], [SECTION_THICKNESS, "nm"], None],
                 "dtype": np.dtype(dtype).name,
                 "rank" : 4
             }
@@ -1484,7 +1486,7 @@ class MontageRenderer:
             return self._tile_sizes[indx]
 
 
-    def generate_roi_mask(self, scale, show_conn=False, mask_erode=0):
+    def generate_roi_mask(self, resolution, show_conn=False, mask_erode=0):
         """
         generate low resolution roi mask that can fit in a single image.
         """
@@ -1492,6 +1494,7 @@ class MontageRenderer:
         for msh in self._mesh_rtree_generator():
             _, bbox, _ = msh
             bboxes0.append(bbox)
+        scale = self.resolution / resolution
         bboxes = scale_coordinates(np.array(bboxes0), scale).clip(0, None)
         bboxes = np.round(bboxes).astype(np.int32)
         imgwd, imght = np.max(bboxes[:,-2:], axis=0) + 2

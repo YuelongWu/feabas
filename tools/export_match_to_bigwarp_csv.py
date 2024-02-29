@@ -51,7 +51,7 @@ if __name__ == '__main__':
     if resolution <= 0:
         thumbnail_configs = config.thumbnail_configs()
         thumbnail_mip_lvl = thumbnail_configs.get('thumbnail_mip_level', 6)
-        resolution = config.DEFAULT_RESOLUTION * (2 ** thumbnail_mip_lvl)
+        resolution = config.montage_resolution() * (2 ** thumbnail_mip_lvl)
     
     mlist = glob.glob(os.path.join(match_dir, '*.h5'))
     for mname in mlist:

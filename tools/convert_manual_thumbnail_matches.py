@@ -24,7 +24,7 @@ if __name__ == '__main__':
     root_dir = config.get_work_dir()
     thumbnail_configs = config.thumbnail_configs()
     thumbnail_mip_lvl = thumbnail_configs.get('thumbnail_mip_level', 6)
-    resolution = config.DEFAULT_RESOLUTION * (2 ** thumbnail_mip_lvl)
+    resolution = config.montage_resolution() * (2 ** thumbnail_mip_lvl)
     thumbnail_dir = os.path.join(root_dir, 'thumbnail_align')
     manual_dir = os.path.join(thumbnail_dir, 'manual_matches')
     match_dir = os.path.join(thumbnail_dir, 'matches')

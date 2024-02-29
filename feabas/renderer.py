@@ -17,7 +17,7 @@ from feabas.caching import CacheFIFO
 import feabas.constant as const
 from feabas.mesh import Mesh
 from feabas import common, spatial, dal, logging
-from feabas.config import DEFAULT_RESOLUTION, general_settings
+from feabas.config import DEFAULT_RESOLUTION, SECTION_THICKNESS, montage_resolution
 
 
 class MeshRenderer:
@@ -614,11 +614,11 @@ def render_whole_mesh(mesh, image_loader, prefix, **kwargs):
                 "inclusive_min": [0, 0, 0, 0],
                 "labels": ["x", "y", "z", "channel"]
             },
-            "dimension_units": [[mesh.resolution, "nm"], [mesh.resolution, "nm"], [general_settings().get('section_thickness', 30), "nm"], None],
+            "dimension_units": [[mesh.resolution, "nm"], [mesh.resolution, "nm"], [SECTION_THICKNESS, "nm"], None],
             "dtype": np.dtype(dtype).name,
             "rank" : 4
         }
-        mip_level_str = str(int(np.log(mesh.resolution/DEFAULT_RESOLUTION)/np.log(2)))
+        mip_level_str = str(int(np.log(mesh.resolution/montage_resolution())/np.log(2)))
         if driver == 'zarr':
             ts_specs = {
                 "driver": "zarr",
@@ -830,14 +830,14 @@ class VolumeRenderer:
         self._offset = kwargs.get('out_offset', np.zeros((1,2), dtype=np.int64))
         self._canvas_bbox = kwargs.get('canvas_bbox', None)
         self._ts_verified = False
-        self.resolution = kwargs.get('resolution', DEFAULT_RESOLUTION)
-        self.mip = int(np.log2(self.resolution / DEFAULT_RESOLUTION))
+        self.resolution = kwargs.get('resolution', montage_resolution())
+        self.mip = int(np.log2(self.resolution / montage_resolution()))
         self._number_of_channels = kwargs.get('number_of_channels', None)
         self._dtype = kwargs.get('dtype', None)
         self._chunk_shape = kwargs.get('chunk_shape', (1024, 1024, 16))
         self._read_chunk_shape = kwargs.get('read_chunk_shape', self._chunk_shape)
         schema = {'dimension_units': [[self.resolution, "nm"], [self.resolution, "nm"],
-                                      [general_settings().get('section_thickness', 30), "nm"], None]}
+                                      [SECTION_THICKNESS, "nm"], None]}
         self._ts_spec = {'driver': driver, 'kvstore': kvstore, 'schema': schema}
 
 

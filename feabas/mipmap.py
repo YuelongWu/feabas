@@ -322,7 +322,8 @@ def _write_downsample_tensorstore(src_spec, tgt_spec, bboxes, **kwargs):
             continue
         xmin, ymin, xmax, ymax = bbox
         out_view = ts_out[xmin:xmax, ymin:ymax]
-        out_view.write(img.T.reshape(out_view.shape)).result()
+        img = np.swapaxes(img, 0, 1)
+        out_view.write(img.reshape(out_view.shape)).result()
     return ts_out.spec(minimal_spec=True).to_json()
 
 

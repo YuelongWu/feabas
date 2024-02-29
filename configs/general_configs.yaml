@@ -1,8 +1,8 @@
 working_directory: ./work_dir   # project specific working directory
 cpu_budget: null      # CPU cores to use (estimated target only, no hard control)
 
-full_resolution: 4  # in nanometers
-section_thickness: 30 # in nanometers
+full_resolution: 4  # in nanometers. If the stitch coordinate files don't have resolution, this will be used
+section_thickness: 30 # in nanometers. If also provided in the stitching config file, this will be overridden
 
 # logging configs
 logging_directory: null # directory to save log files. if set to null, default to working_directory/logs

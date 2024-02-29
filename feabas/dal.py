@@ -625,7 +625,8 @@ class StaticImageLoader(AbstractImageLoader):
     def from_coordinate_file(cls, filename, **kwargs):
         imgpaths, bboxes, root_dir, resolution = common.parse_coordinate_files(filename, **kwargs)
         kwargs.setdefault('root_dir', root_dir)
-        kwargs.setdefault('resolution', resolution)
+        if resolution is not None:
+            kwargs.setdefault('resolution', resolution)
         return cls(filepaths=imgpaths, bboxes=bboxes, **kwargs)
 
 
@@ -900,7 +901,7 @@ class MosaicLoader(StaticImageLoader):
         each keyword should only appear once and has one-to-one correspondance
         with a group in regexp.
         e.g. feabas_tr1_is_not_a_pokemon_tc2.png can be parsed with pattern:
-            _tr({ROW_IND}\\d+)\w+_tc({COL_IND}\\d+)
+            _tr({ROW_IND}\\d+)\\w+_tc({COL_IND}\\d+)
         """
         keywords = ['{ROW_IND}','{COL_IND}','{X_MIN}','{Y_MIN}','{X_MAX}','{Y_MAX}']
         pos = np.array([pattern.find(s) for s in keywords])

@@ -24,6 +24,7 @@ if __name__ == '__main__':
     print('finding transformations')
     for tname in tlist:
         M = Mesh.from_h5(tname)
+        M.change_resolution(config.montage_resolution())
         R = M.shapely_regions(gear=constant.MESH_GEAR_MOVING, offsetting=True)
         R = shapely.convex_hull(R)
         if regions is None:
@@ -50,6 +51,7 @@ if __name__ == '__main__':
     print('applying transforms')
     for tname in tlist:
         M = Mesh.from_h5(tname)
+        M.change_resolution(config.montage_resolution())
         M.apply_affine(R, gear=constant.MESH_GEAR_FIXED)
         M.apply_translation(txy, gear=constant.MESH_GEAR_FIXED)
         M.apply_affine(R, gear=constant.MESH_GEAR_MOVING)

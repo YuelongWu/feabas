@@ -49,6 +49,8 @@ def match_main(coord_list, out_dir, **kwargs):
 def optimize_one_section(matchname, outname, **kwargs):
     from feabas.stitcher import Stitcher
     import numpy as np
+    if os.path.isfile(outname):
+        return
     use_group = kwargs.get('use_group', True)
     msem = kwargs.get('msem', False)
     mesh_settings = kwargs.get('mesh_settings', {})
@@ -276,9 +278,11 @@ if __name__ == '__main__':
     elif args.mode.lower().startswith('o'):
         stitch_configs = stitch_configs['optimization']
         mode = 'optimization'
-    else:
+    elif args.mode.lower().startswith('m'):
         stitch_configs = stitch_configs['matching']
         mode = 'matching'
+    else:
+        raise ValueError(f'{args.mode} not supported mode.')
     num_workers = stitch_configs.get('num_workers', 1)
     if num_workers > num_cpus:
         num_workers = num_cpus

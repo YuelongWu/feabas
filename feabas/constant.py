@@ -40,4 +40,5 @@ FFT_CONF_STD = 1        # confidence value derived from the standard deviation
 FFT_CONF_MIRROR = 2     # confidence value derived from the convolution
 
 DEFAULT_RESOLUTION = 4.0
+DEFAULT_THICKNESS = 30.0
 EPSILON0 = 1e-5
