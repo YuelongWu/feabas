@@ -1,5 +1,5 @@
 meshing:
-    num_workers: 12
+    num_workers: 15
     mesh_size: 600  # spacings between mesh grids in pixel at mip0
     simplify_tol: 2 # when approximate regions defined by mask images to polygon, the tolerance of distance error
     mask_dir: null  # the folder contains the material masks. if set to null, default to working_directory/align/material_masks. If mask not exist in this folder, use the one in the thumbnail folder     
@@ -11,7 +11,7 @@ matching:
     loader_config:
         cache_size: 60  # total number of source images allowed to cache in RAM
     matcher_config:
-        num_workers: 12
+        num_workers: 15
         batch_size: 100 # number of cropped regions to do fft at the same time
         conf_thresh: 0.35    # cross-correlations with confidence value smaller than this will be rejected
         sigma: 3.5  # sigma of DoG filter applied to image before matching
@@ -20,7 +20,7 @@ matching:
         distributor: cartesian_region   # cartesian_region/intersect_triangulation
         spacings: [400, 100]    # distance between grid points at each coarse-to-fine level
         shrink_factor: 0.7  # the size of the cropped fft tiles compared to the spacings
-        residue_mode: huber # huber or threshold or None, deciding how to damp matches with large residue errors after optimization
+        residue_mode: threshold # huber or threshold or None, deciding how to damp matches with large residue errors after optimization
         residue_len: 3  # characteristic residue distance used for damping. use 0 to skip
         min_boundary_distance: 20   # minimum distance allowed from a matching point to the boundary of the meshes
         stiffness_multiplier_threshold: 0.5 # material with stiffness multiplier smaller than this will not be considered during the matching process
@@ -41,6 +41,7 @@ optimization:
             tol: 1.0e-7 # convergence tolerance for the solver
             atol: 0.001
             continue_on_flip: true # if to continue the process when a flipped triangle is detected. otherwise stop the program and raise error
+            batch_num_matches: null # larger numberneeds more RAM but faster. default to (total # of matches)/10
             callback_settings:
                 timeout: null   # maximum time (in second) allowed for each round of optimization. After the timeout, select the best solution so far
                 early_stop_thresh: null # if after each step, the maximum movement of the mesh points is smaller than this, consider it a insiginificant update
@@ -48,7 +49,7 @@ optimization:
                 eval_step: 10   # the interval (in steps) when the significance of the updates is evaluated 
 
 rendering:
-    num_workers: 10
+    num_workers: 15
     offset_bbox: true   # if set to true, before the first rendering session, all the transformations will be normalized to align the most upper-left corner of the stack to (0,0)
     out_dir: null  # directory to save the aligned stack. if set to null, default to working_directory/aligned_stack
     prefix_z_number: true   # whether to add the z-index before the section_name when rendering
@@ -65,22 +66,22 @@ rendering:
         apply_CLAHE: false  # should already be applied during stitching 
 
 downsample:
-    num_workers: 10
+    num_workers: 15
     parallel_within_section: true   # whether to parallel among tiles within a section, or among sections
     max_mip: 7
     format: jpg
 
 
 tensorstore_rendering: # render to tensorstore volume
-    num_workers: 10
+    num_workers: 15
     mip_level: 0
-    z_min: null
-    z_max: null
+    z_min: 0    # minimum z index of the volume. value other than 0 seems to cause error for some reason...
+    z_max: null # maximum z index (exclusive) of the volume. If set to null, count the section number.
     driver: neuroglancer_precomputed
-    outdir: null
+    outdir: null # directory to save the aligned stack. if set to null, default to working_directory/aligned_tensorstore
     chunk_shape: [1024, 1024, 16]
     read_chunk_shape: [128, 128, 16]
-    canvas_bbox: null
+    canvas_bbox: null   # if set to null, use the extremes of all the meshes to determine: may be problematic if the transformations are changed between different rendering rounds
     max_tile_per_job: 320
     remap_interp: LANCZOS # LANCZOS | CUBIC | LINEAR | NEAREST
     loader_config:

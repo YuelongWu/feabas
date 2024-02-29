@@ -3,35 +3,36 @@ section_thickness: null # section thickness. If null, use the number in general_
 matching:   # see stitcher.Stitcher.subprocess_match_list_of_overlaps for details
     num_workers: 15
     min_overlap_width: 25   # overlaps thinner than this will be skipped
-    maskout_val: null
+    maskout_val: null       # if set, greyscale level defined here will be considered masked-out regions.
     margin: 100             # extra width of image to include during match to accommondate inaccurate stage movement
-    num_overlaps_per_job: 180
+    num_overlaps_per_job: 180   # maximum number of matches assigned to each multiprocessing subprocess each time
     loader_config:  # see dal.AbstractImageLoader for details
         cache_size: 150     # total number of images allowed to cache in RAM
     matcher_config: # see matcher.stitching_matcher for details
         spacings: null   # the spacing between grid points. null to decide dynamically
         conf_thresh: 0.33   # cross-correlations with confidence value smaller than this will be rejected
-        pad: true
+        residue_mode: threshold # huber or threshold or None, deciding how to damp matches with large residue errors after mesh relaxation
+        pad: true           # whether to do anti-aliasing padding for FFT crosscorrelation
         sigma: 2.5          # sigma of DoG filter applied to the images before matching
         coarse_downsample: 0.5      # down-sample the images at the coase-level matching
         fine_downsample: 1.0        # down-sample the images at the fine-level matching to save time at the cost of accuracy
 
 optimization:
-    num_workers: 1
+    num_workers: 3
     use_group: true     # whether to bundle the deformation within group of tiles (e.g. mFoV) at the initial stage of the optimization to correct fixed pattern distortion
     msem: false          # if is MultiSEM data. used to group tiles.
     minweight: 0.1      # filter out matches with weight smaller than this
     mesh_settings:  # see stitcher.Stitcher.initialize_meshes
         mesh_sizes: [75, 150, 300]   # mesh sizes to select from based on how distorted are the matches
-        cache_size: null    # size of the cache to save intermediate values.
+        cache_size: null    # size of the cache to save intermediate values. No need to worry about this unless very tight on RAM.
         border_width: null  # the overlap width where meshes are finer. null to decide dynamically
-        match_soften: [0.1, 0.2]
-        soft_top: 0.2
-        soft_top_width: 0.0
+        match_soften: [0.1, 0.2] # the default settings means if the overlapping regions deform by 10% percent during matching, then the mesh will only be 20% stiff during optimization, changes linearly.
+        soft_top: 0.2       # to make the top part (less stablized) of the mesh for each tile softer during optimization. 0.2 means 20% stiff compare to the rest of mesh.
+        soft_top_width: 0.0 # the width affected by the soft top in percentage to the tile height.
     translation:    # see stitcher.Stitcher.ptimize_elastic for details
         maxiter: null
         tol: 1.0e-7
-        residue_threshold: 50
+        residue_threshold: 50   # after translational optimzation, matches with residue error larger than this are considered spurious and discarded. I usually use half of the overlapping width in pixels.
     group_elastic: # see stitcher.Stitcher.optimize_group_intersection for details
         maxiter: null
         tol: 1.0e-6
@@ -40,29 +41,30 @@ optimization:
         tol: 1.0e-4
         residue_mode: huber # huber or threshold or None, deciding how to damp matches with large residue errors after optimization
         residue_len: 5      # characteristic residue distance used for damping. use 0 to skip
+        batch_num_matches: null # larger numberneeds more RAM but faster. default to (total # of matches)/10
         callback_settings:
-            timeout: null
-            early_stop_thresh: 1
-            chances: 20
-            eval_step: 10
+            timeout: null   # if each round of equation solving last longer than this, stop the iterations and return the current value
+            early_stop_thresh: 1 # if mesh point move fewer than this number of pixels, for more than ...
+            chances: 20          # this number of times ...
+            eval_step: 10        # when evaluating at every this number of iterations, stop the process and return the current value
     disconnected_assemble:  # controls how groups of tiles that are not connected by matching point should be assembled.
-        explode_factor: 1.2 # larger number make disconnected group farther apart, with 1.0 means the inital stage coordinates are used.
+        explode_factor: 1.0 # larger number make disconnected group farther apart, with 1.0 means the inital stage coordinates are used.
     normalize:
         rotation_threshold: 0.5 # if rotation is larger than the threshold after optimization, rotate back
         offset: [1, 1]  # the upper-left corner of the section will be normalized to this coordinates as the final step
 
 rendering:
     out_dir: null # directory to save the stitched images. if set to null, default to working_directory/stitched_sections
-    driver: image   # image(PNG tiles), zarr, n5, neuroglancer_precomputed
-    num_workers: 5
+    driver: neuroglancer_precomputed   # image(PNG tiles), neuroglancer_precomputed, zarr(not tested), n5(not tested) 
+    num_workers: 15
     tile_size: [4096, 4096] # output tile size
     resolution: null    # if null, use the intrinsic image resolution; otherwise scale to this resolution
     loader_settings: # see dal.AbstractImageLoader for details
         cache_size: 150
-        apply_CLAHE: true
+        apply_CLAHE: true      # whether to apply CLAHE
         CLAHE_cliplimit: 2.0   # counterintuitively, probably need larger value for 16-bit
-        inverse: true
-        fillval: 0
+        inverse: true          # whether to invert the grayscale
+        fillval: 0             # grayscale value outside valid image areas
         dtype: null # can be uint8, uint16 etc. to use the src dtype, set to null 
     render_settings:
         blend: PYRAMID  # options: LINEAR, NEAREST, PYRAMID, MAX, MIN, NONE

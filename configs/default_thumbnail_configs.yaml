@@ -4,31 +4,31 @@ downsample:
     num_workers: 10
     parallel_within_section: true   # whether to parallel among tiles within a section, or among sections
     # max_mip: 5
-    format: jpg
+    format: jpg                 # for image tile output, the extension of the low resolution image tiles
     thumbnail_highpass: true    # whether to use high-pass filter to enhance contrast when generating thumbnail.
-    highpass_inter_mip_lvl: 4
+    highpass_inter_mip_lvl: 4   # the intermediate mip level to apply high-pass filter on if the feature is turned on
 
 
 alignment:
     num_workers: 5
-    compare_distance: 2
-    cache_size: 3
-    save_feature_match: false
+    compare_distance: 2     # how further away each section should be compared to its neighboring. 1 means only compare to the immediate neighbor
+    cache_size: 3           # the number of sections whose feature keypoints should be cached
+    save_feature_match: false   # whether to save the feature matching results to disk
     match_name_delimiter: __to__    # so that the match file follows the patern sec0{delimieter}sec2.h5
     feature_matching:
-        affine_only: true
-        scale: 1.0
+        affine_only: true        # whehter to only find an affine model for each connected parts, or approximate a nonlinear one with a series of affines found by RANSAC
+        scale: 1.0              # scale at which the thumbnail are matched
         detect_settings:
-            sigma: 3.5
-            min_spacing: 10
+            sigma: 3.5          # sigma of the DoG filter applied before keypoint detection
+            min_spacing: 10     # the minimal space between detected keypoints in pixels
             num_features: 5000    # non-positive values mean no limitation on keypoint numbers
-        extract_settings:
+        extract_settings:   # detailed settings of discriptors that emperically work well
             proj_num: 6
             beam_num: 8
             beam_wd: 3
             beam_radius: 15
         matching_settings:
-            exhaustive: true
+            exhaustive: true    # set to true for slower but more robust matching
         strain_filter_settings:
             strain_limit: 0.2
             shear_limit: 45
@@ -45,6 +45,6 @@ alignment:
         spacings: [150, 50]
         shrink_factor: 1
         distributor: intersect_triangulation
-        residue_mode: huber
+        residue_mode: threshold
         residue_len: 3
         min_boundary_distance: 20

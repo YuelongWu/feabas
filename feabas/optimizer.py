@@ -644,6 +644,8 @@ class SLM:
             batch_num_matches = kwargs.get('batch_num_matches', None)
             if batch_num_matches is None:
                 batch_num_matches = self.num_matches / 10
+            if batch_num_matches < 1:
+                batch_num_matches = self.num_matches * batch_num_matches
             dof = self.degree_of_freedom
             Cs_lft = sparse.csr_matrix((dof, dof), dtype=np.float32)
             Cs_rht = np.zeros(dof, dtype=np.float32)
