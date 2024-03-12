@@ -29,10 +29,15 @@ optimization:
         match_soften: [0.1, 0.2] # the default settings means if the overlapping regions deform by 10% percent during matching, then the mesh will only be 20% stiff during optimization, changes linearly.
         soft_top: 0.2       # to make the top part (less stablized) of the mesh for each tile softer during optimization. 0.2 means 20% stiff compare to the rest of mesh.
         soft_top_width: 0.0 # the width affected by the soft top in percentage to the tile height.
-    translation:    # see stitcher.Stitcher.ptimize_elastic for details
+    translation:    # see stitcher.Stitcher.optimize_elastic for details
         maxiter: null
         tol: 1.0e-7
         residue_threshold: 50   # after translational optimzation, matches with residue error larger than this are considered spurious and discarded. I usually use half of the overlapping width in pixels.
+    affine: # see stitcher.Stitcher.optimize_affine for details
+        maxiter: 0
+        tol: 1.0e-6
+        use_group: true
+        stiffness_multiplier: 1.0
     group_elastic: # see stitcher.Stitcher.optimize_group_intersection for details
         maxiter: null
         tol: 1.0e-6

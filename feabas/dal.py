@@ -152,6 +152,7 @@ class AbstractImageLoader(ABC):
         self._number_of_channels = kwargs.get('number_of_channels', None)
         self._apply_CLAHE = kwargs.get('apply_CLAHE', False)
         clahe_clip_limit = kwargs.get('CLAHE_cliplimit', 2.0)
+        self._clahe_clip_limit = clahe_clip_limit
         self._CLAHE = cv2.createCLAHE(clipLimit=clahe_clip_limit, tileGridSize=(8,8))
         self._inverse = kwargs.get('inverse', False)
         self._default_fillval = kwargs.get('fillval', 0)
@@ -313,6 +314,7 @@ class AbstractImageLoader(ABC):
                 out['number_of_channels'] = self._number_of_channels
             out['fillval'] = self._default_fillval
             out['apply_CLAHE'] = self._apply_CLAHE
+            out['CLAHE_cliplimit'] = self._clahe_clip_limit
             out['inverse'] = self._inverse
         if cache_settings:
             out['cache_size'] = self._cache_size

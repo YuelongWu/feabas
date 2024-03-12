@@ -739,6 +739,55 @@ class Stitcher:
         return num_disabled
 
 
+    def optimize_affine(self, **kwargs):
+        """
+        optimize with coarse transformations (affine by default) for each tile.
+        Kwargs:
+            mesh_scale: scale to reduce mesh element number. 0 by default for
+                affine.
+            use_groupings: whether to enforce groupings during mesh relaxation.
+                True by default.
+            maxiter: maximum number of iterations. None if no limit.
+            tol: the stopping tolerance of the least-square iterations.
+            stiffness_multiplier: multiplier to make the affines more regulated.
+            start_gear: gear that associated with the vertices before applying
+                the translation.
+            target_gear: gear that associated with the vertices at the final
+                postions for locked meshes. Also the results are saved to this
+                gear as well.
+        """
+        mesh_scale = kwargs.get('mesh_scale', 0)
+        use_groupings = kwargs.get('use_groupings', True) and self.has_groupings
+        maxiter = kwargs.get('maxiter', None)
+        tol = kwargs.get('tol', 1e-06)
+        stiffness_multiplier = kwargs.get('stiffness_multiplier', 1.0)
+        target_gear = kwargs.get('target_gear', const.MESH_GEAR_FIXED)
+        start_gear = kwargs.get('start_gear', target_gear)
+        if maxiter == 0:
+            return
+        if self._optimizer is None:
+            self.initialize_optimizer()
+        shared_cache = caching.CacheFIFO(maxlen=None)
+        stiffness_lambda = self._optimizer._stiffness_lambda * stiffness_multiplier
+        opt_c = self._optimizer.coarse_mesh_SLM(mesh_scale=mesh_scale, target_gear=target_gear,
+                                                start_gear=start_gear, shared_cache=shared_cache,
+                                                stiffness_lambda=stiffness_lambda)
+        shared_cache.clear()
+        if use_groupings:
+            groupings = self.groupings(normalize=True)
+        else:
+            groupings = None
+        cost = opt_c.optimize_linear(maxiter=maxiter, tol=tol,
+                              shape_gear=const.MESH_GEAR_FIXED,
+                              target_gear = const.MESH_GEAR_MOVING,
+                              start_gear = const.MESH_GEAR_FIXED,
+                              groupings=groupings)
+        if cost[1] < cost[0]:
+            self._optimizer.apply_coarse_relaxation_results(opt_c, start_gear=start_gear, target_gear=target_gear)
+        return cost
+
+
+
     def optimize_group_intersection(self, **kwargs):
         """
         initialize the mesh transformation based only on the matches between

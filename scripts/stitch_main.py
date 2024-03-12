@@ -55,6 +55,7 @@ def optimize_one_section(matchname, outname, **kwargs):
     msem = kwargs.get('msem', False)
     mesh_settings = kwargs.get('mesh_settings', {})
     translation_settings = kwargs.get('translation', {})
+    affine_settings = kwargs.get('affine': {})
     group_elastic_settings = kwargs.get('group_elastic', {})
     elastic_settings = kwargs.get('final_elastic', {})
     disconnected_settings = kwargs.get('disconnected_assemble', {})
@@ -85,6 +86,10 @@ def optimize_one_section(matchname, outname, **kwargs):
     discrd =stitcher.optimize_translation(target_gear=feabas.MESH_GEAR_FIXED, **translation_settings)
     dis = stitcher.match_residues()
     logger.info(f'{bname}: residue after translation {np.nanmean(dis)} | discarded {discrd}')
+    if affine_settings.get('maxiter', 0) != 0:
+        cost=stitcher.optimize_affine(target_gear=feabas.MESH_GEAR_FIXED, **affine_settings)
+        dis = stitcher.match_residues()
+        logger.info(f'{bname}: residue after affine {np.nanmean(dis)} | cost {cost}')
     if use_group:
         stitcher.optimize_group_intersection(target_gear=feabas.MESH_GEAR_FIXED, **group_elastic_settings)
         stitcher.optimize_translation(target_gear=feabas.MESH_GEAR_FIXED, **translation_settings)

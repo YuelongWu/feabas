@@ -560,6 +560,7 @@ class Mesh:
         init_dict['epsilon'] = self._epsilon
         if bool(self._name):
             init_dict['name'] = self._name
+        init_dict['locked'] = self.locked
         init_dict['token'] = self.token
         init_dict['uid'] = self.uid
         init_dict['soft_factor'] = self.soft_factor
@@ -795,6 +796,61 @@ class Mesh:
         init_dict = self.get_init_dict(save_material=save_material, **override_dict)
         if deep:
             init_dict = copy.deepcopy(init_dict)
+        return self.__class__(**init_dict)
+
+
+    @config_cache('TBD')
+    def _coarse_mesh_grids(self, mesh_scale, gear=const.MESH_GEAR_INITIAL):
+        """remember to clear cache when mesh_scale changes."""
+        ntri0 = self.num_triangles
+        ntri = self.num_triangles * mesh_scale
+        if ntri < 3:
+            mesh_scale = 0 # if too coarse, use a single affine
+        mask = self.shapely_regions(gear=gear, offsetting=False)
+        m_area = mask.area
+        if mesh_scale == 0:
+            mbc = shapely.minimum_bounding_circle(mask)
+            cntr = np.array(mbc.centroid.coords)
+            rr = np.sum((np.array(mbc.boundary.coords) - cntr) ** 2, axis=-1) ** 0.5
+            radius = 2 * np.max(rr) * 1.001
+            theta = np.pi / 2 + np.arange(3) * np.pi * 2 / 3
+            dd = np.stack((np.cos(theta), np.sin(theta)), axis=-1) * radius
+            vtx = cntr + dd
+            T = np.array((0,1,2)).reshape(1,3)
+            soft_factor = m_area / (3*(3**0.5)*(radius)**2/4)
+        else:
+            area_ele = m_area * mesh_scale / ntri0
+            side_len = (area_ele * 4 / 3**0.5) ** 0.5
+            vtx = spatial.generate_equilat_grid_mask(mask, side_len)
+            T = triangle.delaunay(vtx)
+            edges = Mesh.triangle2edge(T, directional=True)
+            edge_len = np.sum(np.diff(vtx[edges], axis=-2)**2, axis=-1)**0.5
+            indx = ~np.any(edge_len.reshape(3, -1) > 1.25 * edge_len, axis=0)
+            T = T[indx]
+            soft_factor = m_area / (area_ele * T.shape[0])
+        return vtx, T, soft_factor
+
+
+    def coarse_mesh(self, mesh_scale=0, gear=const.MESH_GEAR_INITIAL, **kwargs):
+        """
+        generate a coarse mesh covering this mesh (in specified gear) with
+        uniform equilateral elements. It is to be used for a inital relaxation
+        at coarse level before the optimization step. The coarse mesh will be
+        stored to INITIAL_GEAR and leave rest of gears unspecified. After
+        optimization, the relaxed results should be written to MOVING_GEAR.
+        
+        Args:
+            mesh_scale (float): scale applied to the mesh granuality. e.g. when
+                set to 0.01, then the coarse mesh should have ~1% triangles. If
+                set to 0, then it'll become one triangle (model affine tform).
+        """
+        cache = kwargs.get('cache', False)
+        vtx, T, soft_factor = self._coarse_mesh_grids(mesh_scale, gear=gear, cache=cache)
+        init_dict = self.get_init_dict(save_material=False, vertex_flags=(const.MESH_GEAR_INITIAL,))
+        init_dict.update({'vertices': vtx, 'triangles': T})
+        init_dict['soft_factor'] = self.soft_factor * soft_factor
+        init_dict.pop('stiffness_multiplier', None)
+        init_dict.pop('token')
         return self.__class__(**init_dict)
 
 

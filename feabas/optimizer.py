@@ -2,10 +2,11 @@ from collections import defaultdict
 import gc
 import h5py
 import numpy as np
+import os
 from scipy import sparse
 import time
 
-from feabas import spatial, common
+from feabas import spatial, common, caching
 import feabas.constant as const
 from feabas.mesh import Mesh
 
@@ -317,6 +318,53 @@ class Link:
         return self._mask
 
 
+class MeshList:
+    """
+    list of meshes. Each element could be a Mesh object, or as string direct to
+    the file location of the mesh H5 file.
+    """
+    def __init__(self, meshes, maxlen=None):
+        self._mesh_list = meshes
+        self._mesh_cache = caching.CacheFIFO(maxlen=maxlen)
+
+    @classmethod
+    def init(cls, meshes, maxlen=None):
+        if np.all([isinstance(m, Mesh) for m in meshes]):
+            return meshes
+        else:
+            return cls(meshes, maxlen=maxlen)
+
+    def __getitem__(self, key):
+        m = self._mesh_list[key]
+        if isinstance(m, Mesh):
+            return m
+        elif key in self._mesh_cache:
+            return self._mesh_cache[key]
+        elif isinstance(m, str) and os.path.isfile(m):
+            M = Mesh.from_h5(m)
+            self._mesh_cache[key] = M
+            return M
+        else:
+            raise KeyError
+    
+    def __setitem__(self, key, data):
+        self._mesh_list[key] = data
+        self._mesh_cache.clear()
+
+    def __iter__(self):
+        for k in range(len(self._mesh_list)):
+            yield self.__getitem__(k)
+
+    def __len__(self):
+        return len(self._mesh_list)
+
+    def extend(self, meshes):
+        self._mesh_list.extend(meshes)
+
+    def append(self, mesh):
+        self._mesh_list.append(mesh)
+
+
 
 class SLM:
     """
@@ -326,7 +374,7 @@ class SLM:
     def __init__(self, meshes, links=None, **kwargs):
         if links is None:
             links = []
-        self.meshes = meshes
+        self.meshes = MeshList(meshes, maxlen=kwargs.get('maxlen', None))
         self.links = links
         self._stiffness_lambda = kwargs.get('stiffness_lambda', 1.0)
         self._crosslink_lambda = kwargs.get('crosslink_lambda', -1.0)
@@ -539,7 +587,7 @@ class SLM:
         moving = ~self.lock_flags
         to_keep = (A.dot(moving) > 0) | moving
         if not np.all(to_keep):
-            self.meshes = [m for flag, m in zip(to_keep, self.meshes) if flag]
+            self.meshes = MeshList([m for flag, m in zip(to_keep, self.meshes) if flag])
             self.mesh_changed()
 
 
@@ -555,7 +603,7 @@ class SLM:
                 if len(dm) > 1:
                     modified = True
         if modified:
-            self.meshes = new_meshes
+            self.meshes = MeshList(new_meshes)
             self.mesh_changed()
             if prune_links:
                 self.prune_links(**kwargs)
@@ -766,8 +814,12 @@ class SLM:
         A = A.tocsr()
         Tx = sparse.linalg.lsqr(A, bx, atol=tol, btol=tol, iter_lim=maxiter)[0]
         Ty = sparse.linalg.lsqr(A, by, atol=tol, btol=tol, iter_lim=maxiter)[0]
-        for idx, tx, ty in zip(active_index, Tx, Ty):
-            self.meshes[idx].set_translation((tx, ty), gear=(start_gear,targt_gear))
+        if (np.linalg.norm(A.dot(Tx) - bx) < np.linalg.norm(bx)) and (np.linalg.norm(A.dot(Ty) - by) < np.linalg.norm(by)):
+            for idx, tx, ty in zip(active_index, Tx, Ty):
+                self.meshes[idx].set_translation((tx, ty), gear=(start_gear,targt_gear))
+        else:
+            Tx = 0 * Tx
+            Ty = 0 * Ty
         return np.any(Tx!=0, axis=None) or np.any(Ty!=0, axis=None)
 
 
@@ -835,6 +887,71 @@ class SLM:
         return modified
 
 
+    def coarse_mesh_SLM(self, mesh_scale=0, **kwargs):
+        """
+        simplify the meshes to coarse equilateral meshes and return a SLM for
+        rough mesh relaxation.
+
+        Kwargs:
+            mesh_scale: the ratio to reduce the number of triangles in meshes.
+                If set to 0, it reduces to a global affine transform.
+            start_gear: gear that associated with the vertices before applying
+                the translation.
+            target_gear: gear that associated with the vertices at the final
+                postions for locked meshes. Also the results are saved to this
+                gear as well.
+        """
+        targt_gear = kwargs.get('target_gear', const.MESH_GEAR_MOVING)
+        start_gear = kwargs.get('start_gear', targt_gear)
+        slm_settings = {}
+        slm_settings['stiffness_lambda'] = kwargs.get('stiffness_lambda', self._stiffness_lambda)
+        slm_settings['crosslink_lambda'] = kwargs.get('crosslink_lambda', self._crosslink_lambda)
+        shared_cache = kwargs.get('shared_cache', None)
+        slm_settings['shared_cache'] = shared_cache
+        meshes = []
+        for m in self.meshes:
+            if m.locked:
+                meshes.append(m.coarse_mesh(mesh_scale=mesh_scale, gear=targt_gear, cache=shared_cache))
+            else:
+                meshes.append(m.coarse_mesh(mesh_scale=mesh_scale, gear=start_gear, cache=shared_cache))
+        slm_c = SLM(meshes, **slm_settings)
+        for lnk in self.links:
+            if not lnk.relevant:
+                continue
+            lnk_locked = lnk.locked
+            if lnk_locked[0]:
+                xy0 = lnk.xy0(gear=targt_gear, use_mask=True, combine=True)
+            else:
+                xy0 = lnk.xy0(gear=start_gear, use_mask=True, combine=True)
+            if lnk_locked[1]:
+                xy1 = lnk.xy1(gear=targt_gear, use_mask=True, combine=True)
+            else:
+                xy1 = lnk.xy1(gear=start_gear, use_mask=True, combine=True)
+            wt = lnk.weight(use_mask=True)
+            slm_c.add_link_from_coordinates(lnk.uids[0], lnk.uids[1], xy0, xy1, gear=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_INITIAL),
+                                            weight=wt, check_duplicates=False)
+        return slm_c
+
+
+    def apply_coarse_relaxation_results(self, slm_c, **kwargs):
+        targt_gear = kwargs.get('target_gear', const.MESH_GEAR_MOVING)
+        start_gear = kwargs.get('start_gear', targt_gear)
+        uids_c = slm_c.mesh_uids
+        uids0 = self.mesh_uids
+        for uid in uids_c:
+            if uid not in uids0:
+                continue
+            M0 = self.select_mesh_from_uid(uid)
+            if M0.locked:
+                continue
+            Mc = slm_c.select_mesh_from_uid(uid)
+            xy0 = M0.vertices_w_offset(gear=start_gear)
+            tid, B = Mc.cart2bary(xy0, gear=const.MESH_GEAR_INITIAL, extrapolate=True)
+            xy0_t = Mc.bary2cart(tid, B, gear=const.MESH_GEAR_MOVING, offsetting=True)
+            dxy = xy0_t - xy0
+            M0.set_field(dxy, gear=(start_gear, targt_gear))
+
+
     def optimize_linear(self, **kwargs):
         """
         optimize the linear system or the tangent problem of non-linear system.
@@ -869,7 +986,7 @@ class SLM:
         maxiter = kwargs.get('maxiter', None)
         tol = kwargs.get('tol', 1e-7)
         atol = kwargs.get('atol', None)
-        callback_settings = kwargs.get('callback_settings', {}).copy()
+        callback_settings = kwargs.get('callback_settings', True)
         shape_gear = kwargs.get('shape_gear', const.MESH_GEAR_FIXED)
         targt_gear = kwargs.get('target_gear', const.MESH_GEAR_MOVING)
         start_gear = kwargs.get('start_gear', targt_gear)
@@ -885,6 +1002,15 @@ class SLM:
             inner_cache=inner_cache, check_flip=check_flip,
             continue_on_flip=cont_on_flip)
         lock_flags = self.lock_flags
+        if isinstance(callback_settings, bool):
+            if callback_settings:
+                callback_settings = {'chances':20, 'eval_step':10}
+            else:
+                callback_settings = {}
+        elif isinstance(callback_settings, dict):
+            callback_settings = callback_settings.copy()
+        else:
+            raise TypeError
         if np.all(lock_flags):
             return 0, 0 # all locked, nothing to optimize
         if stiff_m is None:
@@ -1430,6 +1556,8 @@ def bicgstab(A, b, tol=1e-07, atol=None, maxiter=None, M=None, **kwargs):
     early_stop_thresh = kwargs.get('early_stop_thresh', None)
     chances = kwargs.get('chances', None)
     eval_step = kwargs.get('eval_step', 10)
+    if maxiter == 0:
+        return b * 0
     cb = SLM_Callback(A, b, timeout=timeout, early_stop_thresh=early_stop_thresh, chances=chances, eval_step=eval_step)
     callback = cb.callback
     try:
@@ -1490,7 +1618,7 @@ def relax_mesh(M, free_vertices=None, free_triangles=None, **kwargs):
     vmask = np.zeros(M.num_vertices, dtype=bool)
     vmask[vindx] = True
     if not np.any(vmask):
-        return modified 
+        return modified
     vmask_pad = np.repeat(vmask, 2)
     M.anneal(gear=gear[::-1],  mode=const.ANNEAL_CONNECTED_RIGID)
     M._vertices_changed(gear=gear[0])
@@ -1508,4 +1636,3 @@ def relax_mesh(M, free_vertices=None, free_triangles=None, **kwargs):
         modified = True
         M.apply_field(dd.reshape(-1,2), gear[-1], vtx_mask=vmask)
     return modified
-        
