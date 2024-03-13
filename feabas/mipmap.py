@@ -285,7 +285,7 @@ def generate_target_tensorstore_scale(metafile, mip=None, **kwargs):
                 out_spec = job.result()
     mipmaps.update({mip: out_spec})
     if write_to_file:
-        kv_headers = ('gs://', 'http://', 'https://', 'file://', 'memory://')
+        kv_headers = ('gs://', 'http://', 'https://', 'file://', 'memory://', 's3://')
         for kvh in kv_headers:
             if metafile.startswith(kvh):
                 break

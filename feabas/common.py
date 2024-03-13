@@ -15,7 +15,7 @@ Match = namedtuple('Match', ('xy0', 'xy1', 'weight'))
 
 def imread(path, **kwargs):
     flag = kwargs.get('flag', cv2.IMREAD_UNCHANGED)
-    if path.startswith('gs://'):
+    if path.startswith('gs://') or path.startswith('s3://') or path.startswith('http://') or path.startswith('https://'):
         if path.lower().endswith('.png'):
             driver = 'png'
         elif path.lower().endswith('.bmp'):
@@ -46,6 +46,8 @@ def imread(path, **kwargs):
         except ValueError:
             img = None
     else:
+        if path.startswith('file://'):
+            path = path.replace('file://', '')
         img = cv2.imread(path, flag)
     return img
 
@@ -63,6 +65,8 @@ def imwrite(path, image):
         blob = bucket.blob(relpath)
         blob.upload_from_string(encoded_img.tobytes(), content_type='image/png')
     else:
+        if path.startswith('file://'):
+            path = path.replace('file://', '')
         return cv2.imwrite(path, image)
 
 

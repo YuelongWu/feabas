@@ -593,7 +593,7 @@ def render_whole_mesh(mesh, image_loader, prefix, **kwargs):
         bboxes_out = []
         if not prefix.endswith('/'):
             prefix = prefix + '/'
-        kv_headers = ('gs://', 'http://', 'https://', 'file://', 'memory://')
+        kv_headers = ('gs://', 'http://', 'https://', 'file://', 'memory://', 's3://')
         for kvh in kv_headers:
             if prefix.startswith(kvh):
                 break
@@ -982,7 +982,7 @@ class VolumeRenderer:
                 for zz, nn in rendered.items():
                     if (nn is not None) and (nn > 0):
                         flg_name = os.path.join(self.flag_dir, str(zz)+'.json')
-                        kv_headers = ('gs://', 'http://', 'https://', 'file://', 'memory://')
+                        kv_headers = ('gs://', 'http://', 'https://', 'file://', 'memory://', 's3://')
                         for kvh in kv_headers:
                             if flg_name.startswith(kvh):
                                 break

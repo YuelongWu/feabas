@@ -202,7 +202,7 @@ def render_one_section(tform_name, out_prefix, meta_name=None, **kwargs):
     if (meta_name is not None) and (len(metadata) > 0):
         if use_tensorstore:
             meta_name = meta_name.replace('\\', '/')
-            kv_headers = ('gs://', 'http://', 'https://', 'file://', 'memory://')
+            kv_headers = ('gs://', 'http://', 'https://', 'file://', 'memory://', 's3://')
             for kvh in kv_headers:
                 if meta_name.startswith(kvh):
                     break

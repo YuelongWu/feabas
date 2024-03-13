@@ -1408,7 +1408,7 @@ class MontageRenderer:
         else:
             if not prefix.endswith('/'):
                 prefix = prefix + '/'
-            kv_headers = ('gs://', 'http://', 'https://', 'file://', 'memory://')
+            kv_headers = ('gs://', 'http://', 'https://', 'file://', 'memory://', 's3://')
             for kvh in kv_headers:
                 if prefix.startswith(kvh):
                     break

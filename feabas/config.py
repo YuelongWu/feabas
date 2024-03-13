@@ -160,7 +160,7 @@ def tensorstore_render_dir():
     outdir = outdir.replace('\\', '/')
     if not outdir.endswith('/'):
         outdir = outdir + '/'
-    kv_headers = ('gs://', 'http://', 'https://', 'file://', 'memory://')
+    kv_headers = ('gs://', 'http://', 'https://', 'file://', 'memory://', 's3://')
     for kvh in kv_headers:
         if outdir.startswith(kvh):
             break
