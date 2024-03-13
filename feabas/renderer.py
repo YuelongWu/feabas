@@ -1221,11 +1221,13 @@ def subprocess_render_partial_ts_slab(loaders, meshes, bboxes, out_ts, **kwargs)
     ts_xmax, ts_ymax = exclusive_max[0], exclusive_max[1]
     ts_bbox = (ts_xmin, ts_ymin, ts_xmax, ts_ymax)
     for bbox, bbox_out in zip(bboxes, bboxes_out):
-        try:    # http error may crash the program
-            updated = False
-            for z in zindx:
+        updated = False
+        for z in zindx:
+            try:    # http error may crash the program
                 rndr = renderers[z]
                 if rndr is None:
+                    continue
+                if num_chunks.get(z, 0) == None: # previously errored out
                     continue
                 imgt = rndr.crop(bbox, **kwargs)
                 if (imgt is not None) and np.any(imgt != fillval, axis=None):
@@ -1239,6 +1241,9 @@ def subprocess_render_partial_ts_slab(loaders, meshes, bboxes, out_ts, **kwargs)
                     data_view = out_ts[indx[1], indx[0], z]
                     data_view.with_transaction(txn).write(img_crp.reshape(data_view.shape)).result()
                     num_chunks[z] = num_chunks.get(z, 0) + 1
+            except Exception:
+                num_chunks[z] = None
+        try:
             if updated:
                 txn.commit_async().result()
         except Exception:

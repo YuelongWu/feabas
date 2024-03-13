@@ -457,7 +457,9 @@ if __name__ == '__main__':
         pairnames = []
         match_name_delimiter = thumbnail_configs.get('match_name_delimiter', '__to__')
         processed = []
-        for stp in range(1, compare_distance+1):
+        if not hasattr(compare_distance, '__iter__'):
+            compare_distance = range(1, compare_distance+1)
+        for stp in compare_distance:
             for k in range(len(bname_list)-stp):
                 sname0_ext = bname_list[k]
                 sname1_ext = bname_list[k+stp]
