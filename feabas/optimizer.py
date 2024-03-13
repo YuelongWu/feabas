@@ -374,7 +374,7 @@ class SLM:
     def __init__(self, meshes, links=None, **kwargs):
         if links is None:
             links = []
-        self.meshes = MeshList(meshes, maxlen=kwargs.get('maxlen', None))
+        self.meshes = MeshList.init(meshes, maxlen=kwargs.get('maxlen', None))
         self.links = links
         self._stiffness_lambda = kwargs.get('stiffness_lambda', 1.0)
         self._crosslink_lambda = kwargs.get('crosslink_lambda', -1.0)
@@ -587,7 +587,7 @@ class SLM:
         moving = ~self.lock_flags
         to_keep = (A.dot(moving) > 0) | moving
         if not np.all(to_keep):
-            self.meshes = MeshList([m for flag, m in zip(to_keep, self.meshes) if flag])
+            self.meshes = MeshList.init([m for flag, m in zip(to_keep, self.meshes) if flag])
             self.mesh_changed()
 
 
@@ -603,7 +603,7 @@ class SLM:
                 if len(dm) > 1:
                     modified = True
         if modified:
-            self.meshes = MeshList(new_meshes)
+            self.meshes = MeshList.init(new_meshes)
             self.mesh_changed()
             if prune_links:
                 self.prune_links(**kwargs)
@@ -814,13 +814,26 @@ class SLM:
         A = A.tocsr()
         Tx = sparse.linalg.lsqr(A, bx, atol=tol, btol=tol, iter_lim=maxiter)[0]
         Ty = sparse.linalg.lsqr(A, by, atol=tol, btol=tol, iter_lim=maxiter)[0]
-        if (np.linalg.norm(A.dot(Tx) - bx) < np.linalg.norm(bx)) and (np.linalg.norm(A.dot(Ty) - by) < np.linalg.norm(by)):
+        cost0_x = np.linalg.norm(bx)
+        cost1_x = np.linalg.norm(A.dot(Tx) - bx)
+        cost0_y = np.linalg.norm(by)
+        cost1_y = np.linalg.norm(A.dot(Ty) - by)
+        cost0 = 0
+        cost1 = 0
+        if cost0_x <= cost1_x:
+            Tx = np.zeros_like(Tx)
+        else:
+            cost0 += cost0_x
+            cost1 += cost1_x
+        if cost0_y <= cost1_y:
+            Ty = np.zeros_like(Ty)
+        else:
+            cost0 += cost0_y
+            cost1 += cost1_y
+        if np.any(Tx!=0, axis=None) or np.any(Ty!=0, axis=None):
             for idx, tx, ty in zip(active_index, Tx, Ty):
                 self.meshes[idx].set_translation((tx, ty), gear=(start_gear,targt_gear))
-        else:
-            Tx = 0 * Tx
-            Ty = 0 * Ty
-        return np.any(Tx!=0, axis=None) or np.any(Ty!=0, axis=None)
+        return (cost0, cost1)
 
 
     def optimize_affine_cascade(self, **kwargs):
@@ -941,10 +954,10 @@ class SLM:
         for uid in uids_c:
             if uid not in uids0:
                 continue
-            M0 = self.select_mesh_from_uid(uid)
+            M0 = self.select_mesh_from_uid(uid)[0][0]
             if M0.locked:
                 continue
-            Mc = slm_c.select_mesh_from_uid(uid)
+            Mc = slm_c.select_mesh_from_uid(uid)[0][0]
             xy0 = M0.vertices_w_offset(gear=start_gear)
             tid, B = Mc.cart2bary(xy0, gear=const.MESH_GEAR_INITIAL, extrapolate=True)
             xy0_t = Mc.bary2cart(tid, B, gear=const.MESH_GEAR_MOVING, offsetting=True)
@@ -1004,7 +1017,7 @@ class SLM:
         lock_flags = self.lock_flags
         if isinstance(callback_settings, bool):
             if callback_settings:
-                callback_settings = {'chances':20, 'eval_step':10}
+                callback_settings = {'chances':5, 'eval_step':10}
             else:
                 callback_settings = {}
         elif isinstance(callback_settings, dict):
@@ -1127,7 +1140,7 @@ class SLM:
         shrink_trial = kwargs.get('shrink_trial', 3)
         groupings = kwargs.get('groupings', None)
         batch_num_matches = kwargs.get('batch_num_matches', None)
-        callback_settings = kwargs.get('callback_settings', {}).copy()
+        callback_settings = kwargs.get('callback_settings', True)
         shape_gear = const.MESH_GEAR_FIXED
         start_gear = const.MESH_GEAR_MOVING
         if cont_on_flip:
@@ -1523,7 +1536,7 @@ class SLM_Callback:
 
 
     def callback(self, x):
-        if self._count % self._eval_step == 0:
+        if (self._count % self._eval_step == 0) or (self._count < min(self._eval_step, 5)):
             cost = np.linalg.norm(self._A.dot(x) - self._b)
             if cost < self.min_cost:
                 self.min_cost = cost
@@ -1532,7 +1545,7 @@ class SLM_Callback:
                 t = time.time() - self._t0
                 if t > self._timout:
                     raise EarlyStopFlag
-            if self._chances is not None:
+            if (self._chances is not None) and (self._count >= self._eval_step):
                 if cost > self._last_cost:
                     self._exit_count += 1
                 elif self._early_stop_thresh is not None:

@@ -236,7 +236,10 @@ class Mesh:
         self._vertices[const.MESH_GEAR_STAGING] = kwargs.get('staging_vertices', None)
         self._offsets = {}
         self._offsets[const.MESH_GEAR_INITIAL] = kwargs.get('initial_offset', np.zeros((1,2), dtype=np.float64))
-        self._offsets[const.MESH_GEAR_FIXED] = kwargs.get('fixed_offset', np.zeros((1,2), dtype=np.float64))
+        if ('fixed_vertices' not in kwargs) and ('fixed_offset' not in kwargs):
+            self._offsets[const.MESH_GEAR_FIXED] = kwargs.get('initial_offset', np.zeros((1,2), dtype=np.float64))
+        else:
+            self._offsets[const.MESH_GEAR_FIXED] = kwargs.get('fixed_offset', np.zeros((1,2), dtype=np.float64))
         self._offsets[const.MESH_GEAR_MOVING] = kwargs.get('moving_offset', np.zeros((1,2), dtype=np.float64))
         self._offsets[const.MESH_GEAR_STAGING] = kwargs.get('staging_offset', np.zeros((1,2), dtype=np.float64))
         self._current_gear = const.MESH_GEAR_FIXED
@@ -800,7 +803,7 @@ class Mesh:
 
 
     @config_cache('TBD')
-    def _coarse_mesh_grids(self, mesh_scale, gear=const.MESH_GEAR_INITIAL):
+    def _coarse_mesh_grids(self, mesh_scale=0, gear=const.MESH_GEAR_INITIAL):
         """remember to clear cache when mesh_scale changes."""
         ntri0 = self.num_triangles
         ntri = self.num_triangles * mesh_scale
@@ -819,13 +822,13 @@ class Mesh:
             T = np.array((0,1,2)).reshape(1,3)
             soft_factor = m_area / (3*(3**0.5)*(radius)**2/4)
         else:
-            area_ele = m_area * mesh_scale / ntri0
+            area_ele = m_area / (mesh_scale * ntri0)
             side_len = (area_ele * 4 / 3**0.5) ** 0.5
             vtx = spatial.generate_equilat_grid_mask(mask, side_len)
             T = triangle.delaunay(vtx)
             edges = Mesh.triangle2edge(T, directional=True)
             edge_len = np.sum(np.diff(vtx[edges], axis=-2)**2, axis=-1)**0.5
-            indx = ~np.any(edge_len.reshape(3, -1) > 1.25 * edge_len, axis=0)
+            indx = ~np.any(edge_len.reshape(3, -1) > 1.25 * side_len, axis=0)
             T = T[indx]
             soft_factor = m_area / (area_ele * T.shape[0])
         return vtx, T, soft_factor
@@ -845,9 +848,9 @@ class Mesh:
                 set to 0, then it'll become one triangle (model affine tform).
         """
         cache = kwargs.get('cache', False)
-        vtx, T, soft_factor = self._coarse_mesh_grids(mesh_scale, gear=gear, cache=cache)
+        vtx, T, soft_factor = self._coarse_mesh_grids(mesh_scale=mesh_scale, gear=gear, cache=cache)
         init_dict = self.get_init_dict(save_material=False, vertex_flags=(const.MESH_GEAR_INITIAL,))
-        init_dict.update({'vertices': vtx, 'triangles': T})
+        init_dict.update({'vertices': vtx, 'triangles': T, 'initial_offset': self.offset(gear=gear)})
         init_dict['soft_factor'] = self.soft_factor * soft_factor
         init_dict.pop('stiffness_multiplier', None)
         init_dict.pop('token')

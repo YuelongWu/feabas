@@ -37,7 +37,8 @@ optimization:
         maxiter: 0
         tol: 1.0e-6
         use_group: true
-        stiffness_multiplier: 1.0
+        mesh_scale: 0   # can be 0~1, with smaller number indicates coarser meshing. set 0 to use affine.
+        stiffness_multiplier: 0.1   # smaller number means easier to deform
     group_elastic: # see stitcher.Stitcher.optimize_group_intersection for details
         maxiter: null
         tol: 1.0e-6

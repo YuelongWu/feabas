@@ -707,7 +707,7 @@ class Stitcher:
         residue_threshold = kwargs.get('residue_threshold', None)
         if self._optimizer is None:
             self.initialize_optimizer()
-        self._optimizer.optimize_translation_lsqr(maxiter=maxiter, tol=tol,
+        cost0 = self._optimizer.optimize_translation_lsqr(maxiter=maxiter, tol=tol,
             start_gear=start_gear, target_gear=target_gear)
         num_disabled = 0
         if (residue_threshold is not None) and (residue_threshold > 0):
@@ -734,9 +734,13 @@ class Stitcher:
                             self._optimizer.links[lnk_k].disable()
                             num_disabled += 1
                         uid_record.update(lnk_uids)
-                    self._optimizer.optimize_translation_lsqr(maxiter=maxiter,
+                    cost1 = self._optimizer.optimize_translation_lsqr(maxiter=maxiter,
                         tol=tol,start_gear=start_gear, target_gear=target_gear)
-        return num_disabled
+                    if cost1[1] >= cost1[0]:
+                        break
+                    else:
+                        cost0 = (cost0[0], min(cost1[1], cost0[1]))
+        return num_disabled, cost0
 
 
     def optimize_affine(self, **kwargs):
