@@ -803,15 +803,15 @@ class Mesh:
 
 
     @config_cache('TBD')
-    def _coarse_mesh_grids(self, mesh_scale=0, gear=const.MESH_GEAR_INITIAL):
-        """remember to clear cache when mesh_scale changes."""
+    def _coarse_mesh_grids(self, mesh_reduction_factor=0, gear=const.MESH_GEAR_INITIAL):
+        """remember to clear cache when mesh_reduction_factor changes."""
         ntri0 = self.num_triangles
-        ntri = self.num_triangles * mesh_scale
+        ntri = self.num_triangles * mesh_reduction_factor
         if ntri < 3:
-            mesh_scale = 0 # if too coarse, use a single affine
+            mesh_reduction_factor = 0 # if too coarse, use a single affine
         mask = self.shapely_regions(gear=gear, offsetting=False)
         m_area = mask.area
-        if mesh_scale == 0:
+        if mesh_reduction_factor == 0:
             mbc = shapely.minimum_bounding_circle(mask)
             cntr = np.array(mbc.centroid.coords)
             rr = np.sum((np.array(mbc.boundary.coords) - cntr) ** 2, axis=-1) ** 0.5
@@ -822,7 +822,7 @@ class Mesh:
             T = np.array((0,1,2)).reshape(1,3)
             soft_factor = m_area / (3*(3**0.5)*(radius)**2/4)
         else:
-            area_ele = m_area / (mesh_scale * ntri0)
+            area_ele = m_area / (mesh_reduction_factor * ntri0)
             side_len = (area_ele * 4 / 3**0.5) ** 0.5
             vtx = spatial.generate_equilat_grid_mask(mask, side_len)
             T = triangle.delaunay(vtx)
@@ -834,7 +834,7 @@ class Mesh:
         return vtx, T, soft_factor
 
 
-    def coarse_mesh(self, mesh_scale=0, gear=const.MESH_GEAR_INITIAL, **kwargs):
+    def coarse_mesh(self, mesh_reduction_factor=0, gear=const.MESH_GEAR_INITIAL, **kwargs):
         """
         generate a coarse mesh covering this mesh (in specified gear) with
         uniform equilateral elements. It is to be used for a inital relaxation
@@ -843,12 +843,13 @@ class Mesh:
         optimization, the relaxed results should be written to MOVING_GEAR.
         
         Args:
-            mesh_scale (float): scale applied to the mesh granuality. e.g. when
-                set to 0.01, then the coarse mesh should have ~1% triangles. If
-                set to 0, then it'll become one triangle (model affine tform).
+            mesh_reduction_factor (float): scale applied to the mesh granuality.
+                e.g. when set to 0.01, then the coarse mesh should have ~1%
+                triangles. If set to 0, then it'll become one triangle (model
+                affine tform).
         """
         cache = kwargs.get('cache', False)
-        vtx, T, soft_factor = self._coarse_mesh_grids(mesh_scale=mesh_scale, gear=gear, cache=cache)
+        vtx, T, soft_factor = self._coarse_mesh_grids(mesh_reduction_factor=mesh_reduction_factor, gear=gear, cache=cache)
         init_dict = self.get_init_dict(save_material=False, vertex_flags=(const.MESH_GEAR_INITIAL,))
         init_dict.update({'vertices': vtx, 'triangles': T, 'initial_offset': self.offset(gear=gear)})
         init_dict['soft_factor'] = self.soft_factor * soft_factor

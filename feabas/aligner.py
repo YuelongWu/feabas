@@ -195,6 +195,7 @@ class Stack:
                 else:
                     raise RuntimeError('no match list found.')
         self.match_list = self.filtered_match_list(match_list=match_list)
+        self.save_overflow = kwargs.get('save_overflow', True)
         self._logger = None
 
 
@@ -278,7 +279,7 @@ class Stack:
         """self._mesh_cache is a FIFO cache"""
         cached_name, cached_Ms = self._mesh_cache.popitem(last=False)
         rel_match_names = self.secname_to_matchname_mapper[cached_name]
-        if self._mesh_out_dir is not None:
+        if (self._mesh_out_dir is not None) and self.save_overflow:
             anchored_meshes = [m for m in cached_Ms if not m.is_outcast]
             if len(anchored_meshes) != len(cached_Ms):
                 logger = logging.get_logger(self._logger)

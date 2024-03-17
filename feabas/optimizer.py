@@ -900,14 +900,14 @@ class SLM:
         return modified
 
 
-    def coarse_mesh_SLM(self, mesh_scale=0, **kwargs):
+    def coarse_mesh_SLM(self, mesh_reduction_factor=0, **kwargs):
         """
         simplify the meshes to coarse equilateral meshes and return a SLM for
         rough mesh relaxation.
 
         Kwargs:
-            mesh_scale: the ratio to reduce the number of triangles in meshes.
-                If set to 0, it reduces to a global affine transform.
+            mesh_reduction_factor: the ratio to reduce the number of triangles
+                in meshes. If set to 0, it reduces to a global affine transform.
             start_gear: gear that associated with the vertices before applying
                 the translation.
             target_gear: gear that associated with the vertices at the final
@@ -924,9 +924,9 @@ class SLM:
         meshes = []
         for m in self.meshes:
             if m.locked:
-                meshes.append(m.coarse_mesh(mesh_scale=mesh_scale, gear=targt_gear, cache=shared_cache))
+                meshes.append(m.coarse_mesh(mesh_reduction_factor=mesh_reduction_factor, gear=targt_gear, cache=shared_cache))
             else:
-                meshes.append(m.coarse_mesh(mesh_scale=mesh_scale, gear=start_gear, cache=shared_cache))
+                meshes.append(m.coarse_mesh(mesh_reduction_factor=mesh_reduction_factor, gear=start_gear, cache=shared_cache))
         slm_c = SLM(meshes, **slm_settings)
         for lnk in self.links:
             if not lnk.relevant:

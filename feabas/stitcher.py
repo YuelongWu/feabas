@@ -747,8 +747,8 @@ class Stitcher:
         """
         optimize with coarse transformations (affine by default) for each tile.
         Kwargs:
-            mesh_scale: scale to reduce mesh element number. 0 by default for
-                affine.
+            mesh_reduction_factor: scale to reduce mesh element number. 0 by
+                default for affine.
             use_groupings: whether to enforce groupings during mesh relaxation.
                 True by default.
             maxiter: maximum number of iterations. None if no limit.
@@ -760,7 +760,7 @@ class Stitcher:
                 postions for locked meshes. Also the results are saved to this
                 gear as well.
         """
-        mesh_scale = kwargs.get('mesh_scale', 0)
+        mesh_reduction_factor = kwargs.get('mesh_reduction_factor', 0)
         use_groupings = kwargs.get('use_groupings', True) and self.has_groupings
         maxiter = kwargs.get('maxiter', None)
         tol = kwargs.get('tol', 1e-06)
@@ -773,9 +773,9 @@ class Stitcher:
             self.initialize_optimizer()
         shared_cache = caching.CacheFIFO(maxlen=None)
         stiffness_lambda = self._optimizer._stiffness_lambda * stiffness_multiplier
-        opt_c = self._optimizer.coarse_mesh_SLM(mesh_scale=mesh_scale, target_gear=target_gear,
-                                                start_gear=start_gear, shared_cache=shared_cache,
-                                                stiffness_lambda=stiffness_lambda)
+        opt_c = self._optimizer.coarse_mesh_SLM(mesh_reduction_factor=mesh_reduction_factor,
+                                                target_gear=target_gear, start_gear=start_gear,
+                                                shared_cache=shared_cache, stiffness_lambda=stiffness_lambda)
         shared_cache.clear()
         if use_groupings:
             groupings = self.groupings(normalize=True)

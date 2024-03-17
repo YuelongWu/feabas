@@ -416,7 +416,7 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
     boundary_tolerance = kwargs.get('boundary_tolerance', None)
     shrink_factor = kwargs.get('shrink_factor', 1)
     allow_dwell = kwargs.get('allow_dwell', 0)
-    allow_enlarge = kwargs.get('allow_enlarge', True)
+    allow_enlarge = kwargs.get('allow_enlarge', False)
     link_weight_decay = kwargs.get('link_weight_decay', 0.0)
     compute_strain = kwargs.get('compute_strain', True)
     batch_size = kwargs.pop('batch_size', None)
