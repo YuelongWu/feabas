@@ -1540,7 +1540,7 @@ class SLM_Callback:
             cost = np.linalg.norm(self._A.dot(x) - self._b)
             if cost < self.min_cost:
                 self.min_cost = cost
-                self.solution = x
+                self.solution = x.copy()
             if self._timout is not None:
                 t = time.time() - self._t0
                 if t > self._timout:
