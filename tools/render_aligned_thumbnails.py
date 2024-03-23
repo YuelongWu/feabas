@@ -43,6 +43,14 @@ def render_one_thumbnail(thumbnail_path, mesh_path, out_dir, **kwargs):
     print(f'{outname}: {time.time()-t0} sec')
 
 
+def get_bbox_for_one_section(mname, resolution=None):
+    M = Mesh.from_h5(mname)
+    if resolution is not None:
+        M.change_resolution(resolution)
+    bbox = M.bbox(gear=const.MESH_GEAR_MOVING, offsetting=True)
+    return bbox
+
+
 def parse_args(args=None):
     parser = argparse.ArgumentParser(description="rendering aligned thumbnails")
     parser.add_argument("--resolution", metavar="resolution", type=float, default=0)
@@ -53,10 +61,10 @@ def parse_args(args=None):
     parser.add_argument("--start", metavar="start", type=int, default=0)
     parser.add_argument("--step", metavar="step", type=int, default=1)
     parser.add_argument("--stop", metavar="stop", type=int, default=0)
-    parser.add_argument("--xmin", metavar="xmin", type=int, default=0)
-    parser.add_argument("--ymin", metavar="ymin", type=int, default=0)
-    parser.add_argument("--xmax", metavar="xmax", type=int, default=0)
-    parser.add_argument("--ymax", metavar="ymax", type=int, default=0)
+    parser.add_argument("--xmin", metavar="xmin", type=int)
+    parser.add_argument("--ymin", metavar="ymin", type=int)
+    parser.add_argument("--xmax", metavar="xmax", type=int)
+    parser.add_argument("--ymax", metavar="ymax", type=int)
     parser.add_argument("--ext", metavar="ext", type=str, default='.png')
     return parser.parse_args(args)
 
@@ -68,7 +76,6 @@ if __name__ == '__main__':
         src_resolution = default_thumbnail_resolution
     else:
         src_resolution = args.src_resolution
-
     if args.resolution <= 0:
         resolution = src_resolution
     else:
@@ -82,31 +89,45 @@ if __name__ == '__main__':
         src_dir = args.src_dir
 
     if args.tgt_dir.lower() == 'none':
+        if resolution % 1 == 0:
+            resolution = int(resolution)
         tgt_dir = os.path.join(root_dir, 'align', f'aligned_{resolution}nm')
     else:
         tgt_dir = args.tgt_dir
     os.makedirs(tgt_dir, exist_ok=True)
 
-    tlist = sorted(glob.glob(os.path.join(root_dir, 'align', 'tform', '*.h5')))
+    tform_dir = os.path.join(root_dir, 'align', 'tform')
+    tlist = sorted(glob.glob(os.path.join(tform_dir, '*.h5')))
+
+    if len(tlist) == 0:
+        print(f'no transformations found in {tform_dir}.')
+        exit()
 
     xmin, ymin, xmax, ymax = args.xmin, args.ymin, args.xmax, args.ymax
+    if (xmin is None) or (ymin is None) or (xmax is None) or (ymax is None):
+        bbox0 = []
+        bfunc = partial(get_bbox_for_one_section, resolution=resolution)
+        if args.worker > 1:
+            jobs = []
+            with ProcessPoolExecutor(max_workers=args.worker, mp_context=get_context('spawn')) as executor:
+                for mname in tlist:
+                    jobs.append(executor.submit(bfunc, mname))
+                for job in as_completed(jobs):
+                    bbox0.append(job.result())
+        else:
+            for mname in tlist:
+                bbox0.append(bfunc(mname))
+        bbox0 = np.array(bbox0)
+        if xmin is None:
+            xmin = np.min(bbox0[:,0])
+        if ymin is None:
+            ymin = np.min(bbox0[:,1])
+        if xmax is None:
+            xmax = np.max(bbox0[:,2])
+        if ymax is None:
+            ymax = np.max(bbox0[:,3])
     if (xmin >= xmax) or (ymin >= ymax):
-        initialized = False
-        for mname in tlist:
-            M = Mesh.from_h5(mname)
-            M.change_resolution(resolution)
-            bbox0 = M.bbox(gear=const.MESH_GEAR_MOVING, offsetting=True)
-            if not initialized:
-                initialized = True
-                xmin = np.floor(bbox0[0])
-                ymin = np.floor(bbox0[1])
-                xmax = np.ceil(bbox0[2])
-                ymax = np.ceil(bbox0[3])
-            else:
-                xmin = min(xmin, np.floor(bbox0[0]))
-                ymin = min(ymin, np.floor(bbox0[1]))
-                xmax = max(xmax, np.ceil(bbox0[2]))
-                ymax = max(ymax, np.ceil(bbox0[3]))
+        print(f'invalid bounding box: {(xmin, ymin, xmax, ymax)}')
     bbox = (xmin, ymin, xmax, ymax)
     stt_idx, stp_idx, step = args.start, args.stop, args.step
     if stp_idx == 0:

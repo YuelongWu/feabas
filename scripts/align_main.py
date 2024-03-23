@@ -3,6 +3,7 @@ import argparse
 import glob
 from functools import partial
 from concurrent.futures.process import ProcessPoolExecutor
+from concurrent.futures import as_completed
 from multiprocessing import get_context
 import math
 import os
@@ -190,6 +191,14 @@ def optimize_main(section_list):
     logging.terminate_logger(*logger_info)
 
 
+def _get_bbox_for_one_section(mname, resolution=None):
+    M = Mesh.from_h5(mname)
+    if resolution is not None:
+        M.change_resolution(resolution)
+    bbox = M.bbox(gear=const.MESH_GEAR_MOVING, offsetting=True)
+    return bbox
+
+
 def offset_bbox_main():
     logger_info = logging.initialize_main_logger(logger_name='offset_bbox', mp=False)
     logger = logging.get_logger(logger_info[0])
@@ -197,6 +206,7 @@ def offset_bbox_main():
     tform_list = sorted(glob.glob(os.path.join(tform_dir, '*.h5')))
     if os.path.isfile(outname) or (len(tform_list) == 0):
         return
+    num_workers = align_config.get('num_workers', 1)
     secnames = [os.path.splitext(os.path.basename(s))[0] for s in tform_list]
     mip_level = align_config.pop('get', 0)
     outdir = os.path.join(render_dir, 'mip'+str(mip_level))
@@ -205,20 +215,31 @@ def offset_bbox_main():
             logger.info(f'section {sname} already rendered: transformation not performed')
             return
     bbox_union = None
-    for tname in tform_list:
-        M = Mesh.from_h5(tname)
-        M.change_resolution(config.montage_resolution())
-        bbox = M.bbox(gear=const.MESH_GEAR_MOVING, offsetting=True)
-        if bbox_union is None:
-            bbox_union = bbox
-        else:
-            bbox_union = common.bbox_union((bbox_union, bbox))
+    bfunc = partial(_get_bbox_for_one_section, resolution=config.montage_resolution())
+    if num_workers > 1:
+        jobs = []
+        with ProcessPoolExecutor(max_workers=args.worker, mp_context=get_context('spawn')) as executor:
+            for tname in tform_list:
+                jobs.append(executor.submit(bfunc, tname))
+            for job in as_completed(jobs):
+                bbox = job.result()
+                if bbox_union is None:
+                    bbox_union = bbox
+                else:
+                    bbox_union = common.bbox_union((bbox_union, bbox))
+    else:
+        for tname in tform_list:
+            bbox = bfunc(tname)
+            if bbox_union is None:
+                bbox_union = bbox
+            else:
+                bbox_union = common.bbox_union((bbox_union, bbox))
     offset = -bbox_union[:2]
     bbox_union_new = bbox_union + np.tile(offset, 2)
     if not os.path.isfile(outname):
         with open(outname, 'w') as f:
             f.write('\t'.join([str(s) for s in offset]))
-    logger.warning(f'bbox offset: {tuple(bbox_union)} -> {tuple(bbox_union_new)}')
+    logger.warning(f'bbox offsets at mip0: {tuple(bbox_union)} -> {tuple(bbox_union_new)}')
     logging.terminate_logger(*logger_info)
 
 
@@ -467,6 +488,15 @@ if __name__ == '__main__':
         logger = logging.get_logger(logger_info[0])
         mip_level = align_config.pop('mip_level', 0)
         align_config.pop('outdir', None)
+        canvas_bbox = align_config.get('canvas_bbox', None)
+        if (canvas_bbox is None):
+            canvas_file = os.path.join(tform_dir, 'tensorstore_canvas.txt')
+            if os.path.isfile(canvas_file):
+                with open(canvas_bbox, 'r') as f:
+                    line = f.readline()
+                canvas_bbox = [float(s) for s in line.strip().split('\t')]
+                logger.info(f'use canvas bounding box {canvas_bbox}')
+                align_config['canvas_bbox'] = canvas_bbox
         driver = align_config.get('driver', 'neuroglancer_precomputed')
         if driver == 'zarr':
             tensorstore_render_dir = tensorstore_render_dir + '0/'

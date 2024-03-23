@@ -384,6 +384,18 @@ class Stack:
         return optm
 
 
+    def reduced_stack(self, mesh_reduction_factor=0, gear=const.MESH_GEAR_INITIAL, **kwargs):
+        """
+        Generate a stack with a coarse version of each mesh from the original
+        aligner. The whole stack will be saved in RAM at the same time, so make
+        sure the mesh is coarse enough. Args:
+            mesh_reduction_factor(float): an be 0~1, with smaller number
+                indicates coarser meshing. set 0 to use affine.
+            gear: which gear to use when generating the coarse stack.
+        """
+        pass
+
+
     def optimize_slide_window(self, **kwargs):
         num_workers = kwargs.pop('num_workers', 1)
         locked_section = kwargs.pop('locked_section', None)
