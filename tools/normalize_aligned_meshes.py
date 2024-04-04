@@ -23,7 +23,7 @@ def parse_args(args=None):
     parser.add_argument("--src_dir",  metavar="src_dir", type=str)
     parser.add_argument("--tgt_dir",  metavar="tgt_dir", type=str)
     parser.add_argument("--worker",  metavar="worker", type=int, default=1)
-    parser.add_argument("--angle", metavar="angle", type=float, default=0.0)
+    parser.add_argument("--angle", metavar="angle", type=float)
     parser.add_argument("--offset_x", metavar="offset_x", type=float, default=0.0)
     parser.add_argument("--offset_y", metavar="offset_y", type=float, default=0.0)
     return parser.parse_args(args)
@@ -86,7 +86,7 @@ if __name__ == '__main__':
             for tname in tlist:
                 jobs.append(executor.submit(rfunc, tname, wkb=True))
             for job in as_completed(jobs):
-                wkb = job.result
+                wkb = job.result()
                 R = shapely.from_wkb(wkb)
                 if regions is None:
                     regions = R
@@ -99,18 +99,21 @@ if __name__ == '__main__':
                 regions = R
             else:
                 regions = regions.union(R)
-    bbox = shapely.minimum_rotated_rectangle(regions)
-    corner_xy = np.array(bbox.boundary.coords)
-    corner_dxy = np.diff(corner_xy, axis=0)
-    sides = np.sum(corner_dxy**2, axis=-1) ** 0.5
-    if sides[0] > sides[1]:
-        side_vec = corner_dxy[0]
+    if args.angle is None:
+        bbox = shapely.minimum_rotated_rectangle(regions)
+        corner_xy = np.array(bbox.boundary.coords)
+        corner_dxy = np.diff(corner_xy, axis=0)
+        sides = np.sum(corner_dxy**2, axis=-1) ** 0.5
+        if sides[0] > sides[1]:
+            side_vec = corner_dxy[0]
+        else:
+            side_vec = corner_dxy[1]
+        theta = np.arctan2(side_vec[1], side_vec[0])
+        if np.abs(theta) > np.pi/2:
+            theta = np.pi + theta
     else:
-        side_vec = corner_dxy[1]
-    theta = np.arctan2(side_vec[1], side_vec[0])
-    if np.abs(np.pi - theta) < np.abs(theta):
-        theta = np.pi - theta
-    theta = theta - args.angle * np.pi / 180
+        theta = args.angle * np.pi / 180
+        corner_xy = np.array(regions.boundary.coords)
     Rt = np.array([[np.cos(theta), -np.sin(theta)],[np.sin(theta), np.cos(theta)]])
     R = np.eye(3)
     R[:2,:2] = Rt
