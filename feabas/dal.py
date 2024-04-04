@@ -314,7 +314,8 @@ class AbstractImageLoader(ABC):
                 out['number_of_channels'] = self._number_of_channels
             out['fillval'] = self._default_fillval
             out['apply_CLAHE'] = self._apply_CLAHE
-            out['CLAHE_cliplimit'] = self._clahe_clip_limit
+            if hasattr(self, '_clahe_clip_limit'):
+                out['CLAHE_cliplimit'] = self._clahe_clip_limit
             out['inverse'] = self._inverse
         if cache_settings:
             out['cache_size'] = self._cache_size
