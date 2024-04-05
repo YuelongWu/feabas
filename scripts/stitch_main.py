@@ -113,11 +113,13 @@ def optimize_one_section(matchname, outname, **kwargs):
     ncomp = cnt.size
     ncomp1 = np.sum(cnt>1)
     dis = stitcher.match_residues()
-    finish_str = f'{bname}: {cost} finished {time.time() - t0} sec | residue: {np.nanmean(dis)} | rotation: {round(rot)}'
+    finish_str = (f'|{bname}| cost: {cost} '
+                  + f'| residue: {np.nanmean(dis)} | discarded: {np.sum(np.isnan(dis))} | rotation: {round(rot)} '
+                  + f'| {ncomp1}/{ncomp} components '
+                  + f'| finished {time.time() - t0} sec ')
     if abs(rot) > 1.5:
         logger.warning(f'{bname}: rotation detected in final transform, potential mesh relaxation issues.')
     if ncomp > 1:
-        finish_str = finish_str + f' | {ncomp1}/{ncomp} components'
         logger.warning(f'\t{bname}: {ncomp} disconnected groups found, among which {ncomp1} have more than one tiles.')
     logger.info(finish_str)
 
