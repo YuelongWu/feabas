@@ -97,6 +97,8 @@ class Stitcher:
             else:
                 resolution = data_resolution()
         if selected is not None:
+            if isinstance(selected, (set, tuple)):
+                selected = list(selected)
             imgpaths = [s for k, s in enumerate(imgpaths) if k in selected]
             bboxes = bboxes[selected]
             groupings = groupings[selected]
@@ -1138,6 +1140,8 @@ class MontageRenderer:
             mesh_info = self._mesh_info
             tile_size = self._tile_sizes
         else:
+            if isinstance(selected, (set, tuple)):
+                selected = list(selected)
             imgpaths = [self.imgrelpaths[s] for s in selected]
             mesh_info = [self._mesh_info[s] for s in selected]
             if not self._identical_tile_size:
