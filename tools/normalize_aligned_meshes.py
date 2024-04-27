@@ -43,6 +43,8 @@ def get_convex_hull(tname, wkb=False, resolution=None):
 
 def apply_transform(tname, out_dir=None, R=np.eye(3), txy=np.zeros(2),resolution=None):
     M = Mesh.from_h5(tname)
+    locked = M.locked
+    M.locked = False
     if resolution is not None:
         M.change_resolution(config.montage_resolution())
     M.apply_affine(R, gear=constant.MESH_GEAR_FIXED)
@@ -51,6 +53,7 @@ def apply_transform(tname, out_dir=None, R=np.eye(3), txy=np.zeros(2),resolution
     M.apply_translation(txy, gear=constant.MESH_GEAR_MOVING)
     if out_dir is not None:
         outname = os.path.join(out_dir, os.path.basename(tname))
+    M.locked = locked
     M.save_to_h5(outname, vertex_flags=constant.MESH_GEARS, save_material=True)
 
 

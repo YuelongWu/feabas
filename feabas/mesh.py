@@ -973,21 +973,22 @@ class Mesh:
                 continue
             new_stiffness.append(np.full(cnt, ss))
             new_matid.append(np.full(cnt, mm))
-        new_triangles = np.array(new_triangles)
-        new_stiffness = np.concatenate(new_stiffness, axis=None)
-        new_matid = np.concatenate(new_matid, axis=None)
-        triangles = np.concatenate([self.triangles[~t_indx], new_triangles], axis=0)
-        if isinstance(self._stiffness_multiplier, np.ndarray):
-            stiffness_multiplier =  np.concatenate([self._stiffness_multiplier[~t_indx], new_stiffness], axis=0)
-        else:
-            stiffness_multiplier = None
-        if isinstance(self._material_ids, np.ndarray):
-            material_ids =  np.concatenate([self.material_ids[~t_indx], new_matid], axis=0)
-        else:
-            material_ids = None
-        self.triangles = triangles
-        self._stiffness_multiplier = stiffness_multiplier
-        self._material_ids = material_ids
+        if len(new_triangles) > 0:
+            new_triangles = np.array(new_triangles)
+            new_stiffness = np.concatenate(new_stiffness, axis=None)
+            new_matid = np.concatenate(new_matid, axis=None)
+            triangles = np.concatenate([self.triangles[~t_indx], new_triangles], axis=0)
+            if isinstance(self._stiffness_multiplier, np.ndarray):
+                stiffness_multiplier =  np.concatenate([self._stiffness_multiplier[~t_indx], new_stiffness], axis=0)
+            else:
+                stiffness_multiplier = None
+            if isinstance(self._material_ids, np.ndarray):
+                material_ids =  np.concatenate([self.material_ids[~t_indx], new_matid], axis=0)
+            else:
+                material_ids = None
+            self.triangles = triangles
+            self._stiffness_multiplier = stiffness_multiplier
+            self._material_ids = material_ids
         self.delete_orphaned_vertices()
         self._vertices_changed(gear=const.MESH_GEAR_INITIAL)
         return self

@@ -1010,11 +1010,30 @@ class SLM:
         batch_num_matches = kwargs.get('batch_num_matches', None)
         groupings = kwargs.get('groupings', None)
         auto_clear = kwargs.get('auto_clear', True)
+        remove_extra_dof = kwargs.get('remove_extra_dof', False)
         check_flip = not cont_on_flip
         stiff_m, stress_v = self.stiffness_matrix(gear=(shape_gear,start_gear),
             inner_cache=inner_cache, check_flip=check_flip,
             continue_on_flip=cont_on_flip)
         lock_flags = self.lock_flags
+        edc = None
+        if remove_extra_dof:
+            conn_lbl, _ = self.connected_subsystems
+            rm_flag = np.zeros_like(conn_lbl, dtype=bool)
+            for lbl in np.unique(conn_lbl):
+                idx_lbl = np.nonzero(conn_lbl == lbl)[0]
+                if not np.any(lock_flags[idx_lbl]):
+                    rm_flag[idx_lbl[0]] = True
+            if np.any(rm_flag):
+                edc = []
+                for flg, m in zip(rm_flag, self.meshes):
+                    if m.locked:
+                        continue
+                    s = np.ones(m.num_vertices*2, dtype=bool)
+                    if flg:
+                        s[:3] = False
+                    edc.append(s)
+                edc = np.concatenate(edc, axis=None)
         if isinstance(callback_settings, bool):
             if callback_settings:
                 callback_settings = {'chances':5, 'eval_step':10}
@@ -1066,6 +1085,8 @@ class SLM:
                                         (indx1, indx0)), shape=(grouped_dof, A.shape[0]))
                 A = T_m @ A @ T_m.transpose() / np.mean(g_cnt)
                 b = T_m @ b / np.mean(g_cnt)
+                if edc is not None:
+                    edc = (T_m @ edc) > 0
             else:
                 groupings = None
         A_diag = A.diagonal()
@@ -1074,7 +1095,7 @@ class SLM:
         else:
             M = None
         # dd, _ = sparse.linalg.bicgstab(A, b, tol=tol, maxiter=maxiter, atol=atol, M=M)
-        dd = bicgstab(A, b, tol=tol, maxiter=maxiter, atol=atol, M=M, **callback_settings)
+        dd = bicgstab(A, b, tol=tol, maxiter=maxiter, atol=atol, M=M, extra_dof_constraint=edc, **callback_settings)
         cost = (np.linalg.norm(b), np.linalg.norm(A.dot(dd) - b))
         if cost[1] < cost[0]:
             index_offsets = self.index_offsets
@@ -1572,8 +1593,23 @@ def bicgstab(A, b, tol=1e-07, atol=None, maxiter=None, M=None, **kwargs):
     early_stop_thresh = kwargs.get('early_stop_thresh', None)
     chances = kwargs.get('chances', None)
     eval_step = kwargs.get('eval_step', 10)
+    edc = kwargs.get('extra_dof_constraint', None)
     if maxiter == 0:
-        return b * 0
+        return np.zeros_like(b)
+    if edc is not None:
+        if (not isinstance(edc, np.ndarray)) or (edc.dtype != bool):
+            indx = edc
+            edc = np.zeros_like(b, dtype=bool)
+            edc[indx] = True
+        if np.all(edc):
+            edc = None
+        elif not np.any(edc):
+            return np.zeros_like(b)
+        else:
+            A = A[edc][:, edc]
+            b = b[edc]
+            if M is not None:
+                M = sparse.csr_matrix(M)[edc][:, edc]
     cb = SLM_Callback(A, b, timeout=timeout, early_stop_thresh=early_stop_thresh, chances=chances, eval_step=eval_step)
     callback = cb.callback
     try:
@@ -1583,6 +1619,10 @@ def bicgstab(A, b, tol=1e-07, atol=None, maxiter=None, M=None, **kwargs):
             x = cb.solution
     except EarlyStopFlag:
         x = cb.solution
+    if edc is not None:
+        x0 = x
+        x = np.zeros_like(b, shape=edc.shape)
+        x[edc] = x0
     return x
 
 
@@ -1650,5 +1690,8 @@ def relax_mesh(M, free_vertices=None, free_triangles=None, **kwargs):
     cost = (np.linalg.norm(b), np.linalg.norm(A.dot(dd) - b))
     if (cost[1] < cost[0]) and np.any(dd != 0):
         modified = True
+        locked = M.locked
+        M.locked = False
         M.apply_field(dd.reshape(-1,2), gear[-1], vtx_mask=vmask)
+        M.locked = locked
     return modified
