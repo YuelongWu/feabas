@@ -260,6 +260,7 @@ def render_main(tform_list, out_dir, **kwargs):
 def parse_args(args=None):
     parser = argparse.ArgumentParser(description="Run stitching")
     parser.add_argument("--mode", metavar="mode", type=str, default='opt')
+    parser.add_argument("--filter", metavar="filter", type=str, default='')
     parser.add_argument("--start", metavar="start", type=int, default=0)
     parser.add_argument("--step", metavar="step", type=int, default=1)
     parser.add_argument("--stop", metavar="stop", type=int, default=0)
@@ -313,6 +314,8 @@ if __name__ == '__main__':
 
     if mode == 'rendering':
         tform_list = sorted(glob.glob(os.path.join(mesh_dir, '*.h5')))
+        if len(args.filter) > 0:
+            tform_list = [s for s in tform_list if args.filter in os.path.basename(s)]
         tform_list = tform_list[indx]
         if args.reverse:
             tform_list = tform_list[::-1]
@@ -320,6 +323,8 @@ if __name__ == '__main__':
         render_main(tform_list, image_outdir, **stitch_configs)
     elif mode == 'optimization':
         match_list = sorted(glob.glob(os.path.join(match_dir, '*.h5')))
+        if len(args.filter) > 0:
+            match_list = [s for s in match_list if args.filter in os.path.basename(s)]
         match_list = match_list[indx]
         if args.reverse:
             match_list = match_list[::-1]
@@ -327,6 +332,8 @@ if __name__ == '__main__':
         optmization_main(match_list, mesh_dir, **stitch_configs)
     else:
         coord_list = sorted(glob.glob(os.path.join(coord_dir, '*.txt')))
+        if len(args.filter) > 0:
+            coord_list = [s for s in coord_list if args.filter in os.path.basename(s)]
         coord_list = coord_list[indx]
         if args.reverse:
             coord_list = coord_list[::-1]
