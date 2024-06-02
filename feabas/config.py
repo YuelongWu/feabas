@@ -35,6 +35,7 @@ DEFAULT_RESOLUTION = general_settings().get('full_resolution', constant.DEFAULT_
 def get_work_dir():
     conf = general_settings()
     work_dir = conf.get('working_directory', './work_dir')
+    work_dir = os.path.abspath(os.path.expanduser(os.path.expandvars(work_dir)))
     return work_dir
 
 
@@ -43,7 +44,7 @@ def get_log_dir():
     conf = general_settings()
     log_dir = conf.get('logging_directory', None)
     if log_dir is None:
-        work_dir = conf.get('working_directory', './work_dir')
+        work_dir = get_work_dir()
         log_dir = os.path.join(work_dir, 'logs')
     return log_dir
 
