@@ -7,6 +7,7 @@ from multiprocessing import get_context
 import numpy as np
 from functools import partial
 from scipy.interpolate import interp1d
+from scipy.ndimage import binary_dilation
 import shapely.geometry as shpgeo
 from shapely.ops import unary_union
 import os
@@ -371,6 +372,14 @@ def _max_entropy_scaling_one_side(img, **kwargs):
     bin_edges = np.arange(0, max(256, data0.max() + hist_step), hist_step)
     edge_cntrs = (bin_edges[:-1] + bin_edges[1:]) / 2
     hist, _ = np.histogram(data0, bins=bin_edges)
+    idxt = hist > 0
+    wd = int(round(10 * np.sum(hist[1:-1]) / np.max(hist[1:-1])))
+    if wd > 0:
+        idxt = idxt | ~binary_dilation(idxt, iterations=wd)
+    idxt[0] = 1
+    idxt[-1] = 1
+    edge_cntrs = edge_cntrs[idxt]
+    hist = hist[idxt]
     cdf = np.cumsum(hist, axis=None)
     if upper_bound == 1.0:
         uu = np.max(data0)
@@ -389,7 +398,11 @@ def _max_entropy_scaling_one_side(img, **kwargs):
     pp = pdf_matrix[indx]
     pdf_matrix[indx] = pp * np.log(pp)
     entropy = -np.sum(pdf_matrix, axis=-1)
-    scale = 255 / trials[np.argmax(entropy)]
+    entropy_wt = np.exp(3*entropy)
+    entropy_wt = entropy_wt / np.sum(entropy_wt)
+    sel = int(np.round(np.sum(np.arange(entropy.size) * entropy_wt)))
+    # sel = np.argmax(entropy)
+    scale = 255 / trials[sel]
     img = (img.astype(np.float32) * scale0 * scale).clip(0, 255).astype(np.uint8)
     return img
 
@@ -407,6 +420,14 @@ def _max_entropy_scaling_both_sides(img, **kwargs):
     bin_edges = np.linspace(data0.min(), data0.max(), num=hist_num, endpoint=True)
     edge_cntrs = (bin_edges[:-1] + bin_edges[1:]) / 2
     hist, _ = np.histogram(data0, bins=bin_edges)
+    idxt = hist > 0
+    wd = int(round(10 * np.sum(hist[1:-1]) / np.max(hist[1:-1])))
+    if wd > 0:
+        idxt = idxt | ~binary_dilation(idxt, iterations=wd)
+    idxt[0] = 1
+    idxt[-1] = 1
+    edge_cntrs = edge_cntrs[idxt]
+    hist = hist[idxt]
     cdf = np.cumsum(hist, axis=None)
     if right_upper_bound == 1.0:
         ru = np.max(data0)
@@ -429,8 +450,12 @@ def _max_entropy_scaling_both_sides(img, **kwargs):
     pp = pdf_matrix[indx]
     pdf_matrix[indx] = pp * np.log(pp)
     entropy = -np.sum(pdf_matrix, axis=-1)
-    idx_mx = np.argmax(entropy, axis=None)
-    idx0, idx1 = np.unravel_index(idx_mx, entropy.shape)
+    entropy_wt = np.exp(3*entropy)
+    entropy_wt = entropy_wt / np.sum(entropy_wt, axis=None)
+    idx0 = int(np.round(np.sum(np.arange(entropy.shape[0]).reshape(-1,1) * entropy_wt, axis=None)))
+    idx1 = int(np.round(np.sum(np.arange(entropy.shape[1]).reshape(1,-1) * entropy_wt, axis=None)))
+    # idx_mx = np.argmax(entropy, axis=None)
+    # idx0, idx1 = np.unravel_index(idx_mx, entropy.shape)
     r = trials_r[idx0]
     l = trials_l[idx1]
     img = (255*(img.astype(np.float32) - l)/(r-l)).clip(0, 255).astype(np.uint8)
