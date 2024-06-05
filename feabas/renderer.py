@@ -960,26 +960,28 @@ class VolumeRenderer:
                         job = executor.submit(subprocess_render_partial_ts_slab, **bkw)
                         jobs.append(job)
                     for job in as_completed(jobs):
-                        z_chunks = job.result()
+                        z_chunks, errmsg = job.result()
+                        if len(errmsg) > 0:
+                            logger.error(errmsg)
                         for zz, nn in z_chunks.items():
                             if rendered[zz] is None:
                                 continue
                             if nn is None:
                                 rendered[zz] = None
-                                logger.error(f'error: z={zz}')
                             else:
                                 num_chunks += nn
                                 rendered[zz] += nn
             else:
                 for bkw in render_seriers:
                     bkw.update(kwargs)
-                    z_chunks = subprocess_render_partial_ts_slab(**bkw)
+                    z_chunks, errmsg = subprocess_render_partial_ts_slab(**bkw)
+                    if len(errmsg) > 0:
+                        logger.error(errmsg)
                     for zz, nn in z_chunks.items():
                         if rendered[zz] is None:
                             continue
                         if nn is None:
                             rendered[zz] = None
-                            logger.error(f'error: z={zz}')
                         else:
                             num_chunks += nn
                             rendered[zz] += nn
@@ -1202,6 +1204,7 @@ def subprocess_render_partial_ts_slab(loaders, meshes, bboxes, out_ts, **kwargs)
     zindx = set(loaders.keys()).intersection(set(meshes.keys()))
     renderers = {}
     to_skip = True
+    err_str = ''
     for z in zindx:
         ldr = loaders[z]
         msh = meshes[z]
@@ -1217,7 +1220,7 @@ def subprocess_render_partial_ts_slab(loaders, meshes, bboxes, out_ts, **kwargs)
                     to_skip = False
         renderers[z] = rndr
     if to_skip:
-        return num_chunks
+        return num_chunks, err_str
     if not isinstance(out_ts, ts.TensorStore):
         out_ts = ts.open(out_ts).result()
     inclusive_min = out_ts.domain.inclusive_min
@@ -1244,14 +1247,22 @@ def subprocess_render_partial_ts_slab(loaders, meshes, bboxes, out_ts, **kwargs)
                         txn = ts.Transaction()
                         updated = True
                     data_view = out_ts[indx[1], indx[0], z]
-                    data_view.with_transaction(txn).write(img_crp.reshape(data_view.shape)).result()
+                    data_view.with_transaction(txn).write(img_crp.reshape(data_view.shape)).result(timeout=TS_TIMEOUT)
                     num_chunks[z] = num_chunks.get(z, 0) + 1
-            except Exception:
+            except Exception as err:
                 num_chunks[z] = None
+                if isinstance(err, TimeoutError):
+                    err_str = err_str + f'z={z} Tensorstore timed out.\n'
+                else:
+                    err_str = err_str + f'z={z} {err}\n'
         try:
             if updated:
                 txn.commit_async().result(timeout=TS_TIMEOUT)
-        except Exception:
+        except Exception as err:
             num_chunks = {z: None for z in zindx}
+            if isinstance(err, TimeoutError):
+                err_str = err_str + f'commit error: Tensorstore timed out.\n'
+            else:
+                err_str = err_str + f'commit error: {err}\n'
             break
-    return num_chunks
+    return num_chunks, err_str
