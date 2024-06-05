@@ -24,7 +24,7 @@ from feabas.optimizer import SLM
 from feabas import common, caching
 from feabas.spatial import scale_coordinates
 import feabas.constant as const
-from feabas.config import DEFAULT_RESOLUTION, SECTION_THICKNESS, data_resolution
+from feabas.config import DEFAULT_RESOLUTION, SECTION_THICKNESS, data_resolution, TS_TIMEOUT
 
 class Stitcher:
     """
@@ -1361,7 +1361,12 @@ class MontageRenderer:
                 shp = imgt.shape
                 imght, imgwd = shp[0], shp[1]
                 data_view = dataset[xmin:(xmin+imgwd), ymin:(ymin+imght)]
-                data_view.write(imgt.T.reshape(data_view.shape)).result()
+                try:
+                    data_view.write(imgt.T.reshape(data_view.shape)).result(timeout=TS_TIMEOUT)
+                except TimeoutError:
+                    dataset = ts.open(dataset.spec(minimal_spec=True)).result(timeout=TS_TIMEOUT)
+                    data_view = dataset[xmin:(xmin+imgwd), ymin:(ymin+imght)]
+                    data_view.write(imgt.T.reshape(data_view.shape)).result(timeout=TS_TIMEOUT)
                 rendered.append(tuple(bbox))
         self.image_loader.clear_cache()
         return rendered

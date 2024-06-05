@@ -15,10 +15,11 @@ import tensorstore as ts
 import time
 
 from feabas.dal import MosaicLoader, get_tensorstore_spec
-from feabas import common, logging, dal
+from feabas import common, logging, dal, config
 from feabas.spatial import Geometry
 from feabas.mesh import Mesh
 from feabas.renderer import render_whole_mesh, MeshRenderer
+from feabas.config import TS_TIMEOUT
 
 
 def get_image_loader(src_dir, **kwargs):
@@ -132,17 +133,24 @@ def mip_map_one_section(sec_name, img_dir, max_mip, **kwargs):
     t0 = time.time()
     num_tiles = []
     updated = False
-    for m in range(max_mip):
-        src_dir = os.path.join(img_dir, 'mip'+str(m), sec_name)
-        out_dir = os.path.join(img_dir, 'mip'+str(m+1), sec_name)
-        n_tile = mip_one_level(src_dir, out_dir, output_format=ext_out,
-                                      downsample=2, **kwargs)
-        if n_tile is None:
-            updated = False
-            break
-        if n_tile > 0:
-            updated = True
-        num_tiles.append(abs(n_tile))
+    try:
+        for m in range(max_mip):
+            src_dir = os.path.join(img_dir, 'mip'+str(m), sec_name)
+            out_dir = os.path.join(img_dir, 'mip'+str(m+1), sec_name)
+            n_tile = mip_one_level(src_dir, out_dir, output_format=ext_out,
+                                        downsample=2, **kwargs)
+            if n_tile is None:
+                updated = False
+                break
+            if n_tile > 0:
+                updated = True
+            num_tiles.append(abs(n_tile))
+    except TimeoutError:
+        logger.error(f'{sec_name}: Tensorstore timed out.')
+        updated = False
+    except Exception as err:
+        logger.error(f'{sec_name}: {err}')
+        updated = False
     if updated:
         logger.info(f'{sec_name}: number of tiles {num_tiles} | {(time.time()-t0)/60} min')
     return {sec_name: updated}
@@ -324,7 +332,12 @@ def _write_downsample_tensorstore(src_spec, tgt_spec, bboxes, **kwargs):
         xmin, ymin, xmax, ymax = bbox
         out_view = ts_out[xmin:xmax, ymin:ymax]
         img = np.swapaxes(img, 0, 1)
-        out_view.write(img.reshape(out_view.shape)).result()
+        try:
+            out_view.write(img.reshape(out_view.shape)).result(timeout=TS_TIMEOUT)
+        except TimeoutError:
+            ts_out = ts.open(tgt_spec).result(timeout=TS_TIMEOUT)
+            out_view = ts_out[xmin:xmax, ymin:ymax]
+            out_view.write(img.reshape(out_view.shape)).result(timeout=TS_TIMEOUT)
     return ts_out.spec(minimal_spec=True).to_json()
 
 

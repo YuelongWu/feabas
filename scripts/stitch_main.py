@@ -251,6 +251,8 @@ def render_main(tform_list, out_dir, **kwargs):
                 out_prefix = os.path.join(sec_outdir, sec_name)
             num_rendered = render_one_section(tname, out_prefix, meta_name=meta_name, **kwargs)
             logger.info(f'{sec_name}: {num_rendered} tiles | {(time.time()-t0)/60} min')
+        except TimeoutError:
+            logger.error(f'{sec_name}: Tensorstore timed out.')
         except Exception as err:
             logger.error(f'{sec_name}: {err}')
     logger.info('finished.')

@@ -17,7 +17,7 @@ from feabas.caching import CacheFIFO
 import feabas.constant as const
 from feabas.mesh import Mesh
 from feabas import common, spatial, dal, logging
-from feabas.config import DEFAULT_RESOLUTION, SECTION_THICKNESS, montage_resolution
+from feabas.config import DEFAULT_RESOLUTION, SECTION_THICKNESS, montage_resolution, TS_TIMEOUT
 
 
 class MeshRenderer:
@@ -781,7 +781,12 @@ def subprocess_render_mesh_tiles(imgloader, mesh, bboxes, outnames, **kwargs):
                 if img_crp is None:
                     continue
                 data_view = dataset[indx[1], indx[0]]
-                data_view.write(img_crp.T.reshape(data_view.shape)).result()
+                try:
+                    data_view.write(img_crp.T.reshape(data_view.shape)).result(timeout=TS_TIMEOUT)
+                except TimeoutError:
+                    dataset = ts.open(dataset.spec(minimal_spec=True)).result(timeout=TS_TIMEOUT)
+                    data_view = dataset[indx[1], indx[0]]
+                    data_view.write(img_crp.T.reshape(data_view.shape)).result(timeout=TS_TIMEOUT)
                 rendered.append(tuple(bbox))
     else:
         rendered = {}
@@ -1245,7 +1250,7 @@ def subprocess_render_partial_ts_slab(loaders, meshes, bboxes, out_ts, **kwargs)
                 num_chunks[z] = None
         try:
             if updated:
-                txn.commit_async().result()
+                txn.commit_async().result(timeout=TS_TIMEOUT)
         except Exception:
             num_chunks = {z: None for z in zindx}
             break

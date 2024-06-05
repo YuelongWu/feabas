@@ -9,3 +9,5 @@ logging_directory: null # directory to save log files. if set to null, default t
 logfile_level: WARNING  # DEBUG, INFO, WARNING, ERROR or NONE
 console_level: INFO
 archive_level: INFO
+
+tensorstore_timeout: null # if a call to tensorstore hangs beyond this value in seconds, raise TimeoutError

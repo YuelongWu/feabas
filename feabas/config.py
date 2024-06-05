@@ -29,6 +29,7 @@ def general_settings():
 
 
 DEFAULT_RESOLUTION = general_settings().get('full_resolution', constant.DEFAULT_RESOLUTION)
+TS_TIMEOUT = general_settings().get('tensorstore_timeout', None)
 
 
 @lru_cache(maxsize=1)
