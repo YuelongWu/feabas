@@ -10,7 +10,7 @@ import time
 import tensorstore as ts
 
 import feabas
-from feabas import config, logging, dal
+from feabas import config, logging, dal, multisem
 
 
 def match_one_section(coordname, outname, **kwargs):
@@ -74,7 +74,7 @@ def optimize_one_section(matchname, outname, **kwargs):
             logger.debug(f'{bname}: filtered out {rejected} low-conf matches')
     if use_group:
         if msem:
-            groupings = [int(s.split('/')[0]) for s in stitcher.imgrelpaths]
+            groupings, _ = multisem.mfovids_beamids_from_filenames(stitcher.imgrelpaths)
         else:
             groupings = np.zeros(stitcher.num_tiles, dtype=np.int32)
     else:
