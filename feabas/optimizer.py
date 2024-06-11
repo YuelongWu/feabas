@@ -836,6 +836,62 @@ class SLM:
         return (cost0, cost1)
 
 
+    def optimize_translation_w_filtering(self, **kwargs):
+        """
+        optimize the translation of tiles according to the matches for a specific
+        gear.
+        Kwargs:
+            maxiter: maximum number of iterations in LSQR. None if no limit.
+            tol: the stopping tolerance of the least-square iterations.
+            start_gear: gear that associated with the vertices before applying
+                the translation.
+            target_gear: gear that associated with the vertices at the final
+                postions for locked meshes. Also the results are saved to this
+                gear as well.
+            residue_threshold: if set, links with average error larger than this
+                at the end of the optimization will be removed one at a time.
+        """
+        maxiter = kwargs.get('maxiter', None)
+        tol = kwargs.get('tol', 1e-07)
+        target_gear = kwargs.get('target_gear', const.MESH_GEAR_FIXED)
+        start_gear = kwargs.get('start_gear', target_gear)
+        residue_threshold = kwargs.get('residue_threshold', None)
+        cost0 = self.optimize_translation_lsqr(maxiter=maxiter, tol=tol,
+            start_gear=start_gear, target_gear=target_gear)
+        num_disabled = 0
+        if (residue_threshold is not None) and (residue_threshold > 0):
+            while True:
+                lnks_w_large_dis = []
+                mxdis = 0
+                for k, lnk in enumerate(self.links):
+                    if not lnk.relevant:
+                        continue
+                    dxy = lnk.dxy(gear=(target_gear, target_gear), use_mask=True)
+                    dxy_m = np.median(dxy, axis=0)
+                    dis = np.sqrt(np.sum(dxy_m**2))
+                    mxdis = max(mxdis, dis)
+                    if dis > residue_threshold:
+                        lnks_w_large_dis.append((dis, lnk.uids, k))
+                if not lnks_w_large_dis:
+                    break
+                else:
+                    lnks_w_large_dis.sort(reverse=True)
+                    uid_record = set()
+                    for lnk in lnks_w_large_dis:
+                        dis, lnk_uids, lnk_k = lnk
+                        if uid_record.isdisjoint(lnk_uids):
+                            self.links[lnk_k].disable()
+                            num_disabled += 1
+                        uid_record.update(lnk_uids)
+                    cost1 = self.optimize_translation_lsqr(maxiter=maxiter,
+                        tol=tol,start_gear=start_gear, target_gear=target_gear)
+                    if cost1[1] >= cost1[0]:
+                        break
+                    else:
+                        cost0 = (cost0[0], min(cost1[1], cost0[1]))
+        return num_disabled, cost0
+
+
     def optimize_affine_cascade(self, **kwargs):
         """
         sequentially estimiate the affine transforms starting from meshes

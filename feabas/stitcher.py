@@ -700,48 +700,10 @@ class Stitcher:
                 gear as well.
             residue_threshold: if set, links with average error larger than this
                 at the end of the optimization will be removed one at a time.
-
         """
-        maxiter = kwargs.get('maxiter', None)
-        tol = kwargs.get('tol', 1e-07)
-        target_gear = kwargs.get('target_gear', const.MESH_GEAR_FIXED)
-        start_gear = kwargs.get('start_gear', target_gear)
-        residue_threshold = kwargs.get('residue_threshold', None)
         if self._optimizer is None:
             self.initialize_optimizer()
-        cost0 = self._optimizer.optimize_translation_lsqr(maxiter=maxiter, tol=tol,
-            start_gear=start_gear, target_gear=target_gear)
-        num_disabled = 0
-        if (residue_threshold is not None) and (residue_threshold > 0):
-            while True:
-                lnks_w_large_dis = []
-                mxdis = 0
-                for k, lnk in enumerate(self._optimizer.links):
-                    if not lnk.relevant:
-                        continue
-                    dxy = lnk.dxy(gear=(target_gear, target_gear), use_mask=True)
-                    dxy_m = np.median(dxy, axis=0)
-                    dis = np.sqrt(np.sum(dxy_m**2))
-                    mxdis = max(mxdis, dis)
-                    if dis > residue_threshold:
-                        lnks_w_large_dis.append((dis, lnk.uids, k))
-                if not lnks_w_large_dis:
-                    break
-                else:
-                    lnks_w_large_dis.sort(reverse=True)
-                    uid_record = set()
-                    for lnk in lnks_w_large_dis:
-                        dis, lnk_uids, lnk_k = lnk
-                        if uid_record.isdisjoint(lnk_uids):
-                            self._optimizer.links[lnk_k].disable()
-                            num_disabled += 1
-                        uid_record.update(lnk_uids)
-                    cost1 = self._optimizer.optimize_translation_lsqr(maxiter=maxiter,
-                        tol=tol,start_gear=start_gear, target_gear=target_gear)
-                    if cost1[1] >= cost1[0]:
-                        break
-                    else:
-                        cost0 = (cost0[0], min(cost1[1], cost0[1]))
+        num_disabled, cost0 = self._optimizer.optimize_translation_w_filtering(**kwargs)
         return num_disabled, cost0
 
 

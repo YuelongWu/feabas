@@ -83,7 +83,12 @@ def optimize_one_section(matchname, outname, **kwargs):
     mesh_settings = mesh_settings.copy()
     mesh_sizes = mesh_settings.pop('mesh_sizes', [75, 150, 300])
     stitcher.initialize_meshes(mesh_sizes, **mesh_settings)
-    discrd, cost = stitcher.optimize_translation(target_gear=feabas.MESH_GEAR_FIXED, **translation_settings)
+    discrd = 0
+    if msem:
+        discrd0, cost = multisem.filter_links_from_sfov_pattern(stitcher, target_gear=feabas.MESH_GEAR_FIXED, **translation_settings)
+        discrd += discrd0
+    discrd0, cost = stitcher.optimize_translation(target_gear=feabas.MESH_GEAR_FIXED, **translation_settings)
+    discrd += discrd0
     dis = stitcher.match_residues()
     logger.info(f'{bname}: residue after translation {np.nanmean(dis)} | discarded {discrd}')
     if affine_settings.get('maxiter', 0) != 0:

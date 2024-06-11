@@ -412,10 +412,11 @@ class Mesh:
             Ny = max(np.round(ht / mesh_size), min_num_blocks)
             dx = wd / Nx
             dy = ht / Ny
-            if dx > (max_aspect_ratio * dy):
-                dx = max_aspect_ratio * dy
-            elif dy > (max_aspect_ratio * dx):
-                dy = max_aspect_ratio * dx
+            if max_aspect_ratio > 1:
+                if dx > (max_aspect_ratio * dy):
+                    dx = max_aspect_ratio * dy
+                elif dy > (max_aspect_ratio * dx):
+                    dy = max_aspect_ratio * dx
             Nx = int(np.ceil(wd / dx)) + 1
             Ny = int(np.ceil(ht / dy)) + 1
             xx = np.linspace(xmin, xmax, num=Nx, endpoint=True) - 0.5
@@ -461,6 +462,8 @@ class Mesh:
             bd_width_x = bd_width_x * wd
         if bd_width_y < 1:
             bd_width_y = bd_width_y * ht
+        if np.isinf(mesh_size):
+            mesh_size = max(ht, wd)
         if roundup_bbox:
             ht = np.ceil(ht/mesh_size) * mesh_size
             wd = np.ceil(wd/mesh_size) * mesh_size
