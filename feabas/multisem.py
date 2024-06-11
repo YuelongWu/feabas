@@ -6,6 +6,7 @@ from functools import lru_cache
 import os
 import numpy as np
 
+from feabas import constant as const
 
 def mfovids_from_relpaths(relpaths):
     mfovs = [int(s.split('/')[0]) for s in relpaths]
@@ -138,4 +139,37 @@ def estimate_beam_pattern(matches):
     A = np.concatenate(sfov_lhs, axis=0)
     b = np.concatenate(sfov_rhs, axis=0)
     sfov_pattern = np.linalg.lstsq(A, b)[0]
+    sfov_pattern = sfov_pattern - np.mean(sfov_pattern, axis=0)
     return sfov_pattern
+
+
+def filter_links_from_sfov_pattern(stitcher, residue_threshold=None, **kwargs):
+    maxiter = kwargs.get('maxiter', None)
+    tol = kwargs.get('tol', 1e-07)
+    target_gear = kwargs.get('target_gear', const.MESH_GEAR_FIXED)
+    modified = 0
+    if residue_threshold is None:
+        return modified
+    mfovids, beamids = mfovids_beamids_from_filenames(stitcher.imgrelpaths)
+    _, mfovids = np.unique(mfovids, return_inverse=True)
+    if stitcher._optimizer is None:
+        stitcher.initialize_optimizer()
+    sfov_matches = []
+    mfov_matches = []
+    for lnk in stitcher._optimizer.links:
+        wtsum = lnk.weight_sum
+        if wtsum == 0:
+            continue
+        uid0, uid1 = lnk.uids
+        mid0, mid1 = mfovids[int(uid0)], mfovids[int(uid1)]
+        bid0, bid1 = beamids[int(uid0)], beamids[int(uid1)]
+        dxy = np.median(lnk.dxy(gear=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_INITIAL), use_mask=True), axis=0)
+        if mid0 == mid1:
+            sfov_matches.append(((bid0, bid1), (dxy, wtsum)))
+        else:
+            mfov_matches.append(((mid0, mid1), (bid0, bid1), (dxy, wtsum)))
+    init_offset = stitcher._init_offset
+    sfov_pattern = estimate_beam_pattern(sfov_matches)
+    if sfov_pattern is None:
+        return modified
+
