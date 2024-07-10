@@ -10,7 +10,7 @@ def readme():
 install_requires = [
     'google-cloud-storage',
     'h5py',
-    'numpy',
+    'numpy<2',
     'opencv-python',
     'psutil',
     'pyyaml',
