@@ -1,7 +1,6 @@
 from collections import defaultdict, OrderedDict
 
 import cv2
-import h5py
 import numpy as np
 import shapely.geometry as shpgeo
 from shapely.ops import unary_union, linemerge, polygonize
@@ -10,6 +9,7 @@ from shapely import wkb, get_coordinates
 from feabas import dal, common, material
 import feabas.constant as const
 from feabas.config import DEFAULT_RESOLUTION
+from feabas.cloud import H5File
 
 
 JOIN_STYLE = shpgeo.JOIN_STYLE.mitre
@@ -571,7 +571,7 @@ class Geometry:
     def from_h5(cls, h5name):
         kwargs = {}
         regions = {}
-        with h5py.File(h5name, 'r') as f:
+        with H5File(h5name, 'r') as f:
             if 'resolution' in f:
                 kwargs['resolution'] = f['resolution'][()]
             if 'zorder' in f:
@@ -587,7 +587,7 @@ class Geometry:
 
 
     def save_to_h5(self, h5name):
-        with h5py.File(h5name, 'w') as f:
+        with H5File(h5name, 'w') as f:
             _ = f.create_dataset('resolution', data=self._resolution)
             _ = f.create_dataset('epsilon', data=self._epsilon)
             if bool(self._zorder):

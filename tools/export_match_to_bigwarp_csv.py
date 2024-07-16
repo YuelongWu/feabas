@@ -1,14 +1,14 @@
 import argparse
-import h5py
 import glob
 import numpy as np
 import os
 
 from feabas import config
 from feabas.spatial import scale_coordinates
+from feabas.cloud import H5File
 
 def _export_match(mname, outname, target_resolution=None):
-    with h5py.File(mname, 'r') as f:
+    with H5File(mname, 'r') as f:
         xy0 = f['xy0'][()]
         xy1 = f['xy1'][()]
         resolution = f['resolution'][()]

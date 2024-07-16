@@ -1,6 +1,5 @@
 import cv2
 from collections import defaultdict
-import h5py
 import numpy as np
 import glob
 import os
@@ -9,10 +8,11 @@ from functools import lru_cache
 from feabas.common import numpy_to_str_ascii, imread
 from feabas.spatial import scale_coordinates
 from feabas import config
+from feabas.cloud import H5File
 
 @lru_cache(maxsize=10)
 def parse_h5_match(match_name, target_resolution=None, delimiter='__to__'):
-    with h5py.File(match_name, 'r') as f:
+    with H5File(match_name, 'r') as f:
         xy0 = f['xy0'][()]
         xy1 = f['xy1'][()]
         resolution = f['resolution'][()]

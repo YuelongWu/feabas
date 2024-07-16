@@ -2,7 +2,6 @@ from collections import defaultdict, OrderedDict
 from concurrent.futures.process import ProcessPoolExecutor
 from concurrent.futures import as_completed
 from multiprocessing import get_context
-import h5py
 import numpy as np
 import glob
 import os
@@ -20,10 +19,11 @@ from feabas.optimizer import SLM
 import feabas.constant as const
 from feabas.common import str_to_numpy_ascii, Match, rearrange_section_order
 from feabas.config import montage_resolution
+from feabas.cloud import H5File
 
 
 def read_matches_from_h5(match_name, target_resolution=None):
-    with h5py.File(match_name, 'r') as f:
+    with H5File(match_name, 'r') as f:
         xy0 = f['xy0'][()]
         xy1 = f['xy1'][()]
         weight = f['weight'][()].ravel()
@@ -121,7 +121,7 @@ def match_section_from_initial_matches(match_name, meshes, loaders, out_dir, con
     if xy0 is None:
         return 0
     else:
-        with h5py.File(outname, 'w') as f:
+        with H5File(outname, 'w') as f:
             f.create_dataset('xy0', data=xy0, compression="gzip")
             f.create_dataset('xy1', data=xy1, compression="gzip")
             f.create_dataset('weight', data=weight, compression="gzip")

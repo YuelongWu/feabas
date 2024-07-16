@@ -1,6 +1,5 @@
 from collections import defaultdict
 import gc
-import h5py
 import numpy as np
 import os
 from scipy import sparse

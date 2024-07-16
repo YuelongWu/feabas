@@ -4,7 +4,6 @@ from concurrent.futures.process import ProcessPoolExecutor
 from concurrent.futures import as_completed
 from functools import partial
 import gc
-import h5py
 import matplotlib.tri
 from multiprocessing import get_context
 import numpy as np
@@ -25,6 +24,7 @@ from feabas import common, caching
 from feabas.spatial import scale_coordinates
 import feabas.constant as const
 from feabas.config import DEFAULT_RESOLUTION, SECTION_THICKNESS, data_resolution, TS_TIMEOUT
+from feabas.cloud import H5File
 
 class Stitcher:
     """
@@ -80,7 +80,7 @@ class Stitcher:
         selected (ndarray of int): if provided, only load tiles whose indices
         are in selected.
         """
-        with h5py.File(filename, 'r') as f:
+        with H5File(filename, 'r') as f:
             root_dir = common.numpy_to_str_ascii(f['imgrootdir'][()])
             imgpaths = common.numpy_to_str_ascii(f['imgrelpaths'][()]).split('\n')
             bboxes = f['init_bboxes'][()]
@@ -118,7 +118,7 @@ class Stitcher:
         save_matches = kwargs.get('save_matches', True)
         save_meshes = kwargs.get('save_meshes', True)
         compression = kwargs.get('compression', True)
-        with h5py.File(fname, 'w') as f:
+        with H5File(fname, 'w') as f:
             if compression:
                 create_dataset = partial(f.create_dataset, compression='gzip')
             else:
@@ -161,7 +161,7 @@ class Stitcher:
 
 
     def load_matches_from_h5(self, fname, check_order=False):
-        with h5py.File(fname, 'r') as f:
+        with H5File(fname, 'r') as f:
             match_cnt = 0
             if 'matches' not in f:
                 return match_cnt
@@ -195,7 +195,7 @@ class Stitcher:
         mesh_loaded = False
         if (not force_update) and (self.meshes is not None):
             return mesh_loaded
-        with h5py.File(fname, 'r') as f:
+        with H5File(fname, 'r') as f:
             if 'mesh_sharing_indx' not in f:
                 return mesh_loaded
             mesh_sharing_indx = f['mesh_sharing_indx'][()]

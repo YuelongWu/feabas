@@ -20,6 +20,7 @@ import triangle
 from feabas import common, material, spatial, caching
 import feabas.constant as const
 from feabas.config import DEFAULT_RESOLUTION
+from feabas.cloud import H5File
 
 
 def gear_constant_to_str(gear_const):
@@ -748,7 +749,7 @@ class Mesh:
                 for key in fname[prefix[:-1]].keys():
                     init_dict[key] = fname[prefix+key][()]
         else:
-            with h5py.File(fname, 'r') as f:
+            with H5File(fname, 'r') as f:
                 if not prefix:
                     for key in f.keys():
                         init_dict[key] = f[key][()]
@@ -784,7 +785,7 @@ class Mesh:
         else:
             if '.h5' not in fname:
                 fname = os.path.join(fname, self.name + '.h5')
-            with h5py.File(fname, 'w') as f:
+            with H5File(fname, 'w') as f:
                 for key, val in out.items():
                     if val is None:
                         continue

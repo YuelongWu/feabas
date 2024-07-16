@@ -8,7 +8,7 @@ from scipy import sparse
 from scipy.ndimage import gaussian_filter1d
 import scipy.sparse.csgraph as csgraph
 
-
+from feabas.cloud import GCP_client
 
 Match = namedtuple('Match', ('xy0', 'xy1', 'weight'))
 
@@ -54,14 +54,12 @@ def imread(path, **kwargs):
 
 def imwrite(path, image):
     if path.startswith('gs://'):
-        from google.cloud import storage
         plist = path.replace('gs://', '').split('/')
         plist = [s for s in plist if s]
         bucket = plist[0]
         relpath = '/'.join(plist[1:])
         _, encoded_img = cv2.imencode('.PNG', image)
-        client = storage.Client()
-        bucket = client.get_bucket(bucket)
+        bucket = GCP_client().get_bucket(bucket)
         blob = bucket.blob(relpath)
         blob.upload_from_string(encoded_img.tobytes(), content_type='image/png')
     else:

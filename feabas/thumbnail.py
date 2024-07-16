@@ -1,6 +1,5 @@
 import cv2
 import numpy as np
-import h5py
 import os
 from scipy.fft import rfft, irfft
 from shapely import concave_hull, MultiPoint, intersects_xy
@@ -17,6 +16,7 @@ import feabas.constant as const
 from feabas.dal import StreamLoader
 from feabas.matcher import section_matcher
 from feabas.aligner import read_matches_from_h5
+from feabas.cloud import H5File
 
 
 DEFAULT_FEATURE_SPACING = 15
@@ -543,7 +543,7 @@ def align_two_thumbnails(img0, img1, outname, mask0=None, mask1=None, **kwargs):
         if save_feature_match:
             xy0, xy1, weight = mtch0
             os.makedirs(feature_match_dir, exist_ok=True)
-            with h5py.File(feature_matchname, 'w') as f:
+            with H5File(feature_matchname, 'w') as f:
                 f.create_dataset('xy0', data=xy0, compression="gzip")
                 f.create_dataset('xy1', data=xy1, compression="gzip")
                 f.create_dataset('weight', data=weight, compression="gzip")
@@ -558,7 +558,7 @@ def align_two_thumbnails(img0, img1, outname, mask0=None, mask1=None, **kwargs):
     else:
         xy0, xy1, weight = mtch1
         os.makedirs(os.path.dirname(outname), exist_ok=True)
-        with h5py.File(outname, 'w') as f:
+        with H5File(outname, 'w') as f:
             f.create_dataset('xy0', data=xy0, compression="gzip")
             f.create_dataset('xy1', data=xy1, compression="gzip")
             f.create_dataset('weight', data=weight, compression="gzip")

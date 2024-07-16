@@ -1,9 +1,9 @@
-import h5py
 import numpy as np
 import glob
 import os
 
 from feabas import config
+from feabas.cloud import H5File
 
 def _parse_bigwarp_csv(fname):
     with open(fname, 'r') as f:
@@ -35,7 +35,7 @@ if __name__ == '__main__':
         xy0, xy1 = _parse_bigwarp_csv(mname)
         weight = np.ones(xy0.shape[0], dtype=np.float32)
         if xy0.size > 0:
-           with h5py.File(outname, 'w') as f:
+           with H5File(outname, 'w') as f:
                 f.create_dataset('xy0', data=xy0, compression="gzip")
                 f.create_dataset('xy1', data=xy1, compression="gzip")
                 f.create_dataset('weight', data=weight, compression="gzip")
