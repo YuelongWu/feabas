@@ -16,7 +16,7 @@ install_requires = [
     'pyyaml',
     'rtree',
     'scikit-image',
-    'scipy',
+    'scipy<1.12.0',
     'shapely>=2.0.0',
     'tensorstore<=0.1.51',
     'triangle',
