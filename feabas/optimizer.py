@@ -2,6 +2,7 @@ from collections import defaultdict
 import gc
 import numpy as np
 import os
+import scipy
 from scipy import sparse
 import time
 
@@ -1668,7 +1669,10 @@ def bicgstab(A, b, tol=1e-07, atol=None, maxiter=None, M=None, **kwargs):
     cb = SLM_Callback(A, b, timeout=timeout, early_stop_thresh=early_stop_thresh, chances=chances, eval_step=eval_step)
     callback = cb.callback
     try:
-        x, _ = sparse.linalg.bicgstab(A, b, tol=tol, maxiter=maxiter, atol=atol, M=M, callback=callback)
+        if scipy.__version__ >= '1.12.0':
+            x, _ = sparse.linalg.bicgstab(A, b, rtol=tol, maxiter=maxiter, atol=atol, M=M, callback=callback)
+        else:
+            x, _ = sparse.linalg.bicgstab(A, b, tol=tol, maxiter=maxiter, atol=atol, M=M, callback=callback)
         cost0 = np.linalg.norm(A.dot(x) - b)
         if cost0 > cb.min_cost:
             x = cb.solution
