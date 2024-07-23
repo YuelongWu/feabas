@@ -481,15 +481,21 @@ def _max_entropy_scaling_both_sides(img, **kwargs):
 def _smooth_filter_factory(**kwargs):
     blur = kwargs.get('blur', 2)
     sigma = kwargs.get('sigma', 0.0)
-    return partial(_smooth_filter, blur=blur, sigma=sigma)
+    downsample = kwargs.get('downsample_mode', True)
+    return partial(_smooth_filter, blur=blur, sigma=sigma, downsample=downsample)
 
 
-def _smooth_filter(img, blur=2, sigma=0.0):
+def _smooth_filter(img, blur=2, sigma=0.0, downsample=True):
     if sigma > 0:
         img = common.masked_dog_filter(img, sigma=sigma, signed=False)
-    if blur > 2:
-        if blur % 2 == 1:
-            img = cv2.blur(img, (round(blur), round(blur)))
-        else:
-            img = cv2.blur(img, (round(blur-1), round(blur-1)))
+    if downsample:
+        sz = img.shape
+        img = cv2.resize(img, None, fx = 1/blur, fy=1/blur, interpolation=cv2.INTER_AREA)
+        img = cv2.resize(img, sz, interpolation=cv2.INTER_NEAREST)
+    else:
+        if blur > 2:
+            if blur % 2 == 1:
+                img = cv2.blur(img, (round(blur), round(blur)))
+            else:
+                img = cv2.blur(img, (round(blur-1), round(blur-1)))
     return img
