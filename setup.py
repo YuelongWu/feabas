@@ -8,6 +8,7 @@ def readme():
         return f.read()
 
 install_requires = [
+    'dill',
     'google-cloud-storage',
     'h5py',
     'numpy<2',
@@ -18,7 +19,7 @@ install_requires = [
     'scikit-image',
     'scipy',
     'shapely>=2.0.0',
-    'tensorstore<=0.1.51',
+    'tensorstore',
     'triangle',
 ]
 

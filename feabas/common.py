@@ -310,6 +310,51 @@ def load_plugin(plugin_name):
     return plugin
 
 
+def func_to_str(func):
+    if callable(func):
+        if func.__name__ == '<lambda>':
+            import dill
+            bts = dill.dumps(func).hex()
+            func_str = '<lambda_bytes>' + bts
+        else:
+            func_mod = func.__module__
+            func_name = func.__name__
+            func_str = func_mod + '.' + func_name
+    elif isinstance(func, (str, type(None))):
+        func_str = func
+    else:
+        raise TypeError
+    return func_str
+
+
+def str_to_func(func_str, **kwargs):
+    if func_str is None:
+        func = None
+    else:
+        if callable(func_str):
+            func = func_str
+        elif isinstance(func_str, str):
+            if func_str.startswith('<lambda_bytes>'):
+                import dill
+                bts = bytes.fromhex(func_str[14:])
+                func = dill.loads(bts)
+            elif func_str.startswith('lambda'):
+                func = eval(func_str)
+            else:
+                func = load_plugin(func_str)
+        else:
+            raise TypeError
+        try:
+            # test if func is a factory.
+            produced = func(**kwargs)
+            if callable(produced):
+                func = produced
+        except Exception:
+            pass
+    return func
+
+
+
 def hash_numpy_array(ar):
     if isinstance(ar, np.ndarray):
         return hash(ar.data.tobytes())

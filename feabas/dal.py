@@ -162,7 +162,9 @@ class AbstractImageLoader(ABC):
         self._init_tile_divider(**kwargs)
         self._cache_type = kwargs.get('cache_type', 'mfu')
         self._cache = caching.generate_cache(self._cache_type, maxlen=self._cache_size, maxbytes=self._cache_capacity)
-        self._preprocess = kwargs.get('preprocess', None)
+        preprocess_factory = kwargs.get('preprocess', None)
+        preprocess_parames = kwargs.get('preprocess_params', {})
+        self.update_preprocess_function(preprocess_factory, **preprocess_parames)
         self.resolution = kwargs.get('resolution', DEFAULT_RESOLUTION)
         self._read_counter = 0
 
@@ -170,6 +172,12 @@ class AbstractImageLoader(ABC):
     def clear_cache(self, instant_gc=False):
         # instant_gc: when True, instantly call garbage collection
         self._cache.clear(instant_gc)
+
+
+    def update_preprocess_function(self, preprocess_factory, **preprocess_parames):
+        self._preprocess_factory = preprocess_factory
+        self._preprocess_parames = preprocess_parames
+        self._preprocess = common.str_to_func(preprocess_factory, **preprocess_parames)
 
 
     def CLAHE_off(self):
@@ -317,6 +325,15 @@ class AbstractImageLoader(ABC):
             if hasattr(self, '_clahe_clip_limit'):
                 out['CLAHE_cliplimit'] = self._clahe_clip_limit
             out['inverse'] = self._inverse
+            if self._preprocess_factory is not None:
+                out['preprocess'] = common.func_to_str(self._preprocess_factory)
+                preprocess_params = {}
+                for key, val in self._preprocess_parames.items():
+                    if isinstance(val, np.ndarray):
+                        val = val.tolist()
+                    preprocess_params[key] = val
+                if preprocess_params:
+                    out['preprocess_params'] = preprocess_params
         if cache_settings:
             out['cache_size'] = self._cache_size
             out['cache_type'] = self._cache_type
@@ -365,8 +382,14 @@ class AbstractImageLoader(ABC):
             settings['fillval'] = json_obj['fillval']
         if 'apply_CLAHE' in json_obj:
             settings['apply_CLAHE'] = json_obj['apply_CLAHE']
+        if 'CLAHE_cliplimit' in json_obj:
+            settings['CLAHE_cliplimit'] = json_obj['CLAHE_cliplimit']
         if 'inverse' in json_obj:
             settings['inverse'] = json_obj['inverse']
+        if 'preprocess' in json_obj:
+            settings['preprocess'] = json_obj['preprocess']
+        if 'preprocess_params' in json_obj:
+            settings['preprocess_params'] = json_obj['preprocess_params']
         if 'cache_size' in json_obj:
             settings['cache_size'] = json_obj['cache_size']
         if 'cache_type' in json_obj:

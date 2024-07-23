@@ -54,8 +54,8 @@ class Material:
         self._poisson_ratio = kwargs.get('poisson_ratio', 0.0)
         self.mask_label = kwargs.get('mask_label', None)
         stiffness_func_factory = kwargs.get('stiffness_func_factory', None)
-        stiffness_func_params = kwargs.get('stiffness_func_params', {}).copy()
-        self.update_stiffness_func(stiffness_func_factory, stiffness_func_params)
+        stiffness_func_params = kwargs.get('stiffness_func_params', {})
+        self.update_stiffness_func(stiffness_func_factory, **stiffness_func_params)
         uid = kwargs.get('uid', None)
         if uid is None:
             self.uid = Material.uid
@@ -77,43 +77,21 @@ class Material:
             }
         if self.mask_label is not None:
             out['mask_label'] = self.mask_label
-        if callable(self._stiffness_func_factory):
-            if self._stiffness_func_factory.__name__ == '<lambda>':
-                raise TypeError
-            else:
-                func_mod = self._stiffness_func_factory.__module__
-                func_name = self._stiffness_func_factory.__name__
-                out['stiffness_func_factory'] = func_mod + '.' + func_name
-        elif isinstance(self._stiffness_func_factory, (str, type(None))):
-            out['stiffness_func_factory'] = self._stiffness_func_factory
-        else:
-            raise TypeError
-        stiffness_func_params = {}
-        for key, val in self._stiffness_func_params.items():
-            if isinstance(val, np.ndarray):
-                val = val.tolist()
-            stiffness_func_params[key] = val
-        out['stiffness_func_params'] = stiffness_func_params
+        if self._stiffness_func_factory is not None:
+            out['stiffness_func_factory'] = common.func_to_str(self._stiffness_func_factory)
+            stiffness_func_params = {}
+            for key, val in self._stiffness_func_params.items():
+                if isinstance(val, np.ndarray):
+                    val = val.tolist()
+                stiffness_func_params[key] = val
+            out['stiffness_func_params'] = stiffness_func_params
         return out
 
 
-    def update_stiffness_func(self, stiffness_func_factory=None, stiffness_func_params=None):
+    def update_stiffness_func(self, stiffness_func_factory, **stiffness_func_params):
         self._stiffness_func_factory = stiffness_func_factory
-        if stiffness_func_params is None:
-            stiffness_func_params = {}
         self._stiffness_func_params = stiffness_func_params
-        if self._stiffness_func_factory is None:
-            self._stiffness_func = None
-        elif isinstance(self._stiffness_func_factory, str):
-            if 'lambda' in self._stiffness_func_factory:
-                self._stiffness_func = eval(self._stiffness_func_factory)
-            else:
-                stiffness_func_factory = common.load_plugin(self._stiffness_func_factory)
-                self._stiffness_func = stiffness_func_factory(**self._stiffness_func_params)
-        elif callable(self._stiffness_func_factory):
-            self._stiffness_func = self._stiffness_func_factory(**self._stiffness_func_params)
-        else:
-            raise TypeError
+        self._stiffness_func = common.str_to_func(stiffness_func_factory, **stiffness_func_params)
 
 
     def shape_matrix_from_vertices(self, tripts):

@@ -81,7 +81,8 @@ def mip_one_level(src_dir, out_dir, **kwargs):
     kwargs.setdefault('cache_type', 'fifo')
     kwargs.setdefault('cache_size', downsample + 2)
     if (kwargs['remap_interp'] != cv2.INTER_NEAREST) and (downsample > 2):
-        kwargs.setdefault('preprocess', partial(_smooth_filter, blur=downsample, sigma=0.0))
+        kwargs.setdefault('preprocess', _smooth_filter_factory)
+        kwargs.setdefault('preprocess_params', {'blur': downsample, 'sigma': 0})
     logger = logging.get_logger(logger_info)
     out_meta_file = os.path.join(out_dir, 'metadata.txt')
     if os.path.isfile(out_meta_file):
@@ -165,12 +166,14 @@ def create_thumbnail(src_dir, outname=None, downsample=4, highpass=True, **kwarg
         blur = downsample
     kwargs.setdefault('dtype', np.float32)
     if highpass:
-        kwargs.setdefault('preprocess', partial(_smooth_filter, blur=blur, sigma=0.5))
+        kwargs.setdefault('preprocess', _smooth_filter_factory)
+        kwargs.setdefault('preprocess_params', {'blur': blur, 'sigma': 0.5})
     else:
         if blur <= 2:
             kwargs.setdefault('preprocess', None)
         else:
-            kwargs.setdefault('preprocess', partial(_smooth_filter, blur=blur, sigma=0.0))
+            kwargs.setdefault('preprocess', _smooth_filter_factory)
+            kwargs.setdefault('preprocess_params', {'blur': downsample, 'sigma': 0})
     kwargs.setdefault('cache_type', 'fifo')
     kwargs.setdefault('cache_size', 8)
     image_loader = get_image_loader(src_dir, **kwargs)
@@ -473,6 +476,12 @@ def _max_entropy_scaling_both_sides(img, **kwargs):
     l = trials_l[idx1]
     img = (255*(img.astype(np.float32) - l)/(r-l)).clip(0, 255).astype(np.uint8)
     return img
+
+
+def _smooth_filter_factory(**kwargs):
+    blur = kwargs.get('blur', 2)
+    sigma = kwargs.get('sigma', 0.0)
+    return partial(_smooth_filter, blur=blur, sigma=sigma)
 
 
 def _smooth_filter(img, blur=2, sigma=0.0):
