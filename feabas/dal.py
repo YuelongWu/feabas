@@ -993,6 +993,7 @@ class StreamLoader(AbstractImageLoader):
         self._inverse = kwargs.get('inverse', False)
         self._default_fillval = kwargs.get('fillval', 0)
         self.resolution = kwargs.get('resolution', DEFAULT_RESOLUTION)
+        self.update_preprocess_function(None)
         self.x0 = kwargs.get('x0', 0)
         self.y0 = kwargs.get('y0', 0)
 
