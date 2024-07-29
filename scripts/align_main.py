@@ -218,7 +218,7 @@ def offset_bbox_main():
     bfunc = partial(_get_bbox_for_one_section, resolution=config.montage_resolution())
     if num_workers > 1:
         jobs = []
-        with ProcessPoolExecutor(max_workers=args.worker, mp_context=get_context('spawn')) as executor:
+        with ProcessPoolExecutor(max_workers=num_workers, mp_context=get_context('spawn')) as executor:
             for tname in tform_list:
                 jobs.append(executor.submit(bfunc, tname))
             for job in as_completed(jobs):
