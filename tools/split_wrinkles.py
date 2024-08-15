@@ -16,7 +16,7 @@ if __name__ == '__main__':
     tlist = sorted(glob.glob(os.path.join(root_dir, 'align', 'tform', '*.h5')))
     for tname in tlist:
         M = Mesh.from_h5(tname)
-        mtb = M._material_table.named_table
+        mtb = M.named_material_table
         if 'wrinkle' not in mtb:
             continue
         mid = mtb['wrinkle'].uid

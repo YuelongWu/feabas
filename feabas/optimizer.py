@@ -1067,13 +1067,67 @@ class SLM:
         groupings = kwargs.get('groupings', None)
         auto_clear = kwargs.get('auto_clear', True)
         remove_extra_dof = kwargs.get('remove_extra_dof', False)
+        remove_material_dof = kwargs.get('remove_material_dof', None)
         check_flip = not cont_on_flip
         stiff_m, stress_v = self.stiffness_matrix(gear=(shape_gear,start_gear),
             inner_cache=inner_cache, check_flip=check_flip,
             continue_on_flip=cont_on_flip)
         lock_flags = self.lock_flags
+        if np.all(lock_flags):
+            return 0, 0 # all locked, nothing to optimize
+        if stiff_m is None:
+            return None, None # flipped triangles
+        if isinstance(callback_settings, bool):
+            if callback_settings:
+                callback_settings = {'chances':5, 'eval_step':10}
+            else:
+                callback_settings = {}
+        elif isinstance(callback_settings, dict):
+            callback_settings = callback_settings.copy()
+        else:
+            raise TypeError
         edc = None
-        if remove_extra_dof:
+        if remove_material_dof is not None:
+            border_marker = '_freeborder'
+            if isinstance(remove_material_dof, str):
+                rm_mlist = [remove_material_dof]
+            elif isinstance(remove_material_dof, (tuple, list)):
+                rm_mlist = remove_material_dof
+            else:
+                raise TypeError
+            free_border = [s.replace(border_marker, '') for s in rm_mlist if border_marker in s]
+            fixed_border = [s for s in rm_mlist if border_marker not in s]
+            edc = []
+            for m in self.meshes:
+                if m.locked:
+                    continue
+                m_t = m.triangles
+                edc_m = np.ones(m.num_vertices*2, dtype=bool)
+                for mtname in free_border:
+                    tid = np.zeros(m.num_triangles, dtype=bool)
+                    if mtname in m.named_material_table:
+                        mid = m.named_material_table[mtname].uid
+                        tid = tid | (m.material_ids == mid)
+                    vid_n = np.unique(m_t[tid], axis=None)
+                    vid_p = np.unique(m_t[~tid], axis=None)
+                    if vid_n.size > 0:
+                        edc_m[2*vid_n] = 0
+                        edc_m[2*vid_n + 1] = 0
+                    if vid_p.size > 0:
+                        edc_m[2*vid_p] = 1
+                        edc_m[2*vid_p + 1] = 1
+                for mtname in fixed_border:
+                    tid = np.zeros(m.num_triangles, dtype=bool)
+                    if mtname in m.named_material_table:
+                        mid = m.named_material_table[mtname].uid
+                        tid = tid | (m.material_ids == mid)
+                    vid_n = np.unique(m_t[tid], axis=None)
+                    if vid_n.size > 0:
+                        edc_m[2*vid_n] = 0
+                        edc_m[2*vid_n + 1] = 0
+                edc.append(edc_m)
+            edc = np.concatenate(edc, axis=None)
+        elif remove_extra_dof:
             conn_lbl, _ = self.connected_subsystems
             rm_flag = np.zeros_like(conn_lbl, dtype=bool)
             for lbl in np.unique(conn_lbl):
@@ -1090,19 +1144,6 @@ class SLM:
                         s[:3] = False
                     edc.append(s)
                 edc = np.concatenate(edc, axis=None)
-        if isinstance(callback_settings, bool):
-            if callback_settings:
-                callback_settings = {'chances':5, 'eval_step':10}
-            else:
-                callback_settings = {}
-        elif isinstance(callback_settings, dict):
-            callback_settings = callback_settings.copy()
-        else:
-            raise TypeError
-        if np.all(lock_flags):
-            return 0, 0 # all locked, nothing to optimize
-        if stiff_m is None:
-            return None, None # flipped triangles
         Cs_lft, Cs_rht = self.crosslink_terms(start_gear=start_gear,
             target_gear=targt_gear, batch_num_matches=batch_num_matches)
         stiffness_lambda, crosslink_lambda = self.relative_lambda(stiffness_lambda, crosslink_lambda)
@@ -1200,30 +1241,28 @@ class SLM:
                 constructing the incremental sparse matrices. Larger number
                 needs more RAM but faster
         """
-        max_newtonstep = kwargs.get('max_newtonstep', 5)
-        tol = kwargs.get('tol', 1e-7)
-        atol = kwargs.get('atol', None)
-        maxiter = SLM.expand_to_list(kwargs.get('maxiter', None), max_newtonstep)
-        step_tol = SLM.expand_to_list(kwargs.get('step_tol', tol), max_newtonstep)
-        step_atol = SLM.expand_to_list(kwargs.get('step_atol', atol), max_newtonstep)
-        stiffness_lambda = SLM.expand_to_list(kwargs.get('stiffness_lambda', self._stiffness_lambda), max_newtonstep)
-        crosslink_lambda = SLM.expand_to_list(kwargs.get('crosslink_lambda', self._crosslink_lambda), max_newtonstep)
-        residue_mode = SLM.expand_to_list(kwargs.get('residue_mode', None), max_newtonstep)
-        residue_len = SLM.expand_to_list(kwargs.get('residue_len', 0), max_newtonstep)
-        anneal_mode = SLM.expand_to_list(kwargs.get('anneal_mode', None), max_newtonstep)
-        inner_cache = kwargs.get('inner_cache', self._shared_cache)
-        cont_on_flip = kwargs.get('continue_on_flip', False)
-        crosslink_shrink = kwargs.get('crosslink_shrink', 0.25)
-        shrink_trial = kwargs.get('shrink_trial', 3)
-        groupings = kwargs.get('groupings', None)
-        batch_num_matches = kwargs.get('batch_num_matches', None)
-        callback_settings = kwargs.get('callback_settings', True)
+        max_newtonstep = kwargs.pop('max_newtonstep', 5)
+        tol = kwargs.pop('tol', 1e-7)
+        atol = kwargs.pop('atol', None)
+        maxiter = SLM.expand_to_list(kwargs.pop('maxiter', None), max_newtonstep)
+        step_tol = SLM.expand_to_list(kwargs.pop('step_tol', tol), max_newtonstep)
+        step_atol = SLM.expand_to_list(kwargs.pop('step_atol', atol), max_newtonstep)
+        stiffness_lambda = SLM.expand_to_list(kwargs.pop('stiffness_lambda', self._stiffness_lambda), max_newtonstep)
+        crosslink_lambda = SLM.expand_to_list(kwargs.pop('crosslink_lambda', self._crosslink_lambda), max_newtonstep)
+        residue_mode = SLM.expand_to_list(kwargs.pop('residue_mode', None), max_newtonstep)
+        residue_len = SLM.expand_to_list(kwargs.pop('residue_len', 0), max_newtonstep)
+        anneal_mode = SLM.expand_to_list(kwargs.pop('anneal_mode', None), max_newtonstep)
+        inner_cache = kwargs.pop('inner_cache', self._shared_cache)
+        cont_on_flip = kwargs.pop('continue_on_flip', False)
+        crosslink_shrink = kwargs.pop('crosslink_shrink', 0.25)
+        shrink_trial = kwargs.pop('shrink_trial', 3)
+        batch_num_matches = kwargs.pop('batch_num_matches', None)
         shape_gear = const.MESH_GEAR_FIXED
         start_gear = const.MESH_GEAR_MOVING
         if cont_on_flip:
-            target_gear = const.MESH_GEAR_MOVING
+            target_gear = kwargs.pop('target_gear', const.MESH_GEAR_MOVING)
         else:
-            target_gear = const.MESH_GEAR_STAGING
+            target_gear = kwargs.pop('target_gear', const.MESH_GEAR_MOVING)
         # initialize cost and check flipped triangles
         check_flip = not cont_on_flip
         stiff_m, _ = self.stiffness_matrix(gear=(shape_gear,start_gear),
@@ -1253,8 +1292,8 @@ class SLM:
                 stiffness_lambda=stiffness_lambda[ke],
                 crosslink_lambda=crosslink_lambda[ke]*cshrink,
                 inner_cache=inner_cache, continue_on_flip=cont_on_flip,
-                batch_num_matches=batch_num_matches, groupings=groupings,
-                auto_clear=False, callback_settings=callback_settings)
+                batch_num_matches=batch_num_matches,
+                auto_clear=False, **kwargs)
             if (step_cost[0] is None) or (step_cost[0] < step_cost[1]):
                 break
             if anneal_mode[ke] is not None:

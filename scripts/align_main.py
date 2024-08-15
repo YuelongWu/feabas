@@ -192,6 +192,7 @@ def optimize_main(section_list):
 
 
 def _get_bbox_for_one_section(mname, resolution=None):
+    from feabas.mesh import Mesh
     M = Mesh.from_h5(mname)
     if resolution is not None:
         M.change_resolution(resolution)

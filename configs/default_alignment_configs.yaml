@@ -23,7 +23,7 @@ matching:
         residue_mode: threshold # huber or threshold or None, deciding how to damp matches with large residue errors after optimization
         residue_len: 3  # characteristic residue distance used for damping. use 0 to skip
         min_boundary_distance: 20   # minimum distance allowed from a matching point to the boundary of the meshes
-        stiffness_multiplier_threshold: 0.5 # material with stiffness multiplier smaller than this will not be considered during the matching process
+        stiffness_multiplier_threshold: 0.1 # material with stiffness multiplier smaller than this will not be considered during the matching process
         render_weight_threshold: 0.1  # material with render weight smaller than this will not be rendered during the matching process
 
 optimization:

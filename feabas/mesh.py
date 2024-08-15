@@ -1101,6 +1101,45 @@ class Mesh:
         self.set_stiffness_multiplier(stiffness, tri_mask=tri_mask, composite=composite)
 
 
+    def linearize_material(self, gear=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING), delta_t=(1.0, 1.0)):
+        if not self.is_linear:
+            mtb = self.material_table
+            mx_mid = np.max(list(mtb.keys()))
+            named_mtb = self.named_material_table
+            m_name_lut = {m.uid: nm for nm, m in named_mtb.items()}
+            mids = self.material_ids
+            stiffness_multiplier = np.copy(self.stiffness_multiplier)
+            for m in np.unique(mids):
+                mat = mtb[m]
+                if mat._stiffness_func is not None:
+                    tidx = mids == m
+                    svds = self.triangle_tform_svd(gear=gear[::-1], tri_mask=tidx)
+                    J = np.abs(svds[:,0] * svds[:,1]) * np.sign(svds[:,0])
+                    modifier = mat._stiffness_func(J)
+                    idx_t = (modifier <= delta_t[0]) | (modifier >= delta_t[-1])
+                    if not np.any(idx_t):
+                        continue
+                    elif not np.all(idx_t):
+                        tidx[tidx] = idx_t
+                        modifier = modifier[idx_t]
+                    m_name = m_name_lut[m]
+                    m_name_new = m_name + '__LINEARIZED'
+                    if m_name_new in named_mtb:
+                        uid_new = named_mtb[m_name_new].uid
+                    else:
+                        mat_dict = named_mtb[m_name].to_dict()
+                        mat_dict.pop('stiffness_func_factory', None)
+                        mat_dict.pop('stiffness_func_params', None)
+                        uid_new = mx_mid + 1
+                        mat_dict['uid'] = uid_new
+                        mx_mid += 1
+                        mat_new = material.Material(**mat_dict)
+                        self._material_table.add_material(m_name_new, mat_new)
+                    stiffness_multiplier[tidx] = stiffness_multiplier[tidx] * modifier
+                    self._material_ids[tidx] = uid_new
+        self.set_stiffness_multiplier(stiffness_multiplier)
+
+
     def lock(self):
         self.locked = True
 
@@ -1432,6 +1471,11 @@ class Mesh:
     @property
     def material_table(self):
         return self._material_table.id_table
+
+
+    @property
+    def named_material_table(self):
+        return self._material_table.named_table
 
 
     @property
@@ -1775,7 +1819,7 @@ class Mesh:
         _, A, _ = self.triangle_affine_tform(gear=gear, tri_mask=tri_mask)
         s = np.linalg.svd(A[:,:2,:2],compute_uv=False)
         det = np.linalg.det(A[:,:2,:2])
-        return s * det.reshape(-1,1)
+        return s * np.sign(det.reshape(-1,1))
 
 
     @config_cache('TBD')
@@ -2716,3 +2760,20 @@ class Mesh:
         """
         d = np.piecewise(s, [s<1, s>=1], [lambda x: 1-x, lambda x: 1-1/x])
         return np.max(d, axis=-1)
+
+
+def transform_mesh(M0, Mt, **kwargs):
+    """
+    transform a mesh based on another mesh.
+    M0: source mesh
+    Mt: mesh containing the transformatiom
+    """
+    gears = kwargs.get('gears', (const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING)) # for source mesh
+    tgears=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING) # for transformation mesh
+    resolution0 = M0.resolution
+    Mt.change_resolution(resolution0)
+    v0 = M0.vertices_w_offset(gear=gears[0])
+    tid, B = Mt.cart2bary(v0, tgears[0], tid=None, extrapolate=True)
+    v1 = Mt.bary2cart(tid, B, tgears[1], offsetting=True)
+    M0.set_field(v1-v0, gear=gears)
+    return M0

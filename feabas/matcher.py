@@ -304,7 +304,7 @@ def section_matcher(mesh0, mesh1, image_loader0, image_loader1, **kwargs):
     kwargs.setdefault('continue_on_flip', True)
     kwargs.setdefault('distributor', 'cartesian_region')
     kwargs.setdefault('link_weight_decay', 0.0)
-    stiffness_multiplier_threshold = kwargs.get('stiffness_multiplier_threshold', 0.5)
+    stiffness_multiplier_threshold = kwargs.get('stiffness_multiplier_threshold', 0.1)
     kwargs.setdefault('render_weight_threshold', 0.1)
     if stiffness_multiplier_threshold > 0:
         idx0 = mesh0.triangle_mask_for_stiffness(stiffness_multiplier_threshold=stiffness_multiplier_threshold)
@@ -465,6 +465,11 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
             opt.optimize_linear(tol=1e-6, batch_num_matches=np.inf, continue_on_flip=continue_on_flip, callback_settings=callback_settings)
         else:
             opt.optimize_Newton_Raphson(max_newtonstep=5, tol=1e-4, batch_num_matches=np.inf, continue_on_flip=continue_on_flip, callback_settings=callback_settings)
+    else:
+        mesh0.linearize_material(delta_t=(1/1.5,1.5))
+        mesh1.linearize_material(delta_t=(1/1.5,1.5))
+        mesh0.anneal(gear=(const.MESH_GEAR_MOVING, const.MESH_GEAR_FIXED), mode=const.ANNEAL_COPY_EXACT)
+        mesh1.anneal(gear=(const.MESH_GEAR_MOVING, const.MESH_GEAR_FIXED), mode=const.ANNEAL_COPY_EXACT)
     spacings = np.sort(spacings)[::-1]
     sp = np.max(spacings)
     sp_indx = 0
