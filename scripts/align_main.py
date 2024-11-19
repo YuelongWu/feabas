@@ -268,7 +268,7 @@ def render_one_section(h5name, z_prefix='', **kwargs):
     else:
         stitch_dir = os.path.join(root_dir, 'stitch')
         loader_dir = os.path.join(stitch_dir, 'ts_specs', secname + '.json')
-        loader = VolumeRenderer._get_loader(loader_dir, mip=mip_level)
+        loader = VolumeRenderer._get_loader(loader_dir, mip=mip_level, **loader_config)
     M = Mesh.from_h5(h5name)
     M.change_resolution(resolution)
     if offset is not None:
@@ -293,8 +293,7 @@ def render_main(tform_list, z_prefix=None):
     num_workers = align_config.get('num_workers', 1)
     cache_size = align_config.get('loader_config', {}).get('cache_size', None)
     if (cache_size is not None) and (num_workers > 1):
-        align_config.setdefault('loader_config', {})
-        align_config['loader_config'].setdefault('cache_size', cache_size // num_workers)
+        align_config['loader_config']['cache_size'] = cache_size // num_workers
     offset_name = os.path.join(tform_dir, 'offset.txt')
     if os.path.isfile(offset_name):
         with open(offset_name, 'r') as f:

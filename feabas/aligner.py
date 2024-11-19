@@ -37,7 +37,7 @@ def read_matches_from_h5(match_name, target_resolution=None):
     return Match(xy0, xy1, weight)
 
 
-def match_section_from_initial_matches(match_name, meshes, loaders, out_dir, conf=None):
+def match_section_from_initial_matches(match_name, meshes, loaders, out_dir, conf=None, ignore_initial_match=False):
     """
     given the coarse matches saved in H5 format, caculate the fine matches.
     Args:
@@ -115,7 +115,10 @@ def match_section_from_initial_matches(match_name, meshes, loaders, out_dir, con
         raise TypeError('loader input type not supported.')
     mesh0.change_resolution(resolution)
     mesh1.change_resolution(resolution)
-    initial_matches = read_matches_from_h5(match_name, target_resolution=resolution)
+    if ignore_initial_match:
+        initial_matches = None
+    else:
+        initial_matches = read_matches_from_h5(match_name, target_resolution=resolution)
     xy0, xy1, weight = section_matcher(mesh0, mesh1, loader0, loader1,
         initial_matches=initial_matches, **matcher_config)
     if xy0 is None:

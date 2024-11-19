@@ -1262,7 +1262,7 @@ class SLM:
         if cont_on_flip:
             target_gear = kwargs.pop('target_gear', const.MESH_GEAR_MOVING)
         else:
-            target_gear = kwargs.pop('target_gear', const.MESH_GEAR_MOVING)
+            target_gear = kwargs.pop('target_gear', const.MESH_GEAR_STAGING)
         # initialize cost and check flipped triangles
         check_flip = not cont_on_flip
         stiff_m, _ = self.stiffness_matrix(gear=(shape_gear,start_gear),
@@ -1762,6 +1762,8 @@ def relax_mesh(M, free_vertices=None, free_triangles=None, **kwargs):
     atol = kwargs.get('atol', None)
     callback_settings = kwargs.get('callback_settings', {}).copy()
     modified = False
+    locked = M.locked
+    M.locked = False
     if free_vertices is not None:
         vindx = free_vertices
     elif free_triangles is not None:
@@ -1788,8 +1790,6 @@ def relax_mesh(M, free_vertices=None, free_triangles=None, **kwargs):
     cost = (np.linalg.norm(b), np.linalg.norm(A.dot(dd) - b))
     if (cost[1] < cost[0]) and np.any(dd != 0):
         modified = True
-        locked = M.locked
-        M.locked = False
         M.apply_field(dd.reshape(-1,2), gear[-1], vtx_mask=vmask)
-        M.locked = locked
+    M.locked = locked
     return modified
