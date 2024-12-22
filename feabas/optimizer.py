@@ -6,7 +6,7 @@ import scipy
 from scipy import sparse
 import time
 
-from feabas import spatial, common, caching
+from feabas import spatial, common, caching, storage
 import feabas.constant as const
 from feabas.mesh import Mesh
 
@@ -340,7 +340,7 @@ class MeshList:
             return m
         elif key in self._mesh_cache:
             return self._mesh_cache[key]
-        elif isinstance(m, str) and os.path.isfile(m):
+        elif isinstance(m, str) and storage.file_exists(m):
             M = Mesh.from_h5(m)
             self._mesh_cache[key] = M
             return M

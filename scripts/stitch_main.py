@@ -1,5 +1,4 @@
 import argparse
-import glob
 from concurrent.futures.process import ProcessPoolExecutor
 from concurrent.futures import as_completed
 from multiprocessing import get_context
@@ -10,14 +9,14 @@ import time
 import tensorstore as ts
 
 import feabas
-from feabas import config, logging, dal, multisem
+from feabas import config, logging, dal, multisem, storage
 
 
 def match_one_section(coordname, outname, **kwargs):
     logger_info = kwargs.get('logger', None)
     logger = logging.get_logger(logger_info)
     stitcher = Stitcher.from_coordinate_file(coordname)
-    if os.path.isfile(outname + '_err'):
+    if storage.file_exists(outname + '_err'):
         logger.info(f'loading previous results for {os.path.basename(coordname)}')
         stitcher.load_matches_from_h5(outname + '_err', check_order=True)
     _, err = stitcher.dispatch_matchers(verbose=False, **kwargs)
@@ -35,8 +34,8 @@ def match_main(coord_list, out_dir, **kwargs):
     for coordname in coord_list:
         t0 = time.time()
         fname = os.path.basename(coordname).replace('.txt', '')
-        outname = os.path.join(out_dir, fname + '.h5')
-        if os.path.isfile(outname):
+        outname = storage.join_paths(out_dir, fname + '.h5')
+        if storage.file_exists(outname):
             continue
         logger.info(f'starting matching for {fname}')
         flag = match_one_section(coordname, outname, **kwargs)
@@ -49,7 +48,7 @@ def match_main(coord_list, out_dir, **kwargs):
 def optimize_one_section(matchname, outname, **kwargs):
     from feabas.stitcher import Stitcher
     import numpy as np
-    if os.path.isfile(outname):
+    if storage.file_exists(outname):
         return
     use_group = kwargs.get('use_group', True)
     msem = kwargs.get('msem', False)
@@ -137,16 +136,16 @@ def optmization_main(match_list, out_dir, **kwargs):
     target_func = partial(optimize_one_section, **kwargs)
     if num_workers == 1:
         for matchname in match_list:
-            outname = os.path.join(out_dir, os.path.basename(matchname))
-            if os.path.isfile(outname):
+            outname = storage.join_paths(out_dir, os.path.basename(matchname))
+            if storage.file_exists(outname):
                 continue
             target_func(matchname, outname)
     else:
         jobs = []
         with ProcessPoolExecutor(max_workers=num_workers, mp_context=get_context('spawn')) as executor:
             for matchname in match_list:
-                outname = os.path.join(out_dir, os.path.basename(matchname))
-                if os.path.isfile(outname):
+                outname = storage.join_paths(out_dir, os.path.basename(matchname))
+                if storage.file_exists(outname):
                     continue
                 job = executor.submit(target_func, matchname, outname)
                 jobs.append(job)
@@ -168,7 +167,7 @@ def render_one_section(tform_name, out_prefix, meta_name=None, **kwargs):
     if loader_settings.get('cache_size', None) is not None:
         loader_settings = loader_settings.copy()
         loader_settings['cache_size'] = loader_settings['cache_size'] // num_workers
-    if meta_name is not None and os.path.isfile(meta_name):
+    if meta_name is not None and storage.file_exists(meta_name):
         return None
     renderer = MontageRenderer.from_h5(tform_name, loader_settings=loader_settings)
     if resolution is not None:
@@ -234,26 +233,28 @@ def render_main(tform_list, out_dir, **kwargs):
     use_tensorstore = driver != 'image'
     if use_tensorstore:
         meta_dir = kwargs['meta_dir']
-        os.makedirs(meta_dir, exist_ok=True)
+        tdriver, meta_dir = storage.parse_file_driver(meta_dir)
+        if tdriver == 'file':
+            os.makedirs(meta_dir, exist_ok=True)
     for tname in tform_list:
         t0 = time.time()
         sec_name = os.path.basename(tname).replace('.h5', '')
         try:
-            sec_outdir = os.path.join(out_dir, sec_name)
+            sec_outdir = storage.join_paths(out_dir, sec_name)
             if use_tensorstore:
-                meta_name = os.path.join(meta_dir, sec_name+'.json')
+                meta_name = storage.join_paths(meta_dir, sec_name+'.json')
             else:
-                meta_name = os.path.join(sec_outdir, 'metadata.txt')
-            if os.path.isfile(meta_name):
+                meta_name = storage.join_paths(sec_outdir, 'metadata.txt')
+            if storage.file_exists(meta_name):
                 continue
             logger.info(f'{sec_name}: start')
             if use_tensorstore:
                 out_prefix = sec_outdir
             else:
-                if  sec_outdir.startswith('file://'):
-                    sec_outdir = sec_outdir.replace('file://', '')
-                os.makedirs(sec_outdir, exist_ok=True)
-                out_prefix = os.path.join(sec_outdir, sec_name)
+                tdriver, sec_outdir = storage.parse_file_driver(sec_outdir)
+                if tdriver == 'file':
+                    os.makedirs(sec_outdir, exist_ok=True)
+                out_prefix = storage.join_paths(sec_outdir, sec_name)
             num_rendered = render_one_section(tname, out_prefix, meta_name=meta_name, **kwargs)
             logger.info(f'{sec_name}: {num_rendered} tiles | {(time.time()-t0)/60} min')
         except TimeoutError:
@@ -290,7 +291,7 @@ if __name__ == '__main__':
         image_outdir = config.stitch_render_dir()
         driver = stitch_configs.get('driver', 'image')
         if driver == 'image':
-            image_outdir = os.path.join(image_outdir, 'mip0')
+            image_outdir = storage.join_paths(image_outdir, 'mip0')
     elif args.mode.lower().startswith('o'):
         stitch_configs = stitch_configs['optimization']
         mode = 'optimization'
@@ -309,18 +310,18 @@ if __name__ == '__main__':
     from feabas.stitcher import Stitcher, MontageRenderer
     import numpy as np
 
-    stitch_dir = os.path.join(root_dir, 'stitch')
-    coord_dir = os.path.join(stitch_dir, 'stitch_coord')
-    match_dir = os.path.join(stitch_dir, 'match_h5')
-    mesh_dir = os.path.join(stitch_dir, 'tform')
-    render_meta_dir = os.path.join(stitch_dir, 'ts_specs')
+    stitch_dir = storage.join_paths(root_dir, 'stitch')
+    coord_dir = storage.join_paths(stitch_dir, 'stitch_coord')
+    match_dir = storage.join_paths(stitch_dir, 'match_h5')
+    mesh_dir = storage.join_paths(stitch_dir, 'tform')
+    render_meta_dir = storage.join_paths(stitch_dir, 'ts_specs')
     stt_idx, stp_idx, step = args.start, args.stop, args.step
     if stp_idx == 0:
         stp_idx = None
     indx = slice(stt_idx, stp_idx, step)
 
     if mode == 'rendering':
-        tform_list = sorted(glob.glob(os.path.join(mesh_dir, '*.h5')))
+        tform_list = sorted(storage.list_folder_content(storage.join_paths(mesh_dir, '*.h5')))
         if len(args.filter) > 0:
             tform_list = [s for s in tform_list if args.filter in os.path.basename(s)]
         tform_list = tform_list[indx]
@@ -329,20 +330,24 @@ if __name__ == '__main__':
         stitch_configs.setdefault('meta_dir', render_meta_dir)
         render_main(tform_list, image_outdir, **stitch_configs)
     elif mode == 'optimization':
-        match_list = sorted(glob.glob(os.path.join(match_dir, '*.h5')))
+        match_list = sorted(storage.list_folder_content(storage.join_paths(match_dir, '*.h5')))
         if len(args.filter) > 0:
             match_list = [s for s in match_list if args.filter in os.path.basename(s)]
         match_list = match_list[indx]
         if args.reverse:
             match_list = match_list[::-1]
-        os.makedirs(mesh_dir, exist_ok=True)
+        tdriver, mesh_dir = storage.parse_file_driver(mesh_dir)
+        if tdriver == 'file':
+            os.makedirs(mesh_dir, exist_ok=True)
         optmization_main(match_list, mesh_dir, **stitch_configs)
     else:
-        coord_list = sorted(glob.glob(os.path.join(coord_dir, '*.txt')))
+        coord_list = sorted(storage.list_folder_content(storage.join_paths(coord_dir, '*.txt')))
         if len(args.filter) > 0:
             coord_list = [s for s in coord_list if args.filter in os.path.basename(s)]
         coord_list = coord_list[indx]
         if args.reverse:
             coord_list = coord_list[::-1]
-        os.makedirs(match_dir, exist_ok=True)
+        tdriver, match_dir = storage.parse_file_driver(match_dir)
+        if tdriver == 'file':
+            os.makedirs(match_dir, exist_ok=True)
         match_main(coord_list, match_dir, **stitch_configs)

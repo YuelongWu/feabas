@@ -5,6 +5,7 @@ import numpy as np
 from scipy.interpolate import interp1d
 
 from feabas import common
+from feabas.storage import File
 import feabas.constant as const
 
 
@@ -302,7 +303,7 @@ class MaterialTable:
         if stream:
             dct = json.loads(jsonname)
         else:
-            with open(jsonname, 'r') as f:
+            with File(jsonname, 'r') as f:
                 dct = json.load(f)
         table = {}
         for lbl, props in dct.items():
@@ -322,7 +323,7 @@ class MaterialTable:
             outdict[lbl] = material.to_dict()
         json_str = json.dumps(outdict, indent = 2)
         if jsonname is not None:
-            with open(jsonname, 'w') as f:
+            with File(jsonname, 'w') as f:
                 f.write(json_str)
         return json_str
 

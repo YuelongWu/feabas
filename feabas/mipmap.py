@@ -1,7 +1,6 @@
 from concurrent.futures.process import ProcessPoolExecutor
 from concurrent.futures import as_completed
 import cv2
-import glob
 import json
 from multiprocessing import get_context
 import numpy as np
@@ -15,7 +14,7 @@ import tensorstore as ts
 import time
 
 from feabas.dal import MosaicLoader, get_tensorstore_spec
-from feabas import common, logging, dal, config
+from feabas import common, logging, dal, storage
 from feabas.spatial import Geometry
 from feabas.mesh import Mesh
 from feabas.renderer import render_whole_mesh, MeshRenderer
@@ -33,15 +32,15 @@ def get_image_loader(src_dir, **kwargs):
     if isinstance(ext, str):
         ext = (ext,)
     for e in ext:
-        imgpaths = glob.glob(os.path.join(src_dir, '*.' + e))
+        imgpaths = storage.list_folder_content(storage.join_paths(src_dir, '*.' + e))
         if len(imgpaths) > 0:
             ext = e
             break
     else:
         logger.warning(f'{src_dir}: no image found.')
         return None
-    meta_file = os.path.join(src_dir, 'metadata.txt')
-    if os.path.isfile(meta_file):
+    meta_file = storage.join_paths(src_dir, 'metadata.txt')
+    if storage.file_exists(meta_file):
         image_loader = MosaicLoader.from_coordinate_file(meta_file, **kwargs)
     else:
         pattern0 = pattern.replace('{', '({').replace('}', r'}\d+)')
@@ -84,9 +83,9 @@ def mip_one_level(src_dir, out_dir, **kwargs):
         kwargs.setdefault('preprocess', _smooth_filter_factory)
         kwargs.setdefault('preprocess_params', {'blur': downsample, 'sigma': 0})
     logger = logging.get_logger(logger_info)
-    out_meta_file = os.path.join(out_dir, 'metadata.txt')
-    if os.path.isfile(out_meta_file):
-        n_img = len(glob.glob(os.path.join(out_dir, '*.'+ext_out)))
+    out_meta_file = storage.join_paths(out_dir, 'metadata.txt')
+    if storage.file_exists(out_meta_file):
+        n_img = len(storage.list_folder_content(storage.join_paths(out_dir, '*.'+ext_out)))
         return -n_img
     rendered = {}
     try:
@@ -105,9 +104,11 @@ def mip_one_level(src_dir, out_dir, **kwargs):
         splitter = pattern.split('{')[0]
         if splitter:
             prefix0 = prefix0.split(splitter)[0]
-        prefix = os.path.join(out_dir, prefix0)
+        prefix = storage.join_paths(out_dir, prefix0)
         out_root_dir = os.path.dirname(prefix)
-        os.makedirs(out_root_dir, exist_ok=True)
+        tdriver, out_root_dir = storage.parse_file_driver(out_root_dir)
+        if tdriver == 'file':
+            os.makedirs(out_root_dir, exist_ok=True)
         kwargs.setdefault('seeds', downsample)
         kwargs.setdefault('mx_dis', (tile_size[0]/2+4, tile_size[-1]/2+4))
         rendered = render_whole_mesh(M, image_loader, prefix, tile_size=tile_size,
@@ -136,8 +137,8 @@ def mip_map_one_section(sec_name, img_dir, max_mip, **kwargs):
     updated = False
     try:
         for m in range(max_mip):
-            src_dir = os.path.join(img_dir, 'mip'+str(m), sec_name)
-            out_dir = os.path.join(img_dir, 'mip'+str(m+1), sec_name)
+            src_dir = storage.join_paths(img_dir, 'mip'+str(m), sec_name)
+            out_dir = storage.join_paths(img_dir, 'mip'+str(m+1), sec_name)
             n_tile = mip_one_level(src_dir, out_dir, output_format=ext_out,
                                         downsample=2, **kwargs)
             if n_tile is None:
@@ -219,7 +220,7 @@ def generate_target_tensorstore_scale(metafile, mip=None, **kwargs):
                 s = json_ts.read().result()
                 json_obj = s.item()
             else:
-                with open(metafile, 'r') as f:
+                with storage.File(metafile, 'r') as f:
                     json_obj = json.load(f)
     elif isinstance(metafile, dict):
         json_obj = metafile

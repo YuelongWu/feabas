@@ -8,7 +8,7 @@ from shapely.affinity import affine_transform
 from skimage.feature import peak_local_max
 from itertools import combinations
 
-from feabas import common, logging
+from feabas import common, logging, storage
 from feabas.spatial import fit_affine, Geometry, scale_coordinates
 from feabas.mesh import Mesh
 from feabas.optimizer import SLM
@@ -16,7 +16,8 @@ import feabas.constant as const
 from feabas.dal import StreamLoader
 from feabas.matcher import section_matcher
 from feabas.aligner import read_matches_from_h5
-from feabas.cloud import H5File
+
+H5File = storage.h5file_class()
 
 
 DEFAULT_FEATURE_SPACING = 15
@@ -517,7 +518,7 @@ def _scale_matches(match, scale):
 
 
 def align_two_thumbnails(img0, img1, outname, mask0=None, mask1=None, **kwargs):
-    if os.path.isfile(outname):
+    if storage.file_exists(outname):
         return
     resolution = kwargs.get('resolution')
     feature_match_settings = kwargs.get('feature_matching', {}).copy()
@@ -529,10 +530,10 @@ def align_two_thumbnails(img0, img1, outname, mask0=None, mask1=None, **kwargs):
     bname_ext = os.path.basename(outname)
     bname = bname_ext.replace('.h5', '')
     if feature_match_dir is not None:
-        feature_matchname = os.path.join(feature_match_dir, bname_ext)
+        feature_matchname = storage.join_paths(feature_match_dir, bname_ext)
     else:
         feature_matchname = None
-    if (feature_matchname is not None) and (os.path.isfile(feature_matchname)):
+    if (feature_matchname is not None) and (storage.file_exists(feature_matchname)):
         mtch0 = read_matches_from_h5(feature_matchname, target_resolution=resolution)
     else:
         mtch0 = match_two_thumbnails_LRadon(img0, img1, mask0=mask0, mask1=mask1,
@@ -542,7 +543,9 @@ def align_two_thumbnails(img0, img1, outname, mask0=None, mask1=None, **kwargs):
             return 0
         if save_feature_match:
             xy0, xy1, weight = mtch0
-            os.makedirs(feature_match_dir, exist_ok=True)
+            tdriver, feature_match_dir = storage.parse_file_driver(feature_match_dir)
+            if tdriver == 'file':
+                os.makedirs(feature_match_dir, exist_ok=True)
             with H5File(feature_matchname, 'w') as f:
                 f.create_dataset('xy0', data=xy0, compression="gzip")
                 f.create_dataset('xy1', data=xy1, compression="gzip")
@@ -557,7 +560,9 @@ def align_two_thumbnails(img0, img1, outname, mask0=None, mask1=None, **kwargs):
         return 0
     else:
         xy0, xy1, weight = mtch1
-        os.makedirs(os.path.dirname(outname), exist_ok=True)
+        tdriver, outname = storage.parse_file_driver(outname)
+        if tdriver == 'file':
+            os.makedirs(os.path.dirname(outname), exist_ok=True)
         with H5File(outname, 'w') as f:
             f.create_dataset('xy0', data=xy0, compression="gzip")
             f.create_dataset('xy1', data=xy1, compression="gzip")

@@ -3,7 +3,6 @@ from concurrent.futures.process import ProcessPoolExecutor
 from concurrent.futures import as_completed
 from multiprocessing import get_context
 import numpy as np
-import glob
 import os
 from scipy import sparse
 import scipy.sparse.csgraph as csgraph
@@ -11,16 +10,15 @@ import yaml
 import time
 
 from feabas.mesh import Mesh
-from feabas import dal
-from feabas import logging
+from feabas import dal, logging, storage
 from feabas.spatial import scale_coordinates
 from feabas.matcher import section_matcher
 from feabas.optimizer import SLM
 import feabas.constant as const
 from feabas.common import str_to_numpy_ascii, Match, rearrange_section_order
 from feabas.config import montage_resolution
-from feabas.cloud import H5File
 
+H5File = storage.h5file_class()
 
 def read_matches_from_h5(match_name, target_resolution=None):
     with H5File(match_name, 'r') as f:
@@ -53,11 +51,11 @@ def match_section_from_initial_matches(match_name, meshes, loaders, out_dir, con
         conf: the alignment configurations. Could be the path to a YAML config
             file or a dictionary containing the settings.
     """
-    outname = os.path.join(out_dir, os.path.basename(match_name))
-    if os.path.isfile(outname):
+    outname = storage.join_paths(out_dir, os.path.basename(match_name))
+    if storage.file_exists(outname):
         return None
     if isinstance(conf, str) and conf.lower().endswith('.yaml'):
-        with open(conf, 'r') as f:
+        with storage.File(conf, 'r') as f:
             conf = yaml.safe_load(f)
     if 'matching' in conf:
         conf = conf['matching']
@@ -76,7 +74,7 @@ def match_section_from_initial_matches(match_name, meshes, loaders, out_dir, con
     if 'cache_capacity' in loader_config and loader_config['cache_capacity'] is not None:
         loader_config['cache_capacity'] = loader_config['cache_capacity'] // (2 * matcher_config.get('num_workers',1))
     if isinstance(meshes, str):
-        meshes = (os.path.join(meshes, secnames[0]+'.h5'), os.path.join(meshes, secnames[1]+'.h5'))
+        meshes = (storage.join_paths(meshes, secnames[0]+'.h5'), storage.join_paths(meshes, secnames[1]+'.h5'))
     if isinstance(meshes, (tuple, list)):
         mesh0, mesh1 = meshes
         if isinstance(mesh0, str):
@@ -92,16 +90,16 @@ def match_section_from_initial_matches(match_name, meshes, loaders, out_dir, con
     else:
         raise TypeError('mesh input type not supported.')
     if isinstance(loaders, str):
-        if os.path.isfile(os.path.join(loaders, secnames[0]+'.json')):
-            loader0 = os.path.join(loaders, secnames[0]+'.json')
-        elif os.path.isfile(os.path.join(loaders, secnames[0]+'.txt')):
-            loader0 = os.path.join(loaders, secnames[0]+'.txt')
+        if storage.file_exists(storage.join_paths(loaders, secnames[0]+'.json')):
+            loader0 = storage.join_paths(loaders, secnames[0]+'.json')
+        elif storage.file_exists(storage.join_paths(loaders, secnames[0]+'.txt')):
+            loader0 = storage.join_paths(loaders, secnames[0]+'.txt')
         else:
             raise RuntimeError(f'cannot find loaders for {secnames[0]}')
-        if os.path.isfile(os.path.join(loaders, secnames[1]+'.json')):
-            loader1 = os.path.join(loaders, secnames[1]+'.json')
-        elif os.path.isfile(os.path.join(loaders, secnames[1]+'.txt')):
-            loader1 = os.path.join(loaders, secnames[1]+'.txt')
+        if storage.file_exists(storage.join_paths(loaders, secnames[1]+'.json')):
+            loader1 = storage.join_paths(loaders, secnames[1]+'.json')
+        elif storage.file_exists(storage.join_paths(loaders, secnames[1]+'.txt')):
+            loader1 = storage.join_paths(loaders, secnames[1]+'.txt')
         else:
             raise RuntimeError(f'cannot find loaders for {secnames[1]}')
         loaders = (loader0, loader1)
@@ -158,12 +156,12 @@ class Stack:
         if section_list is None:
             if self._mesh_dir is None:
                 raise RuntimeError('mesh_dir not defined.')
-            slist = glob.glob(os.path.join(self._mesh_dir, '*.h5'))
+            slist = storage.list_folder_content(storage.join_paths(self._mesh_dir, '*.h5'))
             if bool(slist):
                 section_list = sorted([os.path.basename(s).replace('.h5', '') for s in slist])
             else:
                 raise RuntimeError('no section found.')
-            section_order_file = kwargs.get('section_order_file', os.path.join(self._mesh_dir, 'section_order.txt'))
+            section_order_file = kwargs.get('section_order_file', storage.join_paths(self._mesh_dir, 'section_order.txt'))
             section_list = rearrange_section_order(section_list, section_order_file)[0]
         assert len(section_list) == len(set(section_list))
         self.section_list = tuple(section_list)
@@ -189,7 +187,7 @@ class Stack:
             self.normalize_mesh_resoltion()
         if match_list is None:
             if self._match_dir is not None:
-                mlist = glob.glob(os.path.join(self._match_dir, '*.h5'))
+                mlist = storage.list_folder_content(storage.join_paths(self._match_dir, '*.h5'))
                 if bool(mlist):
                     match_list = [os.path.basename(m).replace('.h5', '') for m in mlist]
             if match_list is None:
@@ -256,10 +254,10 @@ class Stack:
         elif self._mesh_dir is None:
             raise RuntimeError('mesh_dir not defined.')
         else:
-            meshpath = os.path.join(self._mesh_out_dir, secname+'.h5')
-            if not os.path.isfile(meshpath):
-                meshpath = os.path.join(self._mesh_dir, secname+'.h5')
-            if not os.path.isfile(meshpath):
+            meshpath = storage.join_paths(self._mesh_out_dir, secname+'.h5')
+            if not storage.file_exists(meshpath):
+                meshpath = storage.join_paths(self._mesh_dir, secname+'.h5')
+            if not storage.file_exists(meshpath):
                 raise RuntimeError(f'{meshpath} not found.')
             uid = self.secname_to_id(secname)
             locked = self.lock_flags[secname]
@@ -293,7 +291,7 @@ class Stack:
                     logger.warning(f'{cached_name}: partially not anchored.')
             if len(anchored_meshes) > 0:
                 cached_M = Mesh.combine_mesh(anchored_meshes, save_material=True)
-                outname = os.path.join(self._mesh_out_dir, cached_name+'.h5')
+                outname = storage.join_paths(self._mesh_out_dir, cached_name+'.h5')
                 cached_M.save_to_h5(outname, vertex_flags=const.MESH_GEARS, save_material=True)
         for matchname in rel_match_names:
             self.dump_link(matchname)
@@ -312,8 +310,8 @@ class Stack:
         if self._match_dir is None:
             raise RuntimeError('match_dir not defined.')
         else:
-            matchpath = os.path.join(self._match_dir, matchname+'.h5')
-            if not os.path.isfile(matchpath):
+            matchpath = storage.join_paths(self._match_dir, matchname+'.h5')
+            if not storage.file_exists(matchpath):
                 raise RuntimeError(f'{matchpath} not found.')
             mtch = read_matches_from_h5(matchpath, target_resolution=self._resolution)
             links = SLM.distribute_link(mesh_list0, mesh_list1, mtch)

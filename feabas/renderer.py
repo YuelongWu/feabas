@@ -16,7 +16,7 @@ import time
 from feabas.caching import CacheFIFO
 import feabas.constant as const
 from feabas.mesh import Mesh
-from feabas import common, spatial, dal, logging
+from feabas import common, spatial, dal, logging, storage
 from feabas.config import DEFAULT_RESOLUTION, SECTION_THICKNESS, montage_resolution, TS_TIMEOUT
 
 
@@ -791,7 +791,7 @@ def subprocess_render_mesh_tiles(imgloader, mesh, bboxes, outnames, **kwargs):
     else:
         rendered = {}
         for fname, bbox in zip(outnames, bboxes):
-            if os.path.isfile(fname):
+            if storage.file_exists(fname):
                 rendered[fname] = bbox
                 continue
             imgt = renderer.crop(bbox, **kwargs)
@@ -857,8 +857,8 @@ class VolumeRenderer:
         if self.flag_dir is not None:
             z_to_render = []
             for z in zz:
-                flg_name = os.path.join(self.flag_dir, str(z)+'.json')
-                if not os.path.isfile(flg_name):
+                flg_name = storage.join_paths(self.flag_dir, str(z)+'.json')
+                if not storage.file_exists(flg_name):
                     z_to_render.append(z)
             zz = np.array(z_to_render)
         zz = zz[(zz >= np.min(self._zindx)) & (zz <= np.max(self._zindx))]
@@ -988,7 +988,7 @@ class VolumeRenderer:
             if self.flag_dir is not None:
                 for zz, nn in rendered.items():
                     if (nn is not None) and (nn > 0):
-                        flg_name = os.path.join(self.flag_dir, str(zz)+'.json')
+                        flg_name = storage.join_paths(self.flag_dir, str(zz)+'.json')
                         kv_headers = ('gs://', 'http://', 'https://', 'file://', 'memory://', 's3://')
                         for kvh in kv_headers:
                             if flg_name.startswith(kvh):
@@ -1172,7 +1172,7 @@ class VolumeRenderer:
             M = msh
         elif isinstance(msh, dict):
             M = Mesh(**msh)
-        elif isinstance(msh, str) and os.path.isfile(msh):
+        elif isinstance(msh, str) and storage.file_exists(msh):
             M = Mesh.from_h5(msh)
         else:
             M = None

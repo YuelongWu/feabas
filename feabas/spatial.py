@@ -9,8 +9,9 @@ from shapely import wkb, get_coordinates
 from feabas import dal, common, material
 import feabas.constant as const
 from feabas.config import DEFAULT_RESOLUTION
-from feabas.cloud import H5File
+from feabas.storage import h5file_class
 
+H5File = h5file_class()
 
 JOIN_STYLE = shpgeo.JOIN_STYLE.mitre
 

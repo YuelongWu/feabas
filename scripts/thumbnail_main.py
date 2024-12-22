@@ -1,12 +1,11 @@
 import argparse
-import glob
 from functools import partial
 from concurrent.futures.process import ProcessPoolExecutor
 import math
 from multiprocessing import get_context
 import os
 
-from feabas import config, logging
+from feabas import config, logging, storage
 
 
 def generate_stitched_mipmaps(img_dir, max_mip, **kwargs):
@@ -15,7 +14,7 @@ def generate_stitched_mipmaps(img_dir, max_mip, **kwargs):
     parallel_within_section = kwargs.pop('parallel_within_section', True)
     logger_info = kwargs.get('logger', None)
     logger = logging.get_logger(logger_info)
-    meta_list = sorted(glob.glob(os.path.join(img_dir, 'mip'+str(min_mip), '**', 'metadata.txt'), recursive=True))
+    meta_list = sorted(storage.list_folder_content(storage.join_paths(img_dir, 'mip'+str(min_mip), '**', 'metadata.txt'), recursive=True))
     meta_list = meta_list[arg_indx]
     secnames = [os.path.basename(os.path.dirname(s)) for s in meta_list]
     update_status = {}
@@ -43,7 +42,7 @@ def generate_stitched_mipmaps_tensorstore(meta_dir, tgt_mips, **kwargs):
     parallel_within_section = kwargs.pop('parallel_within_section', True)
     logger_info = kwargs.get('logger', None)
     logger = logging.get_logger(logger_info)
-    meta_list = sorted(glob.glob(os.path.join(meta_dir,'*.json')))
+    meta_list = sorted(storage.list_folder_content(storage.join_paths(meta_dir,'*.json')))
     meta_list = meta_list[arg_indx]
     update_status = {}
     if parallel_within_section or num_workers == 1:
@@ -68,50 +67,52 @@ def generate_thumbnails(src_dir, out_dir, seclist=None, **kwargs):
     num_workers = kwargs.pop('num_workers', 1)
     logger_info = kwargs.pop('logger', None)
     logger = logging.get_logger(logger_info)
-    meta_list = sorted(glob.glob(os.path.join(src_dir, '**', 'metadata.txt'), recursive=True))
+    meta_list = sorted(storage.list_folder_content(storage.join_paths(src_dir, '**', 'metadata.txt'), recursive=True))
     meta_list = meta_list[arg_indx]
     secnames = [os.path.basename(os.path.dirname(s)) for s in meta_list]
     target_func = partial(mipmap.create_thumbnail, **kwargs)
-    os.makedirs(out_dir, exist_ok=True)
+    tdriver, out_dir = storage.parse_file_driver(out_dir)
+    if tdriver == 'file':
+        os.makedirs(out_dir, exist_ok=True)
     updated = {}
     if num_workers == 1:
         for sname in secnames:
-            outname = os.path.join(out_dir, sname + '.png')
+            outname = storage.join_paths(out_dir, sname + '.png')
             if seclist is None:
-                if os.path.isfile(outname):
+                if storage.file_exists(outname):
                     continue
                 else:
                     updated[sname] = True
             else:
                 if sname not in seclist:
                     continue
-                elif (seclist[sname]) or (not os.path.isfile(outname)):
+                elif (seclist[sname]) or (not storage.file_exists(outname)):
                     updated[sname] = True
                 else:
                     updated[sname] = False
                     continue
-            sdir = os.path.join(src_dir, sname)
+            sdir = storage.join_paths(src_dir, sname)
             img_out = target_func(sdir)
             common.imwrite(outname, img_out)
     else:
         jobs = []
         with ProcessPoolExecutor(max_workers=num_workers, mp_context=get_context('spawn')) as executor:
             for sname in secnames:
-                outname = os.path.join(out_dir, sname + '.png')
+                outname = storage.join_paths(out_dir, sname + '.png')
                 if seclist is None:
-                    if os.path.isfile(outname):
+                    if storage.file_exists(outname):
                         continue
                     else:
                         updated[sname] = True
                 else:
                     if sname not in seclist:
                         continue
-                    elif (seclist[sname]) or (not os.path.isfile(outname)):
+                    elif (seclist[sname]) or (not storage.file_exists(outname)):
                         updated[sname] = True
                     else:
                         updated[sname] = False
                         continue
-                sdir = os.path.join(src_dir, sname)
+                sdir = storage.join_paths(src_dir, sname)
                 job = executor.submit(target_func, sdir, outname=outname)
                 jobs.append(job)
             for job in jobs:
@@ -124,24 +125,26 @@ def generate_thumbnails_tensorstore(src_dir, out_dir, seclist=None, **kwargs):
     num_workers = kwargs.pop('num_workers', 1)
     logger_info = kwargs.pop('logger', None)
     logger = logging.get_logger(logger_info)
-    meta_list = sorted(glob.glob(os.path.join(src_dir, '*.json')))
+    meta_list = sorted(storage.list_folder_content(storage.join_paths(src_dir, '*.json')))
     meta_list = meta_list[arg_indx]
     target_func = partial(mipmap.create_thumbnail_tensorstore, **kwargs)
-    os.makedirs(out_dir, exist_ok=True)
+    tdriver, out_dir = storage.parse_file_driver(out_dir)
+    if tdriver == 'file':
+        os.makedirs(out_dir, exist_ok=True)
     updated = {}
     if num_workers == 1:
         for meta_name in meta_list:
             sname = os.path.basename(meta_name).replace('.json', '')
-            outname = os.path.join(out_dir, sname + '.png')
+            outname = storage.join_paths(out_dir, sname + '.png')
             if seclist is None:
-                if os.path.isfile(outname):
+                if storage.file_exists(outname):
                     continue
                 else:
                     updated[sname] = True
             else:
                 if sname not in seclist:
                     continue
-                elif (seclist[sname]) or (not os.path.isfile(outname)):
+                elif (seclist[sname]) or (not storage.file_exists(outname)):
                     updated[sname] = True
                 else:
                     updated[sname] = False
@@ -153,16 +156,16 @@ def generate_thumbnails_tensorstore(src_dir, out_dir, seclist=None, **kwargs):
         with ProcessPoolExecutor(max_workers=num_workers, mp_context=get_context('spawn')) as executor:
             for meta_name in meta_list:
                 sname = os.path.basename(meta_name).replace('.json', '')
-                outname = os.path.join(out_dir, sname + '.png')
+                outname = storage.join_paths(out_dir, sname + '.png')
                 if seclist is None:
-                    if os.path.isfile(outname):
+                    if storage.file_exists(outname):
                         continue
                     else:
                         updated[sname] = True
                 else:
                     if sname not in seclist:
                         continue
-                    elif (seclist[sname]) or (not os.path.isfile(outname)):
+                    elif (seclist[sname]) or (not storage.file_exists(outname)):
                         updated[sname] = True
                     else:
                         updated[sname] = False
@@ -186,8 +189,8 @@ def save_mask_for_one_sections(mesh_file, out_name, resolution, **kwargs):
     img = 255 - rndr.generate_roi_mask(resolution, mask_erode=mask_erode)
     common.imwrite(out_name, img)
     if img_dir is not None:
-        thumb_name = os.path.join(img_dir, os.path.basename(out_name))
-        if os.path.isfile(thumb_name):
+        thumb_name = storage.join_paths(img_dir, os.path.basename(out_name))
+        if storage.file_exists(thumb_name):
             thumb = common.imread(thumb_name)
             if (thumb.shape[0] != img.shape[0]) or (thumb.shape[1] != img.shape[1]):
                 thumb_out_shape = (*img.shape, *thumb.shape[2:])
@@ -205,22 +208,24 @@ def generate_thumbnail_masks(mesh_dir, out_dir, seclist=None, **kwargs):
     mask_erode = kwargs.get('mask_erode', 0)
     logger_info = kwargs.get('logger', None)
     logger= logging.get_logger(logger_info)
-    mesh_list = sorted(glob.glob(os.path.join(mesh_dir, '*.h5')))
+    mesh_list = sorted(storage.list_folder_content(storage.join_paths(mesh_dir, '*.h5')))
     mesh_list = mesh_list[arg_indx]
     target_func = partial(save_mask_for_one_sections, resolution=resolution, img_dir=img_dir,
                           fillval=fillval, mask_erode=mask_erode)
-    os.makedirs(out_dir, exist_ok=True)
+    tdriver, out_dir = storage.parse_file_driver(out_dir)
+    if tdriver == 'file':
+        os.makedirs(out_dir, exist_ok=True)
     if num_workers == 1:
         for mname in mesh_list:
             sname = os.path.basename(mname).replace('.h5', '')
-            outname = os.path.join(out_dir, sname + '.png')
+            outname = storage.join_paths(out_dir, sname + '.png')
             if seclist is None:
-                if os.path.isfile(outname):
+                if storage.file_exists(outname):
                     continue
             else:
                 if sname not in seclist:
                     continue
-                elif (not seclist[sname]) and (os.path.isfile(outname)):
+                elif (not seclist[sname]) and (storage.file_exists(outname)):
                     continue
             target_func(mname, outname)
     else:
@@ -228,14 +233,14 @@ def generate_thumbnail_masks(mesh_dir, out_dir, seclist=None, **kwargs):
         with ProcessPoolExecutor(max_workers=num_workers, mp_context=get_context('spawn')) as executor:
             for mname in mesh_list:
                 sname = os.path.basename(mname).replace('.h5', '')
-                outname = os.path.join(out_dir, sname + '.png')
+                outname = storage.join_paths(out_dir, sname + '.png')
                 if seclist is None:
-                    if os.path.isfile(outname):
+                    if storage.file_exists(outname):
                         continue
                 else:
                     if sname not in seclist:
                         continue
-                    elif (not seclist[sname]) and (os.path.isfile(outname)):
+                    elif (not seclist[sname]) and (storage.file_exists(outname)):
                         continue
                 job = executor.submit(target_func, mname, out_name=outname)
                 jobs.append(job)
@@ -262,17 +267,17 @@ def align_thumbnail_pairs(pairnames, image_dir, out_dir, **kwargs):
             sname0_ext, sname1_ext = pname
             sname0 = os.path.splitext(sname0_ext)[0]
             sname1 = os.path.splitext(sname1_ext)[0]
-            outname = os.path.join(out_dir, sname0 + match_name_delimiter + sname1 + '.h5')
-            if os.path.isfile(outname):
+            outname = storage.join_paths(out_dir, sname0 + match_name_delimiter + sname1 + '.h5')
+            if storage.file_exists(outname):
                 continue
             if sname0 in prepared_cache:
                 minfo0 = prepared_cache[sname0]
             else:
-                img0 = common.imread(os.path.join(image_dir, sname0_ext))
-                if (region_mask_dir is not None) and os.path.isfile(os.path.join(region_mask_dir, sname0_ext)):
-                    mask0 = common.imread(os.path.join(region_mask_dir, sname0_ext))
-                elif (material_mask_dir is not None) and os.path.isfile(os.path.join(material_mask_dir, sname0_ext)):
-                    mask_t = common.imread(os.path.join(material_mask_dir, sname0_ext))
+                img0 = common.imread(storage.join_paths(image_dir, sname0_ext))
+                if (region_mask_dir is not None) and storage.file_exists(storage.join_paths(region_mask_dir, sname0_ext)):
+                    mask0 = common.imread(storage.join_paths(region_mask_dir, sname0_ext))
+                elif (material_mask_dir is not None) and storage.file_exists(storage.join_paths(material_mask_dir, sname0_ext)):
+                    mask_t = common.imread(storage.join_paths(material_mask_dir, sname0_ext))
                     mask_t = np.isin(mask_t, region_labels).astype(np.uint8)
                     _, mask0 = cv2.connectedComponents(mask_t, connectivity=4, ltype=cv2.CV_16U)
                 else:
@@ -288,11 +293,11 @@ def align_thumbnail_pairs(pairnames, image_dir, out_dir, **kwargs):
             if sname1 in prepared_cache:
                 minfo1 = prepared_cache[sname1]
             else:
-                img1 = common.imread(os.path.join(image_dir, sname1_ext))
-                if (region_mask_dir is not None) and os.path.isfile(os.path.join(region_mask_dir, sname1_ext)):
-                    mask1 = common.imread(os.path.join(region_mask_dir, sname1_ext))
-                elif (material_mask_dir is not None) and os.path.isfile(os.path.join(material_mask_dir, sname1_ext)):
-                    mask_t = common.imread(os.path.join(material_mask_dir, sname1_ext))
+                img1 = common.imread(storage.join_paths(image_dir, sname1_ext))
+                if (region_mask_dir is not None) and storage.file_exists(storage.join_paths(region_mask_dir, sname1_ext)):
+                    mask1 = common.imread(storage.join_paths(region_mask_dir, sname1_ext))
+                elif (material_mask_dir is not None) and storage.file_exists(storage.join_paths(material_mask_dir, sname1_ext)):
+                    mask_t = common.imread(storage.join_paths(material_mask_dir, sname1_ext))
                     mask_t = np.isin(mask_t, region_labels).astype(np.uint8)
                     _, mask1 = cv2.connectedComponents(mask_t, connectivity=4, ltype=cv2.CV_16U)
                 else:
@@ -360,14 +365,14 @@ if __name__ == '__main__':
     else:
         arg_indx = slice(stt_idx, stp_idx, step)
 
-    thumbnail_dir = os.path.join(root_dir, 'thumbnail_align')
-    stitch_tform_dir = os.path.join(root_dir, 'stitch', 'tform')
-    img_dir = os.path.join(thumbnail_dir, 'thumbnails')
-    mat_mask_dir = os.path.join(thumbnail_dir, 'material_masks')
-    reg_mask_dir = os.path.join(thumbnail_dir, 'region_masks')
-    manual_dir = os.path.join(thumbnail_dir, 'manual_matches')
-    match_dir = os.path.join(thumbnail_dir, 'matches')
-    feature_match_dir = os.path.join(thumbnail_dir, 'feature_matches')
+    thumbnail_dir = storage.join_paths(root_dir, 'thumbnail_align')
+    stitch_tform_dir = storage.join_paths(root_dir, 'stitch', 'tform')
+    img_dir = storage.join_paths(thumbnail_dir, 'thumbnails')
+    mat_mask_dir = storage.join_paths(thumbnail_dir, 'material_masks')
+    reg_mask_dir = storage.join_paths(thumbnail_dir, 'region_masks')
+    manual_dir = storage.join_paths(thumbnail_dir, 'manual_matches')
+    match_dir = storage.join_paths(thumbnail_dir, 'matches')
+    feature_match_dir = storage.join_paths(thumbnail_dir, 'feature_matches')
     if mode == 'downsample':
         logger_info = logging.initialize_main_logger(logger_name='stitch_mipmap', mp=num_workers>1)
         thumbnail_configs['logger'] = logger_info[0]
@@ -390,7 +395,7 @@ if __name__ == '__main__':
                 src_mip = max(0, thumbnail_mip_lvl-2)
                 highpass_inter_mip_lvl = thumbnail_configs.get('highpass_inter_mip_lvl', src_mip)
                 assert highpass_inter_mip_lvl < thumbnail_mip_lvl
-                src_dir = os.path.join(src_dir0, 'mip'+str(highpass_inter_mip_lvl))
+                src_dir = storage.join_paths(src_dir0, 'mip'+str(highpass_inter_mip_lvl))
                 downsample = 2 ** (thumbnail_mip_lvl - highpass_inter_mip_lvl)
                 if downsample >= 4:
                     highpass = True
@@ -398,15 +403,15 @@ if __name__ == '__main__':
                     highpass = False
             else:
                 src_mip = max(0, thumbnail_mip_lvl-1)
-                src_dir = os.path.join(src_dir0, 'mip'+str(src_mip))
+                src_dir = storage.join_paths(src_dir0, 'mip'+str(src_mip))
                 downsample = 2 ** (thumbnail_mip_lvl - src_mip)
                 highpass = False
             thumbnail_configs.setdefault('downsample', downsample)
             thumbnail_configs.setdefault('highpass', highpass)
             slist = generate_thumbnails(src_dir, img_dir, seclist=slist, **thumbnail_configs)
         else:
-            stitch_dir = os.path.join(root_dir, 'stitch')
-            src_dir = os.path.join(stitch_dir, 'ts_specs')
+            stitch_dir = storage.join_paths(root_dir, 'stitch')
+            src_dir = storage.join_paths(stitch_dir, 'ts_specs')
             tgt_mips = [align_mip]
             if thumbnail_configs.get('thumbnail_highpass', True):
                 highpass_inter_mip_lvl = thumbnail_configs.pop('highpass_inter_mip_lvl', max(0, thumbnail_mip_lvl-2))
@@ -434,8 +439,12 @@ if __name__ == '__main__':
         logger.info('finished.')
         logging.terminate_logger(*logger_info)
     elif mode == 'alignment':
-        os.makedirs(match_dir, exist_ok=True)
-        os.makedirs(manual_dir, exist_ok=True)
+        tdriver, match_dir = storage.parse_file_driver(match_dir)
+        if tdriver == 'file':
+            os.makedirs(match_dir, exist_ok=True)
+        tdriver, manual_dir = storage.parse_file_driver(manual_dir)
+        if tdriver == 'file':
+            os.makedirs(manual_dir, exist_ok=True)
         compare_distance = thumbnail_configs.pop('compare_distance', 1)
         logger_info = logging.initialize_main_logger(logger_name='thumbnail_align', mp=num_workers>1)
         thumbnail_configs['logger'] = logger_info[0]
@@ -443,8 +452,8 @@ if __name__ == '__main__':
         resolution = config.montage_resolution() * (2 ** thumbnail_mip_lvl)
         thumbnail_configs.setdefault('resolution', resolution)
         thumbnail_configs.setdefault('feature_match_dir', feature_match_dir)
-        imglist = sorted(glob.glob(os.path.join(img_dir, '*.png')))
-        section_order_file = os.path.join(root_dir, 'section_order.txt')
+        imglist = sorted(storage.list_folder_content(storage.join_paths(img_dir, '*.png')))
+        section_order_file = storage.join_paths(root_dir, 'section_order.txt')
         imglist = common.rearrange_section_order(imglist, section_order_file)[0]
         bname_list = [os.path.basename(s) for s in imglist]
         region_labels = []
@@ -465,8 +474,8 @@ if __name__ == '__main__':
                 sname1_ext = bname_list[k+stp]
                 sname0 = os.path.splitext(sname0_ext)[0]
                 sname1 = os.path.splitext(sname1_ext)[0]
-                outname = os.path.join(match_dir, sname0 + match_name_delimiter + sname1 + '.h5')
-                if os.path.isfile(outname):
+                outname = storage.join_paths(match_dir, sname0 + match_name_delimiter + sname1 + '.h5')
+                if storage.file_exists(outname):
                     processed.append(True)
                 else:
                     processed.append(False)

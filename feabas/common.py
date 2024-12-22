@@ -8,7 +8,7 @@ from scipy import sparse
 from scipy.ndimage import gaussian_filter1d
 import scipy.sparse.csgraph as csgraph
 
-from feabas.cloud import GCP_client
+from feabas.storage import GCP_client, File, file_exists, join_paths
 
 Match = namedtuple('Match', ('xy0', 'xy1', 'weight'))
 
@@ -577,7 +577,7 @@ def parse_coordinate_files(filename, **kwargs):
     resolution = kwargs.get('resolution', None)
     imgpaths = []
     bboxes = []
-    with open(filename, 'r') as f:
+    with File(filename, 'r') as f:
         lines = f.readlines()
     if len(lines) == 0:
         raise RuntimeError(f'empty file: {filename}')
@@ -619,7 +619,7 @@ def parse_coordinate_files(filename, **kwargs):
         else:
             if tile_size is None:
                 if relpath:
-                    mpath_f = os.path.join(root_dir, mpath)
+                    mpath_f = join_paths(root_dir, mpath)
                 else:
                     mpath_f = mpath
                 img = imread(mpath_f, flag=cv2.IMREAD_GRAYSCALE)
@@ -632,8 +632,8 @@ def parse_coordinate_files(filename, **kwargs):
 
 
 def rearrange_section_order(section_list, section_order_file, order_file_only=True, merge=False):
-    if os.path.isfile(section_order_file):
-        with open(section_order_file, 'r') as f:
+    if file_exists(section_order_file):
+        with File(section_order_file, 'r') as f:
             section_orders0 = f.readlines()
         section_orders = []
         z_lut = {}

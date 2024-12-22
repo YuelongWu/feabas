@@ -1,12 +1,13 @@
 import numpy as np
-import glob
 import os
 
 from feabas import config
-from feabas.cloud import H5File
+from feabas.storage import h5file_class, File, join_paths, list_folder_content
+
+H5File = h5file_class()
 
 def _parse_bigwarp_csv(fname):
-    with open(fname, 'r') as f:
+    with File(fname, 'r') as f:
         lines = f.readlines()
     xy0 = []
     xy1 = []
@@ -25,13 +26,13 @@ if __name__ == '__main__':
     thumbnail_configs = config.thumbnail_configs()
     thumbnail_mip_lvl = thumbnail_configs.get('thumbnail_mip_level', 6)
     resolution = config.montage_resolution() * (2 ** thumbnail_mip_lvl)
-    thumbnail_dir = os.path.join(root_dir, 'thumbnail_align')
-    manual_dir = os.path.join(thumbnail_dir, 'manual_matches')
-    match_dir = os.path.join(thumbnail_dir, 'matches')
+    thumbnail_dir = join_paths(root_dir, 'thumbnail_align')
+    manual_dir = join_paths(thumbnail_dir, 'manual_matches')
+    match_dir = join_paths(thumbnail_dir, 'matches')
 
-    mlist = glob.glob(os.path.join(manual_dir, '*.csv'))
+    mlist = list_folder_content(join_paths(manual_dir, '*.csv'))
     for mname in mlist:
-        outname = os.path.join(match_dir, os.path.basename(mname).replace('.csv', '.h5'))
+        outname = join_paths(match_dir, os.path.basename(mname).replace('.csv', '.h5'))
         xy0, xy1 = _parse_bigwarp_csv(mname)
         weight = np.ones(xy0.shape[0], dtype=np.float32)
         if xy0.size > 0:

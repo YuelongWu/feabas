@@ -10,6 +10,7 @@ import shapely
 
 from feabas.mesh import Mesh
 from feabas import config, constant
+from feabas.storage import File, join_paths, list_folder_content, parse_file_driver
 
 """
 apply rigid transforms to the meshes in {WORK_DIR}/align/tform/ folder so that
@@ -52,7 +53,7 @@ def apply_transform(tname, out_dir=None, R=np.eye(3), txy=np.zeros(2),resolution
     M.apply_affine(R, gear=constant.MESH_GEAR_MOVING)
     M.apply_translation(txy, gear=constant.MESH_GEAR_MOVING)
     if out_dir is not None:
-        outname = os.path.join(out_dir, os.path.basename(tname))
+        outname = join_paths(out_dir, os.path.basename(tname))
     M.locked = locked
     M.save_to_h5(outname, vertex_flags=constant.MESH_GEARS, save_material=True)
 
@@ -62,7 +63,7 @@ if __name__ == '__main__':
 
     if args.src_dir is None:
         root_dir =  config.get_work_dir()
-        tform_dir = os.path.join(root_dir, 'align', 'tform')
+        tform_dir = join_paths(root_dir, 'align', 'tform')
     else:
         tform_dir = args.src_dir
     if args.tgt_dir is None:
@@ -70,14 +71,16 @@ if __name__ == '__main__':
     else:
         out_dir = args.tgt_dir
     
-    canvas_name = os.path.join(out_dir, 'tensorstore_canvas.txt')
-    offset_name = os.path.join(out_dir, 'offset.txt')
+    canvas_name = join_paths(out_dir, 'tensorstore_canvas.txt')
+    offset_name = join_paths(out_dir, 'offset.txt')
 
-    tlist = sorted(glob.glob(os.path.join(tform_dir, '*.h5')))
+    tlist = sorted(list_folder_content(join_paths(tform_dir, '*.h5')))
     if len(tlist) == 0:
         print(f'No meshes found in {tform_dir}')
         exit()
-    os.makedirs(out_dir, exist_ok=True)
+    tdriver, out_dir = parse_file_driver(out_dir)
+    if tdriver == 'file':
+        os.makedirs(out_dir, exist_ok=True)
     resolution0 = config.montage_resolution()
 
     print('finding transformations')
@@ -129,9 +132,9 @@ if __name__ == '__main__':
     bbox[:2] = np.floor(bbox[:2])
     bbox[-2:] = np.ceil(bbox[-2:]) + 1
     print(f'transformed bbox: {bbox}')
-    with open(canvas_name, 'w') as f:
+    with File(canvas_name, 'w') as f:
         f.write('\t'.join([str(s) for s in bbox]))
-    with open(offset_name, 'w') as f:
+    with File(offset_name, 'w') as f:
         f.write('\t'.join([str(s) for s in -bbox[:2]]))
     tfunc = partial(apply_transform, out_dir=out_dir, R=R, txy=txy,resolution=resolution0)
     print('applying transforms.')

@@ -1,12 +1,13 @@
 import numpy as np
-import glob
 import os
 
 import shapely
 import shapely.geometry as shpgeo
 from feabas import config
 from feabas.spatial import scale_coordinates
-from feabas.cloud import H5File
+from feabas.storage import h5file_class, join_paths, list_folder_content
+
+H5File = h5file_class()
 
 def _merge_matches(fname0, fname1, outname, clearance=0, weight=1):
     with H5File(fname0, 'r') as f:
@@ -44,9 +45,9 @@ def _merge_matches(fname0, fname1, outname, clearance=0, weight=1):
 
 if __name__ == '__main__':
     root_dir = config.get_work_dir()
-    match_dir = os.path.join(root_dir, 'align', 'matches')
-    merge_dir = os.path.join(match_dir, 'merge')
-    mlist = glob.glob(os.path.join(merge_dir, '*.h5'))
+    match_dir = join_paths(root_dir, 'align', 'matches')
+    merge_dir = join_paths(match_dir, 'merge')
+    mlist = list_folder_content(join_paths(merge_dir, '*.h5'))
     for mname in mlist:
-        fname0 = os.path.join(match_dir, os.path.basename(mname))
+        fname0 = join_paths(match_dir, os.path.basename(mname))
         _merge_matches(fname0, mname, mname, clearance=400, weight=5)

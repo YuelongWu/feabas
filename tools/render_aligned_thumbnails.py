@@ -9,7 +9,7 @@ import os
 import glob
 import time
 
-from feabas import common, dal, config
+from feabas import common, dal, config, storage
 from feabas.mesh import Mesh
 import feabas.constant as const
 from feabas.renderer import MeshRenderer
@@ -22,8 +22,8 @@ def render_one_thumbnail(thumbnail_path, mesh_path, out_dir, **kwargs):
     bbox = kwargs.get('bbox', None)
     out_resolution = kwargs.get('out_resolution', thumbnail_resolution)
     t0 = time.time()
-    outname = os.path.join(out_dir, os.path.basename(thumbnail_path))
-    if os.path.isfile(outname):
+    outname = storage.join_paths(out_dir, os.path.basename(thumbnail_path))
+    if storage.file_exists(outname):
         return
     M = Mesh.from_h5(mesh_path)
     M.change_resolution(out_resolution)
@@ -84,20 +84,22 @@ if __name__ == '__main__':
     root_dir =  config.get_work_dir()
 
     if args.src_dir.lower() == 'none':
-        src_dir = os.path.join(root_dir, 'thumbnail_align', 'thumbnails')
+        src_dir = storage.join_paths(root_dir, 'thumbnail_align', 'thumbnails')
     else:
         src_dir = args.src_dir
 
     if args.tgt_dir.lower() == 'none':
         if resolution % 1 == 0:
             resolution = int(resolution)
-        tgt_dir = os.path.join(root_dir, 'align', f'aligned_{resolution}nm')
+        tgt_dir = storage.join_paths(root_dir, 'align', f'aligned_{resolution}nm')
     else:
         tgt_dir = args.tgt_dir
-    os.makedirs(tgt_dir, exist_ok=True)
+    tdriver, tgt_dir = storage.parse_file_driver(tgt_dir)
+    if tdriver == 'file':
+        os.makedirs(tgt_dir, exist_ok=True)
 
-    tform_dir = os.path.join(root_dir, 'align', 'tform')
-    tlist = sorted(glob.glob(os.path.join(tform_dir, '*.h5')))
+    tform_dir = storage.join_paths(root_dir, 'align', 'tform')
+    tlist = sorted(storage.list_folder_content(storage.join_paths(tform_dir, '*.h5')))
 
     if len(tlist) == 0:
         print(f'no transformations found in {tform_dir}.')
@@ -139,10 +141,10 @@ if __name__ == '__main__':
                           thumbnail_resolution=src_resolution,
                           out_resolution=resolution, bbox=bbox)
     jobs = []
-    imglist = [os.path.join(src_dir, os.path.basename(s).replace('.h5', args.ext)) for s in tlist]
+    imglist = [storage.join_paths(src_dir, os.path.basename(s).replace('.h5', args.ext)) for s in tlist]
     with ProcessPoolExecutor(max_workers=args.worker, mp_context=get_context('spawn')) as executor:
         for tname, mname in zip(tlist, imglist):
-            if not os.path.isfile(mname):
+            if not storage.file_exists(mname):
                 continue
             jobs.append(executor.submit(target_func, mname, tname))
         for job in as_completed(jobs):

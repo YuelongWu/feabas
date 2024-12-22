@@ -2,7 +2,6 @@ from abc import ABC
 from collections import OrderedDict
 from functools import partial
 import gc
-import glob
 import json
 import os
 import re
@@ -13,6 +12,7 @@ from rtree import index
 import tensorstore as ts
 
 from feabas import common, caching
+from feabas.storage import File, join_paths, list_folder_content
 from feabas.config import DEFAULT_RESOLUTION
 
 
@@ -99,7 +99,7 @@ def get_loader_from_json(json_info, loader_type=None, **kwargs):
                     s = json_ts.read().result()
                     json_obj = s.item()
                 else:
-                    with open(json_info, 'r') as f:
+                    with File(json_info, 'r') as f:
                         json_obj = json.load(f)
     elif isinstance(json_info, dict):
         json_obj = json_info
@@ -215,7 +215,7 @@ class AbstractImageLoader(ABC):
         if jsonname is None:
             return json.dumps(out, indent=2)
         else:
-            with open(jsonname, 'w') as f:
+            with File(jsonname, 'w') as f:
                 json.dump(out, f, indent=2)
 
 
@@ -363,7 +363,7 @@ class AbstractImageLoader(ABC):
     def _load_settings_from_json(jsonname):
         if isinstance(jsonname, str):
             if jsonname.lower().endswith('.json'):
-                with open(jsonname, 'r') as f:
+                with File(jsonname, 'r') as f:
                     json_obj = json.load(f)
             else:
                 json_obj = json.loads(jsonname)
@@ -604,7 +604,7 @@ class StaticImageLoader(AbstractImageLoader):
         if len(bboxes) == 0:
             tile_size = kwargs.get('tile_size', None)
             if tile_size is None:
-                imgpath = os.path.join(self.imgrootdir, self.imgrelpaths[0])
+                imgpath = join_paths(self.imgrootdir, self.imgrelpaths[0])
                 img = super()._read_image(imgpath, number_of_channels=1, apply_CLAHE=False, inverse=False)
                 tile_size = img.shape[:2]
             bboxes = np.tile((0, 0, tile_size[-1], tile_size[0]), (len(filepaths), 1))
@@ -658,7 +658,7 @@ class StaticImageLoader(AbstractImageLoader):
 
     def to_coordinate_file(self, filename, **kwargs):
         delimiter = kwargs.get('delimiter', '\t')
-        with open(filename, 'w') as f:
+        with File(filename, 'w') as f:
             f.write(f'{{ROOT_DIR}}{delimiter}{self.imgrootdir}\n')
             f.write(f'{{RESOLUTION}}{delimiter}{self.resolution}\n')
             for imgpath, bbox in zip(self.imgrelpaths, self._file_bboxes):
@@ -708,7 +708,7 @@ class StaticImageLoader(AbstractImageLoader):
             if isinstance(fileid, str):
                 imgpath = fileid
             else:
-                imgpath = os.path.join(self.imgrootdir, self.imgrelpaths[fileid])
+                imgpath = join_paths(self.imgrootdir, self.imgrelpaths[fileid])
             raise KeyError(f'{imgpath} not in the image loader cache')
         else:
             return self._cache[fileid]
@@ -762,7 +762,7 @@ class StaticImageLoader(AbstractImageLoader):
         if isinstance(fileid, str):
             imgpath = fileid
         else:
-            imgpath = os.path.join(self.imgrootdir, self.imgrelpaths[fileid])
+            imgpath = join_paths(self.imgrootdir, self.imgrelpaths[fileid])
         img = super()._read_image(imgpath, **kwargs)
         if self._dtype is None:
             self._dtype = img.dtype
@@ -806,7 +806,7 @@ class StaticImageLoader(AbstractImageLoader):
     @property
     def filepaths_generator(self):
         for fname in self.imgrelpaths:
-            yield os.path.join(self.imgrootdir, fname)
+            yield join_paths(self.imgrootdir, fname)
 
 
     @property
@@ -846,7 +846,7 @@ class MosaicLoader(StaticImageLoader):
         pixel_offset = kwargs.get('pixel_offset', None)
         if isinstance(imgpaths, str):
             if '*' in imgpaths:
-                imgpaths = glob.glob(imgpaths)
+                imgpaths = list_folder_content(imgpaths)
                 assert bool(imgpaths), 'No image found: {}'.format(imgpaths)
                 imgpaths.sort()
             else:
@@ -1102,7 +1102,7 @@ def get_tensorstore_spec(metafile, mip=None, **kwargs):
                 s = json_ts.read().result()
                 json_obj = s.item()
             else:
-                with open(metafile, 'r') as f:
+                with File(metafile, 'r') as f:
                     json_obj = json.load(f)
     elif isinstance(metafile, dict):
         json_obj = metafile

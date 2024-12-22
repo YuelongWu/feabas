@@ -20,8 +20,9 @@ import triangle
 from feabas import common, material, spatial, caching
 import feabas.constant as const
 from feabas.config import DEFAULT_RESOLUTION
-from feabas.cloud import H5File
+from feabas.storage import h5file_class, join_paths
 
+H5File = h5file_class()
 
 def gear_constant_to_str(gear_const):
     if isinstance(gear_const, (tuple, list)):
@@ -784,7 +785,7 @@ class Mesh:
                     _ = fname.create_dataset(prefix+key, data=val, compression="gzip")
         else:
             if '.h5' not in fname:
-                fname = os.path.join(fname, self.name + '.h5')
+                fname = join_paths(fname, self.name + '.h5')
             with H5File(fname, 'w') as f:
                 for key, val in out.items():
                     if val is None:

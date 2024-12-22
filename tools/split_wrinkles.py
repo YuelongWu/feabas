@@ -3,7 +3,7 @@ import os
 import glob
 from feabas.mesh import Mesh
 from feabas.optimizer import relax_mesh
-from feabas import config, constant
+from feabas import config, constant, storage
 """
 split the wrinkle artifact after mesh relaxation
 """
@@ -13,7 +13,7 @@ DEFORM_THRESHOLD = 1.6 # wrinkle element with larger than this expansion ratio w
 
 if __name__ == '__main__':
     root_dir =  config.get_work_dir()
-    tlist = sorted(glob.glob(os.path.join(root_dir, 'align', 'tform', '*.h5')))
+    tlist = sorted(storage.list_folder_content(storage.join_paths(root_dir, 'align', 'tform', '*.h5')))
     for tname in tlist:
         M = Mesh.from_h5(tname)
         mtb = M.named_material_table

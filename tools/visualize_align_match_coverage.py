@@ -8,7 +8,9 @@ from functools import lru_cache
 from feabas.common import numpy_to_str_ascii, imread
 from feabas.spatial import scale_coordinates
 from feabas import config
-from feabas.cloud import H5File
+from feabas.storage import h5file_class, file_exists, join_paths, list_folder_content, parse_file_driver
+
+H5File = h5file_class()
 
 @lru_cache(maxsize=10)
 def parse_h5_match(match_name, target_resolution=None, delimiter='__to__'):
@@ -35,9 +37,9 @@ def parse_h5_match(match_name, target_resolution=None, delimiter='__to__'):
 
 if __name__ == '__main__':
     root_dir = config.get_work_dir()
-    thumb_dir = os.path.join(root_dir, 'thumbnail_align', 'thumbnails')
-    match_dir = os.path.join(root_dir, 'align', 'matches')
-    out_dir = os.path.join(match_dir, 'match_cover')
+    thumb_dir = join_paths(root_dir, 'thumbnail_align', 'thumbnails')
+    match_dir = join_paths(root_dir, 'align', 'matches')
+    out_dir = join_paths(match_dir, 'match_cover')
     ext = '.png'
     thumbnail_configs = config.thumbnail_configs()
     delimiter = thumbnail_configs.get('alignment', {}).get('match_name_delimiter', '__to__')
@@ -50,10 +52,12 @@ if __name__ == '__main__':
     skel = np.ones((blksz, blksz), np.uint8)
     ds = 2
 
-    os.makedirs(out_dir, exist_ok=True)
+    tdriver, out_dir = parse_file_driver(out_dir)
+    if tdriver == 'file':
+        os.makedirs(out_dir, exist_ok=True)
     
-    tlist = sorted(glob.glob(os.path.join(thumb_dir, '*'+ext)))
-    mlist = sorted(glob.glob(os.path.join(match_dir, '*.h5')))
+    tlist = sorted(list_folder_content(join_paths(thumb_dir, '*'+ext)))
+    mlist = sorted(list_folder_content(join_paths(match_dir, '*.h5')))
     mlist_pairnames = [os.path.splitext(os.path.basename(m))[0].split(delimiter) for m in mlist]
     prev_lut = defaultdict(list)
     post_lut = defaultdict(list)
@@ -62,8 +66,8 @@ if __name__ == '__main__':
         prev_lut[p[1]].append(mname)
     for tname in tlist:
         tname_noext = os.path.splitext(os.path.basename(tname))[0]
-        outname = os.path.join(out_dir, tname_noext+'.jpg')
-        if os.path.isfile(outname):
+        outname = join_paths(out_dir, tname_noext+'.jpg')
+        if file_exists(outname):
             continue
         if (len(prev_lut[tname_noext]) == 0) and (len(post_lut[tname_noext]) == 0):
             continue

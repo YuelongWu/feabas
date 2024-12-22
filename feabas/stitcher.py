@@ -24,7 +24,9 @@ from feabas import common, caching
 from feabas.spatial import scale_coordinates
 import feabas.constant as const
 from feabas.config import DEFAULT_RESOLUTION, SECTION_THICKNESS, data_resolution, TS_TIMEOUT
-from feabas.cloud import H5File
+from feabas.storage import h5file_class, file_exists
+
+H5File = h5file_class()
 
 class Stitcher:
     """
@@ -420,7 +422,7 @@ class Stitcher:
                 mask_paths = [s for s in image_loader.filepaths_generator]
                 for sub0, sub1 in zip(image_to_mask_path[0], image_to_mask_path[1]):
                     mask_paths = [s.replace(sub0, sub1) for s in mask_paths]
-            mask_exist = np.array([os.path.isfile(s) for s in mask_paths])
+            mask_exist = np.array([file_exists(s) for s in mask_paths])
             loader_config = loader_config.copy()
             loader_config.update({'apply_CLAHE': False,
                                   'inverse': False,
@@ -1299,7 +1301,7 @@ class MontageRenderer:
             self.image_loader._preprocess = partial(cv2.blur, ksize=(ksz, ksz))
         if not use_tensorstore: # render as image tiles
             for bbox, filename in zip(bboxes, filenames):
-                if os.path.isfile(filename):
+                if file_exists(filename):
                     rendered[filename] = bbox
                     continue
                 imgt = self.crop(bbox, **kwargs)

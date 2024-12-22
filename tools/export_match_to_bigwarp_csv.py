@@ -5,7 +5,9 @@ import os
 
 from feabas import config
 from feabas.spatial import scale_coordinates
-from feabas.cloud import H5File
+from feabas.storage import h5file_class, File, join_paths, list_folder_content, parse_file_driver
+
+H5File = h5file_class()
 
 def _export_match(mname, outname, target_resolution=None):
     with H5File(mname, 'r') as f:
@@ -19,8 +21,10 @@ def _export_match(mname, outname, target_resolution=None):
         xy0 = scale_coordinates(xy0, scale)
         xy1 = scale_coordinates(xy1, scale)
     xys = np.concatenate((xy0, xy1), axis=-1)
-    os.makedirs(os.path.dirname(outname), exist_ok=True)
-    with open(outname, 'w') as f:
+    tdriver, outname = parse_file_driver(outname)
+    if tdriver == 'file':
+        os.makedirs(os.path.dirname(outname), exist_ok=True)
+    with File(outname, 'w') as f:
         for k, xy in enumerate(xys):
             fields = [f'"Pt-{k}"', '"true"'] + [f'"{s}"' for s in xy]
             outstr = ','.join(fields) + '\n'
@@ -42,18 +46,18 @@ if __name__ == '__main__':
     resolution = args.resolution
     if match_dir.lower() == 'null':
         root_dir = config.get_work_dir()
-        thumbnail_dir = os.path.join(root_dir, 'thumbnail_align')
-        match_dir = os.path.join(thumbnail_dir, 'matches')
+        thumbnail_dir = join_paths(root_dir, 'thumbnail_align')
+        match_dir = join_paths(thumbnail_dir, 'matches')
     if out_dir.lower() == 'null':
         root_dir = config.get_work_dir()
-        thumbnail_dir = os.path.join(root_dir, 'thumbnail_align')
-        out_dir = os.path.join(thumbnail_dir, 'manual_matches')
+        thumbnail_dir = join_paths(root_dir, 'thumbnail_align')
+        out_dir = join_paths(thumbnail_dir, 'manual_matches')
     if resolution <= 0:
         thumbnail_configs = config.thumbnail_configs()
         thumbnail_mip_lvl = thumbnail_configs.get('thumbnail_mip_level', 6)
         resolution = config.montage_resolution() * (2 ** thumbnail_mip_lvl)
     
-    mlist = glob.glob(os.path.join(match_dir, '*.h5'))
+    mlist = list_folder_content(join_paths(match_dir, '*.h5'))
     for mname in mlist:
-        outname = os.path.join(out_dir, os.path.basename(mname).replace('.h5', '.csv'))
+        outname = join_paths(out_dir, os.path.basename(mname).replace('.h5', '.csv'))
         _export_match(mname, outname, target_resolution=resolution)
