@@ -93,6 +93,7 @@ def listener_process(queue, logger_name):
     while True:
         message = queue.get()
         if message is None:
+            logging.shutdown()
             break
         main_logger.handle(message)
 
@@ -129,3 +130,6 @@ def terminate_logger(queue, listener):
     if listener is not None:
         queue.put_nowait(None)
         listener.join()
+    else:
+        logging.shutdown()
+
