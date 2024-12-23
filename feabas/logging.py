@@ -80,7 +80,7 @@ def get_main_logger(logger_name):
         main_logger.setLevel(logging.DEBUG)
         import socket
         hostname = socket.gethostname()
-        warnfile = storage.join_paths(log_dir, _time_stamp + '_' + hostname + '_' +  + logger_prefix + '.log')
+        warnfile = storage.join_paths(log_dir, _time_stamp + '_' + hostname + '_' + logger_prefix + '.log')
         warn_handler = FileHandler(warnfile, mode='a', delay=True)
         warn_handler.setFormatter(formatter)
         warn_handler.setLevel(logging.WARNING)
