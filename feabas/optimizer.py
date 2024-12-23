@@ -1054,7 +1054,7 @@ class SLM:
         """
         maxiter = kwargs.get('maxiter', None)
         tol = kwargs.get('tol', 1e-7)
-        atol = kwargs.get('atol', None)
+        atol = kwargs.get('atol', 0.0)
         callback_settings = kwargs.get('callback_settings', True)
         shape_gear = kwargs.get('shape_gear', const.MESH_GEAR_FIXED)
         targt_gear = kwargs.get('target_gear', const.MESH_GEAR_MOVING)
@@ -1243,7 +1243,7 @@ class SLM:
         """
         max_newtonstep = kwargs.pop('max_newtonstep', 5)
         tol = kwargs.pop('tol', 1e-7)
-        atol = kwargs.pop('atol', None)
+        atol = kwargs.pop('atol', 0)
         maxiter = SLM.expand_to_list(kwargs.pop('maxiter', None), max_newtonstep)
         step_tol = SLM.expand_to_list(kwargs.pop('step_tol', tol), max_newtonstep)
         step_atol = SLM.expand_to_list(kwargs.pop('step_atol', atol), max_newtonstep)
@@ -1759,7 +1759,7 @@ def relax_mesh(M, free_vertices=None, free_triangles=None, **kwargs):
     gear = kwargs.get('gear', (const.MESH_GEAR_FIXED, const.MESH_GEAR_MOVING))
     maxiter = kwargs.get('maxiter', None)
     tol = kwargs.get('tol', 1e-7)
-    atol = kwargs.get('atol', None)
+    atol = kwargs.get('atol', 0.0)
     callback_settings = kwargs.get('callback_settings', {}).copy()
     modified = False
     locked = M.locked
