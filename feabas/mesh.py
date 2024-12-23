@@ -1138,7 +1138,7 @@ class Mesh:
                         self._material_table.add_material(m_name_new, mat_new)
                     stiffness_multiplier[tidx] = stiffness_multiplier[tidx] * modifier
                     self._material_ids[tidx] = uid_new
-        self.set_stiffness_multiplier(stiffness_multiplier)
+            self.set_stiffness_multiplier(stiffness_multiplier)
 
 
     def lock(self):
