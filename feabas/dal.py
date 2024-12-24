@@ -1166,7 +1166,10 @@ class TensorStoreLoader(AbstractImageLoader):
         if total_bytes_limit >= 0:
             cntx = {'cache_pool': {'total_bytes_limit': total_bytes_limit}}
             js_spec = js_spec.copy()
-            js_spec.update({'context': cntx, 'recheck_cached_data': 'open'})
+            crnt_lvl = js_spec
+            while 'base' in crnt_lvl:
+                crnt_lvl = crnt_lvl['base']
+            crnt_lvl.update({'context': cntx, 'recheck_cached_data': 'open'})
         dataset = ts.open(js_spec).result()
         if js_spec['driver'] in ('neuroglancer_precomputed', 'n5'):
             kwargs['fillval'] = 0
