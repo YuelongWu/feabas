@@ -680,7 +680,7 @@ def bboxes_mesh_renderer_matcher(mesh0, mesh1, image_loader0, image_loader1, bbo
         batch_indices = szchg_id
     else:
         batch_indices = []
-        for bid0, bid1 in zip(szchg_id[:-1], szchg_id[:1]):
+        for bid0, bid1 in zip(szchg_id[:-1], szchg_id[1:]):
             num_batchs = max(1, int(np.ceil(bid1-bid0 / batch_size)))
             batch_indices.append(np.linspace(bid0, bid1, num=num_batchs+1, endpoint=True))
         batch_indices = np.round(np.concatenate(batch_indices, axis=-1))
