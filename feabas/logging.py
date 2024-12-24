@@ -91,7 +91,10 @@ def get_main_logger(logger_name):
 def listener_process(queue, logger_name):
     main_logger = get_main_logger(logger_name=logger_name)
     while True:
-        message = queue.get()
+        try:
+            message = queue.get()
+        except EOFError:
+            message = None
         if message is None:
             logging.shutdown()
             break
