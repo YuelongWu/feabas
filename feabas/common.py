@@ -39,6 +39,8 @@ def imread(path, **kwargs):
                 num_channels = 1
             else:
                 num_channels = img.shape[-1]
+                if num_channels == 1:
+                    img = img[..., 0]
             if flag == cv2.IMREAD_GRAYSCALE and num_channels != 1:
                 img = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
             elif flag == cv2.IMREAD_COLOR and num_channels == 1:
