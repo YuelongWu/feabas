@@ -63,7 +63,7 @@ def list_folder_content(pathname, recursive=False):
         flist = []
         for b in blobs:
             fname = b.name
-            if ext not in fname:
+            if not fname.endswith(ext):
                 continue
             flist.append(join_paths('gs://'+bucketname, fname))
     return flist
