@@ -800,13 +800,11 @@ class Stitcher:
         cost = opt.optimize_linear(groupings=sel_grps, **kwargs)
         if check_validity:
             m_valid = np.array([m.is_valid() for m in opt.meshes])
-        else:
-            m_valid = np.ones(opt.num_meshes, dtype=bool)
+            if not np.all(m_valid):
+                return 0, 0
         for g, m in zip(groupings, self.meshes):
             sel_idx = np.nonzero(sel_grps == g)[0]
             if sel_idx.size == 0:
-                continue
-            elif not m_valid[sel_idx[0]]:
                 continue
             else:
                 m_border = opt.meshes[sel_idx[0]]
