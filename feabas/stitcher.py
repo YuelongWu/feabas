@@ -766,6 +766,7 @@ class Stitcher:
         Kwargs: refer to the input of feabas.optimizer.SLM.optimize_linear.
         """
         check_validity = kwargs.get('check_validity', True)
+        check_residues = kwargs.get('check_residues', True)
         cache_size = kwargs.get('cache_size', None)
         target_gear = kwargs.setdefault('target_gear', const.MESH_GEAR_FIXED)
         if not self.has_groupings:
@@ -802,7 +803,12 @@ class Stitcher:
             m_valid = np.array([m.is_valid() for m in opt.meshes])
             if not np.all(m_valid):
                 return 0, 0
+        if check_residues:
+            res0 = np.nanmean(self.match_residues())
+        vertices0 = []
         for g, m in zip(groupings, self.meshes):
+            if check_residues:
+                vertices0.append(m.vertices(gear=target_gear))
             sel_idx = np.nonzero(sel_grps == g)[0]
             if sel_idx.size == 0:
                 continue
@@ -810,6 +816,12 @@ class Stitcher:
                 m_border = opt.meshes[sel_idx[0]]
                 v = m_border.vertices(gear=target_gear)
                 m.set_vertices(v, target_gear)
+        if check_residues:
+            res1 = np.nanmean(self.match_residues())
+            if res0 <= res1:
+                for m, v0 in zip(self.meshes, vertices0):
+                    m.set_vertices(v0, target_gear)
+                return 0, 0
         return cost
 
 
