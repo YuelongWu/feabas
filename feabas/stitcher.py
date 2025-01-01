@@ -765,6 +765,7 @@ class Stitcher:
         transformation.
         Kwargs: refer to the input of feabas.optimizer.SLM.optimize_linear.
         """
+        check_validity = kwargs.get('check_validity', True)
         cache_size = kwargs.get('cache_size', None)
         target_gear = kwargs.setdefault('target_gear', const.MESH_GEAR_FIXED)
         if not self.has_groupings:
@@ -797,9 +798,15 @@ class Stitcher:
             opt.add_link_from_coordinates(uids1[0], uids1[1], xy0, xy1,
                 weight=weight, check_duplicates=False)
         cost = opt.optimize_linear(groupings=sel_grps, **kwargs)
+        if check_validity:
+            m_valid = np.array([m.is_valid() for m in opt.meshes])
+        else:
+            m_valid = np.ones(opt.num_meshes, dtype=bool)
         for g, m in zip(groupings, self.meshes):
             sel_idx = np.nonzero(sel_grps == g)[0]
             if sel_idx.size == 0:
+                continue
+            elif not m_valid[sel_idx[0]]:
                 continue
             else:
                 m_border = opt.meshes[sel_idx[0]]
