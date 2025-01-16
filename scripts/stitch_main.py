@@ -233,9 +233,7 @@ def render_main(tform_list, out_dir, **kwargs):
     use_tensorstore = driver != 'image'
     if use_tensorstore:
         meta_dir = kwargs['meta_dir']
-        tdriver, meta_dir = storage.parse_file_driver(meta_dir)
-        if tdriver == 'file':
-            os.makedirs(meta_dir, exist_ok=True)
+        storage.makedirs(meta_dir)
     for tname in tform_list:
         t0 = time.time()
         sec_name = os.path.basename(tname).replace('.h5', '')
@@ -251,9 +249,7 @@ def render_main(tform_list, out_dir, **kwargs):
             if use_tensorstore:
                 out_prefix = sec_outdir
             else:
-                tdriver, sec_outdir = storage.parse_file_driver(sec_outdir)
-                if tdriver == 'file':
-                    os.makedirs(sec_outdir, exist_ok=True)
+                storage.makedirs(sec_outdir)
                 out_prefix = storage.join_paths(sec_outdir, sec_name)
             num_rendered = render_one_section(tname, out_prefix, meta_name=meta_name, **kwargs)
             logger.info(f'{sec_name}: {num_rendered} tiles | {(time.time()-t0)/60} min')
@@ -336,9 +332,7 @@ if __name__ == '__main__':
         match_list = match_list[indx]
         if args.reverse:
             match_list = match_list[::-1]
-        tdriver, mesh_dir = storage.parse_file_driver(mesh_dir)
-        if tdriver == 'file':
-            os.makedirs(mesh_dir, exist_ok=True)
+        storage.makedirs(mesh_dir)
         optmization_main(match_list, mesh_dir, **stitch_configs)
     else:
         coord_list = sorted(storage.list_folder_content(storage.join_paths(coord_dir, '*.txt')))
@@ -347,7 +341,5 @@ if __name__ == '__main__':
         coord_list = coord_list[indx]
         if args.reverse:
             coord_list = coord_list[::-1]
-        tdriver, match_dir = storage.parse_file_driver(match_dir)
-        if tdriver == 'file':
-            os.makedirs(match_dir, exist_ok=True)
+        storage.makedirs(match_dir)
         match_main(coord_list, match_dir, **stitch_configs)

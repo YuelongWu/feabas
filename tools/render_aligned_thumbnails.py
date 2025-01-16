@@ -94,9 +94,7 @@ if __name__ == '__main__':
         tgt_dir = storage.join_paths(root_dir, 'align', f'aligned_{resolution}nm')
     else:
         tgt_dir = args.tgt_dir
-    tdriver, tgt_dir = storage.parse_file_driver(tgt_dir)
-    if tdriver == 'file':
-        os.makedirs(tgt_dir, exist_ok=True)
+    storage.makedirs(tgt_dir, exist_ok=True)
 
     tform_dir = storage.join_paths(root_dir, 'align', 'tform')
     tlist = sorted(storage.list_folder_content(storage.join_paths(tform_dir, '*.h5')))

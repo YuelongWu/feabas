@@ -1,14 +1,13 @@
 import cv2
 from collections import defaultdict
 import numpy as np
-import glob
 import os
 from functools import lru_cache
 
 from feabas.common import numpy_to_str_ascii, imread
 from feabas.spatial import scale_coordinates
 from feabas import config
-from feabas.storage import h5file_class, file_exists, join_paths, list_folder_content, parse_file_driver
+from feabas.storage import h5file_class, file_exists, join_paths, list_folder_content, parse_file_driver, makedirs
 
 H5File = h5file_class()
 
@@ -52,9 +51,7 @@ if __name__ == '__main__':
     skel = np.ones((blksz, blksz), np.uint8)
     ds = 2
 
-    tdriver, out_dir = parse_file_driver(out_dir)
-    if tdriver == 'file':
-        os.makedirs(out_dir, exist_ok=True)
+    makedirs(out_dir, exist_ok=True)
     
     tlist = sorted(list_folder_content(join_paths(thumb_dir, '*'+ext)))
     mlist = sorted(list_folder_content(join_paths(match_dir, '*.h5')))

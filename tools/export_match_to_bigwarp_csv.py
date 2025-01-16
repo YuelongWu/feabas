@@ -5,7 +5,7 @@ import os
 
 from feabas import config
 from feabas.spatial import scale_coordinates
-from feabas.storage import h5file_class, File, join_paths, list_folder_content, parse_file_driver
+from feabas.storage import h5file_class, File, join_paths, list_folder_content, parse_file_driver, makedirs
 
 H5File = h5file_class()
 
@@ -21,9 +21,7 @@ def _export_match(mname, outname, target_resolution=None):
         xy0 = scale_coordinates(xy0, scale)
         xy1 = scale_coordinates(xy1, scale)
     xys = np.concatenate((xy0, xy1), axis=-1)
-    tdriver, outname = parse_file_driver(outname)
-    if tdriver == 'file':
-        os.makedirs(os.path.dirname(outname), exist_ok=True)
+    makedirs(os.path.dirname(outname), exist_ok=True)
     with File(outname, 'w') as f:
         for k, xy in enumerate(xys):
             fields = [f'"Pt-{k}"', '"true"'] + [f'"{s}"' for s in xy]

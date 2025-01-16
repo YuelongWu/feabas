@@ -4,13 +4,12 @@ from concurrent.futures import as_completed
 from multiprocessing import get_context
 from functools import partial
 import numpy as np
-import os
-import glob
 import shapely
 
-from feabas.mesh import Mesh
-from feabas import config, constant
-from feabas.storage import File, join_paths, list_folder_content, parse_file_driver
+from feabas.spatial import find_rotation_for_minimum_rectangle
+from feabas.aligner import get_convex_hull, apply_transform_normalization
+from feabas import config
+from feabas.storage import File, join_paths, list_folder_content, makedirs
 
 """
 apply rigid transforms to the meshes in {WORK_DIR}/align/tform/ folder so that
@@ -28,34 +27,6 @@ def parse_args(args=None):
     parser.add_argument("--offset_x", metavar="offset_x", type=float, default=0.0)
     parser.add_argument("--offset_y", metavar="offset_y", type=float, default=0.0)
     return parser.parse_args(args)
-
-
-def get_convex_hull(tname, wkb=False, resolution=None):
-    M = Mesh.from_h5(tname)
-    if resolution is not None:
-        M.change_resolution(resolution)
-    R = M.shapely_regions(gear=constant.MESH_GEAR_MOVING, offsetting=True)
-    R = shapely.convex_hull(R)
-    if wkb:
-        return shapely.to_wkb(R)
-    else:
-        return R
-
-
-def apply_transform(tname, out_dir=None, R=np.eye(3), txy=np.zeros(2),resolution=None):
-    M = Mesh.from_h5(tname)
-    locked = M.locked
-    M.locked = False
-    if resolution is not None:
-        M.change_resolution(config.montage_resolution())
-    M.apply_affine(R, gear=constant.MESH_GEAR_FIXED)
-    M.apply_translation(txy, gear=constant.MESH_GEAR_FIXED)
-    M.apply_affine(R, gear=constant.MESH_GEAR_MOVING)
-    M.apply_translation(txy, gear=constant.MESH_GEAR_MOVING)
-    if out_dir is not None:
-        outname = join_paths(out_dir, os.path.basename(tname))
-    M.locked = locked
-    M.save_to_h5(outname, vertex_flags=constant.MESH_GEARS, save_material=True)
 
 
 if __name__ == '__main__':
@@ -78,9 +49,7 @@ if __name__ == '__main__':
     if len(tlist) == 0:
         print(f'No meshes found in {tform_dir}')
         exit()
-    tdriver, out_dir = parse_file_driver(out_dir)
-    if tdriver == 'file':
-        os.makedirs(out_dir, exist_ok=True)
+    makedirs(out_dir, exist_ok=True)
     resolution0 = config.montage_resolution()
 
     print('finding transformations')
@@ -106,20 +75,10 @@ if __name__ == '__main__':
             else:
                 regions = regions.union(R)
     if args.angle is None:
-        bbox = shapely.minimum_rotated_rectangle(regions)
-        corner_xy = np.array(bbox.boundary.coords)
-        corner_dxy = np.diff(corner_xy, axis=0)
-        sides = np.sum(corner_dxy**2, axis=-1) ** 0.5
-        if sides[0] > sides[1]:
-            side_vec = corner_dxy[0]
-        else:
-            side_vec = corner_dxy[1]
-        theta = np.arctan2(side_vec[1], side_vec[0])
-        if np.abs(theta) > np.pi/2:
-            theta = np.pi + theta
+        theta = find_rotation_for_minimum_rectangle(regions)
     else:
         theta = args.angle * np.pi / 180
-        corner_xy = np.array(regions.boundary.coords)
+    corner_xy = np.array(regions.boundary.coords)
     Rt = np.array([[np.cos(theta), -np.sin(theta)],[np.sin(theta), np.cos(theta)]])
     R = np.eye(3)
     R[:2,:2] = Rt
@@ -136,7 +95,7 @@ if __name__ == '__main__':
         f.write('\t'.join([str(s) for s in bbox]))
     with File(offset_name, 'w') as f:
         f.write('\t'.join([str(s) for s in -bbox[:2]]))
-    tfunc = partial(apply_transform, out_dir=out_dir, R=R, txy=txy,resolution=resolution0)
+    tfunc = partial(apply_transform_normalization, out_dir=out_dir, R=R, txy=txy,resolution=resolution0)
     print('applying transforms.')
     if args.worker > 1:
         jobs = []

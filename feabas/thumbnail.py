@@ -543,9 +543,7 @@ def align_two_thumbnails(img0, img1, outname, mask0=None, mask1=None, **kwargs):
             return 0
         if save_feature_match:
             xy0, xy1, weight = mtch0
-            tdriver, feature_match_dir = storage.parse_file_driver(feature_match_dir)
-            if tdriver == 'file':
-                os.makedirs(feature_match_dir, exist_ok=True)
+            storage.makedirs(feature_match_dir)
             with H5File(feature_matchname, 'w') as f:
                 f.create_dataset('xy0', data=xy0, compression="gzip")
                 f.create_dataset('xy1', data=xy1, compression="gzip")
@@ -560,9 +558,7 @@ def align_two_thumbnails(img0, img1, outname, mask0=None, mask1=None, **kwargs):
         return 0
     else:
         xy0, xy1, weight = mtch1
-        tdriver, outname = storage.parse_file_driver(outname)
-        if tdriver == 'file':
-            os.makedirs(os.path.dirname(outname), exist_ok=True)
+        storage.makedirs(os.path.dirname(outname), exist_ok=True)
         with H5File(outname, 'w') as f:
             f.create_dataset('xy0', data=xy0, compression="gzip")
             f.create_dataset('xy1', data=xy1, compression="gzip")

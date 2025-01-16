@@ -17,27 +17,14 @@ os.environ["OPENCV_IO_MAX_IMAGE_PIXELS"] = str(pow(2,40)) # for large masks in m
 def generate_mesh_from_mask(mask_names, outname, **kwargs):
     if storage.file_exists(outname):
         return
-    from feabas import material, dal, spatial, mesh
-    material_table = kwargs.get('material_table', material.MaterialTable())
-    target_resolution = kwargs.get('target_resolution', config.montage_resolution())
-    mesh_size = kwargs.get('mesh_size', 600)
-    simplify_tol = kwargs.get('simplify_tol', 2)
-    area_thresh = kwargs.get('area_thresh', 0)
+    from feabas import material, dal, mesh
+    material_table = kwargs.pop('material_table', material.MaterialTable())
+    target_resolution = kwargs.pop('target_resolution', config.montage_resolution())
+    mesh_size = kwargs.pop('mesh_size', 600)
     logger_info = kwargs.pop('logger', None)
+    initial_tform = kwargs.pop('initial_tform', None)
     logger = logging.get_logger(logger_info)
-    if isinstance(simplify_tol, dict):
-        region_tols = defaultdict(lambda: 0.1)
-        region_tols.update(simplify_tol)
-    else:
-        region_tols = defaultdict(lambda: simplify_tol)
     loader = None
-    if not isinstance(material_table, material.MaterialTable):
-        if isinstance(material_table, dict):
-            material_table = material.MaterialTable(table=material_table)
-        elif isinstance(material_table, str):
-            material_table = material.MaterialTable.from_json(material_table, stream=not material_table.endswith('.json'))
-        else:
-            raise TypeError
     if 'exclude' in material_table.named_table:
         mat = material_table['exclude']
         fillval = mat.mask_label
@@ -57,14 +44,11 @@ def generate_mesh_from_mask(mask_names, outname, **kwargs):
         logger.warning(f'{secname}: mask does not exist.')
         return
     mesh_size = mesh_size * config.montage_resolution() / src_resolution
-    G = spatial.Geometry.from_image_mosaic(loader, material_table=material_table, resolution=src_resolution)
-    PSLG = G.PSLG(region_tol=region_tols,  roi_tol=0, area_thresh=area_thresh)
-    M = mesh.Mesh.from_PSLG(**PSLG, material_table=material_table, mesh_size=mesh_size, min_mesh_angle=20)
+    M = mesh.mesh_from_mask(loader, mesh_size=mesh_size, material_table=material_table, resolution=src_resolution, **kwargs)
     M.change_resolution(target_resolution)
-    if ('split' in material_table.named_table):
-        mid = material_table.named_table['split'].uid
-        m_indx = M.material_ids == mid
-        M.incise_region(m_indx)
+    if initial_tform is not None:
+        Mt = mesh.Mesh.from_h5(initial_tform)
+        M = mesh.transform_mesh(M, Mt, gears=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_FIXED), tgears=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING))
     mshname = os.path.splitext(os.path.basename(mask_name))[0]
     M.save_to_h5(outname, save_material=True, override_dict={'name': mshname})
 
@@ -93,7 +77,10 @@ def generate_mesh_main():
                         (storage.join_paths(alt_mask_dir, sname + '.png'), alt_mask_resolution),
                         (storage.join_paths(thumbnail_mask_dir, sname + '.png'), thumbnail_resolution)]
             outname = storage.join_paths(mesh_dir, sname + '.h5')
-            generate_mesh_from_mask(mask_names, outname, material_table=material_table, **mesh_config)
+            initial_tform = storage.join_paths(initial_tform_dir, sname + '.h5')
+            if not storage.file_exists(initial_tform):
+                initial_tform = None
+            generate_mesh_from_mask(mask_names, outname, material_table=material_table, initial_tform=initial_tform, **mesh_config)
     else:
         material_table = material_table.save_to_json(jsonname=None)
         target_func = partial(generate_mesh_from_mask, material_table=material_table, **mesh_config)
@@ -105,8 +92,11 @@ def generate_mesh_main():
                               (storage.join_paths(alt_mask_dir, sname + '.png'), alt_mask_resolution),
                               (storage.join_paths(thumbnail_mask_dir, sname + '.png'), thumbnail_resolution)]
                 outname = storage.join_paths(mesh_dir, sname + '.h5')
+                initial_tform = storage.join_paths(initial_tform_dir, sname + '.h5')
+                if not storage.file_exists(initial_tform):
+                    initial_tform = None
                 if not storage.file_exists(outname):
-                    job = executor.submit(target_func, mask_names=mask_names, outname=outname)
+                    job = executor.submit(target_func, mask_names=mask_names, outname=outname, initial_tform=initial_tform)
                     jobs.append(job)
             for job in jobs:
                 job.result()
@@ -146,7 +136,8 @@ def match_main(match_list):
             loader0.update(loader_config)
             loader1.update(loader_config)
             loaders = [loader0, loader1]
-        num_matches = match_section_from_initial_matches(mname, mesh_dir, loaders, match_dir, align_config)
+        ignore_initial_match = not storage.file_exists(mname)
+        num_matches = match_section_from_initial_matches(mname, mesh_dir, loaders, match_dir, align_config, ignore_initial_match=ignore_initial_match)
         if num_matches is not None:
             if num_matches > 0:
                 logger.info(f'{tname}: {num_matches} matches, {round((time.time()-t0)/60,3)} min.')
@@ -254,9 +245,7 @@ def render_one_section(h5name, z_prefix='', **kwargs):
     meta_name = storage.join_paths(outdir, 'metadata.txt')
     if storage.file_exists(meta_name):
         return None
-    tdriver, outdir = storage.parse_file_driver(outdir)
-    if tdriver == 'file':
-        os.makedirs(outdir, exist_ok=True)
+    storage.makedirs(outdir)
     t0 = time.time()
     stitch_config = config.stitch_configs().get('rendering', {})
     loader_config = kwargs.pop('loader_config', {}).copy()
@@ -428,7 +417,9 @@ if __name__ == '__main__':
     mesh_dir = storage.join_paths(align_dir, 'mesh')
     match_dir = storage.join_paths(align_dir, 'matches')
     tform_dir = storage.join_paths(align_dir, 'tform')
+    match_filename = storage.join_paths(align_dir, 'match_name.txt')
     thumbnail_dir = storage.join_paths(root_dir, 'thumbnail_align')
+    initial_tform_dir = storage.join_paths(thumbnail_dir, 'tform')
     thumb_match_dir = storage.join_paths(thumbnail_dir, 'matches')
     render_dir = config.align_render_dir()
     tensorstore_render_dir = config.tensorstore_render_dir()
@@ -440,26 +431,32 @@ if __name__ == '__main__':
     if stp_idx == 0:
         stp_idx = None
     indx = slice(stt_idx, stp_idx, step)
-    tdriver, mesh_dir = storage.parse_file_driver(mesh_dir)
-    if tdriver == 'file':
-        os.makedirs(mesh_dir, exist_ok=True)
+    storage.makedirs(mesh_dir)
     if mode == 'meshing':
         generate_mesh_main()
     elif mode == 'matching':
-        tdriver, match_dir = storage.parse_file_driver(match_dir)
-        if tdriver == 'file':
-            os.makedirs(match_dir, exist_ok=True)
+        storage.makedirs(match_dir)
         generate_mesh_main()
-        match_list = sorted(storage.list_folder_content(storage.join_paths(thumb_match_dir, '*.h5')))
+        if storage.file_exists(match_filename):
+            with storage.File(match_filename, 'r') as f:
+                match_list0 = f.readlines()
+            match_list = []
+            for s in match_list0:
+                s = s.strip()
+                s = s.replace('\t', match_name_delimiter)
+                if not s.endswith('.h5'):
+                    s = s + '.h5'
+                s = storage.join_paths(thumb_match_dir, s)
+                match_list.append(s)
+        else:
+            match_list = sorted(storage.list_folder_content(storage.join_paths(thumb_match_dir, '*.h5')))
         match_list = match_list[indx]
         if args.reverse:
             match_list = match_list[::-1]
         align_config.setdefault('match_name_delimiter',  match_name_delimiter)
         match_main(match_list)
     elif mode == 'optimization':
-        tdriver, tform_dir = storage.parse_file_driver(tform_dir)
-        if tdriver == 'file':
-            os.makedirs(tform_dir, exist_ok=True)
+        storage.makedirs(tform_dir)
         optimize_main(None)
     elif mode == 'rendering':
         if align_config.pop('offset_bbox', True):
@@ -467,9 +464,7 @@ if __name__ == '__main__':
             if not storage.file_exists(offset_name):
                 time.sleep(0.1 * (1 + (args.start % args.step))) # avoid racing
                 offset_bbox_main()
-        tdriver, render_dir = storage.parse_file_driver(render_dir)
-        if tdriver == 'file':
-            os.makedirs(render_dir, exist_ok=True)
+        storage.makedirs(render_dir)
         tform_list = sorted(storage.list_folder_content(storage.join_paths(tform_dir, '*.h5')))
         tform_list = tform_list[indx]
         if args.reverse:

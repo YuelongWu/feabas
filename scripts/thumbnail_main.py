@@ -1,9 +1,11 @@
 import argparse
 from functools import partial
 from concurrent.futures.process import ProcessPoolExecutor
+from concurrent.futures import as_completed
 import math
 from multiprocessing import get_context
 import os
+import time
 
 from feabas import config, logging, storage
 
@@ -71,9 +73,7 @@ def generate_thumbnails(src_dir, out_dir, seclist=None, **kwargs):
     meta_list = meta_list[arg_indx]
     secnames = [os.path.basename(os.path.dirname(s)) for s in meta_list]
     target_func = partial(mipmap.create_thumbnail, **kwargs)
-    tdriver, out_dir = storage.parse_file_driver(out_dir)
-    if tdriver == 'file':
-        os.makedirs(out_dir, exist_ok=True)
+    storage.makedirs(out_dir)
     updated = {}
     if num_workers == 1:
         for sname in secnames:
@@ -128,9 +128,7 @@ def generate_thumbnails_tensorstore(src_dir, out_dir, seclist=None, **kwargs):
     meta_list = sorted(storage.list_folder_content(storage.join_paths(src_dir, '*.json')))
     meta_list = meta_list[arg_indx]
     target_func = partial(mipmap.create_thumbnail_tensorstore, **kwargs)
-    tdriver, out_dir = storage.parse_file_driver(out_dir)
-    if tdriver == 'file':
-        os.makedirs(out_dir, exist_ok=True)
+    storage.makedirs(out_dir)
     updated = {}
     if num_workers == 1:
         for meta_name in meta_list:
@@ -212,9 +210,7 @@ def generate_thumbnail_masks(mesh_dir, out_dir, seclist=None, **kwargs):
     mesh_list = mesh_list[arg_indx]
     target_func = partial(save_mask_for_one_sections, resolution=resolution, img_dir=img_dir,
                           fillval=fillval, mask_erode=mask_erode)
-    tdriver, out_dir = storage.parse_file_driver(out_dir)
-    if tdriver == 'file':
-        os.makedirs(out_dir, exist_ok=True)
+    storage.makedirs(out_dir)
     if num_workers == 1:
         for mname in mesh_list:
             sname = os.path.basename(mname).replace('.h5', '')
@@ -315,6 +311,118 @@ def align_thumbnail_pairs(pairnames, image_dir, out_dir, **kwargs):
             logger.error(f'{pname}: error {err}')
 
 
+def generate_mesh_from_mask(secname, **kwargs):
+    from feabas import mesh, storage, common
+    mask_name = kwargs.pop('mask_name', None)
+    mask_size = kwargs.pop('mask_size', None)
+    out_dir = kwargs.pop('out_dir', None)
+    logger_info = kwargs.pop('logger', None)
+    logger = logging.get_logger(logger_info)
+    kwargs.setdefault('name', secname)
+    if (mask_name is not None) and storage.file_exists(mask_name):
+        M = mesh.mesh_from_mask(mask_name, **kwargs)
+    elif mask_size is not None:
+        if isinstance(mask_size, str):
+            img = common.imread(mask_size)
+            mask_size = img.shape
+        ymax, xmax = mask_size[0], mask_size[1]
+        M = mesh.Mesh.from_polygon_equilateral((0, 0, xmax, ymax), **kwargs)
+    else:
+        logger.error(f'{secname}: mask not found for meshing')
+        return False
+    if out_dir is None:
+        return M
+    else:
+        outname = storage.join_paths(out_dir, secname+'.h5')
+        M.save_to_h5(outname, save_material=True)
+        return True
+
+
+def normalize_transforms(tlist, angle=0.0, offset=(0,0), **kwargs):
+    num_workers = kwargs.get('num_workers', 1)
+    resolution = kwargs.get('resolution', thumbnail_resolution)
+    if (angle == 0) and (offset is None):
+        modify_tform = False
+    else:
+        modify_tform = True
+    rfunc = partial(get_convex_hull, resolution=resolution)
+    regions = shapely.Polygon()
+    if num_workers > 1:
+        jobs = []
+        with ProcessPoolExecutor(max_workers=num_workers, mp_context=get_context('spawn')) as executor:
+            for tname in tlist:
+                jobs.append(executor.submit(rfunc, tname, wkb=True))
+            for job in as_completed(jobs):
+                wkb = job.result()
+                R = shapely.from_wkb(wkb)
+                regions = regions.union(R)
+    else:
+        for tname in tlist:
+            R = rfunc(tname, wkb=False)
+            regions.union(R)
+    if angle is None:
+        theta = find_rotation_for_minimum_rectangle(regions)
+    else:
+        theta = angle * np.pi / 180
+    corner_xy = np.array(regions.boundary.coords)
+    Rt = np.array([[np.cos(theta), -np.sin(theta)],[np.sin(theta), np.cos(theta)]])
+    R = np.eye(3)
+    R[:2,:2] = Rt
+    corner_txy = corner_xy @ Rt
+    corner_min = np.min(corner_txy, axis=0)
+    corner_max = np.max(corner_max, axis=0)
+    if offset is None:
+        centr = np.array(regions.centroid.coords).ravel()
+        txy = centr - centr @ Rt
+    else:
+        txy = np.array(offset).ravel() - corner_min
+    xy_max = np.ceil((corner_max + txy) + (corner_min + txy).clip(0, None))
+    bbox_out = (0, 0, xy_max[0], xy_max[1])
+    if modify_tform:
+        tfunc = partial(apply_transform_normalization, out_dir=None, R=R, txy=txy, resolution=resolution)
+        if num_workers > 1:
+            jobs = []
+            with ProcessPoolExecutor(max_workers=num_workers, mp_context=get_context('spawn')) as executor:
+                for tname in tlist:
+                    jobs.append(executor.submit(tfunc, tname))
+                for job in as_completed(jobs):
+                    job.result()
+        else:
+            for tname in tlist:
+                tfunc(tname)
+    return bbox_out
+
+
+def render_one_thumbnail(tform_name, thumbnail_dir, out_dir, **kwargs):
+    src_resolution = kwargs.get('src_resolution', thumbnail_resolution)
+    out_resolution = kwargs.get('out_resolution', src_resolution)
+    bbox = kwargs.get('bbox', None)
+    logger_info = kwargs.get('logger', None)
+    logger = logging.get_logger(logger_info)
+    t0 = time.time()
+    secname = os.path.basename(tform_name).replace('.h5', '.png')
+    thumbnail_name = storage.join_paths(thumbnail_dir, secname)
+    outname = storage.join_paths(out_dir, secname)
+    if storage.file_exists(outname):
+        return
+    M = Mesh.from_h5(tform_name)
+    M.change_resolution(out_resolution)
+    img = common.imread(thumbnail_name)
+    if out_resolution > src_resolution:
+        scale = src_resolution / out_resolution
+        img = cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+    elif out_resolution < src_resolution:
+        raise RuntimeError('not sufficient thumbnail resolution.')
+    renderer = MeshRenderer.from_mesh(M)
+    renderer.link_image_loader(StreamLoader(img, resolution=out_resolution, fillval=0))
+    if bbox is None:
+        bbox = M.bbox(gear=constant.MESH_GEAR_MOVING, offsetting=True)
+        bbox[:2] = 0
+    imgt = renderer.crop(bbox, remap_interp=cv2.INTER_LANCZOS4)
+    common.imwrite(outname, imgt)
+    logger.debug(f'{outname}: {time.time()-t0} sec')
+
+
 
 def parse_args(args=None):
     parser = argparse.ArgumentParser(description="Align thumbnails")
@@ -335,14 +443,22 @@ if __name__ == '__main__':
 
     thumbnail_configs = config.thumbnail_configs()
     thumbnail_mip_lvl = thumbnail_configs.get('thumbnail_mip_level', 6)
+    thumbnail_resolution = config.montage_resolution() * (2 ** thumbnail_mip_lvl)
     if args.mode.lower().startswith('d'):
         thumbnail_configs = thumbnail_configs['downsample']
         mode = 'downsample'
-    elif args.mode.lower().startswith('a') or args.mode.lower().startswith('m'):
-        thumbnail_configs = thumbnail_configs['alignment']
-        mode = 'alignment'
     else:
-        raise ValueError(f'{args.mode} not supported mode.')
+        thumbnail_configs = thumbnail_configs['alignment']
+        if args.mode.lower().startswith('a'):
+            mode = 'alignment'
+        elif args.mode.lower().startswith('m'):
+            mode = 'matching'
+        elif args.mode.lower().startswith('o'):
+            mode = 'optimization'
+        elif args.mode.lower().startswith('r'):
+            mode = 'render'
+        else:
+            raise ValueError(f'{args.mode} not supported mode.')
 
     num_workers = thumbnail_configs.get('num_workers', 1)
     if num_workers > num_cpus:
@@ -351,9 +467,16 @@ if __name__ == '__main__':
     nthreads = max(1, math.floor(num_cpus / num_workers))
     config.limit_numpy_thread(nthreads)
 
-    from feabas import mipmap, common, material
+    import cv2
+    from feabas import mipmap, common, material, constant
+    from feabas.dal import StreamLoader
+    from feabas.mesh import Mesh
+    from feabas.renderer import MeshRenderer
+    from feabas.aligner import apply_transform_normalization, get_convex_hull, Stack
     from feabas.mipmap import mip_map_one_section
+    from feabas.spatial import find_rotation_for_minimum_rectangle
     import numpy as np
+    import shapely
 
     stt_idx, stp_idx, step = args.start, args.stop, args.step
     if stp_idx == 0:
@@ -365,7 +488,9 @@ if __name__ == '__main__':
     else:
         arg_indx = slice(stt_idx, stp_idx, step)
 
+    tdriver, root_dir = storage.parse_file_driver(root_dir)
     thumbnail_dir = storage.join_paths(root_dir, 'thumbnail_align')
+    match_filename = storage.join_paths(thumbnail_dir, 'match_name.txt')
     stitch_tform_dir = storage.join_paths(root_dir, 'stitch', 'tform')
     img_dir = storage.join_paths(thumbnail_dir, 'thumbnails')
     mat_mask_dir = storage.join_paths(thumbnail_dir, 'material_masks')
@@ -373,6 +498,8 @@ if __name__ == '__main__':
     manual_dir = storage.join_paths(thumbnail_dir, 'manual_matches')
     match_dir = storage.join_paths(thumbnail_dir, 'matches')
     feature_match_dir = storage.join_paths(thumbnail_dir, 'feature_matches')
+    tform_dir = storage.join_paths(thumbnail_dir, 'tform')
+    render_prefix = storage.join_paths(thumbnail_dir, 'aligned_thumbnails_')
     if mode == 'downsample':
         logger_info = logging.initialize_main_logger(logger_name='stitch_mipmap', mp=num_workers>1)
         thumbnail_configs['logger'] = logger_info[0]
@@ -433,75 +560,163 @@ if __name__ == '__main__':
             thumbnail_configs.setdefault('highpass', highpass)
             thumbnail_configs.setdefault('mip', thumbnail_mip_lvl)
             slist = generate_thumbnails_tensorstore(src_dir, img_dir, seclist=slist, **thumbnail_configs)
-        mask_resolution = config.montage_resolution() * (2 ** thumbnail_mip_lvl)
-        generate_thumbnail_masks(stitch_tform_dir, mat_mask_dir, seclist=slist, resolution=mask_resolution,
+        generate_thumbnail_masks(stitch_tform_dir, mat_mask_dir, seclist=slist, resolution=thumbnail_resolution,
                                  img_dir=img_dir, **thumbnail_configs)
         logger.info('finished.')
         logging.terminate_logger(*logger_info)
-    elif mode == 'alignment':
-        tdriver, match_dir = storage.parse_file_driver(match_dir)
-        if tdriver == 'file':
-            os.makedirs(match_dir, exist_ok=True)
-        tdriver, manual_dir = storage.parse_file_driver(manual_dir)
-        if tdriver == 'file':
-            os.makedirs(manual_dir, exist_ok=True)
-        compare_distance = thumbnail_configs.pop('compare_distance', 1)
-        logger_info = logging.initialize_main_logger(logger_name='thumbnail_align', mp=num_workers>1)
-        thumbnail_configs['logger'] = logger_info[0]
-        logger= logging.get_logger(logger_info[0])
-        resolution = config.montage_resolution() * (2 ** thumbnail_mip_lvl)
-        thumbnail_configs.setdefault('resolution', resolution)
-        thumbnail_configs.setdefault('feature_match_dir', feature_match_dir)
+    else:
         imglist = sorted(storage.list_folder_content(storage.join_paths(img_dir, '*.png')))
         section_order_file = storage.join_paths(root_dir, 'section_order.txt')
         imglist = common.rearrange_section_order(imglist, section_order_file)[0]
         bname_list = [os.path.basename(s) for s in imglist]
-        region_labels = []
-        material_table_file = config.material_table_file()
-        material_table = material.MaterialTable.from_json(material_table_file, stream=False)
-        for _, mat in material_table:
-            if mat.enable_mesh and (mat._stiffness_multiplier > 0.1) and (mat.mask_label is not None):
-                region_labels.append(mat.mask_label)
-        thumbnail_configs.setdefault('region_labels', region_labels)
-        pairnames = []
-        match_name_delimiter = thumbnail_configs.get('match_name_delimiter', '__to__')
-        processed = []
-        if not hasattr(compare_distance, '__iter__'):
-            compare_distance = range(1, compare_distance+1)
-        for stp in compare_distance:
-            for k in range(len(bname_list)-stp):
-                sname0_ext = bname_list[k]
-                sname1_ext = bname_list[k+stp]
-                sname0 = os.path.splitext(sname0_ext)[0]
-                sname1 = os.path.splitext(sname1_ext)[0]
-                outname = storage.join_paths(match_dir, sname0 + match_name_delimiter + sname1 + '.h5')
-                if storage.file_exists(outname):
-                    processed.append(True)
+        secname_list = [os.path.splitext(s)[0] for s in bname_list]
+        if (mode == 'matching') or (mode == 'alignment'):
+            storage.makedirs(match_dir)
+            storage.makedirs(manual_dir)
+            logger_info = logging.initialize_main_logger(logger_name='thumbnail_align', mp=num_workers>1)
+            thumbnail_configs['logger'] = logger_info[0]
+            logger= logging.get_logger(logger_info[0])
+            thumbnail_configs.setdefault('resolution', thumbnail_resolution)
+            thumbnail_configs.setdefault('feature_match_dir', feature_match_dir)
+            region_labels = []
+            material_table_file = config.material_table_file()
+            material_table = material.MaterialTable.from_json(material_table_file, stream=False)
+            for _, mat in material_table:
+                if mat.enable_mesh and (mat._stiffness_multiplier > 0.1) and (mat.mask_label is not None):
+                    region_labels.append(mat.mask_label)
+            thumbnail_configs.setdefault('region_labels', region_labels)
+            pairnames = []
+            match_name_delimiter = thumbnail_configs.get('match_name_delimiter', '__to__')
+            processed = []
+            if storage.file_exists(match_filename):
+                with storage.File(match_filename, 'r') as f:
+                    match_list0 = f.readlines()
+                for s in match_list0:
+                    s = s.strip()
+                    s = s.replace('.h5', '').replace(match_name_delimiter, '\t')
+                    snames = s.split('\t')
+                    sname0, sname1 = snames[0], snames[1]
+                    pairnames.append((sname0 + '.h5', sname1 + '.h5'))
+                    outname = storage.join_paths(match_dir, sname0 + match_name_delimiter + sname1 + '.h5')
+                    if storage.file_exists(outname):
+                        processed.append(True)
+                    else:
+                        processed.append(False)
+            else:
+                compare_distance = thumbnail_configs.pop('compare_distance', 1)
+                if not hasattr(compare_distance, '__iter__'):
+                    compare_distance = range(1, compare_distance+1)
+                for stp in compare_distance:
+                    for k in range(len(bname_list)-stp):
+                        sname0_ext = bname_list[k]
+                        sname1_ext = bname_list[k+stp]
+                        sname0 = os.path.splitext(sname0_ext)[0]
+                        sname1 = os.path.splitext(sname1_ext)[0]
+                        outname = storage.join_paths(match_dir, sname0 + match_name_delimiter + sname1 + '.h5')
+                        if storage.file_exists(outname):
+                            processed.append(True)
+                        else:
+                            processed.append(False)
+                        pairnames.append((sname0_ext, sname1_ext))
+            if len(pairnames) == len(pairnames[arg_indx]):
+
+                pairnames = [s for p, s in zip(processed, pairnames) if not p]
+            pairnames.sort()
+            pairnames = pairnames[arg_indx]
+            target_func = partial(align_thumbnail_pairs, image_dir=img_dir, out_dir=match_dir,
+                                material_mask_dir=mat_mask_dir, region_mask_dir=reg_mask_dir,
+                                **thumbnail_configs)
+            if (num_workers == 1) or (len(pairnames) <= 1):
+                target_func(pairnames)
+            else:
+                num_workers = min(num_workers, len(pairnames))
+                match_per_job = thumbnail_configs.pop('match_per_job', 15)
+                Njobs = max(num_workers, len(pairnames) // match_per_job)
+                indx_j = np.linspace(0, len(pairnames), num=Njobs+1, endpoint=True)
+                indx_j = np.unique(np.round(indx_j).astype(np.int32))
+                jobs = []
+                with ProcessPoolExecutor(max_workers=num_workers, mp_context=get_context('spawn')) as executor:
+                    for idx0, idx1 in zip(indx_j[:-1], indx_j[1:]):
+                        prnm = pairnames[idx0:idx1]
+                        job = executor.submit(target_func, pairnames=prnm)
+                        jobs.append(job)
+                    for job in jobs:
+                        job.result()
+        if (mode == 'optimization') or (mode == 'alignment'):
+            tmp_mesh_dir = storage.join_paths(tform_dir, 'mesh')
+            storage.makedirs(tform_dir, exist_ok=True)
+            storage.makedirs(tmp_mesh_dir, exist_ok=True)
+            # meshing
+            opt_configs = thumbnail_configs.get('optimization', {})
+            mesh_configs = opt_configs.get('meshing_config', {})
+            mfunc = partial(generate_mesh_from_mask, out_dir=tmp_mesh_dir, material_table=material_table,
+                            resolution=thumbnail_resolution, logger=logger_info[0], **mesh_configs)
+            tasks = []
+            for sname in secname_list:
+                tform_name = storage.join_paths(tform_dir, sname+'.h5')
+                mask_name = storage.join_paths(mat_mask_dir, sname+'.png')
+                img_name = storage.join_paths(img_dir, sname+'.png')
+                if storage.file_exists(tform_name):
+                    continue  
+                if storage.file_exists(mask_name):
+                    tasks.append({'mask_name': mask_name})
+                elif storage.file_exists(img_name):
+                    logger.warning(f'{sname} meshing: {mask_name} not found, use rectangular mesh.')
+                    tasks.append({'mask_size': img_name})
                 else:
-                    processed.append(False)
-                pairnames.append((sname0_ext, sname1_ext))
-        if len(pairnames) == len(pairnames[arg_indx]):
-            pairnames = [s for p, s in zip(processed, pairnames) if not p]
-        pairnames.sort()
-        pairnames = pairnames[arg_indx]
-        target_func = partial(align_thumbnail_pairs, image_dir=img_dir, out_dir=match_dir,
-                              material_mask_dir=mat_mask_dir, region_mask_dir=reg_mask_dir,
-                              **thumbnail_configs)
-        if (num_workers == 1) or (len(pairnames) <= 1):
-            target_func(pairnames)
-        else:
-            num_workers = min(num_workers, len(pairnames))
-            match_per_job = thumbnail_configs.pop('match_per_job', 15)
-            Njobs = max(num_workers, len(pairnames) // match_per_job)
-            indx_j = np.linspace(0, len(pairnames), num=Njobs+1, endpoint=True)
-            indx_j = np.unique(np.round(indx_j).astype(np.int32))
-            jobs = []
-            with ProcessPoolExecutor(max_workers=num_workers, mp_context=get_context('spawn')) as executor:
-                for idx0, idx1 in zip(indx_j[:-1], indx_j[1:]):
-                    prnm = pairnames[idx0:idx1]
-                    job = executor.submit(target_func, pairnames=prnm)
-                    jobs.append(job)
-                for job in jobs:
-                    job.result()
+                    logger.error(f'{sname} meshing: {mask_name} not found.')
+            if len(tasks) > 0:
+                logger.info('generating meshes for thumbnails')
+                if num_workers == 1:
+                    for task in tasks:
+                        mfunc(**task)
+                else:
+                    jobs = []
+                    with ProcessPoolExecutor(max_workers=num_workers, mp_context=get_context('spawn')) as executor:
+                        for task in tasks:
+                            job = executor.submit(mfunc, **task)
+                            jobs.append(job)
+                        for job in jobs:
+                            job.result()
+            # optimization
+                logger.info('optimizing...')
+                stack_config = opt_configs.get('stack_config', {})
+                slide_window = opt_configs.get('slide_window', {})
+                slide_window['logger'] = logger_info[0]
+                stk = Stack(section_list=secname_list, mesh_dir=tmp_mesh_dir, match_dir=match_dir, mesh_out_dir=tform_dir, **stack_config)
+                section_list = stk.section_list
+                stk.update_lock_flags({s: storage.file_exists(storage.join_paths(tform_dir, s + '.h5')) for s in section_list})
+                cost = stk.optimize_slide_window(optimize_rigid=True, optimize_elastic=True, 
+                    target_gear=constant.MESH_GEAR_MOVING, **slide_window)
+        if (mode == 'render') or (mode == 'alignment'):
+            render_configs = thumbnail_configs.get('render', {})
+            render_scale = render_configs.get('scale', None)
+            if render_scale is None:
+                to_render = False
+            else:
+                to_render = True
+                render_resolution = thumbnail_resolution / render_scale
+                render_dir = render_prefix + str(int(render_resolution)) + 'nm'
+                rendered = storage.list_folder_content(storage.join_paths(render_dir, '*.png'))
+                tform_list = sorted(storage.list_folder_content(storage.join_paths(tform_dir, '*.h5')))
+                if len(rendered) > 0:
+                    img = common.imread(rendered[0])
+                    bbox_render = (0, 0, img.shape[1], img.shape[0])
+                else:
+                    angle = render_configs.get('rotation_angle', None)
+                    offset = render_configs.get('bbox_offset', [0,0])
+                    bbox_render = normalize_transforms(tform_list, angle=angle, offset=offset, num_workers=num_workers, resolution=render_resolution)
+                rfunc = partial(render_one_thumbnail, thumbnail_dir=img_dir, out_dir=render_dir, src_resolution=thumbnail_resolution,
+                                out_resolution=render_resolution, bbox=bbox_render, logger=logger_info[0])
+                if num_workers > 1:
+                    with ProcessPoolExecutor(max_workers=num_workers, mp_context=get_context('spawn')) as executor:
+                        jobs = []
+                        for tname in tform_list:
+                            jobs.append(executor.submit(rfunc, tname))
+                        for job in as_completed(jobs):
+                            job.result()
+                else:
+                    for tname in tform_list:
+                        rfunc(tname)
         logger.info('finished.')
         logging.terminate_logger(*logger_info)

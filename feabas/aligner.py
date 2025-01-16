@@ -6,11 +6,12 @@ import numpy as np
 import os
 from scipy import sparse
 import scipy.sparse.csgraph as csgraph
+import shapely
 import yaml
 import time
 
 from feabas.mesh import Mesh
-from feabas import dal, logging, storage
+from feabas import config, dal, logging, storage
 from feabas.spatial import scale_coordinates
 from feabas.matcher import section_matcher
 from feabas.optimizer import SLM
@@ -433,6 +434,7 @@ class Stack:
         elif start_loc == 'M':
             init_idx0 = (self.num_sections - window_size)//2
         costs = {}
+        buffer_list = []
         if start_loc == 'L':
             indices0 = np.arange(init_idx0, self.num_sections, window_size-buffer_size)
             for idx0 in indices0:
@@ -444,9 +446,11 @@ class Stack:
                     costs.update(cst)
                 if buffer_size > 0:
                     self.update_lock_flags({s:True for s in seclst[:-buffer_size]})
+                    buffer_list = seclst[-buffer_size:]
                 else:
                     self.update_lock_flags({s:True for s in seclst})
             else:
+                self.update_lock_flags({s:True for s in buffer_list})
                 self.flush_meshes()
         elif start_loc == 'R':
             indices1 = np.arange(self.num_sections, 0, buffer_size-window_size)
@@ -460,9 +464,11 @@ class Stack:
                     costs.update(cst)
                 if buffer_size > 0:
                     self.update_lock_flags({s:True for s in seclst[buffer_size:]})
+                    buffer_list = seclst[:buffer_size]
                 else:
                     self.update_lock_flags({s:True for s in seclst})
             else:
+                self.update_lock_flags({s:True for s in buffer_list})
                 self.flush_meshes()
         else:
             assert window_size > 2 * buffer_size + 1
@@ -629,7 +635,7 @@ class Stack:
         ref_flag = A.dot(sel_flag) & (~sel_flag) & self.locked_array
         combined_flag = sel_flag | ref_flag
         return [s for flg, s in zip(combined_flag, self.section_list) if flg]
-        
+
 
 
     @property
@@ -665,3 +671,34 @@ class Stack:
         stack = Stack(**init_dict)
         func = getattr(stack, process_name)
         return func(**kwargs)
+
+
+def get_convex_hull(tname, wkb=False, resolution=None):
+    M = Mesh.from_h5(tname)
+    if resolution is not None:
+        M.change_resolution(resolution)
+    R = M.shapely_regions(gear=const.MESH_GEAR_MOVING, offsetting=True)
+    R = shapely.convex_hull(R)
+    if wkb:
+        return shapely.to_wkb(R)
+    else:
+        return R
+
+
+def apply_transform_normalization(tname, out_dir=None, R=np.eye(3), txy=np.zeros(2),resolution=None):
+    M = Mesh.from_h5(tname)
+    locked = M.locked
+    M.locked = False
+    if resolution is not None:
+        M.change_resolution(resolution)
+    M.apply_affine(R, gear=const.MESH_GEAR_FIXED)
+    M.apply_translation(txy, gear=const.MESH_GEAR_FIXED)
+    if M.vertices_initialized(gear=const.MESH_GEAR_MOVING):
+        M.apply_affine(R, gear=const.MESH_GEAR_MOVING)
+        M.apply_translation(txy, gear=const.MESH_GEAR_MOVING)
+    if out_dir is not None:
+        outname = storage.join_paths(out_dir, os.path.basename(tname))
+    else:
+        outname = tname
+    M.locked = locked
+    M.save_to_h5(outname, vertex_flags=const.MESH_GEARS, save_material=True)

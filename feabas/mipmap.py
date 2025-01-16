@@ -106,9 +106,7 @@ def mip_one_level(src_dir, out_dir, **kwargs):
             prefix0 = prefix0.split(splitter)[0]
         prefix = storage.join_paths(out_dir, prefix0)
         out_root_dir = os.path.dirname(prefix)
-        tdriver, out_root_dir = storage.parse_file_driver(out_root_dir)
-        if tdriver == 'file':
-            os.makedirs(out_root_dir, exist_ok=True)
+        storage.makedirs(out_root_dir, exist_ok=True)
         kwargs.setdefault('seeds', downsample)
         kwargs.setdefault('mx_dis', (tile_size[0]/2+4, tile_size[-1]/2+4))
         rendered = render_whole_mesh(M, image_loader, prefix, tile_size=tile_size,

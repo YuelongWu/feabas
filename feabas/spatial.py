@@ -4,7 +4,7 @@ import cv2
 import numpy as np
 import shapely.geometry as shpgeo
 from shapely.ops import unary_union, linemerge, polygonize
-from shapely import wkb, get_coordinates
+from shapely import wkb, get_coordinates, minimum_rotated_rectangle
 
 from feabas import dal, common, material
 import feabas.constant as const
@@ -468,6 +468,13 @@ def generate_equilat_grid_mask(mask, side_len, anchor_point=None, buffer=None):
     """
     if buffer is None:
         buffer = side_len
+    if isinstance(mask, (tuple, list, np.ndarray)):
+        mask_np = np.array(mask)
+        if mask_np.size == 4: #bbox
+            xmin, ymin, xmax, ymax = mask_np.ravel()
+            mask = shpgeo.box(xmin, ymin, xmax, ymax)
+        else:
+            mask = shpgeo.Polygon(mask_np.reshape(-1, 2))
     if hasattr(mask, 'geoms'):
         # if multiple geometries, filter out ones with 0 areas
         to_keep = []
@@ -486,6 +493,23 @@ def generate_equilat_grid_mask(mask, side_len, anchor_point=None, buffer=None):
     else:
         return np.array((pts.x, pts.y))
     
+
+def find_rotation_for_minimum_rectangle(poly, rounding=0):
+    bbox = minimum_rotated_rectangle(poly)
+    corner_xy = np.array(bbox.boundary.coords)
+    corner_dxy = np.diff(corner_xy, axis=0)
+    sides = np.sum(corner_dxy**2, axis=-1) ** 0.5
+    if sides[0] > sides[1]:
+        side_vec = corner_dxy[0]
+    else:
+        side_vec = corner_dxy[1]
+    theta = np.arctan2(side_vec[1], side_vec[0])
+    if rounding > 0:
+        delta = rounding * np.pi / 180
+        theta = np.round(theta / delta) * delta
+    if np.abs(theta) > np.pi/2:
+        theta = np.pi + theta
+    return theta
 
 
 class Geometry:

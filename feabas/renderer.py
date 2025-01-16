@@ -989,12 +989,9 @@ class VolumeRenderer:
                 for zz, nn in rendered.items():
                     if (nn is not None) and (nn > 0):
                         flg_name = storage.join_paths(self.flag_dir, str(zz)+'.json')
-                        kv_headers = ('gs://', 'http://', 'https://', 'file://', 'memory://', 's3://')
-                        for kvh in kv_headers:
-                            if flg_name.startswith(kvh):
-                                break
-                        else:
-                            os.makedirs(self.flag_dir, exist_ok=True)
+                        storage.makedirs(self.flag_dir)
+                        tdriver, flg_name = storage.parse_file_driver(flg_name)
+                        if tdriver == 'file':
                             flg_name = 'file://' + flg_name
                         flg_ts = out_data[:,:,zz].spec(minimal_spec=True).to_json()
                         json_ts = ts.open({"driver": "json", "kvstore": flg_name}).result()

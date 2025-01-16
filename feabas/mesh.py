@@ -17,7 +17,7 @@ import shapely.geometry as shpgeo
 from shapely.ops import polygonize, unary_union
 import triangle
 
-from feabas import common, material, spatial, caching
+from feabas import common, dal, material, spatial, caching
 import feabas.constant as const
 from feabas.config import DEFAULT_RESOLUTION
 from feabas.storage import h5file_class, join_paths
@@ -2778,3 +2778,34 @@ def transform_mesh(M0, Mt, **kwargs):
     v1 = Mt.bary2cart(tid, B, tgears[1], offsetting=True)
     M0.set_field(v1-v0, gear=gears)
     return M0
+
+
+def mesh_from_mask(mask, **kwargs):
+    material_table = kwargs.get('material_table', material.MaterialTable())
+    simplify_tol = kwargs.pop('simplify_tol', 2)
+    area_thresh = kwargs.pop('area_thresh', 0)
+    if isinstance(mask, dal.AbstractImageLoader):
+        resolution = mask.resolution
+    else:
+        resolution = kwargs.get('resolution')
+    if not isinstance(material_table, material.MaterialTable):
+        if isinstance(material_table, dict):
+            material_table = material.MaterialTable(table=material_table)
+        elif isinstance(material_table, str):
+            material_table = material.MaterialTable.from_json(material_table, stream=not material_table.endswith('.json'))
+        else:
+            raise TypeError
+    if isinstance(simplify_tol, dict):
+        region_tols = defaultdict(lambda: 0.1)
+        region_tols.update(simplify_tol)
+    else:
+        region_tols = defaultdict(lambda: simplify_tol)
+    G = spatial.Geometry.from_image_mosaic(mask, material_table=material_table, resolution=resolution)
+    PSLG = G.PSLG(region_tol=region_tols, roi_tol=0, area_thresh=area_thresh)
+    PSLG = PSLG.update(kwargs)
+    M = Mesh.from_PSLG(**PSLG)
+    if ('split' in material_table.named_table):
+        mid = material_table.named_table['split'].uid
+        m_indx = M.material_ids == mid
+        M.incise_region(m_indx)
+    return M

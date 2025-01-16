@@ -96,6 +96,12 @@ def join_paths(*args):
     return pth
 
 
+def makedirs(filename):
+    driver, filename = parse_file_driver(filename)
+    if driver == 'file':
+        os.makedirs(filename, exist_ok=True)
+
+
 def h5file_class():
     import h5py # delay import to delay numpy, for thread control
     class H5File(h5py.File):

@@ -205,9 +205,7 @@ def data_resolution():
     # if coordinate list exists, cache data resolution
     if len(coord_list) > 0:
         res.update({'DATA_RESOLUTION': dt_res})
-        cf_driver, cache_file = storage.parse_file_driver(cache_file)
-        if cf_driver == 'file':
-            os.makedirs(os.path.dirname(cache_file), exist_ok=True)
+        storage.makedirs(os.path.dirname(cache_file), exist_ok=True)
         with storage.File(cache_file, 'w') as f:
             yaml.dump(res, f)
     return dt_res
