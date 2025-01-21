@@ -2,7 +2,6 @@ import argparse
 from functools import partial
 from concurrent.futures.process import ProcessPoolExecutor
 from concurrent.futures import as_completed
-import math
 from multiprocessing import get_context
 import os
 import time
@@ -438,8 +437,6 @@ if __name__ == '__main__':
     args = parse_args()
 
     root_dir = config.get_work_dir()
-    generate_settings = config.general_settings()
-    num_cpus = generate_settings['cpu_budget']
 
     thumbnail_configs = config.thumbnail_configs()
     thumbnail_mip_lvl = thumbnail_configs.get('thumbnail_mip_level', 6)
@@ -461,11 +458,9 @@ if __name__ == '__main__':
             raise ValueError(f'{args.mode} not supported mode.')
 
     num_workers = thumbnail_configs.get('num_workers', 1)
-    if num_workers > num_cpus:
-        num_workers = num_cpus
-        thumbnail_configs['num_workers'] = num_workers
-    nthreads = max(1, math.floor(num_cpus / num_workers))
-    config.limit_numpy_thread(nthreads)
+    num_workers = config.set_numpy_thread_from_num_workers(num_workers)
+    thumbnail_configs['num_workers'] = num_workers
+
 
     import cv2
     from feabas import mipmap, common, material, constant

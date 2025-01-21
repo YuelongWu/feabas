@@ -341,17 +341,14 @@ if __name__ == '__main__':
     args = parse_args()
 
     root_dir = config.get_work_dir()
-    generate_settings = config.general_settings()
-    num_cpus = generate_settings['cpu_budget']
 
     align_config = config.align_configs()
     if args.mode.lower().startswith('r'):
         align_config = align_config['rendering']
         mode = 'rendering'
         num_workers = align_config.get('num_workers', 1)
-        if num_workers > num_cpus:
-            num_workers = num_cpus
-            align_config['num_workers'] = num_workers
+        num_workers = config.set_numpy_thread_from_num_workers(num_workers)
+        align_config['num_workers'] = num_workers
     elif args.mode.lower().startswith('o'):
         align_config = align_config['optimization']
         mode = 'optimization'
@@ -360,27 +357,24 @@ if __name__ == '__main__':
             num_workers = min(2, align_config.get('slide_window', {}).get('num_workers', 2))
         else:
             num_workers = 1
-        if num_workers > num_cpus:
-            num_workers = num_cpus
-            align_config.setdefault('slide_window', {})
-            align_config['slide_window']['num_workers'] = num_workers
+        num_workers = config.set_numpy_thread_from_num_workers(num_workers)
+        align_config.setdefault('slide_window', {})
+        align_config['slide_window']['num_workers'] = num_workers
     elif args.mode.lower().startswith('ma'):
         mesh_config = align_config['meshing']
         align_config = align_config['matching']
         mode = 'matching'
         num_workers = align_config.get('matcher_config', {}).get('num_workers', 1)
-        if num_workers > num_cpus:
-            num_workers = num_cpus
-            align_config.setdefault('matcher_config', {})
-            align_config['matcher_config']['num_workers'] = num_workers
-            mesh_config['num_workers'] = min(num_workers, mesh_config.get('num_workers', num_workers))
+        num_workers = config.set_numpy_thread_from_num_workers(num_workers)
+        align_config.setdefault('matcher_config', {})
+        align_config['matcher_config']['num_workers'] = num_workers
+        mesh_config['num_workers'] = min(num_workers, mesh_config.get('num_workers', num_workers))
     elif args.mode.lower().startswith('me'):
         mesh_config = align_config['meshing']
         mode = 'meshing'
         num_workers = mesh_config.get('num_workers', 1)
-        if num_workers > num_cpus:
-            num_workers = num_cpus
-            mesh_config['num_workers'] = num_workers
+        num_workers = config.set_numpy_thread_from_num_workers(num_workers)
+        mesh_config['num_workers'] = num_workers
     elif args.mode.lower().startswith('d'):
         min_mip = align_config.get('rendering', {}).get('mip_level', 0)
         mode = 'downsample'
@@ -391,20 +385,16 @@ if __name__ == '__main__':
         filename_config.update(align_config['downsample'])
         align_config = filename_config
         num_workers = align_config.get('num_workers', 1)
-        if num_workers > num_cpus:
-            num_workers = num_cpus
-            align_config['num_workers'] = num_workers
+        num_workers = config.set_numpy_thread_from_num_workers(num_workers)
+        align_config['num_workers'] = num_workers
     elif args.mode.lower().startswith('tensor'):
         align_config = align_config['tensorstore_rendering']
         mode = 'tensorstore_rendering'
         num_workers = align_config.get('num_workers', 1)
-        if num_workers > num_cpus:
-            num_workers = num_cpus
-            align_config['num_workers'] = num_workers
+        num_workers = config.set_numpy_thread_from_num_workers(num_workers)
+        align_config['num_workers'] = num_workers
     else:
         raise RuntimeError(f'{args.mode} not supported mode.')
-    nthreads = max(1, math.floor(num_cpus / num_workers))
-    config.limit_numpy_thread(nthreads)
 
     from feabas import material, dal, common
     from feabas.mesh import Mesh

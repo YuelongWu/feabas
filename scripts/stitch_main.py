@@ -2,7 +2,6 @@ import argparse
 from concurrent.futures.process import ProcessPoolExecutor
 from concurrent.futures import as_completed
 from multiprocessing import get_context
-import math
 from functools import partial
 import os
 import time
@@ -276,8 +275,6 @@ if __name__ == '__main__':
     args = parse_args()
 
     root_dir = config.get_work_dir()
-    generate_settings = config.general_settings()
-    num_cpus = generate_settings['cpu_budget']
 
     stitch_configs = config.stitch_configs()
     if args.mode.lower().startswith('r'):
@@ -297,11 +294,8 @@ if __name__ == '__main__':
     else:
         raise ValueError(f'{args.mode} not supported mode.')
     num_workers = stitch_configs.get('num_workers', 1)
-    if num_workers > num_cpus:
-        num_workers = num_cpus
-        stitch_configs['num_workers'] = num_workers
-    nthreads = max(1, math.floor(num_cpus / num_workers))
-    config.limit_numpy_thread(nthreads)
+    num_workers = config.set_numpy_thread_from_num_workers(num_workers)
+    stitch_configs['num_workers'] = num_workers
 
     from feabas.stitcher import Stitcher, MontageRenderer
     import numpy as np
