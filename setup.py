@@ -8,6 +8,7 @@ def readme():
         return f.read()
 
 install_requires = [
+    'dask[array,distributed,diagnostics]',
     'dill',
     'google-cloud-storage',
     'h5py',
@@ -20,7 +21,7 @@ install_requires = [
     'scipy',
     'shapely>=2.0.0',
     'tensorstore',
-    'triangle',
+    'triangle'
 ]
 
 if (platform.python_version() < '3.12') and (platform.system() == 'Windows'):

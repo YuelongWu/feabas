@@ -435,6 +435,7 @@ class Stitcher:
         matches = {}
         strains = {}
         error_messages = []
+        err_count = 0
         for indices, bbox_ov, wd in zip(overlaps, bboxes_overlap, wds):
             if wd <= min_width:
                 continue
@@ -484,11 +485,14 @@ class Stitcher:
                 matches[(idx0, idx1)] = (xy0, xy1, weight)
                 strains[(idx0, idx1)] = strain
             except Exception as err:
+                err_count += 1
                 if not err_raised:
-                    error_messages.append(f'{image_loader.imgrootdir}: {err}')
+                    error_messages.append(f'{image_loader.imgrootdir}: <NUM_ERRORS> errors')
+                    error_messages.append(f'\tfirst error encountered: {err}')
+                    error_messages.append(f'\t\t{image_loader.imgrelpaths[idx0]} <-> {image_loader.imgrelpaths[idx1]}')
                     err_raised = True
-                error_messages.append(f'\t{image_loader.imgrelpaths[idx0]} <-> {image_loader.imgrelpaths[idx1]}')
         if err_raised:
+            error_messages[0] = error_messages[0].replace('<NUM_ERRORS>', str(err_count))
             msg = '\n'.join(error_messages)
             logger.error(msg)
         image_loader.clear_cache()
