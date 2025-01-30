@@ -1,8 +1,5 @@
-from concurrent.futures.process import ProcessPoolExecutor
-from concurrent.futures import as_completed
 import cv2
 import json
-from multiprocessing import get_context
 import numpy as np
 from functools import partial
 from scipy.interpolate import interp1d
@@ -13,6 +10,7 @@ import os
 import tensorstore as ts
 import time
 
+from feabas.concurrent import submit_to_workers
 from feabas.dal import MosaicLoader, get_tensorstore_spec
 from feabas import common, logging, dal, storage
 from feabas.spatial import Geometry
@@ -284,16 +282,14 @@ def generate_target_tensorstore_scale(metafile, mip=None, **kwargs):
         N_jobs = round(n_tiles / num_tile_per_job)
         indices = np.round(np.linspace(0, n_tiles, num=N_jobs+1, endpoint=True))
         indices = np.unique(indices).astype(np.uint32)
-        jobs = []
-        out_spec = None
-        with ProcessPoolExecutor(max_workers=num_workers, mp_context=get_context('spawn')) as executor:
-            for idx0, idx1 in zip(indices[:-1], indices[1:]):
-                idx0, idx1 = int(idx0), int(idx1)
-                bbox_t = bboxes[idx0:idx1]
-                job = executor.submit(_write_downsample_tensorstore, ds_spec, tgt_spec, bbox_t, **kwargs)
-                jobs.append(job)
-            for job in as_completed(jobs):
-                out_spec = job.result()
+        args_list = []
+        for idx0, idx1 in zip(indices[:-1], indices[1:]):
+            idx0, idx1 = int(idx0), int(idx1)
+            bbox_t = bboxes[idx0:idx1]
+            args_list.append(ds_spec, tgt_spec, bbox_t)
+        kwargs_list = [kwargs]
+        for out_spec in submit_to_workers(_write_downsample_tensorstore, args=args_list, kwargs=kwargs_list, num_workers=num_workers):
+            pass
     mipmaps.update({mip: out_spec})
     if write_to_file:
         kv_headers = ('gs://', 'http://', 'https://', 'file://', 'memory://', 's3://')

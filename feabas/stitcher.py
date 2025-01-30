@@ -1,11 +1,8 @@
 import cv2
 from collections import defaultdict, namedtuple
-from concurrent.futures.process import ProcessPoolExecutor
-from concurrent.futures import as_completed
 from functools import partial
 import gc
 import matplotlib.tri
-from multiprocessing import get_context
 import numpy as np
 import os
 from rtree import index
@@ -15,6 +12,7 @@ from scipy import sparse
 import scipy.sparse.csgraph as csgraph
 import tensorstore as ts
 
+from feabas.concurrent import submit_to_workers
 from feabas.dal import StaticImageLoader
 from feabas import logging
 from feabas.matcher import stitching_matcher
@@ -312,29 +310,29 @@ class Stitcher:
         indx_j = np.linspace(0, num_overlaps, num=N_jobs+1, endpoint=True)
         indx_j = np.unique(np.round(indx_j).astype(np.int32))
         # divide works
-        jobs = []
+        args_list = []
+        kwargs_list = []
         num_new_matches = 0
         err_raised = False
-        with ProcessPoolExecutor(max_workers=num_workers, mp_context=get_context('spawn')) as executor:
-            for idx0, idx1 in zip(indx_j[:-1], indx_j[1:]):
-                ovlp_g = overlaps[idx0:idx1] # global indices of overlaps
-                mapper, ovlp = np.unique(ovlp_g, return_inverse=True, axis=None)
-                ovlp = ovlp.reshape(ovlp_g.shape)
-                bboxes = self.init_bboxes[mapper]
-                imgpaths = [self.imgrelpaths[s] for s in mapper]
-                job = executor.submit(target_func, ovlp, imgpaths, bboxes, index_mapper=mapper)
-                jobs.append(job)
-            matched_counter = 0
-            for job in as_completed(jobs):
-                matches, match_strains, ouch = job.result()
-                err_raised = err_raised or ouch
-                num_new_matches += len(matches)
-                self.matches.update(matches)
-                self.match_strains.update(match_strains)
-                matched_counter += len(matches)
-                if matched_counter > (len(overlaps)/10):
-                    logger.debug(f'matching in progress: {num_new_matches}/{len(overlaps)}')
-                    matched_counter = 0
+        for idx0, idx1 in zip(indx_j[:-1], indx_j[1:]):
+            ovlp_g = overlaps[idx0:idx1] # global indices of overlaps
+            mapper, ovlp = np.unique(ovlp_g, return_inverse=True, axis=None)
+            ovlp = ovlp.reshape(ovlp_g.shape)
+            bboxes = self.init_bboxes[mapper]
+            imgpaths = [self.imgrelpaths[s] for s in mapper]
+            args_list.append((ovlp, imgpaths, bboxes))
+            kwargs_list.append({'index_mapper': mapper})
+        matched_counter = 0
+        for res in submit_to_workers(target_func, args=args_list, kwargs=kwargs_list, num_workers=num_workers):
+            matches, match_strains, ouch = res
+            err_raised = err_raised or ouch
+            num_new_matches += len(matches)
+            self.matches.update(matches)
+            self.match_strains.update(match_strains)
+            matched_counter += len(matches)
+            if matched_counter > (len(overlaps)/10):
+                logger.debug(f'matching in progress: {num_new_matches}/{len(overlaps)}')
+                matched_counter = 0
         return num_new_matches, err_raised
 
 

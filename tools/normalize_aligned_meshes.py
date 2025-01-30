@@ -1,11 +1,9 @@
 import argparse
-from concurrent.futures.process import ProcessPoolExecutor
-from concurrent.futures import as_completed
-from multiprocessing import get_context
 from functools import partial
 import numpy as np
 import shapely
 
+from feabas.concurrent import submit_to_workers
 from feabas.spatial import find_rotation_for_minimum_rectangle
 from feabas.aligner import get_convex_hull, apply_transform_normalization
 from feabas import config
@@ -55,25 +53,12 @@ if __name__ == '__main__':
     print('finding transformations')
     rfunc = partial(get_convex_hull, resolution=resolution0)
     regions = None
-    if args.worker > 1:
-        jobs = []
-        with ProcessPoolExecutor(max_workers=args.worker, mp_context=get_context('spawn')) as executor:
-            for tname in tlist:
-                jobs.append(executor.submit(rfunc, tname, wkb=True))
-            for job in as_completed(jobs):
-                wkb = job.result()
-                R = shapely.from_wkb(wkb)
-                if regions is None:
-                    regions = R
-                else:
-                    regions = regions.union(R)
-    else:
-        for tname in tlist:
-            R = rfunc(tname, wkb=False)
-            if regions is None:
-                regions = R
-            else:
-                regions = regions.union(R)
+    for wkb in submit_to_workers(rfunc, args=[(s,) for s in tlist], kwargs=[{'wkb': True}], num_workers=args.worker):
+        R = shapely.from_wkb(wkb)
+        if regions is None:
+            regions = R
+        else:
+            regions = regions.union(R)
     if args.angle is None:
         theta = find_rotation_for_minimum_rectangle(regions)
     else:
@@ -97,14 +82,6 @@ if __name__ == '__main__':
         f.write('\t'.join([str(s) for s in -bbox[:2]]))
     tfunc = partial(apply_transform_normalization, out_dir=out_dir, R=R, txy=txy,resolution=resolution0)
     print('applying transforms.')
-    if args.worker > 1:
-        jobs = []
-        with ProcessPoolExecutor(max_workers=args.worker, mp_context=get_context('spawn')) as executor:
-            for tname in tlist:
-                jobs.append(executor.submit(tfunc, tname))
-            for job in as_completed(jobs):
-                job.result()
-    else:
-        for tname in tlist:
-            tfunc(tname)
+    for _ in submit_to_workers(tfunc, args=[(s,) for s in tlist], num_workers=args.worker):
+        pass
     print('finished')

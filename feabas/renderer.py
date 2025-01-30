@@ -1,8 +1,5 @@
 from collections import defaultdict
-from concurrent.futures.process import ProcessPoolExecutor
-from concurrent.futures import as_completed
 from functools import partial
-from multiprocessing import get_context
 import matplotlib.tri
 import numpy as np
 import os
@@ -14,6 +11,7 @@ import tensorstore as ts
 import time
 
 from feabas.caching import CacheFIFO
+from feabas.concurrent import submit_to_workers
 import feabas.constant as const
 from feabas.mesh import Mesh
 from feabas import common, spatial, dal, logging, storage
@@ -709,23 +707,24 @@ def render_whole_mesh(mesh, image_loader, prefix, **kwargs):
             else:
                 bboxes_out_list.append(bboxes_out[idx0:idx1])
         submeshes = mesh.submeshes_from_bboxes(bbox_unions, save_material=True)
-        jobs = []
-        with ProcessPoolExecutor(max_workers=num_workers, mp_context=get_context('spawn')) as executor:
+        args_list = []
+        for k in range(len(submeshes)):
+            msh = submeshes[k]
+            if msh is None:
+                continue
+            msh_dict = msh.get_init_dict(save_material=True, vertex_flags=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING))
+            bbox = bboxes_list[k]
             if driver == 'image':
-                for msh, bbox, fnames in zip(submeshes, bboxes_list, filenames_list):
-                    if msh is None:
-                        continue
-                    msh_dict = msh.get_init_dict(save_material=True, vertex_flags=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING))
-                    job = executor.submit(target_func, msh_dict, bbox, fnames)
-                    jobs.append(job)
+                fnames = filenames_list[k]
+                args_list.append((msh_dict, bbox, fnames))
             else:
-                for msh, bbox, bbox_out in zip(submeshes, bboxes_list, bboxes_out_list):
-                    if msh is None:
-                        continue
-                    msh_dict = msh.get_init_dict(save_material=True, vertex_flags=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING))
-                    job = executor.submit(target_func, msh_dict, bbox, bboxes_out=bbox_out)
-            for job in as_completed(jobs):
-                rendered.update(job.result())
+                bbox_out = bboxes_out_list[k]
+                args_list.append((msh_dict, bbox, bbox_out))
+        for res in submit_to_workers(target_func, args=args_list, num_workers=num_workers):
+            if isinstance(rendered, dict):
+                rendered.update(res)
+            else:
+                rendered.extend(res)
     else:
         if driver == 'image':
             rendered = target_func(mesh, bboxes, filenames)
@@ -952,39 +951,20 @@ class VolumeRenderer:
                 continue
             logger.info(f'start block from z={z_stt}')
             actual_num_workers = min(num_workers, len(render_seriers))
-            if actual_num_workers > 1:
-                jobs = []
-                with ProcessPoolExecutor(max_workers=actual_num_workers, mp_context=get_context('spawn')) as executor:
-                    for bkw in render_seriers:
-                        bkw.update(kwargs)
-                        job = executor.submit(subprocess_render_partial_ts_slab, **bkw)
-                        jobs.append(job)
-                    for job in as_completed(jobs):
-                        z_chunks, errmsg = job.result()
-                        if len(errmsg) > 0:
-                            logger.error(errmsg)
-                        for zz, nn in z_chunks.items():
-                            if rendered[zz] is None:
-                                continue
-                            if nn is None:
-                                rendered[zz] = None
-                            else:
-                                num_chunks += nn
-                                rendered[zz] += nn
-            else:
-                for bkw in render_seriers:
-                    bkw.update(kwargs)
-                    z_chunks, errmsg = subprocess_render_partial_ts_slab(**bkw)
-                    if len(errmsg) > 0:
-                        logger.error(errmsg)
-                    for zz, nn in z_chunks.items():
-                        if rendered[zz] is None:
-                            continue
-                        if nn is None:
-                            rendered[zz] = None
-                        else:
-                            num_chunks += nn
-                            rendered[zz] += nn
+            for bkw in render_seriers:
+                bkw.update(kwargs)
+            for res in submit_to_workers(subprocess_render_partial_ts_slab, kwargs=render_seriers, num_workers=actual_num_workers):
+                z_chunks, errmsg = res
+                if len(errmsg) > 0:
+                    logger.error(errmsg)
+                for zz, nn in z_chunks.items():
+                    if rendered[zz] is None:
+                        continue
+                    if nn is None:
+                        rendered[zz] = None
+                    else:
+                        num_chunks += nn
+                        rendered[zz] += nn
             if self.flag_dir is not None:
                 for zz, nn in rendered.items():
                     if (nn is not None) and (nn > 0):

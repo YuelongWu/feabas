@@ -1,13 +1,11 @@
 import argparse
-from concurrent.futures.process import ProcessPoolExecutor
-from concurrent.futures import as_completed
-from multiprocessing import get_context
 from functools import partial
 import os
 import time
 import tensorstore as ts
 
 import feabas
+from feabas.concurrent import submit_to_workers
 from feabas import config, logging, dal, multisem, storage
 
 
@@ -133,23 +131,14 @@ def optmization_main(match_list, out_dir, **kwargs):
     kwargs['logger'] = logger_info[0]
     logger= logging.get_logger(logger_info[0])
     target_func = partial(optimize_one_section, **kwargs)
-    if num_workers == 1:
-        for matchname in match_list:
-            outname = storage.join_paths(out_dir, os.path.basename(matchname))
-            if storage.file_exists(outname):
-                continue
-            target_func(matchname, outname)
-    else:
-        jobs = []
-        with ProcessPoolExecutor(max_workers=num_workers, mp_context=get_context('spawn')) as executor:
-            for matchname in match_list:
-                outname = storage.join_paths(out_dir, os.path.basename(matchname))
-                if storage.file_exists(outname):
-                    continue
-                job = executor.submit(target_func, matchname, outname)
-                jobs.append(job)
-            for job in jobs:
-                job.result()
+    args_list = []
+    for matchname in match_list:
+        outname = storage.join_paths(out_dir, os.path.basename(matchname))
+        if storage.file_exists(outname):
+            continue
+        args_list.append((matchname, outname))
+    for _ in submit_to_workers(target_func, args=args_list, num_workers=num_workers):
+        pass
     logger.info('finished.')
     logging.terminate_logger(*logger_info)
 
@@ -192,18 +181,16 @@ def render_one_section(tform_name, out_prefix, meta_name=None, **kwargs):
             metadata = []
         else:
             metadata = {}
-        jobs = []
         target_func = partial(MontageRenderer.subprocess_render_montages, **render_settings)
-        with ProcessPoolExecutor(max_workers=num_workers, mp_context=get_context('spawn')) as executor:
-            for bboxes, filenames, hits in zip(bboxes_list, filenames_list, hits_list):
-                init_args = renderer.init_args(selected=hits)
-                job = executor.submit(target_func, init_args, bboxes, filenames)
-                jobs.append(job)
-            for job in as_completed(jobs):
-                if use_tensorstore:
-                    metadata.extend(job.result())
-                else:
-                    metadata.update(job.result())
+        args_list = []
+        for bboxes, filenames, hits in zip(bboxes_list, filenames_list, hits_list):
+            init_args = renderer.init_args(selected=hits)
+            args_list.append((init_args, bboxes, filenames))
+        for res in submit_to_workers(target_func, args=args_list, num_workers=num_workers):
+            if use_tensorstore:
+                metadata.extend(res)
+            else:
+                metadata.update(res)
     if (meta_name is not None) and (len(metadata) > 0):
         if use_tensorstore:
             meta_name = meta_name.replace('\\', '/')

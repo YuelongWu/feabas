@@ -27,6 +27,17 @@ def general_settings():
 DEFAULT_RESOLUTION = general_settings().get('full_resolution', constant.DEFAULT_RESOLUTION)
 TS_TIMEOUT = general_settings().get('tensorstore_timeout', None)
 
+@lru_cache(maxsize=1)
+def parallel_framework():
+    frmwk = general_settings.get('parallel_framework', 'builtin')
+    if frmwk.startswith('bu'):
+        frmwk = 'builtin'
+    elif frmwk.startswith('da'):
+        frmwk = 'dask'
+    else:
+        raise ValueError(f'In {_default_configuration_folder}: unsupported parallel framework "{frmwk}"')
+    return frmwk
+
 
 @lru_cache(maxsize=1)
 def get_work_dir():

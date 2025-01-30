@@ -1,7 +1,4 @@
 from collections import defaultdict, OrderedDict
-from concurrent.futures.process import ProcessPoolExecutor
-from concurrent.futures import as_completed
-from multiprocessing import get_context
 import numpy as np
 import os
 from scipy import sparse
@@ -10,8 +7,9 @@ import shapely
 import yaml
 import time
 
+from feabas import dal, logging, storage
 from feabas.mesh import Mesh
-from feabas import config, dal, logging, storage
+from feabas.concurrent import submit_to_workers
 from feabas.spatial import scale_coordinates
 from feabas.matcher import section_matcher
 from feabas.optimizer import SLM
@@ -494,17 +492,9 @@ class Stack:
             init_dict_r = self.init_dict(secnames=seclist_r, check_lock=True)
             kwargs_r = kwargs.copy()
             kwargs_r['start_loc'] = 'R'
-            if num_workers > 1:
-                jobs = []
-                with ProcessPoolExecutor(max_workers=2, mp_context=get_context('spawn')) as executor:
-                    jobs.append(executor.submit(Stack.subprocess_optimize_stack, init_dict_l, func_name, **kwargs_l))
-                    jobs.append(executor.submit(Stack.subprocess_optimize_stack, init_dict_r, func_name, **kwargs_r))
-                    for job in as_completed(jobs):
-                        costs.update(job.result())
-            else:
-                cst = Stack.subprocess_optimize_stack(init_dict_l, func_name, **kwargs_l)
-                costs.update(cst)
-                cst = Stack.subprocess_optimize_stack(init_dict_r, func_name, **kwargs_r)
+            args_list = [(init_dict_l, func_name), (init_dict_r, func_name)]
+            kwargs_list = [kwargs_l, kwargs_r]
+            for cst in submit_to_workers(Stack.subprocess_optimize_stack, args=args_list, kwargs=kwargs_list, num_workers=num_workers):
                 costs.update(cst)
         return costs
 

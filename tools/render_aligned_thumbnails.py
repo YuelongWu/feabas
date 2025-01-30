@@ -1,14 +1,11 @@
 import argparse
 import cv2
-from concurrent.futures.process import ProcessPoolExecutor
-from concurrent.futures import as_completed
-from multiprocessing import get_context
 from functools import partial
 import numpy as np
 import os
-import glob
 import time
 
+from feabas.concurrent import submit_to_workers
 from feabas import common, dal, config, storage
 from feabas.mesh import Mesh
 import feabas.constant as const
@@ -107,16 +104,8 @@ if __name__ == '__main__':
     if (xmin is None) or (ymin is None) or (xmax is None) or (ymax is None):
         bbox0 = []
         bfunc = partial(get_bbox_for_one_section, resolution=resolution)
-        if args.worker > 1:
-            jobs = []
-            with ProcessPoolExecutor(max_workers=args.worker, mp_context=get_context('spawn')) as executor:
-                for mname in tlist:
-                    jobs.append(executor.submit(bfunc, mname))
-                for job in as_completed(jobs):
-                    bbox0.append(job.result())
-        else:
-            for mname in tlist:
-                bbox0.append(bfunc(mname))
+        for bbx in submit_to_workers(bfunc, args=[(s,) for s in list], num_workers=args.worker):
+            bbox0.append(bbx)
         bbox0 = np.array(bbox0)
         if xmin is None:
             xmin = np.min(bbox0[:,0])
@@ -140,11 +129,11 @@ if __name__ == '__main__':
                           out_resolution=resolution, bbox=bbox)
     jobs = []
     imglist = [storage.join_paths(src_dir, os.path.basename(s).replace('.h5', args.ext)) for s in tlist]
-    with ProcessPoolExecutor(max_workers=args.worker, mp_context=get_context('spawn')) as executor:
-        for tname, mname in zip(tlist, imglist):
-            if not storage.file_exists(mname):
-                continue
-            jobs.append(executor.submit(target_func, mname, tname))
-        for job in as_completed(jobs):
-            job.result()
+    args_list = []
+    for tname, mname in zip(tlist, imglist):
+        if not storage.file_exists(mname):
+            continue
+        args_list.append((mname, tname))
+    for _ in submit_to_workers(target_func, args=args_list, num_workers=args.worker):
+        pass
     print('finished.')

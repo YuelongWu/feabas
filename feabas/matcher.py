@@ -1,15 +1,13 @@
 from collections import defaultdict
 import cv2
-from concurrent.futures.process import ProcessPoolExecutor
-from concurrent.futures import as_completed
 from functools import partial
-from multiprocessing import get_context
 import numpy as np
 from scipy import fft
 from scipy.fftpack import next_fast_len
 import shapely.geometry as shpgeo
 from shapely.ops import unary_union
 
+from feabas.concurrent import submit_to_workers
 from feabas.mesh import Mesh
 from feabas.renderer import MeshRenderer
 from feabas import optimizer, dal, common, spatial
@@ -539,23 +537,21 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
                 target_func = partial(bboxes_mesh_renderer_matcher, pad=pad, subpixel=subpixel, **kwargs)
                 submeshes0 = mesh0.submeshes_from_bboxes(batched_bboxes_union0)
                 submeshes1 = mesh1.submeshes_from_bboxes(batched_bboxes_union1)
-                jobs = []
                 xy0 = []
                 xy1 = []
                 conf = []
-                with ProcessPoolExecutor(max_workers=num_workers, mp_context=get_context('spawn')) as executor:
-                    for m0_p, m1_p, bboxes0_p, bboxes1_p in zip(submeshes0, submeshes1, batched_bboxes0, batched_bboxes1):
-                        if (m0_p is None) or (m1_p is None):
-                            continue
-                        m0dict = m0_p.get_init_dict(vertex_flags=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING))
-                        m1dict = m1_p.get_init_dict(vertex_flags=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING))
-                        job = executor.submit(target_func, m0dict, m1dict, loader_dict0, loader_dict1, bboxes0_p, bboxes1_p)
-                        jobs.append(job)
-                    for job in as_completed(jobs):
-                        pt0, pt1, cnf = job.result()
-                        xy0.append(pt0)
-                        xy1.append(pt1)
-                        conf.append(cnf)
+                args_list = []
+                for m0_p, m1_p, bboxes0_p, bboxes1_p in zip(submeshes0, submeshes1, batched_bboxes0, batched_bboxes1):
+                    if (m0_p is None) or (m1_p is None):
+                        continue
+                    m0dict = m0_p.get_init_dict(vertex_flags=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING))
+                    m1dict = m1_p.get_init_dict(vertex_flags=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING))
+                    args_list.append((m0dict, m1dict, loader_dict0, loader_dict1, bboxes0_p, bboxes1_p))
+                for res in submit_to_workers(target_func, args=args_list, num_workers=num_workers):
+                    pt0, pt1, cnf = res
+                    xy0.append(pt0)
+                    xy1.append(pt1)
+                    conf.append(cnf)
                 if len(xy0) == 0:
                     return invalid_output
                 xy0 = np.concatenate(xy0, axis=0)

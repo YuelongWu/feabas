@@ -6,6 +6,7 @@ from multiprocessing import get_context
 import os
 import time
 
+from feabas.concurrent import submit_to_workers
 from feabas import config, logging, storage
 
 
@@ -21,19 +22,13 @@ def generate_stitched_mipmaps(img_dir, max_mip, **kwargs):
     update_status = {}
     if parallel_within_section or (num_workers == 1):
         for sname in secnames:
-            s = mip_map_one_section(sname, img_dir, max_mip, num_workers=num_workers, **kwargs)
-            update_status.update(s)
+            res = mip_map_one_section(sname, img_dir, max_mip, num_workers=num_workers, **kwargs)
+            update_status.update(res)
     else:
         target_func = partial(mip_map_one_section, img_dir=img_dir,
                                 max_mip=max_mip, num_workers=1, **kwargs)
-        jobs = []
-        with ProcessPoolExecutor(max_workers=num_workers, mp_context=get_context('spawn')) as executor:
-            for sname in secnames:
-                job = executor.submit(target_func, sname)
-                jobs.append(job)
-            for job in jobs:
-                s = job.result()
-                update_status.update(s)
+        for res in submit_to_workers(target_func, args=[(s,) for s in secnames], num_workers=num_workers):
+            update_status.update(res)
     logger.info('mipmapping generated.')
     return update_status
 
@@ -52,14 +47,8 @@ def generate_stitched_mipmaps_tensorstore(meta_dir, tgt_mips, **kwargs):
             update_status.update(s)
     else:
         target_func = partial(mipmap.generate_tensorstore_scales, mips=tgt_mips, **kwargs)
-        jobs = []
-        with ProcessPoolExecutor(max_workers=num_workers, mp_context=get_context('spawn')) as executor:
-            for metafile in meta_list:
-                job = executor.submit(target_func, metafile)
-                jobs.append(job)
-            for job in jobs:
-                s = job.result()
-                update_status.update(s)
+        for res in submit_to_workers(target_func, args=[(s,) for s in meta_list], num_workers=num_workers):
+            update_status.update(res)
     logger.info('mipmapping generated.')
     return update_status
 
@@ -74,49 +63,29 @@ def generate_thumbnails(src_dir, out_dir, seclist=None, **kwargs):
     target_func = partial(mipmap.create_thumbnail, **kwargs)
     storage.makedirs(out_dir)
     updated = {}
-    if num_workers == 1:
-        for sname in secnames:
-            outname = storage.join_paths(out_dir, sname + '.png')
-            if seclist is None:
-                if storage.file_exists(outname):
-                    continue
-                else:
-                    updated[sname] = True
+    args_list = []
+    kwargs_list = []
+    for sname in secnames:
+        outname = storage.join_paths(out_dir, sname + '.png')
+        if seclist is None:
+            if storage.file_exists(outname):
+                continue
             else:
-                if sname not in seclist:
-                    continue
-                elif (seclist[sname]) or (not storage.file_exists(outname)):
-                    updated[sname] = True
-                else:
-                    updated[sname] = False
-                    continue
-            sdir = storage.join_paths(src_dir, sname)
-            img_out = target_func(sdir)
-            common.imwrite(outname, img_out)
-    else:
-        jobs = []
-        with ProcessPoolExecutor(max_workers=num_workers, mp_context=get_context('spawn')) as executor:
-            for sname in secnames:
-                outname = storage.join_paths(out_dir, sname + '.png')
-                if seclist is None:
-                    if storage.file_exists(outname):
-                        continue
-                    else:
-                        updated[sname] = True
-                else:
-                    if sname not in seclist:
-                        continue
-                    elif (seclist[sname]) or (not storage.file_exists(outname)):
-                        updated[sname] = True
-                    else:
-                        updated[sname] = False
-                        continue
-                sdir = storage.join_paths(src_dir, sname)
-                job = executor.submit(target_func, sdir, outname=outname)
-                jobs.append(job)
-            for job in jobs:
-                job.result()
-        logger.info('thumbnails generated.')
+                updated[sname] = True
+        else:
+            if sname not in seclist:
+                continue
+            elif (seclist[sname]) or (not storage.file_exists(outname)):
+                updated[sname] = True
+            else:
+                updated[sname] = False
+                continue
+        sdir = storage.join_paths(src_dir, sname)
+        args_list.append((sdir,))
+        kwargs_list.append({'outname': outname})
+    for _ in submit_to_workers(target_func, args=args_list, kwargs=kwargs_list, num_workers=num_workers):
+        pass         
+    logger.info('thumbnails generated.')
     return updated
 
 
@@ -129,49 +98,29 @@ def generate_thumbnails_tensorstore(src_dir, out_dir, seclist=None, **kwargs):
     target_func = partial(mipmap.create_thumbnail_tensorstore, **kwargs)
     storage.makedirs(out_dir)
     updated = {}
-    if num_workers == 1:
-        for meta_name in meta_list:
-            sname = os.path.basename(meta_name).replace('.json', '')
-            outname = storage.join_paths(out_dir, sname + '.png')
-            if seclist is None:
-                if storage.file_exists(outname):
-                    continue
-                else:
-                    updated[sname] = True
+    args_list = []
+    kwargs_list = []
+    for meta_name in meta_list:
+        sname = os.path.basename(meta_name).replace('.json', '')
+        outname = storage.join_paths(out_dir, sname + '.png')
+        if seclist is None:
+            if storage.file_exists(outname):
+                continue
             else:
-                if sname not in seclist:
-                    continue
-                elif (seclist[sname]) or (not storage.file_exists(outname)):
-                    updated[sname] = True
-                else:
-                    updated[sname] = False
-                    continue
-            img_out = target_func(meta_name)
-            common.imwrite(outname, img_out)
-    else:
-        jobs = []
-        with ProcessPoolExecutor(max_workers=num_workers, mp_context=get_context('spawn')) as executor:
-            for meta_name in meta_list:
-                sname = os.path.basename(meta_name).replace('.json', '')
-                outname = storage.join_paths(out_dir, sname + '.png')
-                if seclist is None:
-                    if storage.file_exists(outname):
-                        continue
-                    else:
-                        updated[sname] = True
-                else:
-                    if sname not in seclist:
-                        continue
-                    elif (seclist[sname]) or (not storage.file_exists(outname)):
-                        updated[sname] = True
-                    else:
-                        updated[sname] = False
-                        continue
-                job = executor.submit(target_func, meta_name, outname=outname)
-                jobs.append(job)
-            for job in jobs:
-                job.result()
-        logger.info('thumbnails generated.')
+                updated[sname] = True
+        else:
+            if sname not in seclist:
+                continue
+            elif (seclist[sname]) or (not storage.file_exists(outname)):
+                updated[sname] = True
+            else:
+                updated[sname] = False
+                continue
+        args_list.append((meta_name,))
+        kwargs_list.append({'outname': outname})
+    for _ in submit_to_workers(target_func, args=args_list, kwargs=kwargs_list, num_workers=num_workers):
+        pass
+    logger.info('thumbnails generated.')
     return updated
 
 
@@ -210,38 +159,22 @@ def generate_thumbnail_masks(mesh_dir, out_dir, seclist=None, **kwargs):
     target_func = partial(save_mask_for_one_sections, resolution=resolution, img_dir=img_dir,
                           fillval=fillval, mask_erode=mask_erode)
     storage.makedirs(out_dir)
-    if num_workers == 1:
-        for mname in mesh_list:
-            sname = os.path.basename(mname).replace('.h5', '')
-            outname = storage.join_paths(out_dir, sname + '.png')
-            if seclist is None:
-                if storage.file_exists(outname):
-                    continue
-            else:
-                if sname not in seclist:
-                    continue
-                elif (not seclist[sname]) and (storage.file_exists(outname)):
-                    continue
-            target_func(mname, outname)
-    else:
-        jobs = []
-        with ProcessPoolExecutor(max_workers=num_workers, mp_context=get_context('spawn')) as executor:
-            for mname in mesh_list:
-                sname = os.path.basename(mname).replace('.h5', '')
-                outname = storage.join_paths(out_dir, sname + '.png')
-                if seclist is None:
-                    if storage.file_exists(outname):
-                        continue
-                else:
-                    if sname not in seclist:
-                        continue
-                    elif (not seclist[sname]) and (storage.file_exists(outname)):
-                        continue
-                job = executor.submit(target_func, mname, out_name=outname)
-                jobs.append(job)
-            for job in jobs:
-                job.result()
-        logger.info('thumbnail masks generated.')
+    args_list = []
+    for mname in mesh_list:
+        sname = os.path.basename(mname).replace('.h5', '')
+        outname = storage.join_paths(out_dir, sname + '.png')
+        if seclist is None:
+            if storage.file_exists(outname):
+                continue
+        else:
+            if sname not in seclist:
+                continue
+            elif (not seclist[sname]) and (storage.file_exists(outname)):
+                continue
+        args_list.append((mname, outname))
+    for _ in submit_to_workers(target_func, args=args_list, num_workers=num_workers):
+        pass
+    logger.info('thumbnail masks generated.')
 
 
 def align_thumbnail_pairs(pairnames, image_dir, out_dir, **kwargs):
@@ -346,19 +279,9 @@ def normalize_transforms(tlist, angle=0.0, offset=(0,0), **kwargs):
         modify_tform = True
     rfunc = partial(get_convex_hull, resolution=resolution)
     regions = shapely.Polygon()
-    if num_workers > 1:
-        jobs = []
-        with ProcessPoolExecutor(max_workers=num_workers, mp_context=get_context('spawn')) as executor:
-            for tname in tlist:
-                jobs.append(executor.submit(rfunc, tname, wkb=True))
-            for job in as_completed(jobs):
-                wkb = job.result()
-                R = shapely.from_wkb(wkb)
-                regions = regions.union(R)
-    else:
-        for tname in tlist:
-            R = rfunc(tname, wkb=False)
-            regions.union(R)
+    for wkb in submit_to_workers(rfunc, args=[(s,) for s in tlist], kwargs=[{'wkb': True}], num_workers=num_workers):
+        R = shapely.from_wkb(wkb)
+        regions = regions.union(R)
     if angle is None:
         theta = find_rotation_for_minimum_rectangle(regions)
     else:
@@ -379,16 +302,8 @@ def normalize_transforms(tlist, angle=0.0, offset=(0,0), **kwargs):
     bbox_out = (0, 0, xy_max[0], xy_max[1])
     if modify_tform:
         tfunc = partial(apply_transform_normalization, out_dir=None, R=R, txy=txy, resolution=resolution)
-        if num_workers > 1:
-            jobs = []
-            with ProcessPoolExecutor(max_workers=num_workers, mp_context=get_context('spawn')) as executor:
-                for tname in tlist:
-                    jobs.append(executor.submit(tfunc, tname))
-                for job in as_completed(jobs):
-                    job.result()
-        else:
-            for tname in tlist:
-                tfunc(tname)
+        for _ in submit_to_workers(tfunc, args=[(s,) for s in tlist], num_workers=num_workers):
+            pass
     return bbox_out
 
 
@@ -629,14 +544,11 @@ if __name__ == '__main__':
                 Njobs = max(num_workers, len(pairnames) // match_per_job)
                 indx_j = np.linspace(0, len(pairnames), num=Njobs+1, endpoint=True)
                 indx_j = np.unique(np.round(indx_j).astype(np.int32))
-                jobs = []
-                with ProcessPoolExecutor(max_workers=num_workers, mp_context=get_context('spawn')) as executor:
-                    for idx0, idx1 in zip(indx_j[:-1], indx_j[1:]):
-                        prnm = pairnames[idx0:idx1]
-                        job = executor.submit(target_func, pairnames=prnm)
-                        jobs.append(job)
-                    for job in jobs:
-                        job.result()
+                kwargs_list = []
+                for idx0, idx1 in zip(indx_j[:-1], indx_j[1:]):
+                    kwargs_list.append({'pairnames': pairnames[idx0:idx1]})
+                with _ in submit_to_workers(target_func, kwargs=kwargs_list, num_workers=num_workers):
+                    pass
         if (mode == 'optimization') or (mode == 'alignment'):
             tmp_mesh_dir = storage.join_paths(tform_dir, 'mesh')
             storage.makedirs(tform_dir, exist_ok=True)
@@ -662,17 +574,8 @@ if __name__ == '__main__':
                     logger.error(f'{sname} meshing: {mask_name} not found.')
             if len(tasks) > 0:
                 logger.info('generating meshes for thumbnails')
-                if num_workers == 1:
-                    for task in tasks:
-                        mfunc(**task)
-                else:
-                    jobs = []
-                    with ProcessPoolExecutor(max_workers=num_workers, mp_context=get_context('spawn')) as executor:
-                        for task in tasks:
-                            job = executor.submit(mfunc, **task)
-                            jobs.append(job)
-                        for job in jobs:
-                            job.result()
+                for _ in submit_to_workers(mfunc, kwargs=tasks, num_workers=num_workers):
+                    pass
             # optimization
                 logger.info('optimizing...')
                 stack_config = opt_configs.get('stack_config', {})
@@ -703,15 +606,7 @@ if __name__ == '__main__':
                     bbox_render = normalize_transforms(tform_list, angle=angle, offset=offset, num_workers=num_workers, resolution=render_resolution)
                 rfunc = partial(render_one_thumbnail, thumbnail_dir=img_dir, out_dir=render_dir, src_resolution=thumbnail_resolution,
                                 out_resolution=render_resolution, bbox=bbox_render, logger=logger_info[0])
-                if num_workers > 1:
-                    with ProcessPoolExecutor(max_workers=num_workers, mp_context=get_context('spawn')) as executor:
-                        jobs = []
-                        for tname in tform_list:
-                            jobs.append(executor.submit(rfunc, tname))
-                        for job in as_completed(jobs):
-                            job.result()
-                else:
-                    for tname in tform_list:
-                        rfunc(tname)
+                for _ in submit_to_workers(rfunc, args=[(s,) for s in tform_list], num_workers=num_workers):
+                    pass
         logger.info('finished.')
         logging.terminate_logger(*logger_info)

@@ -1,15 +1,13 @@
 from collections import defaultdict
 import argparse
 from functools import partial
-from concurrent.futures.process import ProcessPoolExecutor
-from concurrent.futures import as_completed
-from multiprocessing import get_context
 import math
 import os
 import time
 import gc
 
 from feabas import config, logging, storage
+from feabas.concurrent import submit_to_workers
 import feabas.constant as const
 
 os.environ["OPENCV_IO_MAX_IMAGE_PIXELS"] = str(pow(2,40)) # for large masks in meshing
@@ -70,36 +68,23 @@ def generate_mesh_main():
         alt_mask_dir = storage.join_paths(align_dir, 'material_masks')
     material_table_file = config.material_table_file()
     material_table = material.MaterialTable.from_json(material_table_file, stream=False)
-    if num_workers == 1:
-        for sname in secnames:
-            mask_names = [(storage.join_paths(alt_mask_dir, sname + '.json'), alt_mask_resolution),
+    material_table = material_table.save_to_json(jsonname=None)
+    mesh_func = partial(generate_mesh_from_mask, material_table=material_table, **mesh_config)
+    kwargs_list = []
+    for sname in secnames:
+        outname = storage.join_paths(mesh_dir, sname + '.h5')
+        if storage.file_exists(outname):
+            continue
+        mask_names = [(storage.join_paths(alt_mask_dir, sname + '.json'), alt_mask_resolution),
                         (storage.join_paths(alt_mask_dir, sname + '.txt'), alt_mask_resolution),
                         (storage.join_paths(alt_mask_dir, sname + '.png'), alt_mask_resolution),
                         (storage.join_paths(thumbnail_mask_dir, sname + '.png'), thumbnail_resolution)]
-            outname = storage.join_paths(mesh_dir, sname + '.h5')
-            initial_tform = storage.join_paths(initial_tform_dir, sname + '.h5')
-            if not storage.file_exists(initial_tform):
-                initial_tform = None
-            generate_mesh_from_mask(mask_names, outname, material_table=material_table, initial_tform=initial_tform, **mesh_config)
-    else:
-        material_table = material_table.save_to_json(jsonname=None)
-        target_func = partial(generate_mesh_from_mask, material_table=material_table, **mesh_config)
-        jobs = []
-        with ProcessPoolExecutor(max_workers=num_workers, mp_context=get_context('spawn')) as executor:
-            for sname in secnames:
-                mask_names = [(storage.join_paths(alt_mask_dir, sname + '.json'), alt_mask_resolution),
-                              (storage.join_paths(alt_mask_dir, sname + '.txt'), alt_mask_resolution),
-                              (storage.join_paths(alt_mask_dir, sname + '.png'), alt_mask_resolution),
-                              (storage.join_paths(thumbnail_mask_dir, sname + '.png'), thumbnail_resolution)]
-                outname = storage.join_paths(mesh_dir, sname + '.h5')
-                initial_tform = storage.join_paths(initial_tform_dir, sname + '.h5')
-                if not storage.file_exists(initial_tform):
-                    initial_tform = None
-                if not storage.file_exists(outname):
-                    job = executor.submit(target_func, mask_names=mask_names, outname=outname, initial_tform=initial_tform)
-                    jobs.append(job)
-            for job in jobs:
-                job.result()
+        initial_tform = storage.join_paths(initial_tform_dir, sname + '.h5')
+        if not storage.file_exists(initial_tform):
+            initial_tform = None
+        kwargs_list.append({'mask_names': mask_names, 'outname': outname, 'initial_tform': initial_tform})
+    for _ in submit_to_workers(mesh_func, kwargs=kwargs_list, num_workers=num_workers):
+        pass
     logger.info('meshes generated.')
     logging.terminate_logger(*logger_info)
 
@@ -207,24 +192,11 @@ def offset_bbox_main():
             return
     bbox_union = None
     bfunc = partial(_get_bbox_for_one_section, resolution=config.montage_resolution())
-    if num_workers > 1:
-        jobs = []
-        with ProcessPoolExecutor(max_workers=num_workers, mp_context=get_context('spawn')) as executor:
-            for tname in tform_list:
-                jobs.append(executor.submit(bfunc, tname))
-            for job in as_completed(jobs):
-                bbox = job.result()
-                if bbox_union is None:
-                    bbox_union = bbox
-                else:
-                    bbox_union = common.bbox_union((bbox_union, bbox))
-    else:
-        for tname in tform_list:
-            bbox = bfunc(tname)
-            if bbox_union is None:
-                bbox_union = bbox
-            else:
-                bbox_union = common.bbox_union((bbox_union, bbox))
+    for bbox in submit_to_workers(bfunc, args=[(s,) for s in tform_list], num_workers=num_workers):
+        if bbox_union is None:
+            bbox_union = bbox
+        else:
+            bbox_union = common.bbox_union((bbox_union, bbox))
     offset = -bbox_union[:2]
     bbox_union_new = bbox_union + np.tile(offset, 2)
     if not storage.file_exists(outname):
@@ -316,13 +288,8 @@ def generate_aligned_mipmaps(render_dir, max_mip, meta_list=None, **kwargs):
     else:
         target_func = partial(mip_map_one_section, img_dir=render_dir,
                                 max_mip=max_mip, num_workers=1, **kwargs)
-        jobs = []
-        with ProcessPoolExecutor(max_workers=num_workers, mp_context=get_context('spawn')) as executor:
-            for sname in secnames:
-                job = executor.submit(target_func, sname)
-                jobs.append(job)
-            for job in jobs:
-                job.result()
+        for _ in submit_to_workers(target_func, args=[(s,) for s in secnames], num_workers=num_workers):
+            pass
     logger.info('mipmapping generated.')
     logging.terminate_logger(*logger_info)
 
