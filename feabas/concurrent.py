@@ -10,9 +10,11 @@ def parse_inputs(args, kwargs):
         kwargs = defaultdict(dict)
     N = max(len(args), len(kwargs))
     if len(args) == 1:
-        args = defaultdict(lambda: args[0])
+        val = args[0]
+        args = defaultdict(lambda: val)
     if len(kwargs) == 1:
-        kwargs = defaultdict(lambda: kwargs[0])
+        val = kwargs[0]
+        kwargs = defaultdict(lambda: val)
     return N, args, kwargs
 
 
@@ -93,7 +95,7 @@ def submit_to_dask_localcluster(func, args=None, kwargs=None, **settings):
         batch_size = num_workers * max_tasks_per_child
         indices = [index0[k:(k+batch_size)] for k in range(0, N, batch_size)]
     for idx in indices:
-        with LocalCluster(n_workers=num_workers, processes=True, threads_per_worker=1, memory_limit=memory_limit) as cluster:
+        with LocalCluster(n_workers=num_workers, processes=True, threads_per_worker=threads_per_worker, memory_limit=memory_limit) as cluster:
             with Client(cluster) as client:
                 futures = []
                 for k in idx:
