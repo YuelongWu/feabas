@@ -286,7 +286,7 @@ def generate_target_tensorstore_scale(metafile, mip=None, **kwargs):
         for idx0, idx1 in zip(indices[:-1], indices[1:]):
             idx0, idx1 = int(idx0), int(idx1)
             bbox_t = bboxes[idx0:idx1]
-            args_list.append(ds_spec, tgt_spec, bbox_t)
+            args_list.append((ds_spec, tgt_spec, bbox_t))
         kwargs_list = [kwargs]
         for out_spec in submit_to_workers(_write_downsample_tensorstore, args=args_list, kwargs=kwargs_list, num_workers=num_workers):
             pass

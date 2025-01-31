@@ -22,13 +22,13 @@ def submit_to_workers(func, args=None, kwargs=None, **settings):
     parallel_framework = settings.pop('parallel_framework', DEFAUL_FRAMEWORK)
     num_workers = settings.get('num_workers', 1)
     force_remote = settings.pop('force_remote', False)
-    N, args, kwargs = parse_inputs(args, kwargs)
+    N, args_n, kwargs_n = parse_inputs(args, kwargs)
     if N == 0:
         return []
     if (num_workers == 1) and (not force_remote):
         for k in range(N):
-            args_b = args[k]
-            kwargs_b = kwargs[k]
+            args_b = args_n[k]
+            kwargs_b = kwargs_n[k]
             res = func(*args_b, **kwargs_b)
             yield res
     else:
