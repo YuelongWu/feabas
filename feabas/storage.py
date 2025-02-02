@@ -96,10 +96,10 @@ def join_paths(*args):
     return pth
 
 
-def makedirs(filename):
+def makedirs(filename, exist_ok=True):
     driver, filename = parse_file_driver(filename)
     if driver == 'file':
-        os.makedirs(filename, exist_ok=True)
+        os.makedirs(filename, exist_ok=exist_ok)
 
 
 def h5file_class():

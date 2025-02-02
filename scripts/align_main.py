@@ -23,6 +23,8 @@ def generate_mesh_from_mask(mask_names, outname, **kwargs):
     initial_tform = kwargs.pop('initial_tform', None)
     logger = logging.get_logger(logger_info)
     loader = None
+    if not isinstance(material_table, material.MaterialTable):
+        material_table = material.MaterialTable.from_pickleable(material_table)
     if 'exclude' in material_table.named_table:
         mat = material_table['exclude']
         fillval = mat.mask_label

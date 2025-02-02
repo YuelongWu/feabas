@@ -292,7 +292,7 @@ def normalize_transforms(tlist, angle=0.0, offset=(0,0), **kwargs):
     R[:2,:2] = Rt
     corner_txy = corner_xy @ Rt
     corner_min = np.min(corner_txy, axis=0)
-    corner_max = np.max(corner_max, axis=0)
+    corner_max = np.max(corner_txy, axis=0)
     if offset is None:
         centr = np.array(regions.centroid.coords).ravel()
         txy = centr - centr @ Rt
@@ -308,7 +308,16 @@ def normalize_transforms(tlist, angle=0.0, offset=(0,0), **kwargs):
 
 
 def render_one_thumbnail(tform_name, thumbnail_dir, out_dir, **kwargs):
-    src_resolution = kwargs.get('src_resolution', thumbnail_resolution)
+    import cv2
+    from feabas.mesh import Mesh
+    from feabas.renderer import MeshRenderer
+    from feabas import common
+    from feabas.dal import StreamLoader
+    src_resolution = kwargs.get('src_resolution', None)
+    if src_resolution is None:
+        thumbnail_configs = config.thumbnail_configs()
+        thumbnail_mip_lvl = thumbnail_configs.get('thumbnail_mip_level', 6)
+        src_resolution = config.montage_resolution() * (2 ** thumbnail_mip_lvl)
     out_resolution = kwargs.get('out_resolution', src_resolution)
     bbox = kwargs.get('bbox', None)
     logger_info = kwargs.get('logger', None)
@@ -335,7 +344,6 @@ def render_one_thumbnail(tform_name, thumbnail_dir, out_dir, **kwargs):
     imgt = renderer.crop(bbox, remap_interp=cv2.INTER_LANCZOS4)
     common.imwrite(outname, imgt)
     logger.debug(f'{outname}: {time.time()-t0} sec')
-
 
 
 def parse_args(args=None):
@@ -377,11 +385,7 @@ if __name__ == '__main__':
     thumbnail_configs['num_workers'] = num_workers
 
 
-    import cv2
     from feabas import mipmap, common, material, constant
-    from feabas.dal import StreamLoader
-    from feabas.mesh import Mesh
-    from feabas.renderer import MeshRenderer
     from feabas.aligner import apply_transform_normalization, get_convex_hull, Stack
     from feabas.mipmap import mip_map_one_section
     from feabas.spatial import find_rotation_for_minimum_rectangle
@@ -556,7 +560,7 @@ if __name__ == '__main__':
             # meshing
             opt_configs = thumbnail_configs.get('optimization', {})
             mesh_configs = opt_configs.get('meshing_config', {})
-            mfunc = partial(generate_mesh_from_mask, out_dir=tmp_mesh_dir, material_table=material_table,
+            mfunc = partial(generate_mesh_from_mask, out_dir=tmp_mesh_dir, material_table=material_table.save_to_json(),
                             resolution=thumbnail_resolution, logger=logger_info[0], **mesh_configs)
             tasks = []
             for sname in secname_list:
@@ -566,10 +570,10 @@ if __name__ == '__main__':
                 if storage.file_exists(tform_name):
                     continue  
                 if storage.file_exists(mask_name):
-                    tasks.append({'mask_name': mask_name})
+                    tasks.append({'secname': sname, 'mask_name': mask_name})
                 elif storage.file_exists(img_name):
                     logger.warning(f'{sname} meshing: {mask_name} not found, use rectangular mesh.')
-                    tasks.append({'mask_size': img_name})
+                    tasks.append({'secname': sname, 'mask_size': img_name})
                 else:
                     logger.error(f'{sname} meshing: {mask_name} not found.')
             if len(tasks) > 0:
@@ -595,6 +599,7 @@ if __name__ == '__main__':
                 to_render = True
                 render_resolution = thumbnail_resolution / render_scale
                 render_dir = render_prefix + str(int(render_resolution)) + 'nm'
+                storage.makedirs(render_dir, exist_ok=True)
                 rendered = storage.list_folder_content(storage.join_paths(render_dir, '*.png'))
                 tform_list = sorted(storage.list_folder_content(storage.join_paths(tform_dir, '*.h5')))
                 if len(rendered) > 0:

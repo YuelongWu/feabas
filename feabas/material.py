@@ -312,6 +312,17 @@ class MaterialTable:
         return cls(table=table, default_material=default_material)
 
 
+    @classmethod
+    def from_pickleable(cls, mt):
+        if isinstance(mt, dict):
+            mt = cls(table=mt)
+        elif isinstance(mt, str):
+            mt = cls.from_json(mt, stream=not mt.endswith('.json'))
+        else:
+            raise TypeError
+        return mt
+
+
     def copy(self):
         table = self._table.copy()
         return self.__class__(table=table)

@@ -761,10 +761,11 @@ class Mesh:
         return cls(**init_dict)
 
 
-    def save_to_h5(self, fname, vertex_flags=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING),
-                   override_dict=None, **kwargs):
+    def save_to_h5(self, fname, vertex_flags=None, override_dict=None, **kwargs):
         if override_dict is None:
             override_dict = {}
+        if vertex_flags is None:
+            vertex_flags = [g for g in const.MESH_GEARS if self.vertices_initialized(gear=g)]
         prefix = kwargs.get('prefix', '')
         save_material = kwargs.get('save_material', True)
         compression = kwargs.get('compression', True)
@@ -2789,12 +2790,8 @@ def mesh_from_mask(mask, **kwargs):
     else:
         resolution = kwargs.get('resolution')
     if not isinstance(material_table, material.MaterialTable):
-        if isinstance(material_table, dict):
-            material_table = material.MaterialTable(table=material_table)
-        elif isinstance(material_table, str):
-            material_table = material.MaterialTable.from_json(material_table, stream=not material_table.endswith('.json'))
-        else:
-            raise TypeError
+        material_table = material.MaterialTable.from_pickleable(material_table)
+        kwargs['material_table'] = material_table
     if isinstance(simplify_tol, dict):
         region_tols = defaultdict(lambda: 0.1)
         region_tols.update(simplify_tol)
@@ -2802,7 +2799,7 @@ def mesh_from_mask(mask, **kwargs):
         region_tols = defaultdict(lambda: simplify_tol)
     G = spatial.Geometry.from_image_mosaic(mask, material_table=material_table, resolution=resolution)
     PSLG = G.PSLG(region_tol=region_tols, roi_tol=0, area_thresh=area_thresh)
-    PSLG = PSLG.update(kwargs)
+    PSLG.update(kwargs)
     M = Mesh.from_PSLG(**PSLG)
     if ('split' in material_table.named_table):
         mid = material_table.named_table['split'].uid
