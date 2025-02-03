@@ -551,7 +551,7 @@ if __name__ == '__main__':
                 kwargs_list = []
                 for idx0, idx1 in zip(indx_j[:-1], indx_j[1:]):
                     kwargs_list.append({'pairnames': pairnames[idx0:idx1]})
-                with _ in submit_to_workers(target_func, kwargs=kwargs_list, num_workers=num_workers):
+                for _ in submit_to_workers(target_func, kwargs=kwargs_list, num_workers=num_workers):
                     pass
         if (mode == 'optimization') or (mode == 'alignment'):
             tmp_mesh_dir = storage.join_paths(tform_dir, 'mesh')
