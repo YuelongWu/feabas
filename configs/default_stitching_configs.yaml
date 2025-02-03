@@ -32,7 +32,7 @@ optimization:
     translation:    # see stitcher.Stitcher.optimize_elastic for details
         maxiter: null
         tol: 1.0e-7
-        residue_threshold: 50   # after translational optimzation, matches with residue error larger than this are considered spurious and discarded. I usually use half of the overlapping width in pixels.
+        residue_threshold: 0.5   # after translational optimzation, matches with residue error larger than this are considered spurious and discarded. If set to a number < 1, it is the ratio wrt the overlapping width
     affine: # see stitcher.Stitcher.optimize_affine for details
         maxiter: 0
         tol: 1.0e-6

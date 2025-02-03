@@ -564,12 +564,7 @@ class Stitcher:
                 idx = groupings == g
                 tile_mesh_sizes[idx] = np.min(tile_mesh_sizes[idx])
         if border_width is None:
-            indx = self.overlaps
-            bboxes = self.init_bboxes
-            _, ovlp_wds = common.bbox_intersections(bboxes[indx[:,0]], bboxes[indx[:,1]])
-            tile_border_widths = np.zeros(self.num_tiles, dtype=np.float32)
-            np.maximum.at(tile_border_widths, indx, np.stack((ovlp_wds, ovlp_wds), axis=-1))
-            tile_border_widths = tile_border_widths / np.min(self.tile_sizes, axis=-1)
+            tile_border_widths = self.overlap_widths / np.min(self.tile_sizes, axis=-1)
             # tiles in a group share mesh
             grp_u, cnt = np.unique(groupings, return_counts=True)
             grp_u = grp_u[cnt>1]
@@ -707,6 +702,10 @@ class Stitcher:
         """
         if self._optimizer is None:
             self.initialize_optimizer()
+        residue_threshold = kwargs.get('residue_threshold', None)
+        if (residue_threshold is not None) and (residue_threshold <= 1):
+            overlap_width = np.median(self.overlap_widths)
+            kwargs['residue_threshold'] = overlap_width * residue_threshold
         num_disabled, cost0 = self._optimizer.optimize_translation_w_filtering(**kwargs)
         return num_disabled, cost0
 
@@ -1036,6 +1035,17 @@ class Stitcher:
         if (not hasattr(self, '_overlaps')) or (self._overlaps is None):
             self._overlaps = self.find_overlaps()
         return self._overlaps
+
+    @property
+    def overlap_widths(self):
+        if (not hasattr(self, '_overlap_widths')) or (self._overlap_widths is None):
+            indx = self.overlaps
+            bboxes = self.init_bboxes
+            _, ovlp_wds = common.bbox_intersections(bboxes[indx[:,0]], bboxes[indx[:,1]])
+            tile_border_widths = np.zeros(self.num_tiles, dtype=np.float32)
+            np.maximum.at(tile_border_widths, indx, np.stack((ovlp_wds, ovlp_wds), axis=-1))
+            self._overlap_widths = tile_border_widths
+        return self._overlap_widths
 
 
     @property
