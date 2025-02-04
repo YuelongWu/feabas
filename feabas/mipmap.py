@@ -205,6 +205,8 @@ def create_thumbnail(src_dir, outname=None, downsample=4, highpass=True, **kwarg
 def generate_target_tensorstore_scale(metafile, mip=None, **kwargs):
     num_workers = kwargs.get('num_workers', 1)
     max_tile_per_job = kwargs.get('max_tile_per_job', 16)
+    use_jpeg_compression = kwargs.get('format', None) in ('jpg', 'jpeg')
+    pad_to_tile_size = kwargs.get('pad_to_tile_size', use_jpeg_compression)
     write_to_file = False
     if isinstance(metafile, str):
         try:
@@ -252,6 +254,10 @@ def generate_target_tensorstore_scale(metafile, mip=None, **kwargs):
     Xmax, Ymax = exclusive_max[0], exclusive_max[1]
     chunk_shape = ts_src.schema.chunk_layout.write_chunk.shape
     tile_wd, tile_ht = chunk_shape[0], chunk_shape[1]
+    if pad_to_tile_size:
+        Xmax = Xmin + int(np.ceil((Xmax - Xmin) / tile_wd)) * tile_wd
+        Ymax = Ymin + int(np.ceil((Ymax - Ymin) / tile_ht)) * tile_ht
+        tgt_schema['domain']['exclusive_max'][:2] = [Xmax, Ymax]
     while tile_wd > (Xmax - Xmin) or tile_ht > (Ymax - Ymin):
         tile_wd = tile_wd // 2
         tile_ht = tile_ht // 2
@@ -262,6 +268,10 @@ def generate_target_tensorstore_scale(metafile, mip=None, **kwargs):
         read_wd = read_wd // 2
         read_ht = read_ht // 2
     tgt_schema['chunk_layout']['read_chunk']['shape'][:2] = [read_wd, read_ht]
+    if use_jpeg_compression:
+        tgt_schema['codec']['encoding'] = 'jpeg'
+        if 'shard_data_encoding' in tgt_schema['codec']:
+            tgt_schema['codec']['shard_data_encoding'] = 'raw'
     tgt_spec['schema'] = tgt_schema
     x1d = np.arange(Xmin, Xmax, tile_wd, dtype=np.int64)
     y1d = np.arange(Ymin, Ymax, tile_ht, dtype=np.int64)

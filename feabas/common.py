@@ -8,7 +8,7 @@ from scipy import sparse
 from scipy.ndimage import gaussian_filter1d
 import scipy.sparse.csgraph as csgraph
 
-from feabas.storage import GCP_client, File, file_exists, join_paths
+from feabas import storage
 
 Match = namedtuple('Match', ('xy0', 'xy1', 'weight'))
 
@@ -56,14 +56,16 @@ def imread(path, **kwargs):
 
 def imwrite(path, image):
     if path.startswith('gs://'):
-        plist = path.replace('gs://', '').split('/')
-        plist = [s for s in plist if s]
-        bucket = plist[0]
-        relpath = '/'.join(plist[1:])
-        _, encoded_img = cv2.imencode('.PNG', image)
-        bucket = GCP_client().get_bucket(bucket)
+        ext = os.path.splitext(path)[-1]
+        tmpname = hex(os.getpid())[2:] + '_' + hex(id(path))[2:] + ext
+        os.makedirs(storage.LOCAL_TEMP_FOLDER, exist_ok=True)
+        local_name = os.path.join(storage.LOCAL_TEMP_FOLDER, tmpname)
+        cv2.imwrite(local_name, image)
+        bucket, relpath = storage.GCP_parse_object_name(path)
+        bucket = storage.GCP_client().get_bucket(bucket)
         blob = bucket.blob(relpath)
-        blob.upload_from_string(encoded_img.tobytes(), content_type='image/png')
+        blob.upload_from_filename(local_name)
+        os.remove(local_name)
     else:
         if path.startswith('file://'):
             path = path.replace('file://', '')
@@ -579,7 +581,7 @@ def parse_coordinate_files(filename, **kwargs):
     resolution = kwargs.get('resolution', None)
     imgpaths = []
     bboxes = []
-    with File(filename, 'r') as f:
+    with storage.File(filename, 'r') as f:
         lines = f.readlines()
     if len(lines) == 0:
         raise RuntimeError(f'empty file: {filename}')
@@ -621,7 +623,7 @@ def parse_coordinate_files(filename, **kwargs):
         else:
             if tile_size is None:
                 if relpath:
-                    mpath_f = join_paths(root_dir, mpath)
+                    mpath_f = storage.join_paths(root_dir, mpath)
                 else:
                     mpath_f = mpath
                 img = imread(mpath_f, flag=cv2.IMREAD_GRAYSCALE)
@@ -634,8 +636,8 @@ def parse_coordinate_files(filename, **kwargs):
 
 
 def rearrange_section_order(section_list, section_order_file, order_file_only=True, merge=False):
-    if file_exists(section_order_file):
-        with File(section_order_file, 'r') as f:
+    if storage.file_exists(section_order_file):
+        with storage.File(section_order_file, 'r') as f:
             section_orders0 = f.readlines()
         section_orders = []
         z_lut = {}

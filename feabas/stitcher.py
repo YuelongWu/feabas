@@ -1380,6 +1380,11 @@ class MontageRenderer:
         """
         driver = kwargs.get('driver', 'image')
         scale = kwargs.get('scale', 1)
+        filename_settings = kwargs.get('filename_settings', {})
+        read_chunk_size = kwargs.get('read_chunk_size', (256, 256))
+        pattern = filename_settings.get('pattern', 'tr{ROW_IND}_tc{COL_IND}.png')
+        use_jpeg_compression = (pattern.lower().endswith('.jpg')) or (pattern.lower().endswith('.jpeg'))
+        pad_to_tile_size = kwargs.get('pad_to_tile_size', use_jpeg_compression)
         resolution = self.resolution / scale
         if not hasattr(tile_size, '__len__'):
             tile_ht, tile_wd = tile_size, tile_size
@@ -1390,20 +1395,18 @@ class MontageRenderer:
             bounds = scale_coordinates(bounds, scale)
         montage_wd = int(np.ceil(bounds[2]))
         montage_ht = int(np.ceil(bounds[3]))
+        Ncol = int(np.ceil(montage_wd / tile_wd))
+        Nrow = int(np.ceil(montage_ht / tile_ht))
         if driver != 'image':
             while tile_ht > montage_ht or tile_wd > montage_wd:
                 tile_ht = tile_ht // 2
                 tile_wd = tile_wd // 2
-        Ncol = int(np.ceil(montage_wd / tile_wd))
-        Nrow = int(np.ceil(montage_ht / tile_ht))
         cols, rows = np.meshgrid(np.arange(Ncol), np.arange(Nrow))
         cols, rows = cols.ravel(), rows.ravel()
         idxz = common.z_order(np.stack((rows, cols), axis=-1))
         cols, rows =  cols[idxz], rows[idxz]
         if driver == 'image':
             montage_ht, montage_wd = Nrow * tile_ht, Ncol * tile_wd
-            filename_settings = kwargs.get('filename_settings', {})
-            pattern = filename_settings.get('pattern', 'tr{ROW_IND}_tc{COL_IND}.png')
             one_based = filename_settings.get('one_based', False)
             keywords = ['{ROW_IND}', '{COL_IND}', '{X_MIN}', '{Y_MIN}', '{X_MAX}', '{Y_MAX}']
             filenames = []
@@ -1419,6 +1422,9 @@ class MontageRenderer:
             number_of_channels = self.number_of_channels
             dtype = self.dtype
             fillval = self.default_fillval
+            if pad_to_tile_size:
+                montage_ht = Nrow * tile_ht
+                montage_wd = Ncol * tile_wd
             schema = {
                 "chunk_layout":{
                     "grid_origin": [0, 0, 0, 0],
@@ -1463,19 +1469,27 @@ class MontageRenderer:
                     "delete_existing": False
                 }
             elif driver == 'neuroglancer_precomputed':
-                if tile_ht % 256 == 0:
-                    read_ht = 256
+                if not hasattr(read_chunk_size, '__len__'):
+                    tile_ht0, tile_wd0 = read_chunk_size, read_chunk_size
+                else:
+                    tile_ht0, tile_wd0 = read_chunk_size[0], read_chunk_size[-1]
+                if tile_ht % tile_ht0 == 0:
+                    read_ht = tile_ht0
                 else:
                     read_ht = tile_ht
-                if tile_wd % 256 == 0:
-                    read_wd = 256
+                if tile_wd % tile_wd0 == 0:
+                    read_wd = tile_wd0
                 else:
                     read_wd = tile_wd
-                schema["codec"]= {
-                    "driver": "neuroglancer_precomputed",
-                    "encoding": "raw",
-                    "shard_data_encoding": "gzip"
-                }
+                schema["codec"]= {"driver": "neuroglancer_precomputed"}
+                if use_jpeg_compression:
+                    schema["codec"].update({"encoding": 'jpeg'})
+                    if (read_ht < tile_ht) or read_wd < tile_wd:
+                        schema["codec"].update({"shard_data_encoding": 'raw'})
+                else:
+                    schema["codec"].update({"encoding": "raw"})
+                    if (read_ht < tile_ht) or read_wd < tile_wd:
+                        schema["codec"].update({"shard_data_encoding": 'gzip'})
                 schema['chunk_layout']["read_chunk"]["shape"] = [read_wd, read_ht, 1, number_of_channels]
                 filenames = {
                     "driver": "neuroglancer_precomputed",

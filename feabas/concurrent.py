@@ -8,13 +8,14 @@ def parse_inputs(args, kwargs):
         args = defaultdict(list)
     if kwargs is None:
         kwargs = defaultdict(dict)
-    N = max(len(args), len(kwargs))
-    if len(args) == 1:
-        val = args[0]
-        args = defaultdict(lambda: val)
-    if len(kwargs) == 1:
-        val = kwargs[0]
-        kwargs = defaultdict(lambda: val)
+    N_args, N_kwargs = len(args), len(kwargs)
+    N = max(N_args, N_kwargs)
+    if (N_args == 1) and (N_kwargs > 1):
+        val_a = args[0]
+        args = defaultdict(lambda: val_a)
+    if (N_kwargs == 1) and (N_args > 1):
+        val_k = kwargs[0]
+        kwargs = defaultdict(lambda: val_k)
     return N, args, kwargs
 
 
