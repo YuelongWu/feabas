@@ -64,6 +64,8 @@ rendering:
     driver: neuroglancer_precomputed   # image(PNG tiles), neuroglancer_precomputed, zarr(not tested), n5(not tested) 
     num_workers: 15
     tile_size: [4096, 4096] # output tile size
+    read_chunk_size: [256, 256] # for sharded precomputed format
+    pad_to_tile_size: true  # pad the border images to make uniform tile size
     resolution: null    # if null, use the intrinsic image resolution; otherwise scale to this resolution
     loader_settings: # see dal.AbstractImageLoader for details
         cache_size: 150
