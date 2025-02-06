@@ -30,8 +30,10 @@ TS_TIMEOUT = general_settings().get('tensorstore_timeout', None)
 @lru_cache(maxsize=1)
 def parallel_framework():
     frmwk = general_settings().get('parallel_framework', 'builtin')
-    if frmwk.startswith('bu'):
-        frmwk = 'builtin'
+    if frmwk.startswith('pr'):
+        frmwk = 'process'
+    elif frmwk.startswith('th'):
+        frmwk = 'thread'
     elif frmwk.startswith('da'):
         frmwk = 'dask'
     else:
