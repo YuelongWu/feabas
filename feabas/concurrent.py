@@ -33,33 +33,32 @@ def submit_to_workers(func, args=None, kwargs=None, **settings):
             res = func(*args_b, **kwargs_b)
             yield res
     else:
-        if parallel_framework == 'builtin':
-            yield from submit_to_builtin_pool(func, args, kwargs, **settings)
+        if parallel_framework == 'process':
+            yield from submit_to_process_pool(func, args, kwargs, **settings)
         elif parallel_framework == 'dask':
             yield from submit_to_dask_localcluster(func, args, kwargs, **settings)
         else:
             raise ValueError(f'unsupported worker type {type}')
 
 
-def submit_to_builtin_pool(func, args=None, kwargs=None, **settings):
+def submit_to_process_pool(func, args=None, kwargs=None, **settings):
     """
-    Python built-in concurrent backend
+    Python built-in concurrent multiprocessing backend
     """
-    from concurrent.futures.process import ProcessPoolExecutor
-    from concurrent.futures import as_completed
+    from concurrent.futures import ProcessPoolExecutor, as_completed
     from multiprocessing import get_context
     num_workers = settings.get('num_workers', 1)
     max_tasks_per_child = settings.get('max_tasks_per_child', None)
     N, args, kwargs = parse_inputs(args, kwargs)
     if (max_tasks_per_child is None) or (max_tasks_per_child == 1):
-        jobs = []
+        futures = []
         with ProcessPoolExecutor(max_workers=num_workers, mp_context=get_context('spawn'), max_tasks_per_child=max_tasks_per_child) as executor:
             for k in range(N):
                 args_b = args[k]
                 kwargs_b = kwargs[k]
                 job = executor.submit(func, *args_b, **kwargs_b)
-                jobs.append(job)
-            for job in as_completed(jobs):
+                futures.append(job)
+            for job in as_completed(futures):
                 res = job.result()
                 yield res
     else:
@@ -67,16 +66,35 @@ def submit_to_builtin_pool(func, args=None, kwargs=None, **settings):
         index0 = list(range(N))
         indices = [index0[k:(k+batch_size)] for k in range(0, N, batch_size)]
         for idx in indices:
-            jobs = []
+            futures = []
             with ProcessPoolExecutor(max_workers=num_workers, mp_context=get_context('spawn')) as executor:
                 for k in idx:
                     args_b = args[k]
                     kwargs_b = kwargs[k]
                     job = executor.submit(func, *args_b, **kwargs_b)
-                    jobs.append(job)
-                for job in as_completed(jobs):
+                    futures.append(job)
+                for job in as_completed(futures):
                     res = job.result()
                     yield res
+
+
+def submit_to_thread_pool(func, args=None, kwargs=None, **settings):
+    """
+    Python built-in concurrent multithreading backend
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    num_workers = settings.get('num_workers', 1)
+    N, args, kwargs = parse_inputs(args, kwargs)
+    futures = []
+    with ThreadPoolExecutor(max_workers=num_workers) as executor:
+        for k in range(N):
+            args_b = args[k]
+            kwargs_b = kwargs[k]
+            job = executor.submit(func, *args_b, **kwargs_b)
+            futures.append(job)
+        for job in as_completed(futures):
+            res = job.result()
+            yield res
 
 
 def submit_to_dask_localcluster(func, args=None, kwargs=None, **settings):

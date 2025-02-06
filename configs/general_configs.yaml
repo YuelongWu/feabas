@@ -1,6 +1,6 @@
 working_directory: ./work_dir   # project specific working directory
 cpu_budget: null      # CPU cores to use (estimated target only, no hard control)
-parallel_framework: builtin # builtin/dask, either using Python's innate multiprocessing or Dask LocalCluster
+parallel_framework: process # process/thread/dask, either using Python's innate multiprocessing/multithreading or Dask LocalCluster
 
 full_resolution: 4  # in nanometers. If the stitch coordinate files don't have resolution, this will be used
 section_thickness: 30 # in nanometers. If also provided in the stitching config file, this will be overridden

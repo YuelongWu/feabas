@@ -1,7 +1,7 @@
 from setuptools import setup, find_packages
 import platform
 
-VERSION = '2.1.0'
+VERSION = '3.0.0'
 
 def readme():
     with open('README.md') as f:
@@ -9,6 +9,7 @@ def readme():
 
 install_requires = [
     'dask[array,distributed,diagnostics]',
+    'dask-jobqueue',
     'dill',
     'google-cloud-storage',
     'h5py',
