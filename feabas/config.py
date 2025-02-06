@@ -254,6 +254,9 @@ def set_numpy_thread_from_num_workers(num_workers):
     num_cpus = general_settings()['cpu_budget']
     if num_workers > num_cpus:
         num_workers = num_cpus
-    nthreads = max(1, math.floor(num_cpus / num_workers))
+    if parallel_framework() == 'thread':
+        nthreads = num_cpus
+    else:
+        nthreads = max(1, math.floor(num_cpus / num_workers))
     limit_numpy_thread(nthreads)
     return num_workers

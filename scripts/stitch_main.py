@@ -2,11 +2,10 @@ import argparse
 from functools import partial
 import os
 import time
-import tensorstore as ts
 
 import feabas
 from feabas.concurrent import submit_to_workers
-from feabas import config, logging, dal, multisem, storage
+from feabas import config, logging, storage
 
 
 def match_one_section(coordname, outname, **kwargs):
@@ -44,6 +43,7 @@ def match_main(coord_list, out_dir, **kwargs):
 
 def optimize_one_section(matchname, outname, **kwargs):
     from feabas.stitcher import Stitcher
+    from feabas import multisem
     import numpy as np
     if storage.file_exists(outname):
         return
@@ -284,8 +284,9 @@ if __name__ == '__main__':
     num_workers = config.set_numpy_thread_from_num_workers(num_workers)
     stitch_configs['num_workers'] = num_workers
 
+    from feabas import dal
     from feabas.stitcher import Stitcher, MontageRenderer
-    import numpy as np
+    import tensorstore as ts
 
     stitch_dir = storage.join_paths(root_dir, 'stitch')
     coord_dir = storage.join_paths(stitch_dir, 'stitch_coord')
