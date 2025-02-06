@@ -78,6 +78,7 @@ tensorstore_rendering: # render to tensorstore volume
     z_min: 0    # minimum z index of the volume. value other than 0 seems to cause error for some reason...
     z_max: null # maximum z index (exclusive) of the volume. If set to null, count the section number.
     driver: neuroglancer_precomputed
+    jpeg_compression: false
     outdir: null # directory to save the aligned stack. if set to null, default to working_directory/aligned_tensorstore
     chunk_shape: [1024, 1024, 16]
     read_chunk_shape: [128, 128, 16]

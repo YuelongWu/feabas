@@ -826,8 +826,9 @@ class VolumeRenderer:
         assert len(meshes) == len(z_indx)
         self._meshes = meshes
         self._zindx = z_indx
-        self._zmin = kwargs.get('z_min', None)
+        self._zmin = kwargs.get('z_min', 0)
         self._zmax = kwargs.get('z_max', None)
+        self._jpeg_compression = kwargs.get('jpeg_compression', False)
         self._loaders = loaders
         driver = kwargs.get('driver', 'neuroglancer_precomputed')
         self.flag_dir = kwargs.get('flag_dir', None)
@@ -1111,15 +1112,21 @@ class VolumeRenderer:
                         "inclusive_min": inclusive_min,
                         "labels": ["x", "y", "z", "channel"]
                     },
+                    "codec":{
+                        "driver": "neuroglancer_precomputed"
+                    },
                     "dtype": np.dtype(self.dtype).name,
                     "rank" : 4
                 }
-                if np.any(np.array(read_chunk) != np.array(write_chunk)):
-                    schema_extra["codec"]= {
-                        "driver": "neuroglancer_precomputed",
-                        "encoding": "raw",
-                        "shard_data_encoding": "gzip"
-                    }
+                sharding = np.any(np.array(read_chunk) != np.array(write_chunk))
+                if self._jpeg_compression:
+                    schema_extra["codec"].update({"encoding": "jpeg"})
+                    if sharding:
+                        schema_extra["codec"].update({"shard_data_encoding": "raw"})
+                else:
+                    schema_extra["codec"].update({"encoding": "raw"})
+                    if sharding:
+                        schema_extra["codec"].update({"shard_data_encoding": "gzip"})
                 spec_copy['schema'].update(schema_extra)
                 dataset = ts.open(spec_copy).result()
             self._ts_verified = True

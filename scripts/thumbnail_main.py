@@ -554,7 +554,7 @@ if __name__ == '__main__':
                 for _ in submit_to_workers(target_func, kwargs=kwargs_list, num_workers=num_workers):
                     pass
         if (mode == 'optimization') or (mode == 'alignment'):
-            tmp_mesh_dir = storage.join_paths(tform_dir, 'mesh')
+            tmp_mesh_dir = storage.join_paths(thumbnail_dir, 'mesh')
             storage.makedirs(tform_dir, exist_ok=True)
             storage.makedirs(tmp_mesh_dir, exist_ok=True)
             # meshing
