@@ -35,7 +35,7 @@ def submit_to_workers(func, args=None, kwargs=None, **settings):
     else:
         if parallel_framework == 'process':
             yield from submit_to_process_pool(func, args, kwargs, **settings)
-        if parallel_framework == 'thread':
+        elif parallel_framework == 'thread':
             yield from submit_to_thread_pool(func, args, kwargs, **settings)
         elif parallel_framework == 'dask':
             yield from submit_to_dask_localcluster(func, args, kwargs, **settings)
