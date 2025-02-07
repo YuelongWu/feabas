@@ -14,7 +14,7 @@ from feabas.spatial import scale_coordinates
 from feabas.matcher import section_matcher
 from feabas.optimizer import SLM
 import feabas.constant as const
-from feabas.common import str_to_numpy_ascii, Match, rearrange_section_order
+from feabas.common import str_to_numpy_ascii, Match, rearrange_section_order, parse_json_file
 from feabas.config import montage_resolution
 
 H5File = storage.h5file_class()
@@ -150,8 +150,9 @@ class Stack:
   ## --------------------------- initialization ---------------------------- ##
     def __init__(self, section_list=None, match_list=None, **kwargs):
         self._mesh_dir = kwargs.get('mesh_dir', None)
-        self._mesh_out_dir = kwargs.get('mesh_out_dir', self._mesh_dir)
+        self._mesh_out_dir = kwargs.get('mesh_out_dir', None)
         self._match_dir = kwargs.get('match_dir', None)
+        self._chunk_dir = kwargs.get('chunk_dir', storage.join_paths(self._mesh_dir, 'chunks'))
         if section_list is None:
             if self._mesh_dir is None:
                 raise RuntimeError('mesh_dir not defined.')
@@ -246,7 +247,21 @@ class Stack:
 
 
     def assign_section_to_chunks(self, chunk_map=None, **kwargs):
-        pass
+        previous_chunk_map = kwargs.get('previous_chunk_map', None)
+        default_chunk_size = kwargs.get('chunk_size', 16)
+        if previous_chunk_map is None:
+            default_file = storage.join_paths(self._chunk_dir, 'chunk_record.json')
+            if storage.file_exists(default_file):
+                previous_chunk_map = default_file
+        previous_chunk_map = parse_json_file(previous_chunk_map)
+        if chunk_map is None:
+            default_file = storage.join_paths(self._mesh_dir, 'chuck_setting.json')
+            if storage.file_exists(default_file):
+                chunk_map = default_file
+        chunk_map = parse_json_file(default_file)
+        if (chunk_map is None) and (previous_chunk_map is None):
+            pass
+        # TBC
 
 
   ## --------------------------- meshes & matches -------------------------- ##
