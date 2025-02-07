@@ -104,7 +104,7 @@ if __name__ == '__main__':
     if (xmin is None) or (ymin is None) or (xmax is None) or (ymax is None):
         bbox0 = []
         bfunc = partial(get_bbox_for_one_section, resolution=resolution)
-        for bbx in submit_to_workers(bfunc, args=[(s,) for s in list], num_workers=args.worker):
+        for bbx in submit_to_workers(bfunc, args=[(s,) for s in tlist], num_workers=args.worker):
             bbox0.append(bbx)
         bbox0 = np.array(bbox0)
         if xmin is None:
