@@ -177,6 +177,8 @@ class Stack:
         self._link_cache = OrderedDict()
         self._link_cache.update(link_cache)
         self.lock_flags = defaultdict(lambda: False)
+        if lock_flags is None:
+            lock_flags = self.aligned_and_committed
         if isinstance(lock_flags, dict):
             self.lock_flags.update(lock_flags)
         elif isinstance(lock_flags, (tuple, list, np.ndarray)):
@@ -241,6 +243,10 @@ class Stack:
             init_dict['link_cache'] = {s: self._link_cache[s] for s in match_list if s in self._link_cache}
         init_dict.update(kwargs)
         return init_dict
+
+
+    def assign_section_to_chunks(self, chunk_map=None, **kwargs):
+        pass
 
 
   ## --------------------------- meshes & matches -------------------------- ##
@@ -625,6 +631,16 @@ class Stack:
         ref_flag = A.dot(sel_flag) & (~sel_flag) & self.locked_array
         combined_flag = sel_flag | ref_flag
         return [s for flg, s in zip(combined_flag, self.section_list) if flg]
+
+
+    @property
+    def aligned_and_committed(self):
+        if self._mesh_out_dir is None:
+            return np.zeros(self.num_sections, dtype=bool)
+        tform_list = storage.list_folder_content(storage.join_paths(self._mesh_out_dir, '*.h5'))
+        tnames = [os.path.basename(s).replace('.h5','') for s in tform_list]
+        flags = np.array([s in tnames for s in self.section_list])
+        return flags
 
 
 

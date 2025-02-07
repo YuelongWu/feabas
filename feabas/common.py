@@ -1,6 +1,7 @@
 from collections import namedtuple
 import cv2
 import importlib
+import json
 import os
 
 import numpy as np
@@ -675,3 +676,28 @@ def rearrange_section_order(section_list, section_order_file, order_file_only=Tr
         return [section_lut.get(s, None) for s in sec_keys], z_indices
     else:
         return section_list, np.arange(len(section_list))
+
+
+def parse_json_file(filename, stream=None):
+    if filename is None:
+        json_dict =  None
+    file_read = False
+    if stream is None:
+        if isinstance(filename, str):
+            try:
+                json_dict = json.loads(filename)
+            except ValueError:
+                with storage.File(filename, 'r') as f:
+                    json_dict = json.load(f)
+                file_read = True
+        elif isinstance(filename, dict):
+            json_dict = filename
+        else:
+            raise TypeError
+    elif stream:
+        json_dict = json.loads(filename)
+    else:
+        with storage.File(filename, 'r') as f:
+            json_dict = json.load(f)
+            file_read = True
+    return json_dict, file_read

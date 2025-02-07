@@ -1,5 +1,4 @@
 import cv2
-import json
 import numpy as np
 from functools import partial
 from scipy.interpolate import interp1d
@@ -208,20 +207,7 @@ def generate_target_tensorstore_scale(metafile, mip=None, **kwargs):
     use_jpeg_compression = kwargs.get('format', None) in ('jpg', 'jpeg')
     pad_to_tile_size = kwargs.get('pad_to_tile_size', use_jpeg_compression)
     write_to_file = False
-    if isinstance(metafile, str):
-        try:
-            json_obj = json.loads(metafile)
-        except ValueError:
-            write_to_file = True
-            if metafile.startswith('gs:'):
-                json_ts = ts.open({"driver": "json", "kvstore": metafile}).result()
-                s = json_ts.read().result()
-                json_obj = s.item()
-            else:
-                with storage.File(metafile, 'r') as f:
-                    json_obj = json.load(f)
-    elif isinstance(metafile, dict):
-        json_obj = metafile
+    json_obj, write_to_file = common.parse_json_file(metafile)
     ds_spec, src_mip, mip, mipmaps = get_tensorstore_spec(json_obj, mip=mip, return_mips=True, **kwargs)
     if src_mip == mip:
         return None

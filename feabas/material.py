@@ -300,11 +300,7 @@ class MaterialTable:
 
     @classmethod
     def from_json(cls, jsonname, stream=False, default_material=None):
-        if stream:
-            dct = json.loads(jsonname)
-        else:
-            with File(jsonname, 'r') as f:
-                dct = json.load(f)
+        dct = common.parse_json_file(jsonname, stream=stream)
         table = {}
         for lbl, props in dct.items():
             material = Material(**props)

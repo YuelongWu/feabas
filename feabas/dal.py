@@ -83,28 +83,14 @@ def _tile_divider_block(imght, imgwd, x0=0, y0=0, cache_block_size=0):
 ##------------------------------ image loaders -------------------------------##
 
 def get_loader_from_json(json_info, loader_type=None, **kwargs):
-    if isinstance(json_info, str):
-        try:
-            json_obj = json.loads(json_info)
-        except ValueError:
-            if json_info.lower().endswith('.txt'): # could use tab separated txt, not recommend
-                if loader_type == 'StaticImageLoader':
-                    loader = StaticImageLoader.from_coordinate_file(json_info)
-                else:
-                    loader = MosaicLoader.from_coordinate_file(json_info)
-                json_obj = loader.init_dict()
-            else:
-                if json_info.startswith('gs:'):
-                    json_ts = ts.open({"driver": "json", "kvstore": json_info}).result()
-                    s = json_ts.read().result()
-                    json_obj = s.item()
-                else:
-                    with File(json_info, 'r') as f:
-                        json_obj = json.load(f)
-    elif isinstance(json_info, dict):
-        json_obj = json_info
+    if isinstance(json_info, str) and json_info.endswith('.txt'):
+        if loader_type == 'StaticImageLoader':
+            loader = StaticImageLoader.from_coordinate_file(json_info)
+        else:
+            loader = MosaicLoader.from_coordinate_file(json_info)
+        json_obj = loader.init_dict()
     else:
-        raise TypeError
+        json_obj, _ = common.parse_json_file(json_info)
     if kwargs.get('mip', None) is not None:
         if str(kwargs['mip']) in json_obj:
              json_obj = json_obj[str(kwargs['mip'])]
@@ -361,16 +347,7 @@ class AbstractImageLoader(ABC):
 
     @staticmethod
     def _load_settings_from_json(jsonname):
-        if isinstance(jsonname, str):
-            if jsonname.lower().endswith('.json'):
-                with File(jsonname, 'r') as f:
-                    json_obj = json.load(f)
-            else:
-                json_obj = json.loads(jsonname)
-        elif isinstance(jsonname, dict):
-            json_obj = jsonname
-        else:
-            raise TypeError
+        json_obj, _ = common.parse_json_file(jsonname)
         settings = {}
         if 'resolution' in json_obj:
             settings['resolution'] = json_obj['resolution']
@@ -1093,19 +1070,7 @@ class StreamLoader(AbstractImageLoader):
 def get_tensorstore_spec(metafile, mip=None, **kwargs):
     downsample_method = kwargs.get('downsample_method', 'mean')
     return_mips = kwargs.get('return_mips', False)
-    if isinstance(metafile, str):
-        try:
-            json_obj = json.loads(metafile)
-        except ValueError:
-            if metafile.startswith('gs:'):
-                json_ts = ts.open({"driver": "json", "kvstore": metafile}).result()
-                s = json_ts.read().result()
-                json_obj = s.item()
-            else:
-                with File(metafile, 'r') as f:
-                    json_obj = json.load(f)
-    elif isinstance(metafile, dict):
-        json_obj = metafile
+    json_obj, _ = common.parse_json_file(metafile)
     try:
         mipmaps = {int(m): json_spec for m, json_spec in json_obj.items()}
     except ValueError:
