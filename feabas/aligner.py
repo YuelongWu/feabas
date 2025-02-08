@@ -253,12 +253,12 @@ class Stack:
             default_file = storage.join_paths(self._chunk_dir, 'chunk_record.json')
             if storage.file_exists(default_file):
                 previous_chunk_map = default_file
-        previous_chunk_map = parse_json_file(previous_chunk_map)
+        previous_chunk_map,_ = parse_json_file(previous_chunk_map)
         if chunk_map is None:
             default_file = storage.join_paths(self._mesh_dir, 'chuck_setting.json')
             if storage.file_exists(default_file):
                 chunk_map = default_file
-        chunk_map = parse_json_file(default_file)
+        chunk_map, _ = parse_json_file(default_file)
         if (chunk_map is None) and (previous_chunk_map is None):
             pass
         # TBC
