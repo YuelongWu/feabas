@@ -300,7 +300,7 @@ class MaterialTable:
 
     @classmethod
     def from_json(cls, jsonname, stream=False, default_material=None):
-        dct = common.parse_json_file(jsonname, stream=stream)
+        dct, _ = common.parse_json_file(jsonname, stream=stream)
         table = {}
         for lbl, props in dct.items():
             material = Material(**props)
