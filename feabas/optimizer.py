@@ -1025,9 +1025,9 @@ class SLM:
         """
         optimize the linear system or the tangent problem of non-linear system.
         kwargs:
-            maxiter: maximum number of iterations in bicgstab. None if no limit.
-            tol: the relative stopping tolerance of the bicgstab.
-            atol: the absolute stopping tolerance of the bicgstab.
+            maxiter: maximum number of iterations in bicgstab/minres. None if no limit.
+            tol: the relative stopping tolerance of the bicgstab/minres.
+            atol: the absolute stopping tolerance of the bicgstab/minres.
             shape_gear: gear to caculate shape matrix.
             start_gear: the gear that associated with the vertex positions before
                 applying the field from optimization. Also used for computing
@@ -1052,6 +1052,7 @@ class SLM:
                 optimization is done. In some occasions, like flip checking
                 in Newton_Raphson method, this could be set to False.
         """
+        solver = kwargs.get('solver', 'minres')
         maxiter = kwargs.get('maxiter', None)
         tol = kwargs.get('tol', 1e-7)
         atol = kwargs.get('atol', 0.0)
@@ -1191,8 +1192,7 @@ class SLM:
             M = sparse.diags(1/(A_diag.clip(min(1.0, A_diag.max()/1000),None))) # Jacobi precondition
         else:
             M = None
-        # dd, _ = sparse.linalg.bicgstab(A, b, tol=tol, maxiter=maxiter, atol=atol, M=M)
-        dd = bicgstab(A, b, tol=tol, maxiter=maxiter, atol=atol, M=M, extra_dof_constraint=edc, **callback_settings)
+        dd = solve(A, b, solver, tol=tol, maxiter=maxiter, atol=atol, M=M, extra_dof_constraint=edc, **callback_settings)
         cost = (np.linalg.norm(b), np.linalg.norm(A.dot(dd) - b))
         if cost[1] < cost[0]:
             index_offsets = self.index_offsets
@@ -1627,7 +1627,7 @@ class EarlyStopFlag(Exception):
 
 class SLM_Callback:
     """
-    call back function class fed to bicgstab optimizer.
+    call back function class fed to iterative solver.
     Args:
         A, b: equation terms to solve x: Ax = b.
     Kwargs:
@@ -1683,7 +1683,7 @@ class SLM_Callback:
         return False
 
 
-def bicgstab(A, b, tol=1e-07, atol=None, maxiter=None, M=None, **kwargs):
+def solve(A, b, solver, x0=None, tol=1e-7, atol=None, maxiter=None, M=None, **kwargs):
     timeout = kwargs.get('timeout', None)
     early_stop_thresh = kwargs.get('early_stop_thresh', None)
     chances = kwargs.get('chances', None)
@@ -1707,11 +1707,21 @@ def bicgstab(A, b, tol=1e-07, atol=None, maxiter=None, M=None, **kwargs):
                 M = sparse.csr_matrix(M)[edc][:, edc]
     cb = SLM_Callback(A, b, timeout=timeout, early_stop_thresh=early_stop_thresh, chances=chances, eval_step=eval_step)
     callback = cb.callback
+    kwargs_solver = {'x0': x0, 'maxiter': maxiter, 'M': M, 'callback': callback}
+    if atol is not None:
+        rtol0 = atol / np.linalg.norm(b)
+        tol = max(tol, rtol0)
+    if scipy.__version__ >= '1.12.0':
+        kwargs_solver['rtol': tol]
+    else:
+        kwargs_solver['tol': tol]
     try:
-        if scipy.__version__ >= '1.12.0':
-            x, _ = sparse.linalg.bicgstab(A, b, rtol=tol, maxiter=maxiter, atol=atol, M=M, callback=callback)
+        if solver == 'bicgstab':
+            x, _ = sparse.linalg.bicgstab(A, b, **kwargs_solver)
+        elif solver == 'minres':
+            x, _ = sparse.linalg.minres(A, b, **kwargs_solver)
         else:
-            x, _ = sparse.linalg.bicgstab(A, b, tol=tol, maxiter=maxiter, atol=atol, M=M, callback=callback)
+            raise ValueError
         cost0 = np.linalg.norm(A.dot(x) - b)
         if cost0 > cb.min_cost:
             x = cb.solution
@@ -1724,7 +1734,6 @@ def bicgstab(A, b, tol=1e-07, atol=None, maxiter=None, M=None, **kwargs):
     return x
 
 
-
 def transform_mesh(mesh_unlocked, mesh_locked, **kwargs):
     err_thresh = kwargs.pop('err_thresh', None)
     kwargs.setdefault('continue_on_flip', True)
@@ -1734,8 +1743,6 @@ def transform_mesh(mesh_unlocked, mesh_locked, **kwargs):
     mesh_unlocked = mesh_unlocked.copy(override_dict={'locked': False, 'uid': 1})
     mesh_unlocked.change_resolution(mesh_locked.resolution)
     xy_fix = mesh_locked.vertices_w_offset(gear=const.MESH_GEAR_INITIAL)
-    # xy_mov = mesh_unlocked.vertices_w_offset(gear=const.MESH_GEAR_INITIAL)
-    # xy0 = np.concatenate((xy_fix, xy_mov), axis=0)
     xy0 = xy_fix
     opt = SLM([mesh_locked, mesh_unlocked], stiffness_lambda=0.01)
     opt.divide_disconnected_submeshes()
@@ -1756,6 +1763,7 @@ def transform_mesh(mesh_unlocked, mesh_locked, **kwargs):
 
 
 def relax_mesh(M, free_vertices=None, free_triangles=None, **kwargs):
+    solver = kwargs.get('solver', 'minres')
     gear = kwargs.get('gear', (const.MESH_GEAR_FIXED, const.MESH_GEAR_MOVING))
     maxiter = kwargs.get('maxiter', None)
     tol = kwargs.get('tol', 1e-7)
@@ -1786,7 +1794,7 @@ def relax_mesh(M, free_vertices=None, free_triangles=None, **kwargs):
         cond = sparse.diags(1/(A_diag.clip(min(1.0, A_diag.max()/1000),None))) # Jacobi precondition
     else:
         cond = None
-    dd = bicgstab(A, b, tol=tol, maxiter=maxiter, atol=atol, M=cond, **callback_settings)
+    dd = solve(A, b, solver, tol=tol, maxiter=maxiter, atol=atol, M=cond, **callback_settings)
     cost = (np.linalg.norm(b), np.linalg.norm(A.dot(dd) - b))
     if (cost[1] < cost[0]) and np.any(dd != 0):
         modified = True
