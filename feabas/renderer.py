@@ -1115,6 +1115,7 @@ class VolumeRenderer:
                     "codec":{
                         "driver": "neuroglancer_precomputed"
                     },
+                    "dimension_units": [[self.resolution, "nm"], [self.resolution, "nm"], [SECTION_THICKNESS, "nm"], None],
                     "dtype": np.dtype(self.dtype).name,
                     "rank" : 4
                 }
