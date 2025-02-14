@@ -8,6 +8,7 @@ import numpy as np
 from scipy import sparse
 from scipy.ndimage import gaussian_filter1d
 import scipy.sparse.csgraph as csgraph
+import tensorstore as ts
 
 from feabas import storage
 
@@ -701,3 +702,30 @@ def parse_json_file(filename, stream=None):
             json_dict = json.load(f)
             file_read = True
     return json_dict, file_read
+
+
+def tensorstore_indices_to_bboxes(ts_spec, ind_x, ind_y, ind_z):
+    # return as xmin, ymin, xmax, ymax, zmin, zmax
+    if isinstance(ts_spec, ts.TensorStore):
+        dataset = ts_spec
+    elif isinstance(ts_spec, dict):
+        dataset = ts.open(ts_spec).result()
+    elif isinstance(ts_spec, str):
+        ts_spec = parse_json_file(ts_spec)
+        dataset = ts.open(ts_spec).result()
+    else:
+        raise TypeError
+    inclusive_min = dataset.domain.inclusive_min
+    exclusive_max = dataset.domain.exclusive_max
+    write_shape = dataset.schema.chunk_layout.write_chunk.shape
+    Xmin, Ymin, Zmin = inclusive_min[0], inclusive_min[1], inclusive_min[2]
+    Xmax, Ymax, Zmax = exclusive_max[0], exclusive_max[1], exclusive_max[2]
+    tile_wd, tile_ht, zstep = write_shape[0], write_shape[1], write_shape[2]
+    x0 = (Xmin + ind_x * tile_wd).clip(Xmin, Xmax)
+    x1 = (Xmin + (ind_x + 1) * tile_wd).clip(Xmin, Xmax)
+    y0 = (Ymin + ind_y * tile_ht).clip(Ymin, Ymax)
+    y1 = (Ymin + (ind_y + 1) * tile_ht).clip(Ymin, Ymax)
+    z0 = (Zmin + ind_z * zstep).clip(Zmin, Zmax)
+    z1 = (Zmin + (ind_z + 1) * zstep).clip(Zmin, Zmax)
+    idx = (x0 < x1) & (y0 < y1) & (z0 < z1)
+    return x0[idx], y0[idx], x1[idx], y1[idx], z0[idx], z1[idx]

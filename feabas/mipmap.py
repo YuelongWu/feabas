@@ -240,20 +240,22 @@ def generate_target_tensorstore_scale(metafile, mip=None, **kwargs):
     Xmax, Ymax = exclusive_max[0], exclusive_max[1]
     chunk_shape = ts_src.schema.chunk_layout.write_chunk.shape
     tile_wd, tile_ht = chunk_shape[0], chunk_shape[1]
+    read_chunk_shape = ts_src.schema.chunk_layout.read_chunk.shape
+    read_wd, read_ht = read_chunk_shape[0], read_chunk_shape[1]
     if pad_to_tile_size:
-        Xmax = Xmin + int(np.ceil((Xmax - Xmin) / tile_wd)) * tile_wd
-        Ymax = Ymin + int(np.ceil((Ymax - Ymin) / tile_ht)) * tile_ht
+        Xmax = Xmin + int(np.ceil((Xmax - Xmin) / read_wd)) * read_wd
+        Ymax = Ymin + int(np.ceil((Ymax - Ymin) / read_ht)) * read_ht
         tgt_schema['domain']['exclusive_max'][:2] = [Xmax, Ymax]
     while tile_wd > (Xmax - Xmin) or tile_ht > (Ymax - Ymin):
         tile_wd = tile_wd // 2
         tile_ht = tile_ht // 2
-    tgt_schema['chunk_layout']['write_chunk']['shape'][:2] = [tile_wd, tile_ht]
-    read_chunk_shape = ts_src.schema.chunk_layout.read_chunk.shape
-    read_wd, read_ht = read_chunk_shape[0], read_chunk_shape[1]
-    while read_wd > (Xmax - Xmin) or read_ht > (Ymax - Ymin):
+    while read_wd > tile_wd or read_ht > tile_ht:
         read_wd = read_wd // 2
         read_ht = read_ht // 2
+    tgt_schema['chunk_layout']['write_chunk']['shape'][:2] = [tile_wd, tile_ht]
     tgt_schema['chunk_layout']['read_chunk']['shape'][:2] = [read_wd, read_ht]
+    tgt_schema['chunk_layout']['write_chunk']['shape_soft_constraint'] = tgt_schema['chunk_layout']['write_chunk'].pop('shape')
+    tgt_schema['chunk_layout']['read_chunk']['shape_soft_constraint'] = tgt_schema['read_chunk']['write_chunk'].pop('shape')
     if use_jpeg_compression:
         tgt_schema['codec']['encoding'] = 'jpeg'
         if 'shard_data_encoding' in tgt_schema['codec']:
@@ -490,3 +492,80 @@ def _smooth_filter(img, blur=2, sigma=0.0, downsample=True):
             else:
                 img = cv2.blur(img, (round(blur-1), round(blur-1)))
     return img
+
+
+def mip_one_level_tensorstore_3d(src_spec, mipup=1, **kwargs):
+    FLAG_PER_PAGE = 1_000_000
+    num_workers = kwargs.get('num_workers', 1)
+    keep_chunk_layout = kwargs.get('keep_chunk_layout', True)
+    downsample_z = kwargs.get('downsample_z', 'auto')
+    downsample_method = kwargs.get("downsample_method", "mean")
+    kvstore_out = kwargs.get('kvstore_out', None)
+    use_jpeg_compression = kwargs.get('use_jpeg_compression', True)
+    pad_to_tile_size = kwargs.get('pad_to_tile_size', use_jpeg_compression)
+    flag_file = kwargs.get('flag_dir', None)
+    src_data = ts.open(src_spec).result()
+    src_spec = src_data.spec(minimal_spec=True).to_json()
+    if kvstore_out is None:
+        kvstore_out = src_spec["kvstore"]
+    scl = 2 ** mipup
+    if downsample_z == 'auto':
+        resln0 = src_data.dimension_units[0].multiplier
+        thick0 = src_data.dimension_units[2].multiplier
+        new_resln = resln0 * scl
+        downsample_z = 2**max(0, round(np.log(new_resln/thick0)/np.log(2)))
+    downsample_factors = [scl, scl, downsample_z, 1]
+    dsp_spec = {
+        "driver": "downsample",
+        "downsample_factors": downsample_factors,
+        "downsample_method": downsample_method,
+        "base": src_spec
+    }
+    dsp_data = ts.open(dsp_spec).result()
+    out_spec = {"driver": "neuroglancer_precomputed", "kvstore": kvstore_out}
+    src_schema = src_data.schema.to_json()
+    dsp_schema = dsp_data.schema.to_json()
+    out_schema = src_schema.copy()
+    out_schema["dimension_units"] = dsp_schema["dimension_units"]
+    if keep_chunk_layout:
+        chunk_layout = src_schema["chunk_layout"]
+    else:
+        chunk_layout = dsp_schema["chunk_layout"]
+    write_shape = chunk_layout["write_chunk"].pop("shape")
+    tile_wd, tile_ht = write_shape[0], write_shape[1]
+    chunk_layout["write_chunk"]["shape_soft_constraint"] = write_shape
+    read_shape = chunk_layout["read_chunk"].pop("shape")
+    read_wd, read_ht = read_shape[0], read_shape[1]
+    chunk_layout["read_chunk"]["shape_soft_constraint"] = read_shape
+    out_schema["chunk_layout"] = chunk_layout
+    out_schema["domain"] = dsp_schema["domain"]
+    inclusive_min = dsp_data.domain.inclusive_min
+    exclusive_max = dsp_data.domain.exclusive_max
+    Xmin, Ymin, Zmin = inclusive_min[0], inclusive_min[1], inclusive_min[2]
+    Xmax, Ymax, Zmax = exclusive_max[0], exclusive_max[1], exclusive_max[2]
+    if pad_to_tile_size:
+        Xmax = Xmin + int(np.ceil((Xmax - Xmin) / tile_wd)) * tile_wd
+        Ymax = Ymin + int(np.ceil((Ymax - Ymin) / tile_ht)) * tile_ht
+        out_schema["domain"]["exclusive_max"][:2] = [Xmax, Ymax]
+    if use_jpeg_compression:
+        out_schema["codec"] = {"driver": "neuroglancer_precomputed", "encoding": 'jpeg'}
+        if (read_ht < tile_ht) or (read_wd < tile_wd):
+            out_schema["codec"].update({"shard_data_encoding": 'raw'})
+    else:
+        out_schema["codec"] = {"driver": "neuroglancer_precomputed", "encoding": 'raw'}
+        if (read_ht < tile_ht) or (read_wd < tile_wd):
+            out_schema["codec"].update({"shard_data_encoding": 'gzip'})
+    out_spec["schema"] = out_schema
+    if (flag_file is None) or (not storage.file_exists(flag_file)):
+        out_spec.update({"open": False, "create": True, "delete_existing": True})
+    else:
+        out_spec.update({"open": True, "create": True, "delete_existing": False})
+    out_data = ts.open(out_spec).result()
+    out_spec = out_data.spec(minimal_spec=True).to_json()
+    out_spec.update({"open": True, "create": True, "delete_existing": False})
+    out_schema = out_data.schema.to_json()
+    write_shape = out_schema["chunk_layout"]["write_chunk"]["shape"]
+    tile_wd, tile_ht, zstep = write_shape[0], write_shape[1], write_shape[2]
+    X0 = np.arange(Xmin, Xmax, tile_wd)
+    Y0 = np.arange(Ymin, Ymax, tile_ht)
+    Z0 = np.arange(Zmin, Zmax, zstep)
