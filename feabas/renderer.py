@@ -2,7 +2,7 @@ from collections import defaultdict
 from functools import partial
 import matplotlib.tri
 import numpy as np
-import os
+import json
 from scipy.sparse import csgraph
 import shapely
 import shapely.geometry as shpgeo
@@ -17,6 +17,7 @@ from feabas.mesh import Mesh
 from feabas import common, spatial, dal, logging, storage
 from feabas.config import DEFAULT_RESOLUTION, SECTION_THICKNESS, montage_resolution, TS_TIMEOUT
 
+H5File = storage.h5file_class()
 
 class MeshRenderer:
     """
@@ -829,9 +830,11 @@ class VolumeRenderer:
         self._zmin = kwargs.get('z_min', 0)
         self._zmax = kwargs.get('z_max', None)
         self._jpeg_compression = kwargs.get('jpeg_compression', False)
+        self._pad_to_tile_size = kwargs.get('pad_to_tile_size', not self._jpeg_compression)
         self._loaders = loaders
         driver = kwargs.get('driver', 'neuroglancer_precomputed')
         self.flag_dir = kwargs.get('flag_dir', None)
+        self.checkpoint_dir = kwargs.get('checkpoint_dir', storage.join_paths(self.flag_dir, 'progress'))
         self._offset = kwargs.get('out_offset', np.zeros((1,2), dtype=np.int64))
         self._canvas_bbox = kwargs.get('canvas_bbox', None)
         self._ts_verified = False
@@ -846,34 +849,36 @@ class VolumeRenderer:
         self._ts_spec = {'driver': driver, 'kvstore': kvstore, 'schema': schema}
 
 
-
-    def plan_one_slab(self, z_start=0, **kwargs):
+    def plan_one_slab(self, z_ind=0, **kwargs):
         num_workers = kwargs.pop('num_workers', 1)
         max_tile_per_job = kwargs.pop('max_tile_per_job', None)
         render_seriers = []
-        chunk_x, chunk_y, chunk_z = self.chunk_shape
-        z_ind = z_start // chunk_z
-        zz = np.arange(z_ind * chunk_z, (z_ind+1) * chunk_z)
-        if self.flag_dir is not None:
-            z_to_render = []
-            for z in zz:
-                flg_name = storage.join_paths(self.flag_dir, str(z)+'.json')
-                if not storage.file_exists(flg_name):
-                    z_to_render.append(z)
-            zz = np.array(z_to_render)
-        zz = zz[(zz >= np.min(self._zindx)) & (zz <= np.max(self._zindx))]
-        if zz.size == 0:
+        writer = dal.TensorStoreWriter.from_json_spec(self.ts_spec)
+        X0, Y0, Z0, X1, Y1, Z1 = writer.write_grids
+        z0, z1 = Z0[z_ind], Z1[z_ind]
+        N_x, N_y = X0.size, Y0.size
+        zz = np.arange(z0, z1)
+        flag_file = storage.join_paths(self.flag_dir, f'z{z0}_{z1}.json')
+        checkpoint_file = storage.join_paths(self.checkpoint_dir, f'z{z0}_{z1}.h5')
+        if (flag_file is not None) and storage.file_exists(flag_file):
+            with storage.File(flag_file, 'r') as f:
+                z_rendered = json.load(f)
+        else:
+            z_rendered = []
+        z_to_render = [z for z in zz if z not in z_rendered]
+        if len(z_to_render) == 0:
             return render_seriers
-        xmin, ymin, xmax, ymax = self.canvas_bbox
-        x0_mn = np.arange((xmin//chunk_x) * chunk_x, xmax, chunk_x)
-        y0_mn = np.arange((ymin//chunk_y) * chunk_y, ymax, chunk_y)
-        xx_mn, yy_mn = np.meshgrid(x0_mn, y0_mn)
-        xx_mn, yy_mn = xx_mn.ravel(), yy_mn.ravel()
-        idxz = common.z_order(np.stack((xx_mn//chunk_x, yy_mn//chunk_y), axis=-1))
-        xx_mn, yy_mn = xx_mn[idxz], yy_mn[idxz]
-        xx_mx, yy_mx = xx_mn + chunk_x, yy_mn + chunk_y
-        xx_mn, yy_mn = xx_mn.clip(xmin, None), yy_mn.clip(ymin, None)
-        xx_mx, yy_mx = xx_mx.clip(None, xmax), yy_mx.clip(None, ymax)
+        check_points = defaultdict(lambda: None)
+        if (checkpoint_file is not None) and storage.file_exists(checkpoint_file):
+            with H5File(checkpoint_file, 'r') as f:
+                for z in z_to_render:
+                    if str(z) in f:
+                        check_points[z] = f[str(z)][()]
+        id_x, id_y = np.meshgrid(np.arange(N_x), np.arange(N_y))
+        id_x, id_y = id_x.ravel(), id_y.ravel()
+        zdr = common.z_order(np.stack((id_x, id_y),axis=-1))
+        id_x, id_y = id_x[zdr], id_y[zdr]
+        xx_mn, yy_mn, xx_mx, yy_mx = X0[id_x], Y0[id_y], X1[id_x], Y1[id_y]
         bboxes = np.stack((xx_mn, yy_mn, xx_mx, yy_mx), axis=-1)
         bboxes_tree = shapely.STRtree([shpgeo.box(*bbox) for bbox in bboxes])
         hit_counts = np.zeros(bboxes.shape[0])
@@ -1077,11 +1082,17 @@ class VolumeRenderer:
                     zmin = self._zmin
                 if (self._zmax is not None) and zmax < self._zmax:
                     zmax = self._zmax
+                write_chunk = list(self._chunk_shape)
+                read_chunk = list(self._read_chunk_shape)
+                if self._pad_to_tile_size:
+                    shp_x, shp_y = read_chunk[:2]
+                    xmin = int(np.floor(xmin / shp_x)) * shp_x
+                    ymin = int(np.floor(ymin / shp_y)) * shp_y
+                    xmax = int(np.ceil(xmax / shp_x)) * shp_x
+                    ymax = int(np.ceil(ymax / shp_y)) * shp_y
                 canvas_min = np.array((xmin, ymin, zmin))
                 canvas_max = np.array((xmax, ymax, zmax))
                 num_channels = self.number_of_channels
-                write_chunk = list(self._chunk_shape)
-                read_chunk = list(self._read_chunk_shape)
                 if len(write_chunk) < 3:
                     write_chunk = write_chunk + [1]
                 if len(write_chunk) < 4:

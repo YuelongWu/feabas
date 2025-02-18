@@ -88,6 +88,8 @@ def dir_exists(dirname):
 
 
 def join_paths(*args):
+    if any([s is None for s in args]):
+        return None
     parent_dir = args[0]
     if parent_dir.startswith('gs://'):
         pth = '/'.join(args)
@@ -100,6 +102,17 @@ def makedirs(filename, exist_ok=True):
     driver, filename = parse_file_driver(filename)
     if driver == 'file':
         os.makedirs(filename, exist_ok=exist_ok)
+
+
+def remove_file(filename):
+    if not file_exists(filename):
+        return
+    driver, filename = parse_file_driver(filename)
+    if driver == 'gs':
+        blob = GCP_get_blob(filename)
+        blob.delete()
+    else:
+        os.remove(filename)
 
 
 def h5file_class():

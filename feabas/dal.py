@@ -1377,16 +1377,28 @@ class TensorStoreWriter(TensorStoreLoader):
             start_x = int(np.floor((Dx0 - ori_x) / shp_x)) * shp_x + ori_x
             start_y = int(np.floor((Dy0 - ori_y) / shp_y)) * shp_y + ori_y
             start_z = int(np.floor((Dz0 - ori_z) / shp_z)) * shp_z + ori_z
-            self._write_grids = (np.arange(start_x, Dx1, shp_x), np.arange(start_y, Dy1, shp_y), np.arange(start_z, Dz1, shp_z))
+            X0 = np.arange(start_x, Dx1, shp_x)
+            Y0 = np.arange(start_y, Dy1, shp_y)
+            Z0 = np.arange(start_z, Dz1, shp_z)
+            X1, Y1, Z1 = X0 + shp_x, Y0 + shp_y, Z0 + shp_z
+            X0, Y0, Z0 = X0.clip(Dx0, Dx1), Y0.clip(Dy0, Dy1), Z0.clip(Dz0, Dz1)
+            X1, Y1, Z1 = X1.clip(Dx0, Dx1), Y1.clip(Dy0, Dy1), Z1.clip(Dz0, Dz1)
+            self._write_grids = (X0, Y0, Z0, X1, Y1, Z1)
         return self._write_grids
 
 
-    def grid_indices_to_bboxes(self, ind_x, ind_y, ind_z):
-        stx0, sty0, stz0 = self.write_grids
-        stx = stx0[ind_x]
-        sty = sty0[ind_y]
-        stz = stz0[ind_z]
-        
+    def grid_indices_to_bboxes(self, g_x, g_y, g_z):
+        X0, Y0, Z0, X1, Y1, Z1 = self.write_grids
+        g_x, g_y, g_z = np.array(g_x).ravel(), np.array(g_y).ravel(), np.array(g_z).ravel()
+        Nb = max(g_x.size, g_y.size, g_z.size)
+        if Nb > 1:
+            if g_x.size == 1:
+                g_x = np.repeat(g_x, Nb)
+            if g_y.size == 1:
+                g_y = np.repeat(g_y, Nb)
+            if g_z.size == 1:
+                g_z = np.repeat(g_z, Nb)
+        return np.stack((X0[g_x], Y0[g_y], Z0[g_z], X1[g_x], Y1[g_y], Z1[g_z]), axis=-1)
 
 
     @property
