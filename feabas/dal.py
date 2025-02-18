@@ -13,7 +13,7 @@ import tensorstore as ts
 
 from feabas import common, caching
 from feabas.storage import File, join_paths, list_folder_content
-from feabas.config import DEFAULT_RESOLUTION
+from feabas.config import DEFAULT_RESOLUTION, TS_TIMEOUT, TS_RETRY
 
 
 # bbox :int: [xmin, ymin, xmax, ymax]
@@ -434,7 +434,7 @@ class AbstractImageLoader(ABC):
         """image_cached_block_rtree get function used in self._crop_from_one_image"""
         pass
 
-    
+
     def _get_image_hits(self, imgpath, bbox):
         # hits[blkid] = bbox
         cached_block_rtree = self._get_image_cached_block_rtree(imgpath)
@@ -837,7 +837,7 @@ class MosaicLoader(StaticImageLoader):
             bbox = MosaicLoader._filename_parser(fname, pattern, tile_size)
             if tile_offset is not None:
                 dx = tile_offset[0] * tile_size[-1]
-                dy = tile_offset[-1] * tile_size[0] 
+                dy = tile_offset[-1] * tile_size[0]
                 bbox = (bbox[0]+dx, bbox[1]+dy, bbox[2]+dx, bbox[3]+dy)
             if pixel_offset is not None:
                 dx, dy = pixel_offset
@@ -958,7 +958,7 @@ class StreamLoader(AbstractImageLoader):
     """
     def __init__(self, img, **kwargs):
         self._img = img
-        self._dtype = kwargs.get('dtype', img.dtype)  
+        self._dtype = kwargs.get('dtype', img.dtype)
         self._apply_CLAHE = kwargs.get('apply_CLAHE', False)
         if len(img.shape) < 3:
             self._src_number_of_channels = 0
@@ -1102,11 +1102,16 @@ class TensorStoreLoader(AbstractImageLoader):
     """
     Loader class for image saved by tensorstore. Mirrors the APIs of MosaicLoader.
     """
-    def __init__(self, dataset, **kwargs):
+    def __init__(self, dataset=None, **kwargs):
         super().__init__(**kwargs)
-        self.resolution = dataset.schema.dimension_units[0].multiplier
+        if dataset is None:
+            self._spec = kwargs.get('spec')
+            self.reconnect()
+        else:
+            self.dataset = dataset
+            self._spec = dataset.spec(minimal_spec=True).to_json()
+        self.resolution = self.dataset.schema.dimension_units[0].multiplier
         self._z = kwargs.get('z', 0)
-        self.dataset = dataset
 
 
     @classmethod
@@ -1135,16 +1140,26 @@ class TensorStoreLoader(AbstractImageLoader):
             while 'base' in crnt_lvl:
                 crnt_lvl = crnt_lvl['base']
             crnt_lvl.update({'context': cntx, 'recheck_cached_data': 'open'})
-        dataset = ts.open(js_spec).result()
         if js_spec['driver'] in ('neuroglancer_precomputed', 'n5'):
             kwargs['fillval'] = 0
-        return cls(dataset, **kwargs)
-        
+        return cls(spec=js_spec)
+
 
     def _export_dict(self, **kwargs):
         out = super()._settings_dict(**kwargs)
-        out['json_spec'] = self.dataset.spec(minimal_spec=True).to_json()
+        out['json_spec'] = self._spec
         return out
+
+
+    def reconnect(self):
+        for _ in range(TS_RETRY+1):
+            try:
+                self.dataset = ts.open(self._spec).result(timeout=TS_TIMEOUT)
+                break
+            except TimeoutError:
+                pass
+        else:
+            raise TimeoutError
 
 
     def crop(self, bbox, return_empty=False, **kwargs):
@@ -1154,18 +1169,25 @@ class TensorStoreLoader(AbstractImageLoader):
         number_of_channels = kwargs.get('number_of_channels', self.number_of_channels)
         inverse = kwargs.get('inverse', self._inverse)
         rnk = self.dataset.rank
-        if rnk > 2:
-            slc = self.dataset[:, :, self._z, ...]
+        for _ in range(TS_RETRY+1):
+            try:
+                if rnk > 2:
+                    slc = self.dataset[:, :, self._z, ...]
+                else:
+                    slc = self.dataset
+                while slc.rank > 2 and slc.shape[-1] == 1:
+                    slc = slc[..., 0]
+                bbox_img = self.bounds
+                slc_crp, indx = common.crop_image_from_bbox(slc, bbox_img, bbox,
+                                                            return_index=True, flip_indx=True)
+                if (slc_crp is None) and (not return_empty):
+                    return None
+                img_crp = slc_crp.read().result(timeout=TS_TIMEOUT)
+                break
+            except TimeoutError:
+                self.reconnect()
         else:
-            slc = self.dataset
-        while slc.rank > 2 and slc.shape[-1] == 1:
-            slc = slc[..., 0]
-        bbox_img = self.bounds
-        slc_crp, indx = common.crop_image_from_bbox(slc, bbox_img, bbox,
-                                                    return_index=True, flip_indx=True)
-        if (slc_crp is None) and (not return_empty):
-            return None
-        img_crp = slc_crp.read().result()
+            raise TimeoutError
         if np.all(img_crp == fillval) and (not return_empty):
             return None
         if dtype is None:
@@ -1195,6 +1217,42 @@ class TensorStoreLoader(AbstractImageLoader):
         return imgout.astype(dtype, copy=False)
 
 
+    def get_chunk(self, bbox, return_empty=False, **kwargs):
+        # bbox [xmin, ymin, zmin, xmax, ymax, zmax]
+        fillval = kwargs.get('fillval', self._default_fillval)
+        bbox = np.array(bbox)
+        b_min, b_max = bbox[:3], bbox[3:]
+        bounds = np.array(self.bounds_3d)
+        D_min, D_max = bounds[:3], bounds[3:]
+        for _ in range(TS_RETRY+1):
+            try:
+                if np.all(b_min >= D_min) and np.all(b_max <= D_max):
+                    block = self.dataset[b_min[0]:b_max[0], b_min[1]:b_max[1], b_min[2]:b_max[2], ...].read().result(timeout=TS_TIMEOUT)
+                else:
+                    block = np.full([*(b_max - b_min).clip(0,None)] + [self.number_of_channels], fillval, dtype=self.dtype)
+                    glb0 = np.maximum(b_min, D_min)
+                    glb1 = np.minimum(b_max, D_max)
+                    if np.all(glb1-glb0 > 0):
+                        loc0 = glb0 - b_min
+                        loc1 = glb1 - b_min
+                        ptch = self.dataset[glb0[0]:glb1[0], glb0[1]:glb1[1], glb0[2]:glb1[2], ...].read().result(timeout=TS_TIMEOUT)
+                        while len(ptch.shape) < len(block.shape):
+                            ptch = ptch[..., np.newaxis]
+                        block[loc0[0]:loc1[0], loc0[1]:loc1[1], loc0[2]:loc1[2], ...] = ptch
+                break
+            except TimeoutError:
+                self.reconnect()
+        else:
+            raise TimeoutError
+        if (not return_empty) and ((block.size == 0) or np.all(block == fillval)):
+            return None
+        while len(block.shape) > self.dataset.rank:
+            block = block[...,0]
+        while len(block.shape) < self.dataset.rank:
+            block = block[..., np.newaxis]
+        return block
+
+
     @property
     def dtype(self):
         if self._dtype is None:
@@ -1221,6 +1279,119 @@ class TensorStoreLoader(AbstractImageLoader):
         xmin, ymin = inclusive_min[0], inclusive_min[1]
         xmax, ymax = exclusive_max[0], exclusive_max[1]
         return (xmin, ymin, xmax, ymax)
+
+
+    @property
+    def bounds_3d(self):
+        domain = self.dataset.domain
+        inclusive_min = domain.inclusive_min
+        exclusive_max = domain.exclusive_max
+        xmin, ymin, zmin = inclusive_min[:3]
+        xmax, ymax, zmax = exclusive_max[:3]
+        return (xmin, ymin, zmin, xmax, ymax, zmax)
+
+
+
+class TensorStoreWriter(TensorStoreLoader):
+    def write_single_chunk(self, bbox, img, **kwargs):
+        ts_retry = kwargs.get('ts_retry', TS_RETRY)
+        txn = kwargs.get('txn', None)
+        updated = False
+        for _ in range(ts_retry+1):
+            try:
+                if len(bbox) == 4:
+                    if self.dataset.rank > 2:
+                        dataset = self.dataset[:, :, self._z, ...]
+                    else:
+                        dataset = self.dataset
+                    D_min, D_max = np.array(self.bounds[:2]), np.array(self.bounds[2:])
+                    b_min, b_max = np.array(bbox[:2]), np.array(bbox[2:])
+                    imgshp = img.shape[:2]
+                elif len(bbox) == 6:
+                    dataset = self.dataset
+                    D_min, D_max = np.array(self.bounds_3d[:3]), np.array(self.bounds_3d[3:])
+                    b_min, b_max = np.array(bbox[:3]), np.array(bbox[3:])
+                    imgshp = img.shape[:3]
+                    if ((b_max[-1] - b_min[-1]) == 1) and len(img.shape) < len(dataset.shape):
+                        img = img[:,:,np.newaxis,...]
+                        imgshp = img.shape[:3]
+                else:
+                    raise TypeError
+                target_empty = False
+                glb_indices = []
+                loc_indices = []
+                for d0, d1, b0, b1, ss in zip(D_min, D_max, b_min, b_max, imgshp):
+                    glb0 = max(b0, d0)
+                    glb1 = min(d1, b1, b0 + ss)
+                    loc0 = glb0 - b0
+                    loc1 = glb1 - b0
+                    if loc0 >= loc1:
+                        target_empty = True
+                        break
+                    glb_indices.append(slice(glb0, glb1, 1))
+                    loc_indices.append(slice(loc0, loc1, 1))
+                if not target_empty:
+                    data_view = dataset[*glb_indices]
+                    img_crp = img[*loc_indices]
+                    while len(img_crp.shape) > len(data_view.shape):
+                        img_crp = img_crp[..., 0]
+                    while len(img_crp.shape) < len(data_view.shape):
+                        img_crp = img_crp[..., np.newaxis]
+                    if txn is None:
+                        data_view.write(img_crp).result(timeout=TS_TIMEOUT)
+                    else:
+                        data_view.with_transaction(txn).write(img_crp).result(timeout=TS_TIMEOUT)
+                    updated = True
+                break
+            except TimeoutError:
+                self.reconnect()
+        else:
+            raise TimeoutError
+        return updated
+
+
+    def write_chunks_w_transaction(self, bboxes, imgs):
+        if (len(bboxes) == 1) and (len(imgs) == 1):
+            self.write_single_chunk(bboxes[0], imgs[0])
+        else:
+            for _ in range(TS_RETRY+1):
+                try:
+                    txn = ts.Transaction()
+                    for bbox, img in zip(bboxes, imgs):
+                        self.write_single_chunk(bbox, img, txn=txn, ts_retry=0)
+                    txn.commit_async().result(timeout=TS_TIMEOUT)
+                    if not txn.aborted:
+                        break
+                except TimeoutError:
+                    self.reconnect()
+            else:
+                raise TimeoutError
+
+
+    @property
+    def write_grids(self):
+        if (not hasattr(self, '_write_grids')) or (self._write_grids is None):
+            shp_x, shp_y, shp_z = self.write_chunk_shape[:3]
+            ori_x, ori_y, ori_z = self.dataset.schema.chunk_layout.grid_origin[:3]
+            Dx0, Dy0, Dz0, Dx1, Dy1, Dz1 = self.bounds_3d
+            start_x = int(np.floor((Dx0 - ori_x) / shp_x)) * shp_x + ori_x
+            start_y = int(np.floor((Dy0 - ori_y) / shp_y)) * shp_y + ori_y
+            start_z = int(np.floor((Dz0 - ori_z) / shp_z)) * shp_z + ori_z
+            self._write_grids = (np.arange(start_x, Dx1, shp_x), np.arange(start_y, Dy1, shp_y), np.arange(start_z, Dz1, shp_z))
+        return self._write_grids
+
+
+    def grid_indices_to_bboxes(self, ind_x, ind_y, ind_z):
+        stx0, sty0, stz0 = self.write_grids
+        stx = stx0[ind_x]
+        sty = sty0[ind_y]
+        stz = stz0[ind_z]
+        
+
+
+    @property
+    def write_chunk_shape(self):
+        return self.dataset.schema.chunk_layout.write_chunk.shape
 
 
 class MultiResolutionImageLoader:

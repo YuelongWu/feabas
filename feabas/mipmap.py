@@ -327,7 +327,7 @@ def _write_downsample_tensorstore(src_spec, tgt_spec, bboxes, **kwargs):
             continue
         xmin, ymin, xmax, ymax = bbox
         out_view = ts_out[xmin:xmax, ymin:ymax]
-        img = np.swapaxes(img, 0, 1)
+        img = np.swapaxes(img, 0, 1).copy()
         try:
             out_view.write(img.reshape(out_view.shape)).result(timeout=TS_TIMEOUT)
         except TimeoutError:
@@ -494,6 +494,21 @@ def _smooth_filter(img, blur=2, sigma=0.0, downsample=True):
     return img
 
 
+def _write_ts_block_from_indices(ind_x, ind_y, ind_z, src_spec, out_spec):
+    src_data = ts.open(src_spec).result()
+    out_data = ts.open(out_spec).result()
+    src_min = src_data.domain.inclusive_min
+    src_max = src_data.domain.exclusive_max
+    Xmin, Ymin, Zmin = src_min[:3]
+    Xmax, Ymax, Zmax = src_max[:3]
+    bboxes = common.tensorstore_indices_to_bboxes(out_spec, ind_x, ind_y, ind_z)
+    for x0, y0, x1, y1, z0, z1 in zip(*bboxes):
+        x0_t, y0_t, z0_t = max(x0, Xmin), max(y0, Ymin), max(z0, Zmin)
+        x1_t, y1_t, z1_t = min(x1, Xmax), min(y1, Ymax), min(z1, Zmax)
+        if (x0!=x0_t) or (y0!=y0_t) or (z0!=z0_t) or (x1!=x1_t) or (y1!=y1_t) or (z1!=z1_t):
+            block = np.zeros((x1-x0, y1-y0, z1-z0), dtype=out_data.dtype.name)
+
+
 def mip_one_level_tensorstore_3d(src_spec, mipup=1, **kwargs):
     FLAG_PER_PAGE = 1_000_000
     num_workers = kwargs.get('num_workers', 1)
@@ -503,7 +518,7 @@ def mip_one_level_tensorstore_3d(src_spec, mipup=1, **kwargs):
     kvstore_out = kwargs.get('kvstore_out', None)
     use_jpeg_compression = kwargs.get('use_jpeg_compression', True)
     pad_to_tile_size = kwargs.get('pad_to_tile_size', use_jpeg_compression)
-    flag_file = kwargs.get('flag_dir', None)
+    flag_dir = kwargs.get('flag_dir', None)
     src_data = ts.open(src_spec).result()
     src_spec = src_data.spec(minimal_spec=True).to_json()
     if kvstore_out is None:
@@ -556,13 +571,17 @@ def mip_one_level_tensorstore_3d(src_spec, mipup=1, **kwargs):
         if (read_ht < tile_ht) or (read_wd < tile_wd):
             out_schema["codec"].update({"shard_data_encoding": 'gzip'})
     out_spec["schema"] = out_schema
-    if (flag_file is None) or (not storage.file_exists(flag_file)):
+    if flag_dir is None:
+        flag_files = []
+    else:
+        flag_files = storage.list_folder_content(storage.join_paths(flag_dir, '*.h5'))
+    if len(flag_files) == 0:
         out_spec.update({"open": False, "create": True, "delete_existing": True})
     else:
         out_spec.update({"open": True, "create": True, "delete_existing": False})
     out_data = ts.open(out_spec).result()
     out_spec = out_data.spec(minimal_spec=True).to_json()
-    out_spec.update({"open": True, "create": True, "delete_existing": False})
+    out_spec.update({"open": True, "create": False, "delete_existing": False})
     out_schema = out_data.schema.to_json()
     write_shape = out_schema["chunk_layout"]["write_chunk"]["shape"]
     tile_wd, tile_ht, zstep = write_shape[0], write_shape[1], write_shape[2]

@@ -11,6 +11,7 @@ import scipy.sparse.csgraph as csgraph
 import tensorstore as ts
 
 from feabas import storage
+from feabas.config import TS_RETRY, TS_TIMEOUT
 
 Match = namedtuple('Match', ('xy0', 'xy1', 'weight'))
 
@@ -34,21 +35,28 @@ def imread(path, **kwargs):
             raise ValueError(f'format not supported: {path}')
         import tensorstore as ts
         js_spec = {'driver': driver, 'kvstore': path}
-        try:
-            ts_data = ts.open(js_spec).result()
-            img = ts_data.read().result()
-            if len(img.shape) < 3:
-                num_channels = 1
-            else:
-                num_channels = img.shape[-1]
-                if num_channels == 1:
-                    img = img[..., 0]
-            if flag == cv2.IMREAD_GRAYSCALE and num_channels != 1:
-                img = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
-            elif flag == cv2.IMREAD_COLOR and num_channels == 1:
-                img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
-        except ValueError:
-            img = None
+        for nt in range(TS_RETRY+1):
+            try:
+                ts_data = ts.open(js_spec).result(timeout=TS_TIMEOUT)
+                img = ts_data.read().result(timeout=TS_TIMEOUT)
+                if len(img.shape) < 3:
+                    num_channels = 1
+                else:
+                    num_channels = img.shape[-1]
+                    if num_channels == 1:
+                        img = img[..., 0]
+                if flag == cv2.IMREAD_GRAYSCALE and num_channels != 1:
+                    img = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+                elif flag == cv2.IMREAD_COLOR and num_channels == 1:
+                    img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
+                break
+            except ValueError:
+                img = None
+                break
+            except TimeoutError:
+                if nt >= (TS_RETRY):
+                    raise TimeoutError
+
     else:
         if path.startswith('file://'):
             path = path.replace('file://', '')
@@ -718,14 +726,13 @@ def tensorstore_indices_to_bboxes(ts_spec, ind_x, ind_y, ind_z):
     inclusive_min = dataset.domain.inclusive_min
     exclusive_max = dataset.domain.exclusive_max
     write_shape = dataset.schema.chunk_layout.write_chunk.shape
-    Xmin, Ymin, Zmin = inclusive_min[0], inclusive_min[1], inclusive_min[2]
-    Xmax, Ymax, Zmax = exclusive_max[0], exclusive_max[1], exclusive_max[2]
-    tile_wd, tile_ht, zstep = write_shape[0], write_shape[1], write_shape[2]
+    Xmin, Ymin, Zmin = inclusive_min[:3]
+    Xmax, Ymax, Zmax = exclusive_max[:3]
+    tile_wd, tile_ht, zstep = write_shape[:3]
     x0 = (Xmin + ind_x * tile_wd).clip(Xmin, Xmax)
     x1 = (Xmin + (ind_x + 1) * tile_wd).clip(Xmin, Xmax)
     y0 = (Ymin + ind_y * tile_ht).clip(Ymin, Ymax)
     y1 = (Ymin + (ind_y + 1) * tile_ht).clip(Ymin, Ymax)
     z0 = (Zmin + ind_z * zstep).clip(Zmin, Zmax)
     z1 = (Zmin + (ind_z + 1) * zstep).clip(Zmin, Zmax)
-    idx = (x0 < x1) & (y0 < y1) & (z0 < z1)
-    return x0[idx], y0[idx], x1[idx], y1[idx], z0[idx], z1[idx]
+    return x0, y0, x1, y1, z0, z1

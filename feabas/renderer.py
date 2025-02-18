@@ -1065,16 +1065,8 @@ class VolumeRenderer:
             spec_copy = self._ts_spec.copy()
             spec_copy.update({'open': True, 'create': False, 'delete_existing': False})
             try:
-                dataset = ts.open(spec_copy).result()
-                # inclusive_min = np.array(dataset.domain.inclusive_min)
-                # exclusive_max = np.array(dataset.domain.exclusive_max)
-                # if np.any(inclusive_min[:3] > canvas_min) or np.any(exclusive_max[:3] < canvas_max):
-                #     inclusive_min[:3] = np.minimum(inclusive_min[:3], canvas_min)
-                #     exclusive_max[:3] = np.maximum(exclusive_max[:3], canvas_max)
-                #     dataset = dataset.resize(inclusive_min=inclusive_min, exclusive_max=exclusive_max,
-                #                              resize_metadata_only=True, expand_only=True).result()
-                self._read_chunk_shape = dataset.schema.chunk_layout.read_chunk.shape[:3]
-                self._chunk_shape = dataset.schema.chunk_layout.write_chunk.shape[:3]
+                writer = dal.TensorStoreWriter.from_json_spec(spec_copy)
+                dataset = writer.dataset
             except ValueError:
                 spec_copy.update({'create': True})
                 xmin, ymin, xmax, ymax = self.canvas_bbox
@@ -1104,8 +1096,8 @@ class VolumeRenderer:
                     "chunk_layout":{
                         "grid_origin": [0, 0, 0, 0],
                         "inner_order": [3, 2, 1, 0],
-                        "read_chunk": {"shape": read_chunk},
-                        "write_chunk": {"shape": write_chunk},
+                        "read_chunk": {"shape_soft_constraint": read_chunk},
+                        "write_chunk": {"shape_soft_constraint": write_chunk},
                     },
                     "domain":{
                         "exclusive_max": exclusive_max,
@@ -1129,7 +1121,11 @@ class VolumeRenderer:
                     if sharding:
                         schema_extra["codec"].update({"shard_data_encoding": "gzip"})
                 spec_copy['schema'].update(schema_extra)
-                dataset = ts.open(spec_copy).result()
+                writer = dal.TensorStoreWriter.from_json_spec(spec_copy)
+                dataset = writer.dataset
+                self._ts_spec = dataset.spec(minimal_spec=True).to_json()
+            self._read_chunk_shape = dataset.schema.chunk_layout.read_chunk.shape[:3]
+            self._chunk_shape = dataset.schema.chunk_layout.write_chunk.shape[:3]
             self._ts_verified = True
 
 
@@ -1179,18 +1175,19 @@ class VolumeRenderer:
 
 
 def subprocess_render_partial_ts_slab(loaders, meshes, bboxes, out_ts, **kwargs):
+    task_id = kwargs.pop('task_id', None)
     target_resolution = kwargs.pop('target_resolution')
     bboxes_out = kwargs.pop('bboxes_out', bboxes)
     mip = kwargs.pop('mip', None)
     loader_config = kwargs.pop('loader_config', {})
-    num_chunks = {}
     loaders = {int(z): VolumeRenderer._get_loader(ldr, mip=mip) for z, ldr in loaders.items()}
     meshes = {int(z): VolumeRenderer._get_mesh(msh) for z, msh in meshes.items()}
-    zindx = set(loaders.keys()).intersection(set(meshes.keys()))
+    zindx = []
     renderers = {}
     to_skip = True
     err_str = ''
-    for z in zindx:
+    flags = {}
+    for z in set(loaders.keys()).intersection(set(meshes.keys())):
         ldr = loaders[z]
         msh = meshes[z]
         if (ldr is None) or (msh is None):
@@ -1200,54 +1197,53 @@ def subprocess_render_partial_ts_slab(loaders, meshes, bboxes, out_ts, **kwargs)
             rndr = MeshRenderer.from_mesh(msh, **loader_config)
             if rndr is not None:
                 rndr.link_image_loader(ldr)
+                zindx.append(z)
+                flags[z] = np.zeros(len(bboxes), dtype=bool)
                 if to_skip:
                     fillval = kwargs.get('fillval', rndr.default_fillval)
                     to_skip = False
         renderers[z] = rndr
     if to_skip:
-        return num_chunks, err_str
-    if not isinstance(out_ts, ts.TensorStore):
-        out_ts = ts.open(out_ts).result()
-    inclusive_min = out_ts.domain.inclusive_min
-    exclusive_max = out_ts.domain.exclusive_max
-    ts_xmin, ts_ymin = inclusive_min[0], inclusive_min[1]
-    ts_xmax, ts_ymax = exclusive_max[0], exclusive_max[1]
-    ts_bbox = (ts_xmin, ts_ymin, ts_xmax, ts_ymax)
-    for bbox, bbox_out in zip(bboxes, bboxes_out):
+        return task_id, flags, err_str
+    if not isinstance(out_ts, dal.TensorStoreWriter):
+        out_ts = dal.TensorStoreWriter.from_json(out_ts)
+    for kb in range(len(bboxes)):
+        bbox, bbox_out = bboxes[kb], bboxes_out[kb]
         updated = False
+        imgs = []
+        bbox_3d = []
         for z in zindx:
             try:    # http error may crash the program
                 rndr = renderers[z]
                 if rndr is None:
                     continue
-                if num_chunks.get(z, 0) == None: # previously errored out
-                    continue
                 imgt = rndr.crop(bbox, **kwargs)
                 if (imgt is not None) and np.any(imgt != fillval, axis=None):
-                    img_crp, indx = common.crop_image_from_bbox(imgt, bbox_out, ts_bbox,
-                                                        return_index=True, flip_indx=True)
-                    if img_crp is None:
-                        continue
-                    if not updated:
-                        txn = ts.Transaction()
-                        updated = True
-                    data_view = out_ts[indx[1], indx[0], z]
-                    data_view.with_transaction(txn).write(img_crp.reshape(data_view.shape)).result(timeout=TS_TIMEOUT)
-                    num_chunks[z] = num_chunks.get(z, 0) + 1
+                    imgt = np.swapaxes(imgt, 0, 1).copy()
+                    imgs.append(imgt)
+                    bbox_3d.append([*bbox_out[:2], z, *bbox_out[2:], z+1])
+                    updated = True
+                flags[z][kb] = True
             except Exception as err:
-                num_chunks[z] = None
                 if isinstance(err, TimeoutError):
                     err_str = err_str + f'z={z} Tensorstore timed out.\n'
                 else:
                     err_str = err_str + f'z={z} {err}\n'
-        try:
-            if updated:
-                txn.commit_async().result(timeout=TS_TIMEOUT)
-        except Exception as err:
-            num_chunks = {z: None for z in zindx}
-            if isinstance(err, TimeoutError):
-                err_str = err_str + f'commit error: Tensorstore timed out.\n'
-            else:
-                err_str = err_str + f'commit error: {err}\n'
-            break
-    return num_chunks, err_str
+        if updated:
+            try:
+                out_ts.write_chunks_w_transaction(bboxes=bbox_3d, imgs=imgs)
+            except Exception as err:
+                for z in zindx:
+                    flags[z][kb] = False
+                if isinstance(err, TimeoutError):
+                    err_str = err_str + f'commit error: Tensorstore timed out.\n'
+                else:
+                    err_str = err_str + f'commit error: {err}\n'
+                break
+    for z in zindx:
+        val = flags[z]
+        if np.all(val):
+            flags[z] = True
+        elif not np.any(val):
+            flags.pop(z)
+    return task_id, flags, err_str
