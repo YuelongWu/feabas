@@ -81,7 +81,7 @@ tensorstore_rendering: # render to tensorstore volume
     jpeg_compression: false
     outdir: null # directory to save the aligned stack. if set to null, default to working_directory/aligned_tensorstore
     chunk_shape: [2048, 2048, 64]
-    read_chunk_shape: [128, 128, 16]
+    read_chunk_shape: [256, 256, 16]
     canvas_bbox: null   # if set to null, use the extremes of all the meshes to determine: may be problematic if the transformations are changed between different rendering rounds
     cache_capacity: 30000  # use to control pool restart, in MiB
     max_tile_per_job: null
