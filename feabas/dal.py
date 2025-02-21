@@ -1109,7 +1109,7 @@ class TensorStoreLoader(AbstractImageLoader):
             self.reconnect()
         else:
             self.dataset = dataset
-            self._spec = dataset.spec(minimal_spec=True).to_json()
+        self._spec = self.dataset.spec(minimal_spec=True).to_json()
         self.resolution = self.dataset.schema.dimension_units[0].multiplier
         self._z = kwargs.get('z', 0)
 
@@ -1272,6 +1272,14 @@ class TensorStoreLoader(AbstractImageLoader):
 
 
     @property
+    def pixel_size(self):
+        res_x = self.dataset.dimension_units[0].multiplier
+        res_y = self.dataset.dimension_units[1].multiplier
+        res_z = self.dataset.dimension_units[2].multiplier
+        return res_x, res_y, res_z
+
+
+    @property
     def bounds(self):
         domain = self.dataset.domain
         inclusive_min = domain.inclusive_min
@@ -1293,6 +1301,10 @@ class TensorStoreLoader(AbstractImageLoader):
 
 
 class TensorStoreWriter(TensorStoreLoader):
+    """
+    Writer class for TensorStore Volume. Handles cropping/padding when the
+    bounding box not aligned to the grid. Also handles timeout retry,
+    """
     def write_single_chunk(self, bbox, img, **kwargs):
         ts_retry = kwargs.get('ts_retry', TS_RETRY)
         txn = kwargs.get('txn', None)
@@ -1387,23 +1399,62 @@ class TensorStoreWriter(TensorStoreLoader):
         return self._write_grids
 
 
-    def grid_indices_to_bboxes(self, g_x, g_y, g_z):
-        X0, Y0, Z0, X1, Y1, Z1 = self.write_grids
-        g_x, g_y, g_z = np.array(g_x).ravel(), np.array(g_y).ravel(), np.array(g_z).ravel()
-        Nb = max(g_x.size, g_y.size, g_z.size)
-        if Nb > 1:
-            if g_x.size == 1:
-                g_x = np.repeat(g_x, Nb)
-            if g_y.size == 1:
-                g_y = np.repeat(g_y, Nb)
-            if g_z.size == 1:
-                g_z = np.repeat(g_z, Nb)
-        return np.stack((X0[g_x], Y0[g_y], Z0[g_z], X1[g_x], Y1[g_y], Z1[g_z]), axis=-1)
+    def grid_indices_to_bboxes(self, g_x, g_y, g_z=None):
+        if g_z is None:
+            X0, Y0, _, X1, Y1, _ = self.write_grids
+            g_x, g_y = np.array(g_x).ravel(), np.array(g_y).ravel()
+            Nb = max(g_x.size, g_y.size)
+            if Nb > 1:
+                if g_x.size == 1:
+                    g_x = np.repeat(g_x, Nb)
+                if g_y.size == 1:
+                    g_y = np.repeat(g_y, Nb)
+            return np.stack((X0[g_x], Y0[g_y], X1[g_x], Y1[g_y]), axis=-1)
+        else:
+            X0, Y0, Z0, X1, Y1, Z1 = self.write_grids
+            g_x, g_y, g_z = np.array(g_x).ravel(), np.array(g_y).ravel(), np.array(g_z).ravel()
+            Nb = max(g_x.size, g_y.size, g_z.size)
+            if Nb > 1:
+                if g_x.size == 1:
+                    g_x = np.repeat(g_x, Nb)
+                if g_y.size == 1:
+                    g_y = np.repeat(g_y, Nb)
+                if g_z.size == 1:
+                    g_z = np.repeat(g_z, Nb)
+            return np.stack((X0[g_x], Y0[g_y], Z0[g_z], X1[g_x], Y1[g_y], Z1[g_z]), axis=-1)
+
+
+    def morton_xy_grid(self, indx=None):
+        if (not hasattr(self, '_morton_xy')) or (self._morton_xy is None):
+            N_x, N_y = self.grid_shape[:2]
+            id_x, id_y = np.meshgrid(np.arange(N_x), np.arange(N_y))
+            id_x, id_y = id_x.ravel(), id_y.ravel()
+            zdr = common.z_order(np.stack((id_x, id_y),axis=-1))
+            self._morton_xy = (id_x[zdr], id_y[zdr])
+        if indx is None:
+            return self._morton_xy
+        else:
+            id_x, id_y = self._morton_xy
+            return id_x[indx], id_y[indx]
+
+
+    @property
+    def grid_shape(self):
+        if (not hasattr(self, '_grid_shape')) or (self._grid_shape is None):
+            X0, Y0, Z0, _, _, _ = self.write_grids
+            self._grid_shape = (X0.size, Y0.size, Z0.size)
+        return self._grid_shape
 
 
     @property
     def write_chunk_shape(self):
         return self.dataset.schema.chunk_layout.write_chunk.shape
+
+
+    @property
+    def spec(self):
+        return self._spec
+
 
 
 class MultiResolutionImageLoader:

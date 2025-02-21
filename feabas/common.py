@@ -711,28 +711,3 @@ def parse_json_file(filename, stream=None):
             file_read = True
     return json_dict, file_read
 
-
-def tensorstore_indices_to_bboxes(ts_spec, ind_x, ind_y, ind_z):
-    # return as xmin, ymin, xmax, ymax, zmin, zmax
-    if isinstance(ts_spec, ts.TensorStore):
-        dataset = ts_spec
-    elif isinstance(ts_spec, dict):
-        dataset = ts.open(ts_spec).result()
-    elif isinstance(ts_spec, str):
-        ts_spec = parse_json_file(ts_spec)
-        dataset = ts.open(ts_spec).result()
-    else:
-        raise TypeError
-    inclusive_min = dataset.domain.inclusive_min
-    exclusive_max = dataset.domain.exclusive_max
-    write_shape = dataset.schema.chunk_layout.write_chunk.shape
-    Xmin, Ymin, Zmin = inclusive_min[:3]
-    Xmax, Ymax, Zmax = exclusive_max[:3]
-    tile_wd, tile_ht, zstep = write_shape[:3]
-    x0 = (Xmin + ind_x * tile_wd).clip(Xmin, Xmax)
-    x1 = (Xmin + (ind_x + 1) * tile_wd).clip(Xmin, Xmax)
-    y0 = (Ymin + ind_y * tile_ht).clip(Ymin, Ymax)
-    y1 = (Ymin + (ind_y + 1) * tile_ht).clip(Ymin, Ymax)
-    z0 = (Zmin + ind_z * zstep).clip(Zmin, Zmax)
-    z1 = (Zmin + (ind_z + 1) * zstep).clip(Zmin, Zmax)
-    return x0, y0, x1, y1, z0, z1

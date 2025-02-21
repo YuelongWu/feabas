@@ -15,7 +15,7 @@ from feabas.concurrent import submit_to_workers
 import feabas.constant as const
 from feabas.mesh import Mesh
 from feabas import common, spatial, dal, logging, storage
-from feabas.config import DEFAULT_RESOLUTION, SECTION_THICKNESS, montage_resolution, TS_TIMEOUT
+from feabas.config import DEFAULT_RESOLUTION, SECTION_THICKNESS, montage_resolution, TS_TIMEOUT, CHECKPOINT_TIME_INTERVAL
 
 H5File = storage.h5file_class()
 
@@ -834,7 +834,7 @@ class VolumeRenderer:
         self._loaders = loaders
         driver = kwargs.get('driver', 'neuroglancer_precomputed')
         self.flag_dir = kwargs.get('flag_dir', None)
-        self.checkpoint_dir = kwargs.get('checkpoint_dir', storage.join_paths(self.flag_dir, 'progress'))
+        self.checkpoint_dir = kwargs.get('checkpoint_dir', storage.join_paths(self.flag_dir, 'checkpoint'))
         self._offset = kwargs.get('out_offset', np.zeros((1,2), dtype=np.int64))
         self._canvas_bbox = kwargs.get('canvas_bbox', None)
         self._ts_verified = False
@@ -850,80 +850,88 @@ class VolumeRenderer:
 
 
     def plan_one_slab(self, z_ind=0, **kwargs):
-        num_workers = kwargs.pop('num_workers', 1)
-        max_tile_per_job = kwargs.pop('max_tile_per_job', None)
-        render_seriers = []
-        writer = dal.TensorStoreWriter.from_json_spec(self.ts_spec)
-        X0, Y0, Z0, X1, Y1, Z1 = writer.write_grids
+        num_workers = kwargs.get('num_workers', 1)
+        max_tile_per_job = kwargs.get('max_tile_per_job', None)
+        cache_capacity = kwargs.pop('cache_capacity', None)
+        _, _, Z0, _, _, Z1 = self.writer.write_grids
         z0, z1 = Z0[z_ind], Z1[z_ind]
-        N_x, N_y = X0.size, Y0.size
+        flag_name = kwargs.get('flag_name', f'z{z0}_{z1}')
+        render_seriers = []
         zz = np.arange(z0, z1)
-        flag_file = storage.join_paths(self.flag_dir, f'z{z0}_{z1}.json')
-        checkpoint_file = storage.join_paths(self.checkpoint_dir, f'z{z0}_{z1}.h5')
+        flag_file = storage.join_paths(self.flag_dir, flag_name + '.json')
+        checkpoint_file = storage.join_paths(self.checkpoint_dir, flag_name + '.h5')
         if (flag_file is not None) and storage.file_exists(flag_file):
             with storage.File(flag_file, 'r') as f:
                 z_rendered = json.load(f)
         else:
             z_rendered = []
+        check_points = {z: False for z in z_rendered}
         z_to_render = [z for z in zz if z not in z_rendered]
         if len(z_to_render) == 0:
-            return render_seriers
-        check_points = defaultdict(lambda: None)
+            return render_seriers, check_points
         if (checkpoint_file is not None) and storage.file_exists(checkpoint_file):
             with H5File(checkpoint_file, 'r') as f:
                 for z in z_to_render:
                     if str(z) in f:
                         check_points[z] = f[str(z)][()]
-        id_x, id_y = np.meshgrid(np.arange(N_x), np.arange(N_y))
-        id_x, id_y = id_x.ravel(), id_y.ravel()
-        zdr = common.z_order(np.stack((id_x, id_y),axis=-1))
-        id_x, id_y = id_x[zdr], id_y[zdr]
-        xx_mn, yy_mn, xx_mx, yy_mx = X0[id_x], Y0[id_y], X1[id_x], Y1[id_y]
-        bboxes = np.stack((xx_mn, yy_mn, xx_mx, yy_mx), axis=-1)
+        id_x, id_y = self.writer.morton_xy_grid()
+        bboxes = self.writer.grid_indices_to_bboxes(id_x, id_y)
         bboxes_tree = shapely.STRtree([shpgeo.box(*bbox) for bbox in bboxes])
-        hit_counts = np.zeros(bboxes.shape[0])
+        hit_counts = np.zeros(id_x.size, dtype=np.uint16)
         full_meshes = {}
         loaders = {}
-        for z, rm in zip(zz, self.region_generator(indx=zz)):
+        for z, rm in zip(z_to_render, self.region_generator(indx=z_to_render)):
             rr = rm[0]
             if rr is None:
                 continue
-            idxt = bboxes_tree.query(rr, predicate='intersects')
-            if idxt.size > 0:
-                np.add.at(hit_counts, idxt, 1)
+            if z not in check_points:
+                idxt = bboxes_tree.query(rr, predicate='intersects')
+                bb = np.zeros(bboxes_tree, dtype=bool)
+                bb[idxt] = True
+                check_points[z] = bb
+            hit_counts += check_points[z]
             full_meshes[z] = rm[1]
             loaders[z] = self.loader_lut.get(z, None)
         if len(full_meshes) == 0:
-            return render_seriers
-        bboxes = bboxes[hit_counts > 0]
-        bboxes_out = bboxes + np.tile(self._offset, 2).reshape(1, 4)
-        hit_counts = hit_counts[hit_counts > 0]
+            return render_seriers, check_points
+        midx_hits = np.nonzero(hit_counts > 0)
+        bboxes = bboxes[midx_hits]
+        hit_counts = hit_counts[midx_hits]
         hit_counts_acc = np.insert(np.cumsum(hit_counts), 0, 0)
         num_tiles = hit_counts_acc[-1]
         num_tile_per_job = max(1, num_tiles // num_workers)
         if max_tile_per_job is not None:
             num_tile_per_job = min(num_tile_per_job, max_tile_per_job)
+        if cache_capacity is not None:
+            chunk_mb = np.prod(self.writer.write_chunk_shape[:2]) * self.writer.number_of_channels / (1024 ** 2)
+            max_chunk_per_proc = max(1, cache_capacity / (chunk_mb * num_workers))
+            num_tile_per_job = min(num_tile_per_job, max_chunk_per_proc)
         N_jobs = round(num_tiles / num_tile_per_job)
         indices_tile = np.round(np.linspace(0, num_tiles, num=N_jobs+1, endpoint=True))
         indices_chunk = np.searchsorted(hit_counts_acc, indices_tile, side='left')
-        indices_chunk = np.unique(indices_chunk).astype(np.uint32)
+        indices_chunk = np.unique(indices_chunk).astype(np.uint64)
         out_ts = self.ts_spec
         bboxes_unions = []
+        b_dilate = np.max(self.writer.write_chunk_shape[:2]) // 2
+        task_id = 0
         for idx0, idx1 in zip(indices_chunk[:-1], indices_chunk[1:]):
             idx0, idx1 = int(idx0), int(idx1)
             bbox_b = bboxes[idx0:idx1]
-            bbox_out_b = bboxes_out[idx0:idx1]
             if bbox_b.size == 0:
                 continue
-            bkw = {'loaders': loaders,
+            b_flag = {z: check_points[z][idx0:idx1] for z in z_to_render}
+            bkw = { 'task_id': task_id,
+                    'loaders': loaders,
                     'meshes': {},
-                    'bboxes': bbox_b,
+                    'morton_indx': np.arange(idx0, idx1),
                     'out_ts': out_ts,
                     'target_resolution': self.resolution,
                     'mip': self.mip,
-                    'bboxes_out': bbox_out_b}
+                    'offset': self._offset,
+                    'flags': b_flag}
+            task_id = task_id + 1
             render_seriers.append(bkw)
-            bboxes_unions.append(common.bbox_enlarge(common.bbox_union(bbox_b), max(chunk_x, chunk_y)//2))
+            bboxes_unions.append(common.bbox_enlarge(common.bbox_union(bbox_b), b_dilate))
         for z, mesh in full_meshes.items():
             submeshes = mesh.submeshes_from_bboxes(bboxes_unions, save_material=True)
             for msh, bkw in zip(submeshes, render_seriers):
@@ -932,57 +940,75 @@ class VolumeRenderer:
                 else:
                     msh_dict = msh.get_init_dict(save_material=True, vertex_flags=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING))
                     bkw['meshes'][z] = msh_dict
-        return render_seriers
+        return render_seriers, check_points
 
 
     def render_volume(self, skip_indx=None , **kwargs):
         num_workers = kwargs.pop('num_workers', 1)
         max_tile_per_job = kwargs.pop('max_tile_per_job', None)
+        cache_capacity = kwargs.pop('cache_capacity', None)
         logger_info = kwargs.pop('logger', None)
         logger = logging.get_logger(logger_info)
-        chunk_z = self.chunk_shape[2]
-        z_starts = np.unique(self._zindx // chunk_z) * chunk_z
+        _, _, Z0, _, _, Z1 = self.writer.write_grids
+        Z_indices = np.arange(Z0.size)
         if skip_indx is not None:
-            z_starts = z_starts[skip_indx]
-        if self.flag_dir is not None:
-            out_data = ts.open(self.ts_spec).result()
-        for z_stt in z_starts:
+            Z_indices = Z_indices[skip_indx]
+        for z_ind in Z_indices:
             t0 = time.time()
-            rendered = defaultdict(int)
+            err_raised = False
             num_chunks = 0
-            render_seriers = self.plan_one_slab(z_start=z_stt,
-                                                num_workers=num_workers,
-                                                max_tile_per_job=max_tile_per_job)
+            flag_name = f'z{Z0[z_ind]}_{Z1[z_ind]}'
+            flag_file = storage.join_paths(self.flag_dir, flag_name + '.json')
+            checkpoint_file = storage.join_paths(self.checkpoint_dir, flag_name + '.h5')
+            render_seriers, checkpoints = self.plan_one_slab(z_ind=z_ind, num_workers=num_workers, flag_name=flag_name, max_tile_per_job=max_tile_per_job, cache_capacity=cache_capacity)
             if len(render_seriers) == 0:
                 continue
-            logger.info(f'start block from z={z_stt}')
+            morton_LUT = {s['task_id']: s['morton_indx'] for s in render_seriers}
+            if cache_capacity is None:
+                max_tasks_per_child = None
+            else:
+                max_tasks_per_child = 1
+            logger.info(f'start rendering block z={Z0[z_ind]}->{Z1[z_ind]}')
             actual_num_workers = min(num_workers, len(render_seriers))
             for bkw in render_seriers:
                 bkw.update(kwargs)
-            for res in submit_to_workers(subprocess_render_partial_ts_slab, kwargs=render_seriers, num_workers=actual_num_workers):
-                z_chunks, errmsg = res
+            t_check = time.time()
+            for res in submit_to_workers(subprocess_render_partial_ts_slab, kwargs=render_seriers, num_workers=actual_num_workers, max_tasks_per_child=max_tasks_per_child):
+                task_id, flag_b, errmsg = res
                 if len(errmsg) > 0:
+                    err_raised = True
                     logger.error(errmsg)
-                for zz, nn in z_chunks.items():
-                    if rendered[zz] is None:
-                        continue
-                    if nn is None:
-                        rendered[zz] = None
-                    else:
-                        num_chunks += nn
-                        rendered[zz] += nn
+                morton_idx = morton_LUT[task_id]
+                added_chunk = np.zeros(morton_idx.size, dtype=bool)
+                for zz, flg in flag_b.items():
+                    old_flag =  checkpoints[zz][morton_idx]
+                    new_flag = old_flag & flg
+                    added_chunk = added_chunk | (new_flag < old_flag)
+                    checkpoints[zz][morton_idx] = new_flag
+                num_chunks += np.sum(added_chunk)
+                if (checkpoint_file is not None) and ((time.time() - t_check) > CHECKPOINT_TIME_INTERVAL):
+                    t_check = time.time()
+                    storage.makedirs(self.checkpoint_dir)
+                    with H5File(checkpoint_file, 'w') as f:
+                        for zz, flg in checkpoints.items():
+                            if isinstance(flg, np.ndarray):
+                                f.create_dataset(str(zz), data=flg, compression="gzip")
             if self.flag_dir is not None:
-                for zz, nn in rendered.items():
-                    if (nn is not None) and (nn > 0):
-                        flg_name = storage.join_paths(self.flag_dir, str(zz)+'.json')
-                        storage.makedirs(self.flag_dir)
-                        tdriver, flg_name = storage.parse_file_driver(flg_name)
-                        if tdriver == 'file':
-                            flg_name = 'file://' + flg_name
-                        flg_ts = out_data[:,:,zz].spec(minimal_spec=True).to_json()
-                        json_ts = ts.open({"driver": "json", "kvstore": flg_name}).result()
-                        json_ts.write(flg_ts).result()
-            logger.info(f'blocks from z={z_stt}: {num_chunks} chunks | {(time.time()-t0)/60} min')
+                if num_chunks > 0:
+                    if err_raised:
+                        z_rendered = []
+                        for zz, flg in checkpoints.items():
+                            if not np.any(flg):
+                                z_rendered.append(zz)
+                    else:
+                        z_rendered = list(checkpoints.keys())
+                if len(z_rendered) > 0:
+                    with storage.File(flag_file, 'w') as f:
+                        json.dump(z_rendered, f)
+                if not err_raised and (checkpoint_file is not None):
+                    storage.remove_file(checkpoint_file)
+            logger.info(f'blocks z={Z0[z_ind]}->{Z1[z_ind]}: added {num_chunks} chunks | {(time.time()-t0)/60} min')
+            return self.writer.spec
 
 
     @property
@@ -1135,6 +1161,7 @@ class VolumeRenderer:
                 writer = dal.TensorStoreWriter.from_json_spec(spec_copy)
                 dataset = writer.dataset
                 self._ts_spec = dataset.spec(minimal_spec=True).to_json()
+            self._writer = writer
             self._read_chunk_shape = dataset.schema.chunk_layout.read_chunk.shape[:3]
             self._chunk_shape = dataset.schema.chunk_layout.write_chunk.shape[:3]
             self._ts_verified = True
@@ -1145,6 +1172,11 @@ class VolumeRenderer:
         self._verify_ts()
         return self._ts_spec
 
+
+    @property
+    def writer(self):
+        self._verify_ts()
+        return self._writer
 
     @property
     def chunk_shape(self):
@@ -1185,23 +1217,26 @@ class VolumeRenderer:
         return loader
 
 
-def subprocess_render_partial_ts_slab(loaders, meshes, bboxes, out_ts, **kwargs):
+def subprocess_render_partial_ts_slab(loaders, meshes, morton_indx, out_ts, **kwargs):
     task_id = kwargs.pop('task_id', None)
     target_resolution = kwargs.pop('target_resolution')
-    bboxes_out = kwargs.pop('bboxes_out', bboxes)
     mip = kwargs.pop('mip', None)
     loader_config = kwargs.pop('loader_config', {})
+    offset = kwargs.pop('offset', np.zeros((1,2), dtype=np.int64))
+    flags0 = kwargs.pop('flags', {})
+    flags = {}
     loaders = {int(z): VolumeRenderer._get_loader(ldr, mip=mip) for z, ldr in loaders.items()}
     meshes = {int(z): VolumeRenderer._get_mesh(msh) for z, msh in meshes.items()}
     zindx = []
     renderers = {}
     to_skip = True
     err_str = ''
-    flags = {}
     for z in set(loaders.keys()).intersection(set(meshes.keys())):
         ldr = loaders[z]
         msh = meshes[z]
         if (ldr is None) or (msh is None):
+            rndr = None
+        elif (z in flags0) and (not np.any(flags0[z])):
             rndr = None
         else:
             msh.change_resolution(target_resolution)
@@ -1209,22 +1244,30 @@ def subprocess_render_partial_ts_slab(loaders, meshes, bboxes, out_ts, **kwargs)
             if rndr is not None:
                 rndr.link_image_loader(ldr)
                 zindx.append(z)
-                flags[z] = np.zeros(len(bboxes), dtype=bool)
+                flags[z] = np.array(flags0.get(z, np.ones(len(morton_indx), dtype=bool)))
                 if to_skip:
                     fillval = kwargs.get('fillval', rndr.default_fillval)
                     to_skip = False
         renderers[z] = rndr
     if to_skip:
         return task_id, flags, err_str
-    if not isinstance(out_ts, dal.TensorStoreWriter):
-        out_ts = dal.TensorStoreWriter.from_json(out_ts)
+    if isinstance(out_ts, dal.TensorStoreWriter):
+        writer = out_ts
+    else:
+        writer = dal.TensorStoreWriter.from_json(out_ts)
+    id_x, id_y = writer.morton_xy_grid(morton_indx)
+    bboxes_out = writer.grid_indices_to_bboxes(id_x, id_y)
+    bboxes = bboxes_out - np.tile(offset, 2).reshape(1, 4)
     for kb in range(len(bboxes)):
         bbox, bbox_out = bboxes[kb], bboxes_out[kb]
         updated = False
         imgs = []
         bbox_3d = []
+        flags_b = []
         for z in zindx:
             try:    # http error may crash the program
+                if (z in flags) and (not flags[z][kb]):
+                    continue
                 rndr = renderers[z]
                 if rndr is None:
                     continue
@@ -1234,27 +1277,28 @@ def subprocess_render_partial_ts_slab(loaders, meshes, bboxes, out_ts, **kwargs)
                     imgs.append(imgt)
                     bbox_3d.append([*bbox_out[:2], z, *bbox_out[2:], z+1])
                     updated = True
-                flags[z][kb] = True
+                flags_b.append(z)
             except Exception as err:
                 if isinstance(err, TimeoutError):
-                    err_str = err_str + f'z={z} Tensorstore timed out.\n'
+                    err_str = err_str + f'\tz={z} Tensorstore timed out.\n'
                 else:
-                    err_str = err_str + f'z={z} {err}\n'
+                    err_str = err_str + f'\tz={z} {err}\n'
         if updated:
             try:
-                out_ts.write_chunks_w_transaction(bboxes=bbox_3d, imgs=imgs)
+                writer.write_chunks_w_transaction(bboxes=bbox_3d, imgs=imgs)
             except Exception as err:
-                for z in zindx:
-                    flags[z][kb] = False
                 if isinstance(err, TimeoutError):
-                    err_str = err_str + f'commit error: Tensorstore timed out.\n'
+                    err_str = err_str + f'\tcommit error: Tensorstore timed out.\n'
                 else:
-                    err_str = err_str + f'commit error: {err}\n'
+                    err_str = err_str + f'\tcommit error: {err}\n'
                 break
+            else:
+                for z in flags_b:
+                    flags[z][kb] = False
     for z in zindx:
         val = flags[z]
-        if np.all(val):
+        if not np.any(val):
+            flags[z] = False
+        elif np.all(val):
             flags[z] = True
-        elif not np.any(val):
-            flags.pop(z)
     return task_id, flags, err_str

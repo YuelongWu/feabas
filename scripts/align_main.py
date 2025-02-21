@@ -1,6 +1,7 @@
 from collections import defaultdict
 import argparse
 from functools import partial
+import json
 import math
 import os
 import time
@@ -382,7 +383,7 @@ if __name__ == '__main__':
     thumb_match_dir = storage.join_paths(thumbnail_dir, 'matches')
     render_dir = config.align_render_dir()
     tensorstore_render_dir = config.tensorstore_render_dir()
-    ts_flag_dir = storage.join_paths(align_dir, 'ts_spec')
+    ts_flag_dir = storage.join_paths(align_dir, 'done_flags')
     thumbnail_configs = config.thumbnail_configs()
     match_name_delimiter = thumbnail_configs.get('alignment', {}).get('match_name_delimiter', '__to__')
 
@@ -473,6 +474,8 @@ if __name__ == '__main__':
         vol_renderer = VolumeRenderer(tform_list, loader_list, tensorstore_render_dir,
                                       z_indx = z_indx, resolution=resolution,
                                       flag_dir = ts_flag_dir, **align_config)
-        vol_renderer.render_volume(skip_indx=indx, logger=logger_info[0], **align_config)
+        out_spec = vol_renderer.render_volume(skip_indx=indx, logger=logger_info[0], **align_config)
+        with storage.File(storage.join_paths(align_dir, 'ts_spec.json'), 'w') as f:
+            json.dump({0: out_spec}, f)
         logger.info('finished')
         logging.terminate_logger(*logger_info)

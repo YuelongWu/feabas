@@ -170,7 +170,7 @@ def render_one_section(tform_name, out_prefix, meta_name=None, **kwargs):
         # delete existing
         out_spec = render_series[1].copy()
         out_spec.update({'open': False, 'create': True, 'delete_existing': True})
-        store = ts.open(out_spec).result()
+        writer = dal.TensorStoreWriter.from_json_spec(out_spec)
     if num_workers == 1:
         bboxes, filenames, _ = render_series
         metadata = renderer.render_series_to_file(bboxes, filenames, **render_settings)
@@ -201,7 +201,7 @@ def render_one_section(tform_name, out_prefix, meta_name=None, **kwargs):
             else:
                 meta_name = 'file://' + meta_name
             meta_ts = ts.open({"driver": "json", "kvstore": meta_name}).result()
-            meta_ts.write({0: store.spec(minimal_spec=True).to_json()}).result()
+            meta_ts.write({0: writer.spec}).result()
         else:
             fnames = sorted(list(metadata.keys()))
             bboxes = []

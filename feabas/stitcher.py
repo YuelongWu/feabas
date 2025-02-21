@@ -13,7 +13,7 @@ import scipy.sparse.csgraph as csgraph
 import tensorstore as ts
 
 from feabas.concurrent import submit_to_workers
-from feabas.dal import StaticImageLoader
+from feabas.dal import StaticImageLoader, TensorStoreWriter
 from feabas import logging
 from feabas.matcher import stitching_matcher
 from feabas.mesh import Mesh
@@ -1339,27 +1339,22 @@ class MontageRenderer:
                 common.imwrite(filename, imgt)
                 rendered[filename] = bbox
         else: # use tensorstore
-            if not isinstance(filenames, ts.TensorStore):
-                dataset = ts.open(filenames).result()
+            if not isinstance(filenames, TensorStoreWriter):
+                if isinstance(filenames, ts.TensorStore):
+                    writer = TensorStoreWriter(dataset=filenames)
+                else:
+                    writer = TensorStoreWriter.from_json_spec(filenames)
             else:
-                dataset = filenames
-            driver = dataset.spec().to_json()['driver']
+                writer = filenames
+            driver = writer.spec['driver']
             if driver in ('neuroglancer_precomputed', 'n5'):
                 kwargs['fillval'] = 0
             for bbox in bboxes:
                 imgt = self.crop(bbox, **kwargs)
                 if imgt is None:
                     continue
-                xmin, ymin, _, _ = bbox
-                shp = imgt.shape
-                imght, imgwd = shp[0], shp[1]
-                data_view = dataset[xmin:(xmin+imgwd), ymin:(ymin+imght)]
-                try:
-                    data_view.write(imgt.T.reshape(data_view.shape)).result(timeout=TS_TIMEOUT)
-                except TimeoutError:
-                    dataset = ts.open(dataset.spec(minimal_spec=True)).result(timeout=TS_TIMEOUT)
-                    data_view = dataset[xmin:(xmin+imgwd), ymin:(ymin+imght)]
-                    data_view.write(imgt.T.reshape(data_view.shape)).result(timeout=TS_TIMEOUT)
+                imgt = imgt.swapaxes(0, 1)
+                writer.write_single_chunk(bbox, imgt)
                 rendered.append(tuple(bbox))
         self.image_loader.clear_cache()
         return rendered
@@ -1429,8 +1424,8 @@ class MontageRenderer:
                 "chunk_layout":{
                     "grid_origin": [0, 0, 0, 0],
                     "inner_order": [3, 2, 1, 0],
-                    "read_chunk": {"shape": [tile_wd, tile_ht, 1, number_of_channels]},
-                    "write_chunk": {"shape": [tile_wd, tile_ht, 1, number_of_channels]},
+                    "read_chunk": {"shape_soft_constraint": [tile_wd, tile_ht, 1, number_of_channels]},
+                    "write_chunk": {"shape_soft_constraint": [tile_wd, tile_ht, 1, number_of_channels]},
                 },
                 "domain":{
                     "exclusive_max": [montage_wd, montage_ht, 1, number_of_channels],
@@ -1490,7 +1485,7 @@ class MontageRenderer:
                     schema["codec"].update({"encoding": "raw"})
                     if (read_ht < tile_ht) or read_wd < tile_wd:
                         schema["codec"].update({"shard_data_encoding": 'gzip'})
-                schema['chunk_layout']["read_chunk"]["shape"] = [read_wd, read_ht, 1, number_of_channels]
+                schema['chunk_layout']["read_chunk"]["shape_soft_constraint"] = [read_wd, read_ht, 1, number_of_channels]
                 filenames = {
                     "driver": "neuroglancer_precomputed",
                     "kvstore": prefix,
