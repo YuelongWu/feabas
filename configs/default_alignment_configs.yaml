@@ -95,6 +95,7 @@ tensorstore_rendering: # render to tensorstore volume
 tensorstore_downsample:
     num_workers: 5
     mip_levels: [1, 3, 5, 7]
+    z_range: null
     cache_capacity: 20000    # use to control pool restart, in MiB
     downsample_z: auto      # a list of the same length to mip_levels, or "auto" to maintain isotropy when possible
     keep_chunk_layout: True # if use the same chunk shape as the high-res volume, or shrink it

@@ -71,6 +71,7 @@ def get_main_logger(logger_name):
         archive_dir = storage.join_paths(log_dir, 'archive')
         import socket
         hostname = socket.gethostname()
+        hostname = hostname.split('.')[0]
         archivefile = storage.join_paths(archive_dir, _time_stamp + '_' + hostname + '_' + logger_prefix + '.log')
         archive_handler = FileHandler(archivefile, mode='a', delay=True)
         archive_handler.setFormatter(formatter)
@@ -80,6 +81,7 @@ def get_main_logger(logger_name):
         main_logger.setLevel(logging.DEBUG)
         import socket
         hostname = socket.gethostname()
+        hostname = hostname.split('.')[0]
         warnfile = storage.join_paths(log_dir, _time_stamp + '_' + hostname + '_' + logger_prefix + '.log')
         warn_handler = FileHandler(warnfile, mode='a', delay=True)
         warn_handler.setFormatter(formatter)

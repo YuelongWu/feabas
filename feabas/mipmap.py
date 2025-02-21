@@ -524,12 +524,12 @@ def mip_one_level_tensorstore_3d(src_spec, mipup=1, **kwargs):
     logger_info = kwargs.get('logger', None)
     logger = logging.get_logger(logger_info)
     skip_indx = kwargs.get('skip_indx', None)
-    flag_file = kwargs.get('flag_dir', None)
-    checkpoint_prefix = kwargs.get('checkpoint_dir', None)
+    flag_prefix = kwargs.get('flag_prefix', None)
+    checkpoint_prefix = kwargs.get('checkpoint_prefix', None)
     err_raised = False
-    if (flag_file is not None) and (checkpoint_prefix is None):
-        checkpoint_dir = storage.join_paths(os.path.dirname(flag_file), 'checkpoints')
-        flag_filename = os.path.splitext(os.path.basename(flag_file))[0]
+    if (flag_prefix is not None) and (checkpoint_prefix is None):
+        checkpoint_dir = storage.join_paths(os.path.dirname(flag_prefix), 'checkpoints')
+        flag_filename = os.path.basename(flag_prefix)
         checkpoint_prefix = storage.join_paths(checkpoint_dir, flag_filename + '_')
     src_loader = dal.TensorStoreLoader.from_json_spec(src_spec)
     src_data = src_loader.dataset
@@ -585,11 +585,16 @@ def mip_one_level_tensorstore_3d(src_spec, mipup=1, **kwargs):
         if (read_ht < tile_ht) or (read_wd < tile_wd):
             out_schema["codec"].update({"shard_data_encoding": 'gzip'})
     out_spec["schema"] = out_schema
-    if (flag_file is None) or (not storage.file_exists(flag_file)):
+    if (flag_prefix is None):
         zind_rendered = []
     else:
-        with storage.File(flag_file, 'r') as f:
-            zind_rendered = json.load(f)
+        zind_rendered = set()
+        flag_list = storage.list_folder_content(flag_prefix+'*')
+        for flgfile in flag_list:
+            with storage.File(flgfile, 'r') as f:
+                zidrnd = json.load(f)
+                zind_rendered.union(zidrnd)
+        zind_rendered = sorted(list(zind_rendered))
     if (len(zind_rendered) == 0) and (skip_indx is None):
         out_spec.update({"open": False, "create": True, "delete_existing": True})
     else:
@@ -602,14 +607,16 @@ def mip_one_level_tensorstore_3d(src_spec, mipup=1, **kwargs):
     if z_range is not None:
         z_range = np.array(z_range) / downsample_z
         idx_t = (np.unique(np.searchsorted(Z0, z_range), side='right') - 1).clip(0, Z0.size - 1)
+        z_range = z_range[idx_t]
         zind_to_render = np.arange(idx_t.min(), idx_t.max()+1)
     else:
         zind_to_render = np.arange(Nz)
     if skip_indx is not None:
         zind_to_render = zind_to_render[skip_indx]
+    flag_file = flag_prefix + f'{zind_to_render[0]}_{zind_to_render[-1]}.json'
     zind_to_render = [z for z in zind_to_render if (z not in zind_rendered)]
     if len(zind_to_render) == 0:
-        return err_raised, out_writer.spec
+        return err_raised, out_writer.spec, z_range
     chunk_shape = out_writer.write_chunk_shape
     chunk_mb = np.prod(chunk_shape) * np.prod(downsample_factors)/ (1024**2)
     if cache_capacity is not None:
@@ -664,6 +671,7 @@ def mip_one_level_tensorstore_3d(src_spec, mipup=1, **kwargs):
             task_id += 1
         flag_cut = np.ones(num_chunks, dtype=bool)
         t_check = time.time()
+        zind_added = []
         for res in submit_to_workers(_write_ts_block_from_indices, kwargs=tasks, num_workers=num_workers, max_tasks_per_child=max_tasks_per_child):
             task_id, flg_b, errmsg = res
             bidx = task_lut[task_id]
@@ -678,17 +686,18 @@ def mip_one_level_tensorstore_3d(src_spec, mipup=1, **kwargs):
                 storage.makedirs(os.path.dirname(checkpoint_prefix))
                 newly_finished = False
                 for zz, flg_z in zip(id_zs, flag_all):
-                    if np.all(flg_z):
+                    if np.all(flg_z) or (zz in zind_added):
                         continue
                     elif np.any(flg_z):
                         checkpoint_file = checkpoint_prefix + str(zz) + '.h5'
                         with H5File(checkpoint_file, 'w') as f:
                             f.create_dataset(str(zz), data=flg_z, compression="gzip")
                     else:
-                        if zz not in zind_rendered:
+                        if zz not in zind_added:
                             newly_finished = True
-                            zind_rendered.append(zz)
+                            zind_added.append(zz)
                 if (flag_file is not None) and newly_finished:
+                    zind_rendered = sorted(list(set(zind_added).union(zind_rendered)))
                     with storage.File(flag_file, 'w') as f:
                         json.dump(zind_rendered, f)
         if flag_file is not None:
@@ -701,10 +710,15 @@ def mip_one_level_tensorstore_3d(src_spec, mipup=1, **kwargs):
                 if np.any(flg_z):
                     err_raised = True
                 else:
-                    if zz not in zind_rendered:
+                    if zz not in zind_added:
                         newly_finished = True
-                        zind_rendered.append(zz)
+                        zind_added.append(zz)
             if newly_finished:
+                zind_rendered = sorted(list(set(zind_added).union(zind_rendered)))
                 with storage.File(flag_file, 'w') as f:
                     json.dump(zind_rendered, f)
-    return err_raised, out_writer.spec
+        if (checkpoint_prefix is not None) and (not err_raised):
+             for zz in id_zs:
+                checkpoint_file = checkpoint_prefix + str(zz) + '.h5'
+                storage.remove_file(checkpoint_file)
+    return err_raised, out_writer.spec, z_range

@@ -357,18 +357,25 @@ if __name__ == '__main__':
         num_workers = align_config.get('num_workers', 1)
         num_workers = config.set_numpy_thread_from_num_workers(num_workers)
         align_config['num_workers'] = num_workers
-    elif args.mode.lower().startswith('tensor'):
+    elif args.mode.lower().startswith('tensorstore_r') or args.mode.lower().startswith('tsr'):
         align_config = align_config['tensorstore_rendering']
         mode = 'tensorstore_rendering'
+        num_workers = align_config.get('num_workers', 1)
+        num_workers = config.set_numpy_thread_from_num_workers(num_workers)
+        align_config['num_workers'] = num_workers
+    elif  args.mode.lower().startswith('tensorstore_d') or args.mode.lower().startswith('tsd'):
+        align_config = align_config['tensorstore_downsample']
+        mode = 'tensorstore_downsample'
         num_workers = align_config.get('num_workers', 1)
         num_workers = config.set_numpy_thread_from_num_workers(num_workers)
         align_config['num_workers'] = num_workers
     else:
         raise RuntimeError(f'{args.mode} not supported mode.')
 
+
     from feabas import material, dal, common
     from feabas.mesh import Mesh
-    from feabas.mipmap import get_image_loader, mip_map_one_section
+    from feabas.mipmap import get_image_loader, mip_map_one_section, mip_one_level_tensorstore_3d
     from feabas.aligner import match_section_from_initial_matches
     from feabas.renderer import render_whole_mesh, VolumeRenderer
     import numpy as np
@@ -384,6 +391,8 @@ if __name__ == '__main__':
     render_dir = config.align_render_dir()
     tensorstore_render_dir = config.tensorstore_render_dir()
     ts_flag_dir = storage.join_paths(align_dir, 'done_flags')
+    ts_spec_file = storage.join_paths(align_dir, 'ts_spec.json')
+    ts_mip_flagdir = storage.join_paths(align_dir, 'mipmap_flags')
     thumbnail_configs = config.thumbnail_configs()
     match_name_delimiter = thumbnail_configs.get('alignment', {}).get('match_name_delimiter', '__to__')
 
@@ -475,7 +484,46 @@ if __name__ == '__main__':
                                       z_indx = z_indx, resolution=resolution,
                                       flag_dir = ts_flag_dir, **align_config)
         out_spec = vol_renderer.render_volume(skip_indx=indx, logger=logger_info[0], **align_config)
-        with storage.File(storage.join_paths(align_dir, 'ts_spec.json'), 'w') as f:
-            json.dump({0: out_spec}, f)
+        with storage.File(ts_spec_file, 'w') as f:
+            json.dump({mip_level: out_spec}, f)
         logger.info('finished')
         logging.terminate_logger(*logger_info)
+    elif mode == 'tensorstore_downsample':
+        logger_info = logging.initialize_main_logger(logger_name='tensorstore_downsample', mp=num_workers>1)
+        logger = logging.get_logger(logger_info[0])
+        mip_levels = align_config.pop('mip_levels', np.arange(1, 9))
+        kvstore_out = align_config.pop('outdir', None)
+        with storage.File(ts_spec_file, 'r') as f:
+            rendered_mips_spec = json.load(f)
+        rendered_mips_spec = {int(mip): spec for mip, spec in rendered_mips_spec.items()}
+        rendered_mips = np.array(sorted(list(rendered_mips_spec.keys())))
+        for mip in sorted(mip_levels):
+            if mip in rendered_mips_spec:
+                continue
+            higher_mips = rendered_mips[rendered_mips < mip]
+            if higher_mips.size == 0:
+                logger.error(f'No previously rendered volume higer than mip{mip} found in {ts_spec_file}.')
+                continue
+            src_mip = np.max(higher_mips)
+            src_spec = rendered_mips_spec[src_mip]
+            if kvstore_out is not None:
+                tdriver, kvstore_out = storage.parse_file_driver(kvstore_out)
+                if tdriver == 'file':
+                    kvstore_out = 'file://' + kvstore_out
+            mipup = mip - src_mip
+            flag_prefix = storage.join_paths(ts_mip_flagdir, f'mip{mip}')
+            err_raised, out_spec, z_range = mip_one_level_tensorstore_3d(src_spec, 
+                                                                         mipup=mipup,
+                                                                         kvstore_out=kvstore_out,
+                                                                         logger=logger_info,
+                                                                         skip_indx=indx,
+                                                                         flag_prefix=flag_prefix,
+                                                                         **align_config)
+            if err_raised:
+                logger.error('failed to generate mip{mip}, abort')
+                break
+            rendered_mips_spec[mip] = out_spec
+            align_config['z_range'] = z_range
+            with storage.File(ts_spec_file, 'w') as f:
+                json.dump(rendered_mips_spec, f)
+            logger.info(f'mip{mip} generated')
