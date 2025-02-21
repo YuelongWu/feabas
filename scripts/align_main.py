@@ -463,7 +463,7 @@ if __name__ == '__main__':
         if (canvas_bbox is None):
             canvas_file = storage.join_paths(tform_dir, 'tensorstore_canvas.txt')
             if storage.file_exists(canvas_file):
-                with storage.File(canvas_bbox, 'r') as f:
+                with storage.File(canvas_file, 'r') as f:
                     line = f.readline()
                 canvas_bbox = [float(s) for s in line.strip().split('\t')]
                 logger.info(f'use canvas bounding box {canvas_bbox}')

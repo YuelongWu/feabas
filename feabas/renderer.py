@@ -877,7 +877,8 @@ class VolumeRenderer:
         id_x, id_y = self.writer.morton_xy_grid()
         bboxes = self.writer.grid_indices_to_bboxes(id_x, id_y)
         bboxes_tree = shapely.STRtree([shpgeo.box(*bbox) for bbox in bboxes])
-        hit_counts = np.zeros(id_x.size, dtype=np.uint16)
+        num_xy_grids = id_x.size
+        hit_counts = np.zeros(num_xy_grids, dtype=np.uint16)
         full_meshes = {}
         loaders = {}
         for z, rm in zip(z_to_render, self.region_generator(indx=z_to_render)):
@@ -886,7 +887,7 @@ class VolumeRenderer:
                 continue
             if z not in check_points:
                 idxt = bboxes_tree.query(rr, predicate='intersects')
-                bb = np.zeros(bboxes_tree, dtype=bool)
+                bb = np.zeros(num_xy_grids, dtype=bool)
                 bb[idxt] = True
                 check_points[z] = bb
             hit_counts += check_points[z]
