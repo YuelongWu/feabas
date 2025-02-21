@@ -1003,11 +1003,11 @@ class VolumeRenderer:
                                 z_rendered.append(zz)
                     else:
                         z_rendered = list(checkpoints.keys())
-                if len(z_rendered) > 0:
-                    with storage.File(flag_file, 'w') as f:
-                        json.dump(z_rendered, f)
-                if not err_raised and (checkpoint_file is not None):
-                    storage.remove_file(checkpoint_file)
+                    if len(z_rendered) > 0:
+                        with storage.File(flag_file, 'w') as f:
+                            json.dump(z_rendered, f)
+                    if not err_raised and (checkpoint_file is not None):
+                        storage.remove_file(checkpoint_file)
             logger.info(f'blocks z={Z0[z_ind]}->{Z1[z_ind]}: added {num_chunks} chunks | {(time.time()-t0)/60} min')
             return self.writer.spec
 
