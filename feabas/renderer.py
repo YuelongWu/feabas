@@ -1255,7 +1255,7 @@ def subprocess_render_partial_ts_slab(loaders, meshes, morton_indx, out_ts, **kw
     if isinstance(out_ts, dal.TensorStoreWriter):
         writer = out_ts
     else:
-        writer = dal.TensorStoreWriter.from_json(out_ts)
+        writer = dal.TensorStoreWriter.from_json_spec(out_ts)
     id_x, id_y = writer.morton_xy_grid(morton_indx)
     bboxes_out = writer.grid_indices_to_bboxes(id_x, id_y)
     bboxes = bboxes_out - np.tile(offset, 2).reshape(1, 4)
