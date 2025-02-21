@@ -895,7 +895,7 @@ class VolumeRenderer:
             loaders[z] = self.loader_lut.get(z, None)
         if len(full_meshes) == 0:
             return render_seriers, check_points
-        midx_hits = np.nonzero(hit_counts > 0)
+        midx_hits = np.nonzero(hit_counts > 0)[0]
         bboxes = bboxes[midx_hits]
         hit_counts = hit_counts[midx_hits]
         hit_counts_acc = np.insert(np.cumsum(hit_counts), 0, 0)
@@ -924,7 +924,7 @@ class VolumeRenderer:
             bkw = { 'task_id': task_id,
                     'loaders': loaders,
                     'meshes': {},
-                    'morton_indx': np.arange(idx0, idx1),
+                    'morton_indx': midx_hits[idx0:idx1],
                     'out_ts': out_ts,
                     'target_resolution': self.resolution,
                     'mip': self.mip,
