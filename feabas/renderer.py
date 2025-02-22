@@ -1005,6 +1005,7 @@ class VolumeRenderer:
                     else:
                         z_rendered = list(checkpoints.keys())
                     if len(z_rendered) > 0:
+                        z_rendered = [int(zz) for zz in z_rendered]
                         with storage.File(flag_file, 'w') as f:
                             json.dump(z_rendered, f)
                     if not err_raised and (checkpoint_file is not None):

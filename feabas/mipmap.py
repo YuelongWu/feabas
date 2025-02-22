@@ -698,6 +698,7 @@ def mip_one_level_tensorstore_3d(src_spec, mipup=1, **kwargs):
                             zind_added.append(zz)
                 if (flag_file is not None) and newly_finished:
                     zind_rendered = sorted(list(set(zind_added).union(zind_rendered)))
+                    zind_rendered = [int(zz) for zz in zind_rendered]
                     with storage.File(flag_file, 'w') as f:
                         json.dump(zind_rendered, f)
         if flag_file is not None:
@@ -715,6 +716,7 @@ def mip_one_level_tensorstore_3d(src_spec, mipup=1, **kwargs):
                         zind_added.append(zz)
             if newly_finished:
                 zind_rendered = sorted(list(set(zind_added).union(zind_rendered)))
+                zind_rendered = [int(zz) for zz in zind_rendered]
                 with storage.File(flag_file, 'w') as f:
                     json.dump(zind_rendered, f)
         if (checkpoint_prefix is not None) and (not err_raised):
