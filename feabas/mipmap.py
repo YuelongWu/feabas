@@ -672,14 +672,17 @@ def mip_one_level_tensorstore_3d(src_spec, mipup=1, **kwargs):
         flag_cut = np.ones(num_chunks, dtype=bool)
         t_check = time.time()
         zind_added = []
+        res_cnt = 0
         for res in submit_to_workers(_write_ts_block_from_indices, kwargs=tasks, num_workers=num_workers, max_tasks_per_child=max_tasks_per_child):
             task_id, flg_b, errmsg = res
+            res_cnt += 1
             bidx = task_lut[task_id]
             flag_cut[bidx] = flg_b
             if len(errmsg) > 0:
                 err_raised = True
                 logger.error(errmsg)
-            if (checkpoint_prefix is not None) and ((time.time() - t_check) > CHECKPOINT_TIME_INTERVAL):
+            if (checkpoint_prefix is not None) and ((time.time() - t_check) > CHECKPOINT_TIME_INTERVAL) and (res_cnt>=num_workers):
+                res_cnt = 0
                 flag_all = np.zeros_like(filter_indx)
                 flag_all[filter_indx] = flag_cut
                 flag_all = flag_all.reshape(len(id_zs), -1)

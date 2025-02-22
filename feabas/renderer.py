@@ -975,8 +975,10 @@ class VolumeRenderer:
             for bkw in render_seriers:
                 bkw.update(kwargs)
             t_check = time.time()
+            res_cnt = 0
             for res in submit_to_workers(subprocess_render_partial_ts_slab, kwargs=render_seriers, num_workers=actual_num_workers, max_tasks_per_child=max_tasks_per_child):
                 task_id, flag_b, errmsg = res
+                res_cnt += 1
                 if len(errmsg) > 0:
                     err_raised = True
                     logger.error(errmsg)
@@ -988,7 +990,8 @@ class VolumeRenderer:
                     added_chunk = added_chunk | (new_flag < old_flag)
                     checkpoints[zz][morton_idx] = new_flag
                 num_chunks += np.sum(added_chunk)
-                if (checkpoint_file is not None) and ((time.time() - t_check) > CHECKPOINT_TIME_INTERVAL):
+                if (checkpoint_file is not None) and ((time.time() - t_check) > CHECKPOINT_TIME_INTERVAL) and (res_cnt >= num_workers):
+                    res_cnt = 0
                     t_check = time.time()
                     storage.makedirs(self.checkpoint_dir)
                     with H5File(checkpoint_file, 'w') as f:
@@ -1011,7 +1014,7 @@ class VolumeRenderer:
                     if not err_raised and (checkpoint_file is not None):
                         storage.remove_file(checkpoint_file)
             logger.info(f'blocks z={Z0[z_ind]}->{Z1[z_ind]}: added {num_chunks} chunks | {(time.time()-t0)/60} min')
-            return self.writer.spec
+        return self.writer.spec
 
 
     @property
