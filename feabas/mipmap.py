@@ -516,14 +516,14 @@ def mip_one_level_tensorstore_3d(src_spec, mipup=1, **kwargs):
     keep_chunk_layout = kwargs.get('keep_chunk_layout', True)
     downsample_z = kwargs.get('downsample_z', 'auto')
     z_range = kwargs.get('z_range', None)
+    full_chunk_only = kwargs.get('full_chunk_only', z_range is not None)
     downsample_method = kwargs.get("downsample_method", "mean")
     kvstore_out = kwargs.get('kvstore_out', None)
-    use_jpeg_compression = kwargs.get('outdir', True)
+    use_jpeg_compression = kwargs.get('use_jpeg_compression', True)
     pad_to_tile_size = kwargs.get('pad_to_tile_size', use_jpeg_compression)
     cache_capacity = kwargs.get('cache_capacity', None)
     logger_info = kwargs.get('logger', None)
     logger = logging.get_logger(logger_info)
-    skip_indx = kwargs.get('skip_indx', None)
     flag_prefix = kwargs.get('flag_prefix', None)
     checkpoint_prefix = kwargs.get('checkpoint_prefix', None)
     err_raised = False
@@ -595,7 +595,7 @@ def mip_one_level_tensorstore_3d(src_spec, mipup=1, **kwargs):
                 zidrnd = json.load(f)
                 zind_rendered.union(zidrnd)
         zind_rendered = sorted(list(zind_rendered))
-    if (len(zind_rendered) == 0) and (skip_indx is None):
+    if (len(zind_rendered) == 0) and (z_range is None):
         out_spec.update({"open": False, "create": True, "delete_existing": True})
     else:
         out_spec.update({"open": True, "create": True, "delete_existing": False})
@@ -603,20 +603,28 @@ def mip_one_level_tensorstore_3d(src_spec, mipup=1, **kwargs):
     out_spec = out_writer.spec
     out_spec.update({"open": True, "create": False, "delete_existing": False})
     Nx, Ny, Nz = out_writer.grid_shape
-    Z0 = out_writer.write_grids[2]
+    Z0, Z1 = out_writer.write_grids[2], out_writer.write_grids[5]
     if z_range is not None:
-        z_range = np.array(z_range) / downsample_z
-        idx_t = (np.unique(np.searchsorted(Z0, z_range), side='right') - 1).clip(0, Z0.size - 1)
-        z_range = z_range[idx_t]
-        zind_to_render = np.arange(idx_t.min(), idx_t.max()+1)
+        z_ptp = Z1.max() - Z0.min()
+        z_min = min(z_range) * z_ptp + Z0.min()
+        z_max = max(z_range) * z_ptp + Z1.min()
+        if full_chunk_only:
+            idx0 = np.searchsorted(Z0, z_min, side='left')
+            idx1 = np.searchsorted(Z1, z_max, side='right') - 1
+        else:
+            idx0 = np.searchsorted(Z0, z_min, side='right') - 1
+            idx1 = np.searchsorted(Z1, z_max, side='left')
+        zind_to_render0 = np.unique(np.arange(idx0, idx1+1).clip(0, Nz-1))
+        if zind_to_render0.size == 0:
+            z_range = []
+        else:
+            z_range = [(Z0[idx0] - Z0.min())/z_ptp, (Z1[idx1] - Z0.min())/ z_ptp]
     else:
-        zind_to_render = np.arange(Nz)
-    if skip_indx is not None:
-        zind_to_render = zind_to_render[skip_indx]
-    flag_file = flag_prefix + f'{zind_to_render[0]}_{zind_to_render[-1]}.json'
-    zind_to_render = [z for z in zind_to_render if (z not in zind_rendered)]
+        zind_to_render0 = np.arange(Nz)
+    zind_to_render = [int(z) for z in zind_to_render0 if (z not in zind_rendered)]
     if len(zind_to_render) == 0:
         return err_raised, out_writer.spec, z_range
+    flag_file = flag_prefix + f'{zind_to_render0[0]}_{zind_to_render0[-1]}.json'
     chunk_shape = out_writer.write_chunk_shape
     chunk_mb = np.prod(chunk_shape) * np.prod(downsample_factors)/ (1024**2)
     if cache_capacity is not None:

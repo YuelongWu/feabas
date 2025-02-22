@@ -79,7 +79,7 @@ tensorstore_rendering: # render to tensorstore volume
     z_max: null # maximum z index (exclusive) of the volume. If set to null, count the section number.
     driver: neuroglancer_precomputed
     jpeg_compression: false
-    outdir: null # directory to save the aligned stack. if set to null, default to working_directory/aligned_tensorstore
+    out_dir: null # directory to save the aligned stack. if set to null, default to working_directory/aligned_tensorstore
     chunk_shape: [2048, 2048, 64]
     read_chunk_shape: [256, 256, 16]
     canvas_bbox: null   # if set to null, use the extremes of all the meshes to determine: may be problematic if the transformations are changed between different rendering rounds
@@ -99,5 +99,5 @@ tensorstore_downsample:
     cache_capacity: 20000    # use to control pool restart, in MiB
     downsample_z: auto      # a list of the same length to mip_levels, or "auto" to maintain isotropy when possible
     keep_chunk_layout: True # if use the same chunk shape as the high-res volume, or shrink it
-    outdir: null    # if set to null, place to the same directory as the full-res images
+    out_dir: null    # if set to null, place to the same directory as the full-res images
     jpeg_compression: True  # whether to use jpeg encoding

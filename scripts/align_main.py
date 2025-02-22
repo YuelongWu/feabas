@@ -302,7 +302,7 @@ def parse_args(args=None):
     parser.add_argument("--mode", metavar="mode", type=str, default='matching')
     parser.add_argument("--start", metavar="start", type=int, default=0)
     parser.add_argument("--step", metavar="step", type=int, default=1)
-    parser.add_argument("--stop", metavar="stop", type=int, default=0)
+    parser.add_argument("--stop", metavar="stop", type=int)
     parser.add_argument("--reverse",  action='store_true')
     return parser.parse_args(args)
 
@@ -397,8 +397,10 @@ if __name__ == '__main__':
     match_name_delimiter = thumbnail_configs.get('alignment', {}).get('match_name_delimiter', '__to__')
 
     stt_idx, stp_idx, step = args.start, args.stop, args.step
-    if stp_idx == 0:
-        stp_idx = None
+    if (stt_idx in (0, None)) and (stp_idx is None) and (step in (1, None)):
+        full_run = True
+    else:
+        full_run = False
     indx = slice(stt_idx, stp_idx, step)
     storage.makedirs(mesh_dir)
     if mode == 'meshing':
@@ -436,8 +438,6 @@ if __name__ == '__main__':
         storage.makedirs(render_dir)
         tform_list = sorted(storage.list_folder_content(storage.join_paths(tform_dir, '*.h5')))
         tform_list = tform_list[indx]
-        if args.reverse:
-            tform_list = tform_list[::-1]
         z_prefix = defaultdict(lambda: '')
         if align_config.pop('prefix_z_number', True):
             seclist = sorted(storage.list_folder_content(storage.join_paths(mesh_dir, '*.h5')))
@@ -458,7 +458,7 @@ if __name__ == '__main__':
         logger_info = logging.initialize_main_logger(logger_name='tensorstore_render', mp=num_workers>1)
         logger = logging.get_logger(logger_info[0])
         mip_level = align_config.pop('mip_level', 0)
-        align_config.pop('outdir', None)
+        align_config.pop('out_dir', None)
         canvas_bbox = align_config.get('canvas_bbox', None)
         if (canvas_bbox is None):
             canvas_file = storage.join_paths(tform_dir, 'tensorstore_canvas.txt')
@@ -492,12 +492,47 @@ if __name__ == '__main__':
         logger_info = logging.initialize_main_logger(logger_name='tensorstore_downsample', mp=num_workers>1)
         logger = logging.get_logger(logger_info[0])
         mip_levels = align_config.pop('mip_levels', np.arange(1, 9))
-        kvstore_out = align_config.pop('outdir', None)
-        with storage.File(ts_spec_file, 'r') as f:
-            rendered_mips_spec = json.load(f)
+        kvstore_out = align_config.pop('out_dir', None)
+        z_range = align_config.pop('z_range', None)
+        if storage.file_exists(ts_spec_file):
+            with storage.File(ts_spec_file, 'r') as f:
+                rendered_mips_spec = json.load(f)
+        else:
+            raise RuntimeError('no rendered mip0 found, run rendering code first...')
         rendered_mips_spec = {int(mip): spec for mip, spec in rendered_mips_spec.items()}
         rendered_mips = np.array(sorted(list(rendered_mips_spec.keys())))
-        for mip in sorted(mip_levels):
+        if (z_range is not None) or (not full_run):
+            mip0_spec = rendered_mips_spec[min(rendered_mips)]
+            mip0_writer = dal.TensorStoreWriter.from_json_spec(mip0_spec)
+            Z0, Z1 = mip0_writer.write_grids[2], mip0_writer.write_grids[5]
+            Z_ptp = Z1.max() - Z0.min()
+            stt_idx = indx.start
+            stp_idx = indx.stop
+            step = indx.step
+            if z_range is None:
+                z_range = [np.min(Z0), np.max(Z1)]
+            if stt_idx is not None:
+                z_range[0] = max(z_range[0], Z0[stt_idx])
+            else:
+                stt_idx = 0
+            if stp_idx is not None:
+                z_range[1] = min(z_range[-1], Z1[stp_idx-1])
+            zr0 = (min(z_range) - Z0.min()) / Z_ptp
+            zr1 = (max(z_range) - Z0.min()) / Z_ptp
+            if (step is not None) and (step > 1):
+                dr = zr1 - zr0
+                rr = 1/step
+                zr0 = zr0 + (stt_idx % step) * dr * rr
+                zr1 = zr0 + dr * rr
+            z_range = [zr0, zr1]
+        downsample_z = align_config.pop('downsample_z', 'auto')
+        if downsample_z == 'auto':
+            downsample_z = ['auto'] * len(mip_levels)
+        elif not hasattr(downsample_z, '__len__'):
+            downsample_z = [downsample_z] * len(mip_levels)
+        elif len(downsample_z) == 1:
+            downsample_z = list(downsample_z) * len(mip_levels)
+        for mip, dsp in zip(sorted(mip_levels), downsample_z):
             if mip in rendered_mips_spec:
                 continue
             higher_mips = rendered_mips[rendered_mips < mip]
@@ -516,14 +551,34 @@ if __name__ == '__main__':
                                                                          mipup=mipup,
                                                                          kvstore_out=kvstore_out,
                                                                          logger=logger_info,
-                                                                         skip_indx=indx,
                                                                          flag_prefix=flag_prefix,
+                                                                         full_chunk_only=(not full_run),
+                                                                         downsample_z=dsp, 
                                                                          **align_config)
             if err_raised:
                 logger.error('failed to generate mip{mip}, abort')
                 break
+            if len(z_range) == 0:
+                logger.warning('no complete chunk to downsample at mip{mip}. skipping...')
+                break
             rendered_mips_spec[mip] = out_spec
             align_config['z_range'] = z_range
-            with storage.File(ts_spec_file, 'w') as f:
-                json.dump(rendered_mips_spec, f)
+            if full_run:
+                flag_list = storage.list_folder_content(flag_prefix + '*.json')
+                flag_out = flag_prefix + '.json'
+                if len(flag_list > 1):
+                    z_rendered = set()
+                    for flgfile in flag_list:
+                        with storage.File(flgfile, 'r') as f:
+                            zidrnd = json.load(f)
+                            z_rendered.union(zidrnd)
+                    z_rendered = sorted(list(z_rendered))
+                    with storage.File(flag_out, 'w') as f:
+                        json.dump(z_rendered, f)
+                    for flgfile in flag_list:
+                        if os.path.basename(flgfile) != os.path.basename(flag_out):
+                            storage.remove_file(flgfile)
+                with storage.File(ts_spec_file, 'w') as f:
+                    json.dump(rendered_mips_spec, f)
             logger.info(f'mip{mip} generated')
+            
