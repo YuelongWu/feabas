@@ -390,7 +390,7 @@ if __name__ == '__main__':
     thumb_match_dir = storage.join_paths(thumbnail_dir, 'matches')
     render_dir = config.align_render_dir()
     tensorstore_render_dir = config.tensorstore_render_dir()
-    ts_flag_dir = storage.join_paths(align_dir, 'done_flags')
+    ts_flag_dir = storage.join_paths(align_dir, 'render_flags')
     ts_spec_file = storage.join_paths(align_dir, 'ts_spec.json')
     ts_mip_flagdir = storage.join_paths(align_dir, 'mipmap_flags')
     thumbnail_configs = config.thumbnail_configs()
@@ -579,6 +579,6 @@ if __name__ == '__main__':
                         if os.path.basename(flgfile) != os.path.basename(flag_out):
                             storage.remove_file(flgfile)
                 with storage.File(ts_spec_file, 'w') as f:
-                    json.dump(rendered_mips_spec, f)
+                    json.dump(rendered_mips_spec, f, indent=2)
             logger.info(f'mip{mip} generated')
             
