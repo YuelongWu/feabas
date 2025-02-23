@@ -566,7 +566,7 @@ if __name__ == '__main__':
             if full_run:
                 flag_list = storage.list_folder_content(flag_prefix + '*.json')
                 flag_out = flag_prefix + 'f.json'
-                if len(flag_list > 1):
+                if len(flag_list) > 1:
                     z_rendered = set()
                     for flgfile in flag_list:
                         with storage.File(flgfile, 'r') as f:
