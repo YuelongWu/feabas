@@ -595,13 +595,9 @@ def mip_one_level_tensorstore_3d(src_spec, mipup=1, **kwargs):
                 zidrnd = json.load(f)
                 zind_rendered.union(zidrnd)
         zind_rendered = sorted(list(zind_rendered))
-    if (len(zind_rendered) == 0) and (z_range is None):
-        out_spec.update({"open": False, "create": True, "delete_existing": True})
-    else:
-        out_spec.update({"open": True, "create": True, "delete_existing": False})
+    out_spec.update({"open": True, "create": True, "delete_existing": False})
     out_writer = dal.TensorStoreWriter.from_json_spec(out_spec)
     out_spec = out_writer.spec
-    out_spec.update({"open": True, "create": False, "delete_existing": False})
     Nx, Ny, Nz = out_writer.grid_shape
     Z0, Z1 = out_writer.write_grids[2], out_writer.write_grids[5]
     if z_range is not None:
