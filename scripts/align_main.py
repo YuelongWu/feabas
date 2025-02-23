@@ -493,7 +493,7 @@ if __name__ == '__main__':
         logger = logging.get_logger(logger_info[0])
         mip_levels = align_config.pop('mip_levels', np.arange(1, 9))
         kvstore_out = align_config.pop('out_dir', None)
-        z_range = align_config.pop('z_range', None)
+        z_range = align_config.get('z_range', None)
         if storage.file_exists(ts_spec_file):
             with storage.File(ts_spec_file, 'r') as f:
                 rendered_mips_spec = json.load(f)
@@ -525,6 +525,7 @@ if __name__ == '__main__':
                 zr0 = zr0 + (stt_idx % step) * dr * rr
                 zr1 = zr0 + dr * rr
             z_range = [zr0, zr1]
+            align_config['z_range'] = z_range
         downsample_z = align_config.pop('downsample_z', 'auto')
         if downsample_z == 'auto':
             downsample_z = ['auto'] * len(mip_levels)
