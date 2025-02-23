@@ -622,7 +622,7 @@ def mip_one_level_tensorstore_3d(src_spec, mipup=1, **kwargs):
     if len(zind_to_render) == 0:
         return err_raised, out_writer.spec, z_range
     if flag_prefix is not None:
-        flag_file = flag_prefix + f'_{Z0[zind_to_render0[0]]}_{Z1[zind_to_render0[-1]]}.json'
+        flag_file = flag_prefix + f'{Z0[zind_to_render0[0]]}_{Z1[zind_to_render0[-1]]}.json'
         storage.makedirs(os.path.dirname(flag_file))
     else:
         flag_file = None

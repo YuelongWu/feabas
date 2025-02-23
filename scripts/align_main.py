@@ -546,7 +546,7 @@ if __name__ == '__main__':
                 if tdriver == 'file':
                     kvstore_out = 'file://' + kvstore_out
             mipup = mip - src_mip
-            flag_prefix = storage.join_paths(ts_mip_flagdir, f'mip{mip}')
+            flag_prefix = storage.join_paths(ts_mip_flagdir, f'mip{mip}_')
             err_raised, out_spec, z_range = mip_one_level_tensorstore_3d(src_spec, 
                                                                          mipup=mipup,
                                                                          kvstore_out=kvstore_out,
@@ -565,13 +565,13 @@ if __name__ == '__main__':
             align_config['z_range'] = z_range
             if full_run:
                 flag_list = storage.list_folder_content(flag_prefix + '*.json')
-                flag_out = flag_prefix + '.json'
+                flag_out = flag_prefix + 'f.json'
                 if len(flag_list > 1):
                     z_rendered = set()
                     for flgfile in flag_list:
                         with storage.File(flgfile, 'r') as f:
                             zidrnd = json.load(f)
-                            z_rendered.union(zidrnd)
+                            z_rendered = z_rendered.union(zidrnd)
                     z_rendered = sorted(list(z_rendered))
                     with storage.File(flag_out, 'w') as f:
                         json.dump(z_rendered, f)
