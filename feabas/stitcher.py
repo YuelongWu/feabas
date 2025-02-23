@@ -306,7 +306,7 @@ class Stitcher:
             return len(new_matches), err_raised
         num_workers = min(num_workers, num_overlaps)
         num_overlaps_per_job = min(num_overlaps//num_workers, num_overlaps_per_job)
-        N_jobs = round(num_overlaps / num_overlaps_per_job)
+        N_jobs = max(1, round(num_overlaps / num_overlaps_per_job))
         indx_j = np.linspace(0, num_overlaps, num=N_jobs+1, endpoint=True)
         indx_j = np.unique(np.round(indx_j).astype(np.int32))
         # divide works
@@ -1526,7 +1526,7 @@ class MontageRenderer:
         num_tile_per_job = max(1, num_tiles // num_workers)
         if max_tile_per_job is not None:
             num_tile_per_job = min(num_tile_per_job, max_tile_per_job)
-        N_jobs = round(num_tiles / num_tile_per_job)
+        N_jobs = max(1, round(num_tiles / num_tile_per_job))
         indices = np.round(np.linspace(0, num_tiles, num=N_jobs+1, endpoint=True))
         indices = np.unique(indices).astype(np.uint32)
         bboxes_list = []

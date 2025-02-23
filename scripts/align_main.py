@@ -528,7 +528,7 @@ if __name__ == '__main__':
                 dr = zr1 - zr0
                 rr = 1/step
                 zr0 = zr0 + (stt_idx % step) * dr * rr
-                zr1 = zr0 + dr * rr
+                zr1 = zr1 - dr + (stt_idx % step + 1) * dr * rr
             z_range = [zr0, zr1]
             align_config['z_range'] = z_range
         downsample_z = align_config.pop('downsample_z', 'auto')
