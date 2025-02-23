@@ -1110,6 +1110,11 @@ class TensorStoreLoader(AbstractImageLoader):
         else:
             self.dataset = dataset
         self._spec = self.dataset.spec(minimal_spec=True).to_json()
+        if self._spec['driver'] == 'neuroglancer_precomputed':
+            self._spec.pop('scale_index', None)
+            self._spec.setdefault('scale_metadata', {})
+            self._spec['scale_metadata'].setdefault('resolution', list(self.pixel_size))
+
         self.resolution = self.dataset.schema.dimension_units[0].multiplier
         self._z = kwargs.get('z', 0)
 

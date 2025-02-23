@@ -621,7 +621,7 @@ def mip_one_level_tensorstore_3d(src_spec, mipup=1, **kwargs):
     if len(zind_to_render) == 0:
         return err_raised, out_writer.spec, z_range
     if flag_prefix is not None:
-        flag_file = flag_prefix + f'_{zind_to_render0[0]}_{zind_to_render0[-1]}.json'
+        flag_file = flag_prefix + f'_{Z0[zind_to_render0[0]]}_{Z1[zind_to_render0[-1]]}.json'
         storage.makedirs(os.path.dirname(flag_file))
     else:
         flag_file = None
@@ -690,6 +690,7 @@ def mip_one_level_tensorstore_3d(src_spec, mipup=1, **kwargs):
                 err_raised = True
                 logger.error(errmsg)
             if (checkpoint_prefix is not None) and ((time.time() - t_check) > CHECKPOINT_TIME_INTERVAL) and (res_cnt>=num_workers):
+                storage.makedirs(os.path.dirname(checkpoint_prefix))
                 res_cnt = 0
                 flag_all = np.zeros_like(filter_indx)
                 flag_all[filter_indx] = flag_cut
