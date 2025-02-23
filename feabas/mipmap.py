@@ -604,7 +604,7 @@ def mip_one_level_tensorstore_3d(src_spec, mipup=1, **kwargs):
     if z_range is not None:
         z_ptp = Z1.max() - Z0.min()
         z_min = min(z_range) * z_ptp + Z0.min()
-        z_max = max(z_range) * z_ptp + Z1.min()
+        z_max = max(z_range) * z_ptp + Z0.min()
         if full_chunk_only:
             idx0 = np.searchsorted(Z0, z_min, side='left')
             idx1 = np.searchsorted(Z1, z_max, side='right') - 1
