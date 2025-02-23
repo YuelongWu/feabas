@@ -660,7 +660,7 @@ def mip_one_level_tensorstore_3d(src_spec, mipup=1, **kwargs):
         else:
             filter_indx = np.ones(id_x0.size, dtype=bool)
         num_chunks = id_x0.size
-        N_batch = round(num_chunks / chunk_per_job)
+        N_batch = max(1, round(num_chunks / chunk_per_job))
         bindx = np.unique(np.linspace(0, num_chunks, N_batch+1, endpoint=True).astype(np.uint32))
         tasks = []
         task_lut = {}
