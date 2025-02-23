@@ -511,14 +511,17 @@ if __name__ == '__main__':
             step = indx.step
             if step is None:
                 step = 1
+            if stt_idx is None:
+                stt_idx = 0
             if z_range is None:
                 z_range = [np.min(Z0), np.max(Z1)]
-            if stt_idx is not None:
-                z_range[0] = max(z_range[0] - z_range[0] % step, Z0[stt_idx])
-            else:
-                stt_idx = 0
-            if stp_idx is not None:
-                z_range[1] = min(z_range[-1], Z1[stp_idx-1])
+            if step == 1:
+                if stt_idx is not None:
+                    z_range[0] = max(z_range[0], Z0[stt_idx])
+                else:
+                    stt_idx = 0
+                if stp_idx is not None:
+                    z_range[1] = min(z_range[-1], Z1[stp_idx-1])
             zr0 = (min(z_range) - Z0.min()) / Z_ptp
             zr1 = (max(z_range) - Z0.min()) / Z_ptp
             if step > 1:
