@@ -620,7 +620,11 @@ def mip_one_level_tensorstore_3d(src_spec, mipup=1, **kwargs):
     zind_to_render = [int(z) for z in zind_to_render0 if (z not in zind_rendered)]
     if len(zind_to_render) == 0:
         return err_raised, out_writer.spec, z_range
-    flag_file = flag_prefix + f'{zind_to_render0[0]}_{zind_to_render0[-1]}.json'
+    if flag_prefix is not None:
+        flag_file = flag_prefix + f'_{zind_to_render0[0]}_{zind_to_render0[-1]}.json'
+        storage.makedirs(os.path.dirname(flag_file))
+    else:
+        flag_file = None
     chunk_shape = out_writer.write_chunk_shape
     chunk_mb = np.prod(chunk_shape) * np.prod(downsample_factors)/ (1024**2)
     if cache_capacity is not None:
