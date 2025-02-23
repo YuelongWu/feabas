@@ -1130,10 +1130,10 @@ class TensorStoreLoader(AbstractImageLoader):
     @classmethod
     def from_json_spec(cls, js_spec, **kwargs):
         if kwargs.get('cache_capacity', None) is not None:
-            total_bytes_limit = kwargs['cache_capacity'] * 1_000_000
+            total_bytes_limit = round(kwargs['cache_capacity'] * 1_000_000)
         elif kwargs.get('cache_size', None) is not None:
             # assume 4k tiles
-            total_bytes_limit = kwargs['cache_size'] * 4096 * 4096
+            total_bytes_limit = round(kwargs['cache_size'] * 4096 * 4096)
         elif ('cache_capacity' not in kwargs) and ('cache_size' not in kwargs):
             total_bytes_limit = -1
         else:
