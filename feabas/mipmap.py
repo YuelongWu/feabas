@@ -531,6 +531,7 @@ def mip_one_level_tensorstore_3d(src_spec, mipup=1, **kwargs):
         checkpoint_dir = storage.join_paths(os.path.dirname(flag_prefix), 'checkpoints')
         flag_filename = os.path.basename(flag_prefix)
         checkpoint_prefix = storage.join_paths(checkpoint_dir, flag_filename + '_')
+        storage.makedirs(os.path.dirname(checkpoint_prefix))
     src_loader = dal.TensorStoreLoader.from_json_spec(src_spec)
     src_data = src_loader.dataset
     src_spec = src_data.spec(minimal_spec=True).to_json()
