@@ -558,7 +558,7 @@ if __name__ == '__main__':
             if err_raised:
                 logger.error('failed to generate mip{mip}, abort')
                 break
-            if len(z_range) == 0:
+            if (z_range is not None) and len(z_range) == 0:
                 logger.warning('no complete chunk to downsample at mip{mip}. skipping...')
                 break
             rendered_mips_spec[mip] = out_spec
