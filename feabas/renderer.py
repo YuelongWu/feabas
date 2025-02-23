@@ -691,7 +691,7 @@ def render_whole_mesh(mesh, image_loader, prefix, **kwargs):
         num_tile_per_job = max(1, num_tiles // num_workers)
         if max_tile_per_job is not None:
             num_tile_per_job = min(num_tile_per_job, max_tile_per_job)
-        N_jobs = round(num_tiles / num_tile_per_job)
+        N_jobs = max(1, round(num_tiles / num_tile_per_job))
         indices = np.round(np.linspace(0, num_tiles, num=N_jobs+1, endpoint=True))
         indices = np.unique(indices).astype(np.uint32)
         bboxes_list = []
@@ -907,7 +907,7 @@ class VolumeRenderer:
             chunk_mb = np.prod(self.writer.write_chunk_shape[:2]) * self.writer.number_of_channels / (1024 ** 2)
             max_chunk_per_proc = max(1, cache_capacity / (chunk_mb * num_workers))
             num_tile_per_job = min(num_tile_per_job, max_chunk_per_proc)
-        N_jobs = round(num_tiles / num_tile_per_job)
+        N_jobs = max(1, round(num_tiles / num_tile_per_job))
         indices_tile = np.round(np.linspace(0, num_tiles, num=N_jobs+1, endpoint=True))
         indices_chunk = np.searchsorted(hit_counts_acc, indices_tile, side='left')
         indices_chunk = np.unique(indices_chunk).astype(np.uint64)
