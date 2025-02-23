@@ -586,5 +586,7 @@ if __name__ == '__main__':
                             storage.remove_file(flgfile)
                 with storage.File(ts_spec_file, 'w') as f:
                     json.dump(rendered_mips_spec, f, indent=2)
+                writer = dal.TensorStoreWriter.from_json_spec(out_spec)
+                writer.sort_precomputed_scale
             logger.info(f'mip{mip} generated')
             

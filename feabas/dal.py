@@ -12,7 +12,7 @@ from rtree import index
 import tensorstore as ts
 
 from feabas import common, caching
-from feabas.storage import File, join_paths, list_folder_content
+from feabas.storage import File, join_paths, list_folder_content, file_exists
 from feabas.config import DEFAULT_RESOLUTION, TS_TIMEOUT, TS_RETRY
 
 
@@ -1459,6 +1459,27 @@ class TensorStoreWriter(TensorStoreLoader):
     @property
     def spec(self):
         return self._spec
+
+
+    def sort_precomputed_scale(self):
+        num_scales = 0
+        url = self.dataset.kvstore.url
+        if self.spec["driver"] == "neuroglancer_precomputed":
+            info_file = join_paths(url, 'info')
+            if file_exists(info_file):
+                with File(info_file, 'r') as f:
+                    spec = json.load(f)
+                scales = spec.pop("scales")
+                num_scales = len(scales)
+                resolutions = np.zeros(num_scales)
+                for m, scale in enumerate(scales):
+                    resolutions[m] = scale["resolution"][0]
+                idx = np.argsort(resolutions)
+                new_scales = [scales[m] for m in idx]
+                spec["scales"] = new_scales
+                with File(info_file, 'w') as f:
+                    json.dump(spec, f, indent=2)
+        return num_scales
 
 
 
