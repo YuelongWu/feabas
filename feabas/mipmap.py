@@ -594,7 +594,7 @@ def mip_one_level_tensorstore_3d(src_spec, mipup=1, **kwargs):
         for flgfile in flag_list:
             with storage.File(flgfile, 'r') as f:
                 zidrnd = json.load(f)
-                zind_rendered.union(zidrnd)
+                zind_rendered = zind_rendered.union(zidrnd)
         zind_rendered = sorted(list(zind_rendered))
     out_spec.update({"open": True, "create": True, "delete_existing": False})
     out_writer = dal.TensorStoreWriter.from_json_spec(out_spec)
