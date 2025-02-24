@@ -22,7 +22,7 @@ from feabas.optimizer import SLM
 from feabas import common, caching, storage, logging
 from feabas.spatial import scale_coordinates
 import feabas.constant as const
-from feabas.config import DEFAULT_RESOLUTION, SECTION_THICKNESS, data_resolution
+from feabas.config import DEFAULT_RESOLUTION, SECTION_THICKNESS, data_resolution, CHECKPOINT_TIME_INTERVAL
 
 H5File = storage.h5file_class()
 
@@ -1740,7 +1740,7 @@ class MontageRenderer:
             res_cnt += 1
             if use_tensorstore:
                 checkpoints[meta] = False
-                if (checkpoint_file is not None) and ((time.time() - t_check) > config.CHECKPOINT_TIME_INTERVAL) and (res_cnt>=num_workers):
+                if (checkpoint_file is not None) and ((time.time() - t_check) > CHECKPOINT_TIME_INTERVAL) and (res_cnt>=num_workers):
                     storage.makedirs(os.path.dirname(checkpoint_file))
                     res_cnt = 0
                     t_check = time.time()
