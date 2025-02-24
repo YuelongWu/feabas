@@ -1478,7 +1478,7 @@ class MontageRenderer:
                     read_wd = tile_wd
                 schema["codec"]= {"driver": "neuroglancer_precomputed"}
                 if use_jpeg_compression:
-                    schema["codec"].update({"encoding": 'jpeg'})
+                    schema["codec"].update({"encoding": 'jpeg', "jpeg_quality": 90})
                     if (read_ht < tile_ht) or read_wd < tile_wd:
                         schema["codec"].update({"shard_data_encoding": 'raw'})
                 else:

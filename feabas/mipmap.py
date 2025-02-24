@@ -263,6 +263,7 @@ def generate_target_tensorstore_scale(metafile, mip=None, **kwargs):
     tgt_schema['chunk_layout']['read_chunk']['shape_soft_constraint'] = tgt_schema['read_chunk']['write_chunk'].pop('shape')
     if use_jpeg_compression:
         tgt_schema['codec']['encoding'] = 'jpeg'
+        tgt_schema['codec']['jpeg_quality'] = 90
         if 'shard_data_encoding' in tgt_schema['codec']:
             tgt_schema['codec']['shard_data_encoding'] = 'raw'
     tgt_spec['schema'] = tgt_schema
@@ -579,7 +580,7 @@ def mip_one_level_tensorstore_3d(src_spec, mipup=1, **kwargs):
         out_schema['domain']['exclusive_max'][:2] = [Xmax, Ymax]
         out_schema['domain']['inclusive_min'][:2] = [Xmin, Ymin]
     if use_jpeg_compression:
-        out_schema["codec"] = {"driver": "neuroglancer_precomputed", "encoding": 'jpeg'}
+        out_schema["codec"] = {"driver": "neuroglancer_precomputed", "encoding": 'jpeg', "jpeg_quality": 90}
         if (read_ht < tile_ht) or (read_wd < tile_wd):
             out_schema["codec"].update({"shard_data_encoding": 'raw'})
     else:

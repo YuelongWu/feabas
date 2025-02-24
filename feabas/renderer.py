@@ -1156,7 +1156,7 @@ class VolumeRenderer:
                 }
                 sharding = np.any(np.array(read_chunk) != np.array(write_chunk))
                 if self._jpeg_compression:
-                    schema_extra["codec"].update({"encoding": "jpeg"})
+                    schema_extra["codec"].update({"encoding": "jpeg", "jpeg_quality": 90})
                     if sharding:
                         schema_extra["codec"].update({"shard_data_encoding": "raw"})
                 else:
