@@ -34,6 +34,8 @@ def GCP_get_blob(url):
 def parse_file_driver(filename):
     if filename.startswith('gs://'):
         driver = 'gs'
+    elif filename.startswith('s3://'):
+        driver = 's3'
     else:
         if filename.startswith('file://'):
             filename = filename[7:]

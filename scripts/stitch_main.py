@@ -7,6 +7,7 @@ import feabas
 from feabas.concurrent import submit_to_workers
 from feabas import config, logging, storage
 
+H5File = storage.h5file_class()
 
 def match_one_section(coordname, outname, **kwargs):
     logger_info = kwargs.get('logger', None)
@@ -145,71 +146,13 @@ def optmization_main(match_list, out_dir, **kwargs):
 
 def render_one_section(tform_name, out_prefix, meta_name=None, **kwargs):
     num_workers = kwargs.get('num_workers', 1)
-    tile_size = kwargs.pop('tile_size', [4096, 4096])
-    scale = kwargs.pop('scale', 1.0)
-    resolution = kwargs.pop('resolution', None)
     loader_settings = kwargs.get('loader_settings', {})
-    render_settings = kwargs.get('render_settings', {}).copy()
-    driver = kwargs.get('driver', 'image')
-    use_tensorstore = driver != 'image'
     if loader_settings.get('cache_size', None) is not None:
         loader_settings = loader_settings.copy()
         loader_settings['cache_size'] = loader_settings['cache_size'] // num_workers
-    if meta_name is not None and storage.file_exists(meta_name):
-        return None
     renderer = MontageRenderer.from_h5(tform_name, loader_settings=loader_settings)
-    if resolution is not None:
-        scale = renderer.resolution / resolution
-    else:
-        resolution = renderer.resolution / scale
-    render_settings['scale'] = scale
-    out_prefix = out_prefix.replace('\\', '/')
-    render_series = renderer.plan_render_series(tile_size, prefix=out_prefix,
-        scale=scale, **kwargs)
-    if use_tensorstore:
-        # delete existing
-        out_spec = render_series[1].copy()
-        out_spec.update({'open': False, 'create': True, 'delete_existing': True})
-        writer = dal.TensorStoreWriter.from_json_spec(out_spec)
-    if num_workers == 1:
-        bboxes, filenames, _ = render_series
-        metadata = renderer.render_series_to_file(bboxes, filenames, **render_settings)
-    else:
-        bboxes_list, filenames_list, hits_list = renderer.divide_render_jobs(render_series,
-            num_workers=num_workers, max_tile_per_job=20)
-        if use_tensorstore:
-            metadata = []
-        else:
-            metadata = {}
-        target_func = partial(MontageRenderer.subprocess_render_montages, **render_settings)
-        args_list = []
-        for bboxes, filenames, hits in zip(bboxes_list, filenames_list, hits_list):
-            init_args = renderer.init_args(selected=hits)
-            args_list.append((init_args, bboxes, filenames))
-        for res in submit_to_workers(target_func, args=args_list, num_workers=num_workers):
-            if use_tensorstore:
-                metadata.extend(res)
-            else:
-                metadata.update(res)
-    if (meta_name is not None) and (len(metadata) > 0):
-        if use_tensorstore:
-            meta_name = meta_name.replace('\\', '/')
-            kv_headers = ('gs://', 'http://', 'https://', 'file://', 'memory://', 's3://')
-            for kvh in kv_headers:
-                if meta_name.startswith(kvh):
-                    break
-            else:
-                meta_name = 'file://' + meta_name
-            meta_ts = ts.open({"driver": "json", "kvstore": meta_name}).result()
-            meta_ts.write({0: writer.spec}).result()
-        else:
-            fnames = sorted(list(metadata.keys()))
-            bboxes = []
-            for fname in fnames:
-                bboxes.append(metadata[fname])
-            out_loader = dal.StaticImageLoader(fnames, bboxes=bboxes, resolution=resolution)
-            out_loader.to_coordinate_file(meta_name)
-    return len(metadata)
+    num_chunks = renderer.render_one_section(out_prefix, meta_name=meta_name, **kwargs)
+    return num_chunks
 
 
 def render_main(tform_list, out_dir, **kwargs):

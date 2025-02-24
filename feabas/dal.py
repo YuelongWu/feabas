@@ -1109,12 +1109,7 @@ class TensorStoreLoader(AbstractImageLoader):
             self.reconnect()
         else:
             self.dataset = dataset
-        self._spec = self.dataset.spec(minimal_spec=True).to_json()
-        if self._spec['driver'] == 'neuroglancer_precomputed':
-            self._spec.pop('scale_index', None)
-            self._spec.setdefault('scale_metadata', {})
-            self._spec['scale_metadata'].setdefault('resolution', list(self.pixel_size))
-
+            self._spec = self.dataset.spec(minimal_spec=True).to_json()
         self.resolution = self.dataset.schema.dimension_units[0].multiplier
         self._z = kwargs.get('z', 0)
 
@@ -1304,6 +1299,17 @@ class TensorStoreLoader(AbstractImageLoader):
         return (xmin, ymin, zmin, xmax, ymax, zmax)
 
 
+    @property
+    def spec(self):
+        if (not hasattr(self, '_min_spec')) or (self._min_spec is None):
+            self._min_spec = self.dataset.spec(minimal_spec=True).to_json()
+            if self._min_spec['driver'] == 'neuroglancer_precomputed':
+                self._min_spec.pop('scale_index', None)
+                self._min_spec.setdefault('scale_metadata', {})
+                self._min_spec['scale_metadata'].setdefault('resolution', list(self.pixel_size))
+        return self._min_spec
+
+
 
 class TensorStoreWriter(TensorStoreLoader):
     """
@@ -1454,11 +1460,6 @@ class TensorStoreWriter(TensorStoreLoader):
     @property
     def write_chunk_shape(self):
         return self.dataset.schema.chunk_layout.write_chunk.shape
-
-
-    @property
-    def spec(self):
-        return self._spec
 
 
     def sort_precomputed_scale(self):

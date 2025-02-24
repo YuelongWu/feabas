@@ -204,130 +204,44 @@ def create_thumbnail(src_dir, outname=None, downsample=4, highpass=True, **kwarg
 
 
 def generate_target_tensorstore_scale(metafile, mip=None, **kwargs):
-    num_workers = kwargs.get('num_workers', 1)
-    max_tile_per_job = kwargs.get('max_tile_per_job', 16)
-    use_jpeg_compression = kwargs.get('format', None) in ('jpg', 'jpeg')
-    pad_to_tile_size = kwargs.get('pad_to_tile_size', use_jpeg_compression)
+    max_tile_per_job = kwargs.pop('max_tile_per_job', 16)
+    use_jpeg_compression = kwargs.pop('format', None) in ('jpg', 'jpeg')
+    kwargs['use_jpeg_compression'] = use_jpeg_compression
+    kwargs['cache_size'] = max_tile_per_job
+    kwargs['downsample_z'] = 1
     write_to_file = False
     json_obj, write_to_file = common.parse_json_file(metafile)
-    ds_spec, src_mip, mip, mipmaps = get_tensorstore_spec(json_obj, mip=mip, return_mips=True, **kwargs)
+    if write_to_file:
+        kwargs['checkpoint_prefix'] = os.path.splitext(metafile)[0] + f'_mip{mip}_'
+    _, src_mip, mip, mipmaps = get_tensorstore_spec(json_obj, mip=mip, return_mips=True, **kwargs)
     if src_mip == mip:
         return None
-    ts_dsp = ts.open(ds_spec).result()
-    ts_src = ts_dsp.base
-    src_spec = ts_src.spec(minimal_spec=True).to_json()
-    tgt_spec = {}
-    driver = src_spec['driver']
-    tgt_spec['driver'] = driver
-    tgt_spec['kvstore'] = src_spec['kvstore']
-    if driver == 'neuroglancer_precomputed':
-        pass
-    elif driver == 'n5':
-        pth = tgt_spec['kvstore']['path']
-        pth = pth[::-1].replace(str(src_mip)+'s', str(mip)+'s', 1)[::-1]
-        tgt_spec['kvstore']['path'] = pth
-    elif driver == 'zarr':
-        pth = tgt_spec['kvstore']['path']
-        pth = pth[::-1].replace(str(src_mip), str(mip), 1)[::-1]
-        tgt_spec['kvstore']['path'] = pth
-    else:
-        raise ValueError(f'driver type {driver} not supported.')
-    tgt_schema = ts_src.schema.to_json()
-    ds_schema = ts_dsp.schema.to_json()
-    tgt_schema['domain'] = ds_schema['domain']
-    tgt_schema['dimension_units'] = ds_schema['dimension_units']
-    inclusive_min = ts_dsp.domain.inclusive_min
-    exclusive_max = ts_dsp.domain.exclusive_max
-    Xmin, Ymin = inclusive_min[0], inclusive_min[1]
-    Xmax, Ymax = exclusive_max[0], exclusive_max[1]
-    chunk_shape = ts_src.schema.chunk_layout.write_chunk.shape
-    tile_wd, tile_ht = chunk_shape[0], chunk_shape[1]
-    read_chunk_shape = ts_src.schema.chunk_layout.read_chunk.shape
-    read_wd, read_ht = read_chunk_shape[0], read_chunk_shape[1]
-    if pad_to_tile_size:
-        Xmin = int(np.floor(Xmin / read_wd)) * read_wd
-        Ymin = int(np.floor(Ymin / read_ht)) * read_ht
-        Ymin = int(np.ceil(Ymin / read_wd)) * read_wd
-        Ymax = int(np.ceil(Ymax / read_ht)) * read_ht
-        tgt_schema['domain']['exclusive_max'][:2] = [Xmax, Ymax]
-        tgt_schema['domain']['inclusive_min'][:2] = [Xmin, Ymin]
-    while tile_wd > (Xmax - Xmin) or tile_ht > (Ymax - Ymin):
-        tile_wd = tile_wd // 2
-        tile_ht = tile_ht // 2
-    while read_wd > tile_wd or read_ht > tile_ht:
-        read_wd = read_wd // 2
-        read_ht = read_ht // 2
-    tgt_schema['chunk_layout']['write_chunk']['shape'][:2] = [tile_wd, tile_ht]
-    tgt_schema['chunk_layout']['read_chunk']['shape'][:2] = [read_wd, read_ht]
-    tgt_schema['chunk_layout']['write_chunk']['shape_soft_constraint'] = tgt_schema['chunk_layout']['write_chunk'].pop('shape')
-    tgt_schema['chunk_layout']['read_chunk']['shape_soft_constraint'] = tgt_schema['read_chunk']['write_chunk'].pop('shape')
-    if use_jpeg_compression:
-        tgt_schema['codec']['encoding'] = 'jpeg'
-        tgt_schema['codec']['jpeg_quality'] = 90
-        if 'shard_data_encoding' in tgt_schema['codec']:
-            tgt_schema['codec']['shard_data_encoding'] = 'raw'
-    tgt_spec['schema'] = tgt_schema
-    writer = dal.TensorStoreWriter.from_json_spec(tgt_spec)
-    id_x, id_y = writer.morton_xy_grid()
-    bboxes = writer.grid_indices_to_bboxes(id_x, id_y)
-    if num_workers == 1:
-        out_spec = _write_downsample_tensorstore(ds_spec, tgt_spec, bboxes, **kwargs)
-    else:
-        n_tiles = id_x.size
-        num_tile_per_job = max(1, n_tiles // num_workers)
-        if max_tile_per_job is not None:
-            num_tile_per_job = min(num_tile_per_job, max_tile_per_job)
-        N_jobs = round(n_tiles / num_tile_per_job)
-        indices = np.round(np.linspace(0, n_tiles, num=N_jobs+1, endpoint=True))
-        indices = np.unique(indices).astype(np.uint32)
-        args_list = []
-        for idx0, idx1 in zip(indices[:-1], indices[1:]):
-            idx0, idx1 = int(idx0), int(idx1)
-            bbox_t = bboxes[idx0:idx1]
-            args_list.append((ds_spec, tgt_spec, bbox_t))
-        kwargs_list = [kwargs]
-        for out_spec in submit_to_workers(_write_downsample_tensorstore, args=args_list, kwargs=kwargs_list, num_workers=num_workers):
-            pass
+    src_spec = mipmaps[src_mip]
+    err_raised, out_spec, _ = mip_one_level_tensorstore_3d(src_spec, mipup=mip-src_mip)
     mipmaps.update({mip: out_spec})
-    if write_to_file:
-        kv_headers = ('gs://', 'http://', 'https://', 'file://', 'memory://', 's3://')
-        for kvh in kv_headers:
-            if metafile.startswith(kvh):
-                break
-        else:
-            metafile = 'file://' + metafile
-        meta_ts = ts.open({"driver": "json", "kvstore": metafile}).result()
-        meta_ts.write(mipmaps).result()
-    return mipmaps
+    if (not err_raised) and write_to_file:
+        with storage.File(metafile, 'w') as f:
+            json.dump(mipmaps, f)
+    return err_raised, mipmaps
 
 
 def generate_tensorstore_scales(metafile, mips, **kwargs):
-    logger_info = kwargs.pop('logger', None)
+    logger_info = kwargs.get('logger', None)
     t0 = time.time()
     logger = logging.get_logger(logger_info)
     mips = np.sort(mips)
     sec_name = os.path.basename(metafile).replace('.json', '')
     updated = False
     for mip in mips:
-        specs = generate_target_tensorstore_scale(metafile, mip=mip, **kwargs)
+        err_raised, specs = generate_target_tensorstore_scale(metafile, mip=mip, **kwargs)
+        if err_raised:
+            break
         if specs is not None:
             updated = True
     if updated:
         logger.info(f'{sec_name}: {(time.time()-t0)/60} min')
     return {sec_name: updated}
 
-
-def _write_downsample_tensorstore(src_spec, tgt_spec, bboxes, **kwargs):
-    src_loader = dal.TensorStoreLoader.from_json_spec(src_spec, **kwargs)
-    tgt_spec.update({'open': True, 'create': True, 'delete_existing': False})
-    writer = dal.TensorStoreWriter.from_json_spec(tgt_spec)
-    for bbox in bboxes:
-        img = src_loader.crop(bbox, return_empty=False, **kwargs)
-        if img is None:
-            continue
-        img = np.swapaxes(img, 0, 1).copy()
-        writer.write_single_chunk(bbox, img)
-    return writer.dataset.spec(minimal_spec=True).to_json()
 
 
 def create_thumbnail_tensorstore(metafile, mip, outname=None, highpass=True, **kwargs):
@@ -524,6 +438,7 @@ def mip_one_level_tensorstore_3d(src_spec, mipup=1, **kwargs):
     pad_to_tile_size = kwargs.get('pad_to_tile_size', use_jpeg_compression)
     mask_file = kwargs.get('mask_file', None)
     cache_capacity = kwargs.get('cache_capacity', None)
+    cache_size = kwargs.get('cache_size', None)
     logger_info = kwargs.get('logger', None)
     logger = logging.get_logger(logger_info)
     flag_prefix = kwargs.get('flag_prefix', None)
@@ -580,7 +495,7 @@ def mip_one_level_tensorstore_3d(src_spec, mipup=1, **kwargs):
         out_schema['domain']['exclusive_max'][:2] = [Xmax, Ymax]
         out_schema['domain']['inclusive_min'][:2] = [Xmin, Ymin]
     if use_jpeg_compression:
-        out_schema["codec"] = {"driver": "neuroglancer_precomputed", "encoding": 'jpeg', "jpeg_quality": 90}
+        out_schema["codec"] = {"driver": "neuroglancer_precomputed", "encoding": 'jpeg', "jpeg_quality": 95}
         if (read_ht < tile_ht) or (read_wd < tile_wd):
             out_schema["codec"].update({"shard_data_encoding": 'raw'})
     else:
@@ -633,10 +548,14 @@ def mip_one_level_tensorstore_3d(src_spec, mipup=1, **kwargs):
     if cache_capacity is not None:
         cache_capacity_per_worker = cache_capacity / num_workers
         chunk_per_job = max(1, cache_capacity_per_worker / chunk_mb)
+        if cache_size is not None:
+            chunk_per_job = min(cache_size, chunk_per_job)
         max_tasks_per_child = 1
     else:
         cache_capacity_per_worker = None
         chunk_per_job = min(20, max(1, round(Nx*Ny*len(zind_to_render)/num_workers)))
+        if cache_size is not None:
+            chunk_per_job = min(cache_size, chunk_per_job)
         max_tasks_per_child = None
     z_step = max(1, int(np.floor(chunk_per_job * num_workers / (Nx * Ny))))
     zind_batches = [zind_to_render[k:(k+z_step)] for k in range(0, len(zind_to_render), z_step)]
@@ -703,6 +622,7 @@ def mip_one_level_tensorstore_3d(src_spec, mipup=1, **kwargs):
             if (checkpoint_prefix is not None) and ((time.time() - t_check) > CHECKPOINT_TIME_INTERVAL) and (res_cnt>=num_workers):
                 storage.makedirs(os.path.dirname(checkpoint_prefix))
                 res_cnt = 0
+                t_check = time.time()
                 flag_all = np.zeros_like(filter_indx)
                 flag_all[filter_indx] = flag_cut
                 flag_all = flag_all.reshape(len(id_zs), -1)

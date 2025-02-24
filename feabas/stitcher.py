@@ -2,6 +2,7 @@ import cv2
 from collections import defaultdict, namedtuple
 from functools import partial
 import gc
+import json
 import matplotlib.tri
 import numpy as np
 import os
@@ -11,20 +12,19 @@ from scipy.ndimage import gaussian_filter, binary_dilation
 from scipy import sparse
 import scipy.sparse.csgraph as csgraph
 import tensorstore as ts
+import time
 
 from feabas.concurrent import submit_to_workers
 from feabas.dal import StaticImageLoader, TensorStoreWriter
-from feabas import logging
 from feabas.matcher import stitching_matcher
 from feabas.mesh import Mesh
 from feabas.optimizer import SLM
-from feabas import common, caching
+from feabas import common, caching, storage, logging
 from feabas.spatial import scale_coordinates
 import feabas.constant as const
-from feabas.config import DEFAULT_RESOLUTION, SECTION_THICKNESS, data_resolution, TS_TIMEOUT
-from feabas.storage import h5file_class, file_exists
+from feabas.config import DEFAULT_RESOLUTION, SECTION_THICKNESS, data_resolution
 
-H5File = h5file_class()
+H5File = storage.h5file_class()
 
 class Stitcher:
     """
@@ -420,7 +420,7 @@ class Stitcher:
                 mask_paths = [s for s in image_loader.filepaths_generator]
                 for sub0, sub1 in zip(image_to_mask_path[0], image_to_mask_path[1]):
                     mask_paths = [s.replace(sub0, sub1) for s in mask_paths]
-            mask_exist = np.array([file_exists(s) for s in mask_paths])
+            mask_exist = np.array([storage.file_exists(s) for s in mask_paths])
             loader_config = loader_config.copy()
             loader_config.update({'apply_CLAHE': False,
                                   'inverse': False,
@@ -1141,11 +1141,11 @@ class MontageRenderer:
                 tile_size = self._tile_sizes[selected]
             else:
                 tile_size = self._tile_sizes[0]
-            args = [imgpaths, mesh_info, tile_size]
-            kwargs = {}
-            kwargs['root_dir'] = self.imgrootdir
-            kwargs['loader_settings'] = self._loader_settings
-            kwargs['resolution'] = self.resolution
+        args = [imgpaths, mesh_info, tile_size]
+        kwargs = {}
+        kwargs['root_dir'] = self.imgrootdir
+        kwargs['loader_settings'] = self._loader_settings
+        kwargs['resolution'] = self.resolution
         return args, kwargs
 
 
@@ -1316,12 +1316,13 @@ class MontageRenderer:
 
 
     def render_series_to_file(self, bboxes, filenames, **kwargs):
-        if isinstance(filenames, (dict, ts.TensorStore)):
+        if isinstance(filenames, (dict, ts.TensorStore, TensorStoreWriter)):
             use_tensorstore = True
             rendered = []
         else:
             use_tensorstore = False
             rendered = {}
+        num_chunks = 0
         scale = kwargs.get('scale', 1.0)
         if scale > 0.33:
             self.image_loader._preprocess = None
@@ -1330,13 +1331,14 @@ class MontageRenderer:
             self.image_loader._preprocess = partial(cv2.blur, ksize=(ksz, ksz))
         if not use_tensorstore: # render as image tiles
             for bbox, filename in zip(bboxes, filenames):
-                if file_exists(filename):
+                if storage.file_exists(filename):
                     rendered[filename] = bbox
                     continue
                 imgt = self.crop(bbox, **kwargs)
                 if imgt is None:
                     continue
                 common.imwrite(filename, imgt)
+                num_chunks += 1
                 rendered[filename] = bbox
         else: # use tensorstore
             if not isinstance(filenames, TensorStoreWriter):
@@ -1346,6 +1348,9 @@ class MontageRenderer:
                     writer = TensorStoreWriter.from_json_spec(filenames)
             else:
                 writer = filenames
+            mindx = bboxes
+            id_x, id_y = writer.morton_xy_grid(indx=mindx)
+            bboxes = writer.grid_indices_to_bboxes(id_x, id_y)
             driver = writer.spec['driver']
             if driver in ('neuroglancer_precomputed', 'n5'):
                 kwargs['fillval'] = 0
@@ -1355,9 +1360,9 @@ class MontageRenderer:
                     continue
                 imgt = imgt.swapaxes(0, 1)
                 writer.write_single_chunk(bbox, imgt)
-                rendered.append(tuple(bbox))
+                num_chunks += 1
         self.image_loader.clear_cache()
-        return rendered
+        return num_chunks, rendered
 
 
     def plan_render_series(self, tile_size, prefix='', **kwargs):
@@ -1376,15 +1381,16 @@ class MontageRenderer:
         driver = kwargs.get('driver', 'image')
         scale = kwargs.get('scale', 1)
         filename_settings = kwargs.get('filename_settings', {})
-        read_chunk_size = kwargs.get('read_chunk_size', (256, 256))
         pattern = filename_settings.get('pattern', 'tr{ROW_IND}_tc{COL_IND}.png')
         use_jpeg_compression = (pattern.lower().endswith('.jpg')) or (pattern.lower().endswith('.jpeg'))
         pad_to_tile_size = kwargs.get('pad_to_tile_size', use_jpeg_compression)
+        checkpoint_file = kwargs.get('checkpoint_file', None)
         resolution = self.resolution / scale
         if not hasattr(tile_size, '__len__'):
             tile_ht, tile_wd = tile_size, tile_size
         else:
             tile_ht, tile_wd = tile_size[0], tile_size[-1]
+        read_chunk_size = kwargs.get('read_chunk_size', (max(256, tile_ht//16), max(256, tile_wd//16)))
         bounds = self.bounds
         if scale != 1:
             bounds = scale_coordinates(bounds, scale)
@@ -1392,27 +1398,24 @@ class MontageRenderer:
         montage_ht = int(np.ceil(bounds[3]))
         Ncol = int(np.ceil(montage_wd / tile_wd))
         Nrow = int(np.ceil(montage_ht / tile_ht))
-        if driver != 'image':
-            while tile_ht > montage_ht or tile_wd > montage_wd:
-                tile_ht = tile_ht // 2
-                tile_wd = tile_wd // 2
-        cols, rows = np.meshgrid(np.arange(Ncol), np.arange(Nrow))
-        cols, rows = cols.ravel(), rows.ravel()
-        idxz = common.z_order(np.stack((rows, cols), axis=-1))
-        cols, rows =  cols[idxz], rows[idxz]
         if driver == 'image':
+            cols, rows = np.meshgrid(np.arange(Ncol), np.arange(Nrow))
+            cols, rows = cols.ravel(), rows.ravel()
+            idxz = common.z_order(np.stack((rows, cols), axis=-1))
+            cols, rows =  cols[idxz], rows[idxz]
             montage_ht, montage_wd = Nrow * tile_ht, Ncol * tile_wd
             one_based = filename_settings.get('one_based', False)
             keywords = ['{ROW_IND}', '{COL_IND}', '{X_MIN}', '{Y_MIN}', '{X_MAX}', '{Y_MAX}']
             filenames = []
+            x0, x1 = cols*tile_wd, ((cols+1)*tile_wd).clip(None, montage_wd)
+            y0, y1 = rows*tile_ht, ((rows+1)*tile_ht).clip(None, montage_ht)
+            bboxes0 = np.stack((x0, y0, x1, y1), axis=-1)
+            bboxes = []
         else:
             if not prefix.endswith('/'):
                 prefix = prefix + '/'
-            kv_headers = ('gs://', 'http://', 'https://', 'file://', 'memory://', 's3://')
-            for kvh in kv_headers:
-                if prefix.startswith(kvh):
-                    break
-            else:
+            tdriver, prefix = storage.parse_file_driver(prefix)
+            if tdriver == 'file':
                 prefix = 'file://' + prefix
             number_of_channels = self.number_of_channels
             dtype = self.dtype
@@ -1420,6 +1423,10 @@ class MontageRenderer:
             if pad_to_tile_size:
                 montage_ht = Nrow * tile_ht
                 montage_wd = Ncol * tile_wd
+            else:
+                while tile_ht > montage_ht or tile_wd > montage_wd:
+                    tile_ht = tile_ht // 2
+                    tile_wd = tile_wd // 2
             schema = {
                 "chunk_layout":{
                     "grid_origin": [0, 0, 0, 0],
@@ -1478,7 +1485,7 @@ class MontageRenderer:
                     read_wd = tile_wd
                 schema["codec"]= {"driver": "neuroglancer_precomputed"}
                 if use_jpeg_compression:
-                    schema["codec"].update({"encoding": 'jpeg', "jpeg_quality": 90})
+                    schema["codec"].update({"encoding": 'jpeg', "jpeg_quality": 95})
                     if (read_ht < tile_ht) or read_wd < tile_wd:
                         schema["codec"].update({"shard_data_encoding": 'raw'})
                 else:
@@ -1496,10 +1503,20 @@ class MontageRenderer:
                 }
             else:
                 raise ValueError(f'{driver} not supported')
+            writer = TensorStoreWriter.from_json_spec(filenames)
+            Nx, Ny = writer.grid_shape[:2]
+            filenames['chunk_num'] = Nx * Ny
+            if (checkpoint_file is not None) and storage.file_exists(checkpoint_file):
+                with H5File(checkpoint_file, 'r') as f:
+                    checkpoint_flag = f['to_render'][()]
+            else:
+                checkpoint_flag = np.ones(Nx*Ny, dtype=bool)
+            id_x, id_y = writer.morton_xy_grid(indx=checkpoint_flag)
+            bboxes0 = writer.grid_indices_to_bboxes(id_x, id_y)
+            mindx0 = np.flatnonzero(checkpoint_flag)
+            bboxes = np.zeros(Nx*Ny, dtype=bool)
         hits = []
-        bboxes = []
-        for r, c in zip(rows, cols):
-            bbox = (c*tile_wd, r*tile_ht, min((c+1)*tile_wd, montage_wd), min((r+1)*tile_ht, montage_ht))
+        for kb, bbox in enumerate(bboxes0):
             if scale != 1:
                 bbox_hit = scale_coordinates(bbox, 1/scale)
             else:
@@ -1508,20 +1525,24 @@ class MontageRenderer:
             if len(hit) == 0:
                 continue
             hits.append(hit)
-            bboxes.append(bbox)
             if driver == 'image':
+                bboxes.append(bbox)
                 xmin, ymin, xmax, ymax = bbox
-                keyword_replaces = [str(r+one_based), str(c+one_based), str(xmin), str(ymin), str(xmax), str(ymax)]
+                keyword_replaces = [str(rows[kb]+one_based), str(cols[kb]+one_based), str(xmin), str(ymin), str(xmax), str(ymax)]
                 fname = pattern
                 for kw, kwr in zip(keywords, keyword_replaces):
                     fname = fname.replace(kw, kwr)
                 filenames.append(prefix + fname)
+            else:
+                bboxes[mindx0[kb]] = True
         return bboxes, filenames, hits
 
 
     def divide_render_jobs(self, render_series, num_workers=1, **kwargs):
         max_tile_per_job = kwargs.get('max_tile_per_job', None)
         bboxes, filenames, hits = render_series
+        if isinstance(bboxes, np.ndarray) and (bboxes.dtype == bool):
+            bboxes = np.flatnonzero(bboxes)
         num_tiles = len(bboxes)
         num_tile_per_job = max(1, num_tiles // num_workers)
         if max_tile_per_job is not None:
@@ -1672,3 +1693,73 @@ class MontageRenderer:
         else:
             raise TypeError
         return M.render_series_to_file(bboxes, outnames, **kwargs)
+
+
+    def render_one_section(self, out_prefix, meta_name=None, **kwargs):
+        num_workers = kwargs.get('num_workers', 1)
+        tile_size = kwargs.pop('tile_size', [4096, 4096])
+        scale = kwargs.pop('scale', 1.0)
+        render_settings = kwargs.get('render_settings', {}).copy()
+        driver = kwargs.get('driver', 'image')
+        use_tensorstore = driver != 'image'
+        if meta_name is not None:
+            if storage.file_exists(meta_name):
+                return None
+            else:
+                checkpoint_file = os.path.splitext(meta_name)[0] + '.h5'
+        else:
+            checkpoint_file = None
+        if resolution is not None:
+            scale = self.resolution / resolution
+        else:
+            resolution = self.resolution / scale
+        render_settings['scale'] = scale
+        out_prefix = out_prefix.replace('\\', '/')
+        render_series = self.plan_render_series(tile_size, prefix=out_prefix,
+            scale=scale, checkpoint_file=checkpoint_file, **kwargs)
+        if use_tensorstore:
+            checkpoints = render_series[0]
+            out_spec = render_series[1].copy()
+            out_spec.update({'open': False, 'create': True, 'delete_existing': True})
+            writer = TensorStoreWriter.from_json_spec(out_spec)
+        bboxes_list, filenames_list, hits_list = self.divide_render_jobs(render_series,
+            num_workers=num_workers, max_tile_per_job=20)
+        if not use_tensorstore:
+            metadata = {}
+        target_func = partial(MontageRenderer.subprocess_render_montages, **render_settings)
+        args_list = []
+        num_chunks = 0
+        for bboxes, filenames, hits in zip(bboxes_list, filenames_list, hits_list):
+            init_args = self.init_args(selected=hits)
+            args_list.append((init_args, bboxes, filenames))
+        t_check = time.time()
+        res_cnt = 0
+        for res in submit_to_workers(target_func, args=args_list, num_workers=num_workers):
+            nmck, meta = res
+            num_chunks += nmck
+            res_cnt += 1
+            if use_tensorstore:
+                checkpoints[meta] = False
+                if (checkpoint_file is not None) and ((time.time() - t_check) > config.CHECKPOINT_TIME_INTERVAL) and (res_cnt>=num_workers):
+                    storage.makedirs(os.path.dirname(checkpoint_file))
+                    res_cnt = 0
+                    t_check = time.time()
+                    with H5File(checkpoint_file, 'w') as f:
+                        f.create_dataset('to_render', data=checkpoints, compression="gzip")
+            else:
+                metadata.update(meta)
+        if meta_name is not None:
+            if use_tensorstore:
+                if not np.any(checkpoints):
+                    with storage.File(meta_name, 'w') as f:
+                        json.dump({0: writer.spec}, f)
+                    storage.remove_file(checkpoint_file)
+            else:
+                if len(metadata) > 0:
+                    fnames = sorted(list(metadata.keys()))
+            bboxes = []
+            for fname in fnames:
+                bboxes.append(metadata[fname])
+                out_loader = StaticImageLoader(fnames, bboxes=bboxes, resolution=resolution)
+                out_loader.to_coordinate_file(meta_name)
+        return num_chunks

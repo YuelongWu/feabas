@@ -688,9 +688,12 @@ def render_whole_mesh(mesh, image_loader, prefix, **kwargs):
     else:
         target_func = partial(subprocess_render_mesh_tiles, image_loader, outnames=ts_specs, **kwargs)
     if (num_workers > 1) and (num_tiles > 1):
-        num_tile_per_job = max(1, num_tiles // num_workers)
+        num_tile_per_job = max(1, int((num_tiles // num_workers)**0.5))
         if max_tile_per_job is not None:
             num_tile_per_job = min(num_tile_per_job, max_tile_per_job)
+            max_tasks_per_child = max(1, round(max_tasks_per_child/num_tile_per_job))
+        else:
+            max_tasks_per_child = None
         N_jobs = max(1, round(num_tiles / num_tile_per_job))
         indices = np.round(np.linspace(0, num_tiles, num=N_jobs+1, endpoint=True))
         indices = np.unique(indices).astype(np.uint32)
@@ -721,7 +724,7 @@ def render_whole_mesh(mesh, image_loader, prefix, **kwargs):
             else:
                 bbox_out = bboxes_out_list[k]
                 args_list.append((msh_dict, bbox, bbox_out))
-        for res in submit_to_workers(target_func, args=args_list, num_workers=num_workers):
+        for res in submit_to_workers(target_func, args=args_list, num_workers=num_workers, max_tasks_per_child=max_tasks_per_child):
             if isinstance(rendered, dict):
                 rendered.update(res)
             else:
@@ -1156,7 +1159,7 @@ class VolumeRenderer:
                 }
                 sharding = np.any(np.array(read_chunk) != np.array(write_chunk))
                 if self._jpeg_compression:
-                    schema_extra["codec"].update({"encoding": "jpeg", "jpeg_quality": 90})
+                    schema_extra["codec"].update({"encoding": "jpeg", "jpeg_quality": 95})
                     if sharding:
                         schema_extra["codec"].update({"shard_data_encoding": "raw"})
                 else:
