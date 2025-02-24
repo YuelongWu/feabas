@@ -391,6 +391,7 @@ if __name__ == '__main__':
     render_dir = config.align_render_dir()
     tensorstore_render_dir = config.tensorstore_render_dir()
     ts_flag_dir = storage.join_paths(align_dir, 'render_flags')
+    rendered_mask_file = storage.join_paths(align_dir, 'mask.png')
     ts_spec_file = storage.join_paths(align_dir, 'ts_spec.json')
     ts_mip_flagdir = storage.join_paths(align_dir, 'mipmap_flags')
     thumbnail_configs = config.thumbnail_configs()
@@ -559,7 +560,8 @@ if __name__ == '__main__':
                                                                          logger=logger_info,
                                                                          flag_prefix=flag_prefix,
                                                                          full_chunk_only=(not full_run),
-                                                                         downsample_z=dsp, 
+                                                                         downsample_z=dsp,
+                                                                         mask_file=rendered_mask_file,
                                                                          **align_config)
             if err_raised:
                 logger.error('failed to generate mip{mip}, abort')

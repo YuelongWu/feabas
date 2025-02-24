@@ -521,6 +521,7 @@ def mip_one_level_tensorstore_3d(src_spec, mipup=1, **kwargs):
     kvstore_out = kwargs.get('kvstore_out', None)
     use_jpeg_compression = kwargs.get('use_jpeg_compression', True)
     pad_to_tile_size = kwargs.get('pad_to_tile_size', use_jpeg_compression)
+    mask_file = kwargs.get('mask_file', None)
     cache_capacity = kwargs.get('cache_capacity', None)
     logger_info = kwargs.get('logger', None)
     logger = logging.get_logger(logger_info)
@@ -600,6 +601,13 @@ def mip_one_level_tensorstore_3d(src_spec, mipup=1, **kwargs):
     out_writer = dal.TensorStoreWriter.from_json_spec(out_spec)
     out_spec = out_writer.spec
     Nx, Ny, Nz = out_writer.grid_shape
+    mask_flag = None
+    if (mask_file is not None) and storage.file_exists(mask_file):
+        mask = common.imread(mask_file)
+        mask = cv2.resize(mask, (Nx, Ny), interpolation=cv2.INTER_AREA)
+        mask = cv2.dilate(mask, np.ones((3,3), dtype=np.uint8)) > 0
+        id_x, id_y = out_writer.morton_xy_grid
+        mask_flag = mask[id_y, id_x]
     Z0, Z1 = out_writer.write_grids[2], out_writer.write_grids[5]
     if z_range is not None:
         z_ptp = Z1.max() - Z0.min()
@@ -650,6 +658,8 @@ def mip_one_level_tensorstore_3d(src_spec, mipup=1, **kwargs):
                 if storage.file_exists(checkpoint_file):
                     with H5File(checkpoint_file, 'r') as f:
                         flg = f[str(zz)][()]
+                elif mask_flag is not None:
+                    flg = mask_flag
                 else:
                     flg = np.ones(mid_x.size, dtype=bool)
                 filter_indx.append(flg)
