@@ -1699,6 +1699,7 @@ class MontageRenderer:
         num_workers = kwargs.get('num_workers', 1)
         tile_size = kwargs.pop('tile_size', [4096, 4096])
         scale = kwargs.pop('scale', 1.0)
+        resolution = kwargs.pop('resolution', None)
         render_settings = kwargs.get('render_settings', {}).copy()
         driver = kwargs.get('driver', 'image')
         use_tensorstore = driver != 'image'
