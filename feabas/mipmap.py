@@ -601,13 +601,6 @@ def mip_one_level_tensorstore_3d(src_spec, mipup=1, **kwargs):
     out_writer = dal.TensorStoreWriter.from_json_spec(out_spec)
     out_spec = out_writer.spec
     Nx, Ny, Nz = out_writer.grid_shape
-    mask_flag = None
-    if (mask_file is not None) and storage.file_exists(mask_file):
-        mask = common.imread(mask_file)
-        mask = cv2.resize(mask, (Nx, Ny), interpolation=cv2.INTER_AREA)
-        mask = cv2.dilate(mask, np.ones((5,5), dtype=np.uint8)) > 0
-        id_x, id_y = out_writer.morton_xy_grid
-        mask_flag = mask[id_y, id_x]
     Z0, Z1 = out_writer.write_grids[2], out_writer.write_grids[5]
     if z_range is not None:
         z_ptp = Z1.max() - Z0.min()
@@ -647,6 +640,12 @@ def mip_one_level_tensorstore_3d(src_spec, mipup=1, **kwargs):
     z_step = max(1, int(np.floor(chunk_per_job * num_workers / (Nx * Ny))))
     zind_batches = [zind_to_render[k:(k+z_step)] for k in range(0, len(zind_to_render), z_step)]
     mid_x, mid_y = out_writer.morton_xy_grid()
+    mask_flag = None
+    if (mask_file is not None) and storage.file_exists(mask_file):
+        mask = common.imread(mask_file)
+        mask = cv2.resize(mask, (Nx, Ny), interpolation=cv2.INTER_AREA)
+        mask = cv2.dilate(mask, np.ones((5,5), dtype=np.uint8)) > 0
+        mask_flag = mask[mid_y, mid_x]
     for id_zs in zind_batches:
         id_x0 = np.tile(mid_x, len(id_zs))
         id_y0 = np.tile(mid_y, len(id_zs))
@@ -658,10 +657,10 @@ def mip_one_level_tensorstore_3d(src_spec, mipup=1, **kwargs):
                 if storage.file_exists(checkpoint_file):
                     with H5File(checkpoint_file, 'r') as f:
                         flg = f[str(zz)][()]
-                elif mask_flag is not None:
-                    flg = mask_flag
                 else:
                     flg = np.ones(mid_x.size, dtype=bool)
+                if mask_flag is not None:
+                    flg = flg & mask_flag
                 filter_indx.append(flg)
             filter_indx = np.concatenate(filter_indx, axis=None)
             id_x0 = id_x0[filter_indx]
