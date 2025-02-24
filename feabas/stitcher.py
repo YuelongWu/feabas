@@ -1505,7 +1505,6 @@ class MontageRenderer:
                 raise ValueError(f'{driver} not supported')
             writer = TensorStoreWriter.from_json_spec(filenames)
             Nx, Ny = writer.grid_shape[:2]
-            filenames['chunk_num'] = Nx * Ny
             if (checkpoint_file is not None) and storage.file_exists(checkpoint_file):
                 with H5File(checkpoint_file, 'r') as f:
                     checkpoint_flag = f['to_render'][()]
