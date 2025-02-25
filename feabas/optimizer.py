@@ -390,6 +390,7 @@ class SLM:
         self._connected_subsystems = None
         self._stiffness_matrix = None
         self._crosslink_terms = None
+        self._virtual_expansion = None
         if instant_gc:
             gc.collect()
 
@@ -417,6 +418,7 @@ class SLM:
         self._connected_subsystems = None
         self._stiffness_matrix = None
         self._crosslink_terms = None
+        self._virtual_expansion = None
         if instant_gc:
             gc.collect()
 
@@ -424,6 +426,7 @@ class SLM:
     def clear_equation_terms(self, instant_gc=False):
         self._stiffness_matrix = None
         self._crosslink_terms = None
+        self._virtual_expansion = None
         if instant_gc:
             gc.collect()
 
@@ -743,6 +746,21 @@ class SLM:
         index_offsets_mapper = defaultdict(lambda:-1)
         index_offsets_mapper.update({uid: offset for uid, offset in zip(self.mesh_uids, index_offsets)})
         return index_offsets_mapper
+
+
+    def virtual_expansion_dislplacement(self, gear=const.MESH_GEAR_MOVING):
+        # displacement under uniform expansion. used to estimate virtual work.
+        if self._virtual_expansion is None:
+            vertices = []
+            for m in self.meshes:
+                if m.locked:
+                    continue
+                v = m.vertices_w_offset(gear=gear)
+                vertices.append(v)
+            vertices = np.concatenate(vertices, axis=0)
+            vertices = vertices - vertices.mean(axis=0, keepdims=True)
+            self._virtual_expansion = vertices.ravel()
+        return self._virtual_expansion
 
 
   ## ------------------------------- optimize ------------------------------ ##
@@ -1070,14 +1088,20 @@ class SLM:
         remove_extra_dof = kwargs.get('remove_extra_dof', False)
         remove_material_dof = kwargs.get('remove_material_dof', None)
         check_flip = not cont_on_flip
-        stiff_m, stress_v = self.stiffness_matrix(gear=(shape_gear,start_gear),
-            inner_cache=inner_cache, check_flip=check_flip,
-            continue_on_flip=cont_on_flip)
         lock_flags = self.lock_flags
         if np.all(lock_flags):
             return 0, 0 # all locked, nothing to optimize
+        stiff_m, stress_v = self.stiffness_matrix(gear=(shape_gear,start_gear),
+            inner_cache=inner_cache, check_flip=check_flip,
+            continue_on_flip=cont_on_flip)
         if stiff_m is None:
             return None, None # flipped triangles
+        Cs_lft, Cs_rht = self.crosslink_terms(start_gear=start_gear,
+            target_gear=targt_gear, batch_num_matches=batch_num_matches)
+        stiffness_lambda, crosslink_lambda = self.relative_lambda_virtual_potential(stiffness_lambda, crosslink_lambda)
+        A = stiffness_lambda * stiff_m + crosslink_lambda * Cs_lft
+        A = 0.5*(A + A.transpose())
+        b = crosslink_lambda * Cs_rht - stiffness_lambda * stress_v
         if isinstance(callback_settings, bool):
             if callback_settings:
                 callback_settings = {'chances':5, 'eval_step':10}
@@ -1145,12 +1169,6 @@ class SLM:
                         s[:3] = False
                     edc.append(s)
                 edc = np.concatenate(edc, axis=None)
-        Cs_lft, Cs_rht = self.crosslink_terms(start_gear=start_gear,
-            target_gear=targt_gear, batch_num_matches=batch_num_matches)
-        stiffness_lambda, crosslink_lambda = self.relative_lambda(stiffness_lambda, crosslink_lambda)
-        A = stiffness_lambda * stiff_m + crosslink_lambda * Cs_lft
-        A = 0.5*(A + A.transpose())
-        b = crosslink_lambda * Cs_rht - stiffness_lambda * stress_v
         if groupings is not None:
             group_u, indx, group_nm, g_cnt = np.unique(groupings, return_index=True, return_inverse=True, return_counts=True)
             if group_u.size < groupings.size:
@@ -1337,7 +1355,8 @@ class SLM:
             return self.optimize_Newton_Raphson(**kwargs)
 
 
-    def relative_lambda(self, stiffness_lambda, crosslink_lambda):
+    def relative_lambda_frobenius(self, stiffness_lambda, crosslink_lambda):
+        # adjust normal based on the Frobenius norms of the matrices
         if (stiffness_lambda < 0) or (crosslink_lambda < 0):
             if (self._stiffness_matrix is None) or (self._crosslink_terms is None):
                 raise RuntimeError('System equation not initialized')
@@ -1347,6 +1366,25 @@ class SLM:
             nm_stiff = sparse.linalg.norm(stiff_m)
             nm_cl = sparse.linalg.norm(Cs_lft)
             stiffness_lambda = abs(ratio * nm_cl / nm_stiff)
+            crosslink_lambda = 1.0
+        return stiffness_lambda, crosslink_lambda
+
+
+    def relative_lambda_virtual_potential(self, stiffness_lambda, crosslink_lambda):
+        # adjust normal based on the potential energy changes
+        if (stiffness_lambda < 0) or (crosslink_lambda < 0): 
+            if (self._stiffness_matrix is None) or (self._crosslink_terms is None):
+                raise RuntimeError('System equation not initialized')
+            reference_ratio = 0.25
+            ratio = abs(stiffness_lambda / crosslink_lambda)
+            virtual_movement = self.virtual_expansion_dislplacement()
+            cross_movement = -virtual_movement # move everything to one point, so crosslink energy is 0
+            elast_movement = reference_ratio * virtual_movement / ratio
+            stiff_m, _ = self._stiffness_matrix
+            Cs_lft, Cs_rht = self._crosslink_terms
+            E_cross = 2 * Cs_rht.dot(cross_movement) - Cs_lft.dot(cross_movement).dot(cross_movement)
+            E_elastic = stiff_m.dot(elast_movement)
+            stiffness_lambda = E_cross / E_elastic
             crosslink_lambda = 1.0
         return stiffness_lambda, crosslink_lambda
 
