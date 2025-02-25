@@ -670,7 +670,7 @@ class SLM:
                 STRESS_v.append(stress * m.soft_factor)
                 v = m.vertices_w_offset(gear=gear[0])
                 v = v - v.mean(axis=0, keepdims=True)
-                v = v * 0.25
+                v = v.ravel() * 0.25
                 self._elastic_energy += (stiff * m.soft_factor).dot(v).dot(v)
             stiffness_matrix = sparse.block_diag(STIFF_M, format='csr')
             stress_vector = np.concatenate(STRESS_v, axis=None)
