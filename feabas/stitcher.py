@@ -1318,7 +1318,7 @@ class MontageRenderer:
     def render_series_to_file(self, bboxes, filenames, **kwargs):
         if isinstance(filenames, (dict, ts.TensorStore, TensorStoreWriter)):
             use_tensorstore = True
-            rendered = []
+            rendered = bboxes
         else:
             use_tensorstore = False
             rendered = {}
