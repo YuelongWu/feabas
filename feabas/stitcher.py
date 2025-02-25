@@ -1720,7 +1720,10 @@ class MontageRenderer:
         if use_tensorstore:
             checkpoints = render_series[0]
             out_spec = render_series[1].copy()
-            out_spec.update({'open': False, 'create': True, 'delete_existing': True})
+            if (checkpoint_file is not None) and storage.file(checkpoint_file):
+                out_spec.update({'open': True, 'create': True, 'delete_existing': False})
+            else:
+                out_spec.update({'open': False, 'create': True, 'delete_existing': True})
             writer = TensorStoreWriter.from_json_spec(out_spec)
         bboxes_list, filenames_list, hits_list = self.divide_render_jobs(render_series,
             num_workers=num_workers, max_tile_per_job=20)
@@ -1757,9 +1760,9 @@ class MontageRenderer:
             else:
                 if len(metadata) > 0:
                     fnames = sorted(list(metadata.keys()))
-            bboxes = []
-            for fname in fnames:
-                bboxes.append(metadata[fname])
-                out_loader = StaticImageLoader(fnames, bboxes=bboxes, resolution=resolution)
-                out_loader.to_coordinate_file(meta_name)
+                    bboxes = []
+                    for fname in fnames:
+                        bboxes.append(metadata[fname])
+                    out_loader = StaticImageLoader(fnames, bboxes=bboxes, resolution=resolution)
+                    out_loader.to_coordinate_file(meta_name)
         return num_chunks
