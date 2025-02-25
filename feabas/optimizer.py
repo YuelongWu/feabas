@@ -97,12 +97,14 @@ class Link:
     def equation_contrib(self, index_offsets, **kwargs):
         """computing the contribution needed to add to the FEM assembled matrix."""
         if (not self.relevant) or (self.num_matches == 0) or ((index_offsets[0] < 0) and (index_offsets[1] < 0)):
-            return None, None, None, None
+            return None, None, None, None, 0
         start_gear = kwargs.get('start_gear', const.MESH_GEAR_MOVING)
         targt_gear = kwargs.get('target_gear', const.MESH_GEAR_MOVING)
         num_matches = self.num_matches
         gears = [targt_gear if m.locked else start_gear for m in self.meshes]
         m_rht = self.dxy(gear=gears, use_mask=True)
+        wt  = self.weight(use_mask=True)
+        energy = np.sum(np.sum(m_rht ** 2, axis=-1) * wt)
         L_b = []  # barycentric coordinate matrices
         L_indx = [] # indices in the assembled system matrix
         if not self.meshes[0].locked:
@@ -123,7 +125,7 @@ class Link:
         # left-hand side:
         indx0_lft = np.concatenate((indx0.ravel(), indx0.ravel()+1))
         indx1_lft = np.concatenate((indx1.ravel(), indx1.ravel()+1))
-        wt  = self.weight(use_mask=True)
+        
         if np.any(wt != 1):
             C = wt.reshape(-1,1,1) * C
             rht_x = wt.reshape(-1,1) * rht_x
@@ -132,7 +134,7 @@ class Link:
         # right-hand side
         indx_rht = np.concatenate((indx.ravel(), indx.ravel()+1))
         V_rht = np.concatenate((rht_x.ravel(), rht_y.ravel()))
-        return V_lft, (indx0_lft, indx1_lft), V_rht, indx_rht
+        return V_lft, (indx0_lft, indx1_lft), V_rht, indx_rht, energy
 
 
     def adjust_weight_from_residue(self, gear=(const.MESH_GEAR_MOVING, const.MESH_GEAR_MOVING)):
@@ -390,7 +392,6 @@ class SLM:
         self._connected_subsystems = None
         self._stiffness_matrix = None
         self._crosslink_terms = None
-        self._virtual_expansion = None
         if instant_gc:
             gc.collect()
 
@@ -418,7 +419,6 @@ class SLM:
         self._connected_subsystems = None
         self._stiffness_matrix = None
         self._crosslink_terms = None
-        self._virtual_expansion = None
         if instant_gc:
             gc.collect()
 
@@ -426,7 +426,6 @@ class SLM:
     def clear_equation_terms(self, instant_gc=False):
         self._stiffness_matrix = None
         self._crosslink_terms = None
-        self._virtual_expansion = None
         if instant_gc:
             gc.collect()
 
@@ -660,6 +659,7 @@ class SLM:
         if (self._stiffness_matrix is None) or force_update:
             STIFF_M = []
             STRESS_v = []
+            self._elastic_energy = 0
             for m in self.meshes:
                 if m.locked:
                     continue
@@ -668,6 +668,10 @@ class SLM:
                     return None, None
                 STIFF_M.append(stiff * m.soft_factor)
                 STRESS_v.append(stress * m.soft_factor)
+                v = m.vertices_w_offset(gear=gear[0])
+                v = v - v.mean(axis=0, keepdims=True)
+                v = v * 0.25
+                self._elastic_energy += (stiff * m.soft_factor).dot(v).dot(v)
             stiffness_matrix = sparse.block_diag(STIFF_M, format='csr')
             stress_vector = np.concatenate(STRESS_v, axis=None)
             if to_cache:
@@ -703,14 +707,16 @@ class SLM:
             V_lft_a = []
             I_lft0_a = []
             I_lft1_a = []
+            self._crosslink_energy = 0
             index_offsets_mapper = self.index_offsets
             num_match = 0
             for lnk in self.links:
                 indx_offst = [index_offsets_mapper[uid] for uid in lnk.uids]
-                v_lft, indices_lft, v_rht, indx_rht = lnk.equation_contrib(indx_offst,
+                v_lft, indices_lft, v_rht, indx_rht, energy = lnk.equation_contrib(indx_offst,
                     start_gear=start_gear, target_gear=targt_gear)
                 if v_lft is None:
                     continue
+                self._crosslink_energy += energy
                 V_lft_a.append(v_lft)
                 I_lft0_a.append(indices_lft[0])
                 I_lft1_a.append(indices_lft[1])
@@ -746,21 +752,6 @@ class SLM:
         index_offsets_mapper = defaultdict(lambda:-1)
         index_offsets_mapper.update({uid: offset for uid, offset in zip(self.mesh_uids, index_offsets)})
         return index_offsets_mapper
-
-
-    def virtual_expansion_dislplacement(self, gear=const.MESH_GEAR_MOVING):
-        # displacement under uniform expansion. used to estimate virtual work.
-        if self._virtual_expansion is None:
-            vertices = []
-            for m in self.meshes:
-                if m.locked:
-                    continue
-                v = m.vertices_w_offset(gear=gear)
-                vertices.append(v)
-            vertices = np.concatenate(vertices, axis=0)
-            vertices = vertices - vertices.mean(axis=0, keepdims=True)
-            self._virtual_expansion = vertices.ravel()
-        return self._virtual_expansion
 
 
   ## ------------------------------- optimize ------------------------------ ##
@@ -1375,16 +1366,8 @@ class SLM:
         if (stiffness_lambda < 0) or (crosslink_lambda < 0): 
             if (self._stiffness_matrix is None) or (self._crosslink_terms is None):
                 raise RuntimeError('System equation not initialized')
-            reference_ratio = 0.25
             ratio = abs(stiffness_lambda / crosslink_lambda)
-            virtual_movement = self.virtual_expansion_dislplacement()
-            cross_movement = -virtual_movement # move everything to one point, so crosslink energy is 0
-            elast_movement = reference_ratio * virtual_movement / ratio
-            stiff_m, _ = self._stiffness_matrix
-            Cs_lft, Cs_rht = self._crosslink_terms
-            E_cross = 2 * Cs_rht.dot(cross_movement) - Cs_lft.dot(cross_movement).dot(cross_movement)
-            E_elastic = stiff_m.dot(elast_movement).dot(elast_movement)
-            stiffness_lambda = E_cross / E_elastic
+            stiffness_lambda = self._crosslink_energy * ratio / self._elastic_energy
             crosslink_lambda = 1.0
         return stiffness_lambda, crosslink_lambda
 
@@ -1750,9 +1733,9 @@ def solve(A, b, solver, x0=None, tol=1e-7, atol=None, maxiter=None, M=None, **kw
         rtol0 = atol / np.linalg.norm(b)
         tol = max(tol, rtol0)
     if scipy.__version__ >= '1.12.0':
-        kwargs_solver['rtol': tol]
+        kwargs_solver['rtol'] = tol
     else:
-        kwargs_solver['tol': tol]
+        kwargs_solver['tol'] = tol
     try:
         if solver == 'bicgstab':
             x, _ = sparse.linalg.bicgstab(A, b, **kwargs_solver)
