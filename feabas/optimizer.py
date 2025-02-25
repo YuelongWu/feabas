@@ -1383,7 +1383,7 @@ class SLM:
             stiff_m, _ = self._stiffness_matrix
             Cs_lft, Cs_rht = self._crosslink_terms
             E_cross = 2 * Cs_rht.dot(cross_movement) - Cs_lft.dot(cross_movement).dot(cross_movement)
-            E_elastic = stiff_m.dot(elast_movement)
+            E_elastic = stiff_m.dot(elast_movement).dot(elast_movement)
             stiffness_lambda = E_cross / E_elastic
             crosslink_lambda = 1.0
         return stiffness_lambda, crosslink_lambda
