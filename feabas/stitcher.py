@@ -1720,7 +1720,7 @@ class MontageRenderer:
         if use_tensorstore:
             checkpoints = render_series[0]
             out_spec = render_series[1].copy()
-            if (checkpoint_file is not None) and storage.file(checkpoint_file):
+            if (checkpoint_file is not None) and storage.file_exists(checkpoint_file):
                 out_spec.update({'open': True, 'create': True, 'delete_existing': False})
             else:
                 out_spec.update({'open': False, 'create': True, 'delete_existing': True})
