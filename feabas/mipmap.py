@@ -564,7 +564,7 @@ def mip_one_level_tensorstore_3d(src_spec, mipup=1, **kwargs):
     if (mask_file is not None) and storage.file_exists(mask_file):
         mask = common.imread(mask_file)
         mask = cv2.resize(mask, (Nx, Ny), interpolation=cv2.INTER_AREA)
-        mask = cv2.dilate(mask, np.ones((5,5), dtype=np.uint8)) > 0
+        mask = cv2.dilate(mask, np.ones((3,3), dtype=np.uint8)) > 0
         mask_flag = mask[mid_y, mid_x]
     for id_zs in zind_batches:
         id_x0 = np.tile(mid_x, len(id_zs))

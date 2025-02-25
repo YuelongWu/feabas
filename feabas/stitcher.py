@@ -1701,11 +1701,11 @@ class MontageRenderer:
         resolution = kwargs.pop('resolution', None)
         render_settings = kwargs.get('render_settings', {}).copy()
         driver = kwargs.get('driver', 'image')
+        mask_out = kwargs.get('mask_out', None)
         use_tensorstore = driver != 'image'
-        rendered_mask = None
         if meta_name is not None:
             if storage.file_exists(meta_name):
-                return 0, rendered_mask
+                return 0
             else:
                 checkpoint_file = os.path.splitext(meta_name)[0] + '.h5'
         else:
@@ -1728,11 +1728,12 @@ class MontageRenderer:
                 out_spec.update({'open': False, 'create': True, 'delete_existing': True})
                 fresh_start = True
             writer = TensorStoreWriter.from_json_spec(out_spec)
-            if fresh_start:
+            if (mask_out is not None) and fresh_start:
                 mask_shape = writer.grid_shape[:2]
                 rendered_mask = np.zeros(mask_shape[::-1], dtype=np.uint8)
                 id_x, id_y = writer.morton_xy_grid()
                 rendered_mask[id_y, id_x] = checkpoints * 255
+                common.imwrite(mask_out, rendered_mask)
         bboxes_list, filenames_list, hits_list = self.divide_render_jobs(render_series,
             num_workers=num_workers, max_tile_per_job=20)
         if not use_tensorstore:
@@ -1773,4 +1774,4 @@ class MontageRenderer:
                         bboxes.append(metadata[fname])
                     out_loader = StaticImageLoader(fnames, bboxes=bboxes, resolution=resolution)
                     out_loader.to_coordinate_file(meta_name)
-        return num_chunks, rendered_mask
+        return num_chunks

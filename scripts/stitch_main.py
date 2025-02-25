@@ -152,11 +152,8 @@ def render_one_section(tform_name, out_prefix, meta_name=None, **kwargs):
         loader_settings = loader_settings.copy()
         loader_settings['cache_size'] = loader_settings['cache_size'] // num_workers
     renderer = MontageRenderer.from_h5(tform_name, loader_settings=loader_settings)
-    num_chunks, rendered_mask = renderer.render_one_section(out_prefix, meta_name=meta_name, **kwargs)
-    if (mask_dir is not None) and (rendered_mask is not None):
-        storage.makedirs(mask_dir)
-        outname = storage.join_paths(mask_dir, os.path.basename(tform_name).replace('.h5','.png'))
-        common.imwrite(outname, rendered_mask)
+    mask_out = storage.join_paths(mask_dir, os.path.basename(tform_name).replace('.h5','.png'))
+    num_chunks = renderer.render_one_section(out_prefix, meta_name=meta_name, mask_out=mask_out, **kwargs)
     return num_chunks
 
 
