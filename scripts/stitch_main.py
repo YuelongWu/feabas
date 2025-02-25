@@ -5,7 +5,7 @@ import time
 
 import feabas
 from feabas.concurrent import submit_to_workers
-from feabas import config, logging, storage
+from feabas import config, logging, storage,common
 
 H5File = storage.h5file_class()
 
@@ -145,13 +145,18 @@ def optmization_main(match_list, out_dir, **kwargs):
 
 
 def render_one_section(tform_name, out_prefix, meta_name=None, **kwargs):
+    mask_dir = kwargs.pop('mask_dir', None)
     num_workers = kwargs.get('num_workers', 1)
     loader_settings = kwargs.get('loader_settings', {})
     if loader_settings.get('cache_size', None) is not None:
         loader_settings = loader_settings.copy()
         loader_settings['cache_size'] = loader_settings['cache_size'] // num_workers
     renderer = MontageRenderer.from_h5(tform_name, loader_settings=loader_settings)
-    num_chunks = renderer.render_one_section(out_prefix, meta_name=meta_name, **kwargs)
+    num_chunks, rendered_mask = renderer.render_one_section(out_prefix, meta_name=meta_name, **kwargs)
+    if (mask_dir is not None) and (rendered_mask is not None):
+        storage.makedirs(mask_dir)
+        outname = storage.join_paths(mask_dir, os.path.basename(tform_name).replace('.h5','.png'))
+        common.imwrite(outname, rendered_mask)
     return num_chunks
 
 
@@ -236,6 +241,7 @@ if __name__ == '__main__':
     match_dir = storage.join_paths(stitch_dir, 'match_h5')
     mesh_dir = storage.join_paths(stitch_dir, 'tform')
     render_meta_dir = storage.join_paths(stitch_dir, 'ts_specs')
+    render_mask_dir = storage.join_paths(render_meta_dir, 'masks')
     stt_idx, stp_idx, step = args.start, args.stop, args.step
     if stp_idx == 0:
         stp_idx = None
@@ -249,7 +255,7 @@ if __name__ == '__main__':
         if args.reverse:
             tform_list = tform_list[::-1]
         stitch_configs.setdefault('meta_dir', render_meta_dir)
-        render_main(tform_list, image_outdir, **stitch_configs)
+        render_main(tform_list, image_outdir, mask_dir=render_mask_dir, **stitch_configs)
     elif mode == 'optimization':
         match_list = sorted(storage.list_folder_content(storage.join_paths(match_dir, '*.h5')))
         if len(args.filter) > 0:

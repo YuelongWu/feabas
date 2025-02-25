@@ -33,6 +33,7 @@ def generate_stitched_mipmaps(img_dir, max_mip, **kwargs):
 def generate_stitched_mipmaps_tensorstore(meta_dir, tgt_mips, **kwargs):
     num_workers = kwargs.pop('num_workers', 1)
     parallel_within_section = kwargs.pop('parallel_within_section', True)
+    mask_dir = kwargs.pop('mask_dir', None)
     logger_info = kwargs.get('logger', None)
     logger = logging.get_logger(logger_info)
     meta_list = sorted(storage.list_folder_content(storage.join_paths(meta_dir,'*.json')))
@@ -40,11 +41,13 @@ def generate_stitched_mipmaps_tensorstore(meta_dir, tgt_mips, **kwargs):
     update_status = {}
     if parallel_within_section or num_workers == 1:
         for metafile in meta_list:
-            s = mipmap.generate_tensorstore_scales(metafile, tgt_mips, num_workers=num_workers, **kwargs)
+            mask_file = storage.join_paths(mask_dir, os.path.basename(metafile).replace('.json','.png'))
+            s = mipmap.generate_tensorstore_scales(metafile, tgt_mips, num_workers=num_workers, mask_file=mask_file, **kwargs)
             update_status.update(s)
     else:
         target_func = partial(mipmap.generate_tensorstore_scales, mips=tgt_mips, **kwargs)
-        for res in submit_to_workers(target_func, args=[(s,) for s in meta_list], num_workers=num_workers):
+        kwarg_list = [{'mask_file': storage.join_paths(mask_dir, os.path.basename(s).replace('.json','.png'))} for s in meta_list]
+        for res in submit_to_workers(target_func, args=[(s,) for s in meta_list], kwargs=kwarg_list, num_workers=num_workers):
             update_status.update(res)
     logger.info('mipmapping generated.')
     return update_status
@@ -450,6 +453,7 @@ if __name__ == '__main__':
         else:
             stitch_dir = storage.join_paths(root_dir, 'stitch')
             src_dir = storage.join_paths(stitch_dir, 'ts_specs')
+            render_mask_dir = storage.join_paths(src_dir, 'masks')
             tgt_mips = [align_mip]
             if thumbnail_configs.get('thumbnail_highpass', True):
                 highpass_inter_mip_lvl = thumbnail_configs.pop('highpass_inter_mip_lvl', max(0, thumbnail_mip_lvl-2))
@@ -467,7 +471,7 @@ if __name__ == '__main__':
                 highpass = False
                 tgt_mips.append(thumbnail_mip_lvl)
                 downsample = 1
-            slist = generate_stitched_mipmaps_tensorstore(src_dir, tgt_mips, **thumbnail_configs)
+            slist = generate_stitched_mipmaps_tensorstore(src_dir, tgt_mips, mask_dir=render_mask_dir, **thumbnail_configs)
             thumbnail_configs.setdefault('highpass', highpass)
             thumbnail_configs.setdefault('mip', thumbnail_mip_lvl)
             slist = generate_thumbnails_tensorstore(src_dir, img_dir, seclist=slist, **thumbnail_configs)

@@ -217,7 +217,7 @@ def generate_target_tensorstore_scale(metafile, mip=None, **kwargs):
     if src_mip == mip:
         return None
     src_spec = mipmaps[src_mip]
-    err_raised, out_spec, _ = mip_one_level_tensorstore_3d(src_spec, mipup=mip-src_mip)
+    err_raised, out_spec, _ = mip_one_level_tensorstore_3d(src_spec, mipup=mip-src_mip, **kwargs)
     mipmaps.update({mip: out_spec})
     if (not err_raised) and write_to_file:
         with storage.File(metafile, 'w') as f:
