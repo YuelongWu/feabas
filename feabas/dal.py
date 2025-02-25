@@ -1129,10 +1129,8 @@ class TensorStoreLoader(AbstractImageLoader):
         elif kwargs.get('cache_size', None) is not None:
             # assume 4k tiles
             total_bytes_limit = round(kwargs['cache_size'] * 4096 * 4096)
-        elif ('cache_capacity' not in kwargs) and ('cache_size' not in kwargs):
-            total_bytes_limit = -1
         else:
-            total_bytes_limit = np.inf
+            total_bytes_limit = -1
         if total_bytes_limit >= 0:
             cntx = {'cache_pool': {'total_bytes_limit': total_bytes_limit}}
             js_spec = js_spec.copy()

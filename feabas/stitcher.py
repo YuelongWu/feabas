@@ -1730,7 +1730,7 @@ class MontageRenderer:
             writer = TensorStoreWriter.from_json_spec(out_spec)
             if fresh_start:
                 mask_shape = writer.grid_shape[:2]
-                rendered_mask = np.zeros(mask_shape, dtype=np.uint8)
+                rendered_mask = np.zeros(mask_shape[::-1], dtype=np.uint8)
                 id_x, id_y = writer.morton_xy_grid()
                 rendered_mask[id_y, id_x] = checkpoints * 255
         bboxes_list, filenames_list, hits_list = self.divide_render_jobs(render_series,
