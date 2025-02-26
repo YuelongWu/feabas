@@ -1505,11 +1505,12 @@ class MontageRenderer:
                     checkpoint_flag = f['to_render'][()]
                 filenames.update({'open': True, 'create': True, 'delete_existing': False})
             else:
+                checkpoint_flag = True
                 filenames.update({'open': False, 'create': True, 'delete_existing': True})
-                checkpoint_flag = np.ones(Nx*Ny, dtype=bool)
             writer = TensorStoreWriter.from_json_spec(filenames)
             filenames.update({'open': True, 'create': True, 'delete_existing': False})
             Nx, Ny = writer.grid_shape[:2]
+            checkpoint_flag = checkpoint_file & np.ones(Nx*Ny, dtype=bool)
             id_x, id_y = writer.morton_xy_grid(indx=checkpoint_flag)
             bboxes0 = writer.grid_indices_to_bboxes(id_x, id_y)
             mindx0 = np.flatnonzero(checkpoint_flag)
