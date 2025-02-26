@@ -1497,19 +1497,19 @@ class MontageRenderer:
                     "driver": "neuroglancer_precomputed",
                     "kvstore": prefix,
                     "schema": schema,
-                    "open": True,
-                    "create": True,
-                    "delete_existing": False
                 }
             else:
                 raise ValueError(f'{driver} not supported')
-            writer = TensorStoreWriter.from_json_spec(filenames)
-            Nx, Ny = writer.grid_shape[:2]
             if (checkpoint_file is not None) and storage.file_exists(checkpoint_file):
                 with H5File(checkpoint_file, 'r') as f:
                     checkpoint_flag = f['to_render'][()]
+                filenames.update({'open': True, 'create': True, 'delete_existing': False})
             else:
+                filenames.update({'open': False, 'create': True, 'delete_existing': True})
                 checkpoint_flag = np.ones(Nx*Ny, dtype=bool)
+            writer = TensorStoreWriter.from_json_spec(filenames)
+            filenames.update({'open': True, 'create': True, 'delete_existing': False})
+            Nx, Ny = writer.grid_shape[:2]
             id_x, id_y = writer.morton_xy_grid(indx=checkpoint_flag)
             bboxes0 = writer.grid_indices_to_bboxes(id_x, id_y)
             mindx0 = np.flatnonzero(checkpoint_flag)
@@ -1722,10 +1722,8 @@ class MontageRenderer:
             checkpoints = render_series[0]
             out_spec = render_series[1].copy()
             if (checkpoint_file is not None) and storage.file_exists(checkpoint_file):
-                out_spec.update({'open': True, 'create': True, 'delete_existing': False})
                 fresh_start = False
             else:
-                out_spec.update({'open': False, 'create': True, 'delete_existing': True})
                 fresh_start = True
             writer = TensorStoreWriter.from_json_spec(out_spec)
             if (mask_out is not None) and fresh_start:
