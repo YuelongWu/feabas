@@ -100,11 +100,16 @@ class Link:
             return None, None, None, None, 0
         start_gear = kwargs.get('start_gear', const.MESH_GEAR_MOVING)
         targt_gear = kwargs.get('target_gear', const.MESH_GEAR_MOVING)
+        shape_gear = kwargs.get('shape_gear', const.MESH_GEAR_FIXED)
         num_matches = self.num_matches
         gears = [targt_gear if m.locked else start_gear for m in self.meshes]
         m_rht = self.dxy(gear=gears, use_mask=True)
         wt  = self.weight(use_mask=True)
-        energy = np.sum(np.sum(m_rht ** 2, axis=-1) * wt)
+        if shape_gear != start_gear:
+            dxy_energy = self.dxy(gear=[targt_gear if m.locked else shape_gear for m in self.meshes], use_mask=True)
+        else:
+            dxy_energy = m_rht
+        energy = np.sum(np.sum(dxy_energy ** 2, axis=-1) * wt)
         L_b = []  # barycentric coordinate matrices
         L_indx = [] # indices in the assembled system matrix
         if not self.meshes[0].locked:
@@ -125,7 +130,6 @@ class Link:
         # left-hand side:
         indx0_lft = np.concatenate((indx0.ravel(), indx0.ravel()+1))
         indx1_lft = np.concatenate((indx1.ravel(), indx1.ravel()+1))
-        
         if np.any(wt != 1):
             C = wt.reshape(-1,1,1) * C
             rht_x = wt.reshape(-1,1) * rht_x
@@ -696,7 +700,7 @@ class SLM:
         if (self._crosslink_terms is None) or force_update:
             start_gear = kwargs.get('start_gear', const.MESH_GEAR_MOVING)
             targt_gear = kwargs.get('target_gear', const.MESH_GEAR_MOVING)
-            batch_num_matches = kwargs.get('batch_num_matches', None)
+            batch_num_matches = kwargs.pop('batch_num_matches', None)
             if batch_num_matches is None:
                 batch_num_matches = self.num_matches / 10
             if batch_num_matches < 1:
@@ -712,8 +716,7 @@ class SLM:
             num_match = 0
             for lnk in self.links:
                 indx_offst = [index_offsets_mapper[uid] for uid in lnk.uids]
-                v_lft, indices_lft, v_rht, indx_rht, energy = lnk.equation_contrib(indx_offst,
-                    start_gear=start_gear, target_gear=targt_gear)
+                v_lft, indices_lft, v_rht, indx_rht, energy = lnk.equation_contrib(indx_offst, **kwargs)
                 if v_lft is None:
                     continue
                 self._crosslink_energy += energy
