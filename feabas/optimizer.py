@@ -1665,7 +1665,8 @@ class SLM_Callback:
     def __init__(self, A, b, timeout=None, early_stop_thresh=None, chances=5, eval_step=10):
         self._A = A
         self._b = b
-        self._timout = timeout
+        self._timeout = timeout
+        self._time_elapse = 0
         self._early_stop_thresh = early_stop_thresh
         self._eval_step = eval_step
         self._t0 = time.time()
@@ -1676,18 +1677,21 @@ class SLM_Callback:
         self._count = 0
         self._chances = chances
         self._exit_count = 0
+        self._exit_code = 0
 
 
     def callback(self, x):
-        if (self._count % self._eval_step == 0) or (self._count < min(self._eval_step, 5)):
+        self._count += 1
+        self._time_elapse = time.time() - self._t0
+        timed_out = (self._time_elapse is not None) and (self._time_elapse > self._timeout)
+        if (self._count % self._eval_step == 0) or (self._count < min(self._eval_step, 5)) or timed_out:
             cost = np.linalg.norm(self._A.dot(x) - self._b)
             if cost < self.min_cost:
                 self.min_cost = cost
                 self.solution = x.copy()
-            if self._timout is not None:
-                t = time.time() - self._t0
-                if t > self._timout:
-                    raise EarlyStopFlag
+            if timed_out:
+                self._exit_code = 1
+                raise EarlyStopFlag
             if (self._chances is not None) and (self._count >= self._eval_step):
                 if cost > self._last_cost:
                     self._exit_count += 1
@@ -1700,6 +1704,7 @@ class SLM_Callback:
                 else:
                     self._exit_count = 0
                 if self._exit_count > self._chances:
+                    self._exit_code = 2
                     raise EarlyStopFlag
                 self._last_x = x.copy()
                 self._last_cost = cost
@@ -1729,28 +1734,48 @@ def solve(A, b, solver, x0=None, tol=1e-7, atol=None, maxiter=None, M=None, **kw
             b = b[edc]
             if M is not None:
                 M = sparse.csr_matrix(M)[edc][:, edc]
-    cb = SLM_Callback(A, b, timeout=timeout, early_stop_thresh=early_stop_thresh, chances=chances, eval_step=eval_step)
-    callback = cb.callback
-    kwargs_solver = {'x0': x0, 'maxiter': maxiter, 'M': M, 'callback': callback}
+    kwargs_solver =  {'x0': x0, 'M': M}
     if atol is not None:
         rtol0 = atol / np.linalg.norm(b)
         tol = max(tol, rtol0)
-    if scipy.__version__ >= '1.12.0':
-        kwargs_solver['rtol'] = tol
-    else:
-        kwargs_solver['tol'] = tol
-    try:
-        if solver == 'bicgstab':
-            x, _ = sparse.linalg.bicgstab(A, b, **kwargs_solver)
-        elif solver == 'minres':
-            x, _ = sparse.linalg.minres(A, b, **kwargs_solver)
+    atol = tol * np.linalg.norm(b)
+    timeout_t, maxiter_t = timeout, maxiter
+    while True:
+        # not sure how minres compute rtol... so need a loop to ensure target is met.
+        cb = SLM_Callback(A, b, timeout=timeout_t, early_stop_thresh=early_stop_thresh, chances=chances, eval_step=eval_step)
+        callback = cb.callback
+        kwargs_solver.update({'maxiter': maxiter_t, 'callback': callback})
+        if scipy.__version__ >= '1.12.0':
+            kwargs_solver['rtol'] = tol
         else:
-            raise ValueError
-        cost0 = np.linalg.norm(A.dot(x) - b)
-        if cost0 > cb.min_cost:
+            kwargs_solver['tol'] = tol
+        try:
+            if solver == 'bicgstab':
+                x, _ = sparse.linalg.bicgstab(A, b, **kwargs_solver)
+            elif solver == 'minres':
+                x, _ = sparse.linalg.minres(A, b, **kwargs_solver)
+            else:
+                raise ValueError
+            cost0 = np.linalg.norm(A.dot(x) - b)
+            if cost0 > cb.min_cost:
+                x = cb.solution
+            cost = min(cost0, cb.min_cost)
+        except EarlyStopFlag:
             x = cb.solution
-    except EarlyStopFlag:
-        x = cb.solution
+            cost = cb.min_cost
+        finally:
+            if cost <= atol:
+                break
+            if cb._exit_code != 0:
+                break
+            if timeout_t is not None:
+                timeout_t -= cb._time_elapse
+                if timeout_t <= 0:
+                    break
+            if maxiter_t is not None:
+                maxiter_t -= cb._count
+                if maxiter_t <= 0:
+                    break
     if edc is not None:
         x0 = x
         x = np.zeros_like(b, shape=edc.shape)
