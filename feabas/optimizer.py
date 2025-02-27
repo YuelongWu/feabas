@@ -1662,10 +1662,11 @@ class SLM_Callback:
         chances: if the number of consecutive iterations with enlarged cost or
             small updates is larger than this number, envoke early stopping.
     """
-    def __init__(self, A, b, timeout=None, early_stop_thresh=None, chances=5, eval_step=10):
+    def __init__(self, A, b, timeout=None, early_stop_thresh=None, chances=5, eval_step=10, atol=None):
         self._A = A
         self._b = b
         self._timeout = timeout
+        self._atol = atol
         self._time_elapse = 0
         self._early_stop_thresh = early_stop_thresh
         self._eval_step = eval_step
@@ -1682,15 +1683,16 @@ class SLM_Callback:
 
     def callback(self, x):
         self._count += 1
-        self._time_elapse = time.time() - self._t0
-        timed_out = (self._time_elapse is not None) and (self._time_elapse > self._timeout)
-        if (self._count % self._eval_step == 0) or (self._count < min(self._eval_step, 5)) or timed_out:
+        if (self._count % self._eval_step == 0) or (self._count < min(self._eval_step, 5)):
+            self._time_elapse = time.time() - self._t0
             cost = np.linalg.norm(self._A.dot(x) - self._b)
             if cost < self.min_cost:
                 self.min_cost = cost
                 self.solution = x.copy()
-            if timed_out:
+            if (self._timeout is not None) and (self._time_elapse > self._timeout):
                 self._exit_code = 1
+                raise EarlyStopFlag
+            if (self._atol is not None) and (cost < self._atol):
                 raise EarlyStopFlag
             if (self._chances is not None) and (self._count >= self._eval_step):
                 if cost > self._last_cost:
@@ -1708,7 +1710,6 @@ class SLM_Callback:
                     raise EarlyStopFlag
                 self._last_x = x.copy()
                 self._last_cost = cost
-        self._count += 1
         return False
 
 
@@ -1742,7 +1743,7 @@ def solve(A, b, solver, x0=None, tol=1e-7, atol=None, maxiter=None, M=None, **kw
     timeout_t, maxiter_t = timeout, maxiter
     while True:
         # not sure how minres compute rtol... so need a loop to ensure target is met.
-        cb = SLM_Callback(A, b, timeout=timeout_t, early_stop_thresh=early_stop_thresh, chances=chances, eval_step=eval_step)
+        cb = SLM_Callback(A, b, timeout=timeout_t, early_stop_thresh=early_stop_thresh, chances=chances, eval_step=eval_step, atol=atol)
         callback = cb.callback
         kwargs_solver.update({'maxiter': maxiter_t, 'callback': callback})
         if scipy.__version__ >= '1.12.0':
@@ -1763,19 +1764,23 @@ def solve(A, b, solver, x0=None, tol=1e-7, atol=None, maxiter=None, M=None, **kw
         except EarlyStopFlag:
             x = cb.solution
             cost = cb.min_cost
-        finally:
-            if cost <= atol:
+        except KeyboardInterrupt:
+            x = cb.solution
+            break
+        if cost <= atol:
+            break
+        if cb._exit_code != 0:
+            break
+        if timeout_t is not None:
+            timeout_t -= cb._time_elapse
+            if timeout_t <= 0:
                 break
-            if cb._exit_code != 0:
+        if maxiter_t is not None:
+            maxiter_t -= cb._count
+            if maxiter_t <= 0:
                 break
-            if timeout_t is not None:
-                timeout_t -= cb._time_elapse
-                if timeout_t <= 0:
-                    break
-            if maxiter_t is not None:
-                maxiter_t -= cb._count
-                if maxiter_t <= 0:
-                    break
+        tol *= tol * atol / cost
+        kwargs_solver.update({'x0': x})
     if edc is not None:
         x0 = x
         x = np.zeros_like(b, shape=edc.shape)
