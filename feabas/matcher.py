@@ -465,8 +465,8 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
         else:
             opt.optimize_Newton_Raphson(max_newtonstep=5, tol=1e-4, batch_num_matches=np.inf, continue_on_flip=continue_on_flip, callback_settings=callback_settings)
     else:
-        mesh0.linearize_material(delta_t=(1/1.5,1.5))
-        mesh1.linearize_material(delta_t=(1/1.5,1.5))
+        # mesh0.linearize_material(delta_t=(1/1.5,1.5))
+        # mesh1.linearize_material(delta_t=(1/1.5,1.5))
         mesh0.anneal(gear=(const.MESH_GEAR_MOVING, const.MESH_GEAR_FIXED), mode=const.ANNEAL_COPY_EXACT)
         mesh1.anneal(gear=(const.MESH_GEAR_MOVING, const.MESH_GEAR_FIXED), mode=const.ANNEAL_COPY_EXACT)
     spacings = np.sort(spacings)[::-1]

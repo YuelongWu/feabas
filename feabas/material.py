@@ -197,7 +197,7 @@ class Material:
             # Engineering strain & stress
             if (self._stiffness_func is not None) or check_flip:
                 if area_stretch is not None:
-                    J = area_stretch
+                    J = area_stretch.reshape(-1,1,1)
                 else:
                     Ft = (B @ uv).reshape(-1,2,2) + np.eye(2, dtype=DTYPE)
                     J = np.linalg.det(Ft).reshape(-1,1,1)
@@ -217,7 +217,7 @@ class Material:
             Ft = (B @ uv).reshape(-1,2,2) + np.eye(2, dtype=DTYPE)
             if (self._stiffness_func is not None) or check_flip:
                 if area_stretch is not None:
-                    J = area_stretch
+                    J = area_stretch.reshape(-1,1,1)
                 else:
                     J = np.linalg.det(Ft).reshape(-1,1,1)
                 if check_flip:
@@ -265,7 +265,7 @@ class Material:
             P = 0.5 * areas * P
             K = 0.5 * areas * K
             if area_stretch is not None:
-                J = area_stretch
+                J = area_stretch.reshape(-1,1,1)
         else:
             raise NotImplementedError
         if self._stiffness_func is not None:

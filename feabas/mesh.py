@@ -1132,9 +1132,12 @@ class Mesh:
                         mat_dict.pop('stiffness_func_factory', None)
                         mat_dict.pop('stiffness_func_params', None)
                         mat_new = material.Material(**mat_dict)
+                        uid_new = mat_new.uid
                         self._material_table.add_material(m_name_new, mat_new)
                     stiffness_multiplier[tidx] = stiffness_multiplier[tidx] * modifier
                     self._material_ids[tidx] = uid_new
+            self._linearity = None
+            self._linear_triangle_mask = None
             self.set_stiffness_multiplier(stiffness_multiplier)
 
 
@@ -1489,6 +1492,19 @@ class Mesh:
                     break
             self._linearity = linearity
         return self._linearity
+
+
+    @property
+    def linear_triangle_mask(self):
+        if (not hasattr(self, '_linear_triangle_mask')) or (self._linear_triangle_mask is None):
+            self._linear_triangle_mask = np.ones(self.num_triangles, dtype=bool)
+            material_table = self.material_table
+            for mid in np.unique(self.material_ids):
+                mat = material_table[mid]
+                if not mat.is_linear:
+                    self._linear_triangle_mask[self.material_ids == mid] = False
+        return self._linear_triangle_mask
+
 
 
     def segments(self, tri_mask=None, **kwargs):
@@ -2616,11 +2632,28 @@ class Mesh:
         indices = []
         F0 = []
         F1 = []
+        tri_areas = None
         for mid, vals in shape_matrices.items():
             mat = material_table[mid]
             indx, Ms = vals
             uv = dxy[self.triangles[indx]].reshape(-1, 6)
-            K, P, flp = mat.element_stiffness_matrices_from_shape_matrices(Ms, uv=uv, **kwargs)
+            if not mat.is_linear:
+                if tri_areas is None:
+                    v_ini = self.vertices(gear=const.MESH_GEAR_INITIAL)
+                    area0 = common.signed_area(v_ini, self.triangles)
+                    area1 = common.signed_area(v1, self.triangles)
+                    linear_triangle_mask = self.linear_triangle_mask
+                    if np.any(linear_triangle_mask):
+                        baseline_ratio = np.sum(np.abs(area1[linear_triangle_mask])) / np.sum(np.abs(area0[linear_triangle_mask]))                        
+                    else:
+                        baseline_ratio = np.sum(np.abs(area1)) / np.sum(np.abs(area0))
+                    tri_areas = (area0, area1)
+                area0, area1 = tri_areas
+                area_stretch = np.sum(area1[indx]) / np.sum(area0[indx])
+                area_stretch = area_stretch / baseline_ratio
+            else:
+                area_stretch = None
+            K, P, flp = mat.element_stiffness_matrices_from_shape_matrices(Ms, uv=uv, area_stretch=area_stretch, **kwargs)
             if flp:
                 flipped = True
                 if not continue_on_flip:
