@@ -5,7 +5,7 @@ import numpy as np
 from scipy.interpolate import interp1d
 
 from feabas import common
-from feabas.storage import File
+from feabas.storage import File, load_yaml
 import feabas.constant as const
 
 
@@ -41,8 +41,9 @@ class Material:
             Otherwise, the user is responsible for this to be unique.
         mask_label(int or RGB triplet): designated label in the mask image.
     """
-    uid = 1
+    used_uids = defaultdict(list)
     def __init__(self, **kwargs):
+        self.name = kwargs.get('name', None)
         self.enable_mesh = kwargs.get('enable_mesh', True)
         self.area_constraint = kwargs.get('area_constraint', 1.0)
         self.render = kwargs.get('render', True)
@@ -59,10 +60,27 @@ class Material:
         self.update_stiffness_func(stiffness_func_factory, **stiffness_func_params)
         uid = kwargs.get('uid', None)
         if uid is None:
-            self.uid = Material.uid
-            Material.uid += 1
+            if self.name == 'default':
+                self.uid = 0
+            elif self.name == 'exclude':
+                self.uid = -1
+            elif self.name in Material.used_uids:
+                self.uid = Material.used_uids[self.name][0]
+            else:
+                self.uid = Material.get_next_available_uid()
         else:
             self.uid = uid
+        Material.used_uids[self.name].append(self.uid)
+
+
+    @classmethod
+    def from_init_dict(cls, mat, name=None):
+        if isinstance(mat, Material):
+            return mat
+        elif isinstance(mat, dict):
+            if name is not None:
+                mat['name'] = name
+            return cls(**mat)
 
 
     def to_dict(self):
@@ -76,6 +94,8 @@ class Material:
             'poisson_ratio': self._poisson_ratio,
             'uid': self.uid
             }
+        if self.name is not None:
+            out['name'] = self.name
         if self.mask_label is not None:
             out['mask_label'] = self.mask_label
         if self._stiffness_func_factory is not None:
@@ -87,6 +107,18 @@ class Material:
                 stiffness_func_params[key] = val
             out['stiffness_func_params'] = stiffness_func_params
         return out
+
+
+    @classmethod
+    def get_next_available_uid(cls):
+        if len(cls.used_uids) == 0:
+            return 1
+        else:
+            uids = set(sum([u for u in cls.used_uids.values()], []))
+            current_mx = max(uids)
+            for u in range(1, current_mx + 2):
+                if u not in uids:
+                    return u
 
 
     def update_stiffness_func(self, stiffness_func_factory, **stiffness_func_params):
@@ -134,6 +166,9 @@ class Material:
             check_flip(bool): check if any triangles are flipped.
             continue_on_flip(bool): whether to continue with flipped triangles
                 detected.
+            area_stretch: explicitly provide the area strech factor to be used
+                in nonlinear material stiffness caculation. Otherwise inferred
+                from uv and shape matrices.
         return:
             element_stiffness(Nx6x6): element tangent stiffness matrix used at
                 stiffness matrix assembly, computed at the current displacement.
@@ -141,6 +176,7 @@ class Material:
                 Newton-Raphson iterations.
             flipped(bool): if any triangle is flipped.
         """
+        area_stretch = kwargs.get('area_stretch', None)
         check_flip = kwargs.get('check_flip', None)
         continue_on_flip = kwargs.get('continue_on_flip', False)
         B, areas = Ms
@@ -160,8 +196,11 @@ class Material:
         if self._type == const.MATERIAL_MODEL_ENG:
             # Engineering strain & stress
             if (self._stiffness_func is not None) or check_flip:
-                Ft = (B @ uv).reshape(-1,2,2) + np.eye(2, dtype=DTYPE)
-                J = np.linalg.det(Ft).reshape(-1,1,1)
+                if area_stretch is not None:
+                    J = area_stretch
+                else:
+                    Ft = (B @ uv).reshape(-1,2,2) + np.eye(2, dtype=DTYPE)
+                    J = np.linalg.det(Ft).reshape(-1,1,1)
                 if check_flip:
                     flipped = np.any(J <= 0, axis=None)
                     if (not continue_on_flip) and flipped:
@@ -177,7 +216,10 @@ class Material:
             # St. Venant-Kirchhoff
             Ft = (B @ uv).reshape(-1,2,2) + np.eye(2, dtype=DTYPE)
             if (self._stiffness_func is not None) or check_flip:
-                J = np.linalg.det(Ft).reshape(-1,1,1)
+                if area_stretch is not None:
+                    J = area_stretch
+                else:
+                    J = np.linalg.det(Ft).reshape(-1,1,1)
                 if check_flip:
                     flipped = np.any(J <= 0, axis=None)
                     if (not continue_on_flip) and flipped:
@@ -222,6 +264,8 @@ class Material:
             K = np.swapaxes(B, 1, 2) @ (np.eye(4, dtype=DTYPE) - U/J + (Fu@np.swapaxes(Fu,1,2))/(J**2)) @ B
             P = 0.5 * areas * P
             K = 0.5 * areas * K
+            if area_stretch is not None:
+                J = area_stretch
         else:
             raise NotImplementedError
         if self._stiffness_func is not None:
@@ -254,20 +298,26 @@ class Material:
 
 
 
-MATERIAL_EXCLUDE = Material(enable_mesh=False,
-                         uid=0,
-                         mask_label=255,
-                         stiffness_multiplier=0.0,
-                         render=False,
-                         render_weight=1.0e-6)
+MATERIAL_EXCLUDE = {
+    "name": 'exclude',
+    "enable_mesh": False,
+    "uid": -1,
+    "mask_label": 255,
+    "stiffness_multiplier": 0.0,
+    "render": False,
+    "render_weight": 0.0
+}
 
-MATERIAL_DEFAULT = Material(enable_mesh=True,
-                            area_constraint=1,
-                            type=const.MATERIAL_MODEL_ENG,
-                            stiffness_multiplier=1.0,
-                            poisson_ratio=0.0,
-                            uid=-1,
-                            mask_label=0)
+MATERIAL_DEFAULT = {
+    "name": 'default',
+    "enable_mesh": True,
+    "area_constraint": 1,
+    "type": const.MATERIAL_MODEL_ENG,
+    "stiffness_multiplier": 1.0,
+    "poisson_ratio": 0.0,
+    "uid": 0,
+    "mask_label": 0
+}
 
 
 
@@ -281,42 +331,98 @@ class MaterialTable:
             'default' label in the table, use that as the default material.
             Otherwise, use MATERIAL_DEFAULT as the default material.
     """
-    def __init__(self, table=None, default_material=None):
+    def __init__(self, table=None, default_material=None, check_uid=True, check_label=False):
         if table is None:
             table = {}
         if default_material is not None:
-            table['default'] = default_material
-            default_factory = lambda: default_material
+            default_material = Material.from_init_dict(default_material)
         elif 'default' in table:
-            default_factory = lambda: table['default']
+            default_material = Material.from_init_dict(table['default'], name='default')
         else:
-            table['default'] = MATERIAL_DEFAULT
-            default_factory = lambda: MATERIAL_DEFAULT
+            default_material = Material(**MATERIAL_DEFAULT)
+        default_factory = lambda: default_material
         self._table = defaultdict(default_factory)
-        if 'exclude' not in table:
-            table['exclude'] =  MATERIAL_EXCLUDE
-        self._table.update(table)
+        self._table['default'] = default_material
+        default_mat_dict = default_material.to_dict()
+        default_mat_dict.pop('uid', None)
+        default_mat_dict.pop('name', None)
+        default_mat_dict.pop('mask_label', None)
+        for name, mat in table.items():
+            if name == 'default':
+                continue
+            if isinstance(mat, dict):
+                template = default_mat_dict.copy()
+                template.update(mat)
+                mat = Material.from_init_dict(template, name=name)
+            self._table[name] = mat
+        if 'exclude' not in self._table:
+            uid = MATERIAL_DEFAULT['uid']
+            uids = self.uids
+            while uid in uids:
+                uid -= 1
+            MATERIAL_DEFAULT['uid'] = uid
+            self._table['exclude'] =  Material(**MATERIAL_EXCLUDE)
+        if check_uid:
+            uids = self.uids
+            assert len(uids) == len(set(uids)), "material uids not unique."
+        if check_label:
+            labels = self.mask_labels
+            assert len(labels) == len(set(labels)), "material mask labels not unique."
 
 
     @classmethod
     def from_json(cls, jsonname, stream=False, default_material=None):
-        dct, _ = common.parse_json_file(jsonname, stream=stream)
-        table = {}
-        for lbl, props in dct.items():
-            material = Material(**props)
-            table[lbl] = material
+        table, _ = common.parse_json_file(jsonname, stream=stream)
+        return cls(table=table, default_material=default_material)
+
+
+    @classmethod
+    def from_yaml(cls, yamlname, default_material=None):
+        table = load_yaml(yamlname)
         return cls(table=table, default_material=default_material)
 
 
     @classmethod
     def from_pickleable(cls, mt):
+        if isinstance(mt, MaterialTable):
+            return mt
+        if isinstance(mt, np.ndarray):
+            mt = common.numpy_to_str_ascii(mt)
         if isinstance(mt, dict):
             mt = cls(table=mt)
         elif isinstance(mt, str):
-            mt = cls.from_json(mt, stream=not mt.endswith('.json'))
+            if mt.endswith('.yaml'):
+                mt = cls.from_yaml(mt)
+            else:
+                mt = cls.from_json(mt, stream=not mt.endswith('.json'))
+        elif mt is None:
+            mt = MaterialTable()
         else:
             raise TypeError
         return mt
+
+
+    def to_dict(self):
+        outdict = {}
+        for name, mat in self._table.items():
+            mat_dict = mat.to_dict()
+            mat_dict.pop('name', None)
+            outdict[name] = mat_dict
+        return outdict
+
+
+    def uid_filterred_material_table(self, uids):
+        table = {}
+        all_kept = True
+        for name, mat in self._table.items():
+            if (mat.uid in uids) or (name in ('exclude', 'default')):
+                table[name] = mat
+            else:
+                all_kept = False
+        if all_kept:
+            return self
+        else:
+            return self.__class__(table=table)
 
 
     def copy(self):
@@ -325,9 +431,7 @@ class MaterialTable:
 
 
     def save_to_json(self, jsonname=None):
-        outdict = {}
-        for lbl, material in self._table.items():
-            outdict[lbl] = material.to_dict()
+        outdict = self.to_dict()
         json_str = json.dumps(outdict, indent = 2)
         if jsonname is not None:
             with File(jsonname, 'w') as f:
@@ -344,18 +448,38 @@ class MaterialTable:
             yield labelname, mat
 
 
-    def add_material(self, label, material, force_update=True):
-        if force_update or (label not in self._table):
-            self._table[label] = material
+    def add_material(self, name, mat, force_update=True):
+        uid_changes = []
+        if name in self._table:
+            if isinstance(mat, Material):
+                uid_old = mat.uid
+            elif isinstance(mat, dict):
+                uid_old = mat.get('uid', None)
+            else:
+                raise TypeError
+            uid_new = self._table[name].uid
+            if (uid_old is not None) and (uid_new != uid_old):
+                uid_changes.append((uid_old, uid_new))
+        if force_update or (name not in self._table):
+            self._table[name] = Material.from_init_dict(mat, name=name)
+        return uid_changes
 
 
-    def combine_material_table(self, mtb, force_update=False):
-        if force_update:
-            self._table.update(mtb.named_table)
-        else:
-            for lbl, m in mtb:
-                if lbl not in self._table:
-                    self._table[lbl] = m
+    def combine_material_table(self, mtb, force_update=False, check_label=False):
+        uid_changes = []
+        mask_labels = self.mask_labels
+        for name, mat in mtb:
+            if check_label:
+                if isinstance(mat, Material):
+                    lbl = mat.mask_label
+                elif isinstance(mat, dict):
+                    lbl = mat.get('mask_label', None)
+                else:
+                    raise TypeError
+                if (lbl is not None) and lbl in mask_labels:
+                    continue
+            uid_changes.extend(self.add_material(name, mat, force_update=force_update))
+        return uid_changes
 
 
     @property
@@ -383,6 +507,16 @@ class MaterialTable:
         for val in self._table.values():
             id_tabel[val.uid] = val
         return id_tabel
+
+
+    @property
+    def uids(self):
+        return [mat.uid for mat in self._table.values()]
+
+
+    @property
+    def mask_labels(self):
+        return [mat.mask_label for mat in self._table.values()]
 
 
 

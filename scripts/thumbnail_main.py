@@ -494,8 +494,7 @@ if __name__ == '__main__':
             thumbnail_configs.setdefault('resolution', thumbnail_resolution)
             thumbnail_configs.setdefault('feature_match_dir', feature_match_dir)
             region_labels = []
-            material_table_file = config.material_table_file()
-            material_table = material.MaterialTable.from_json(material_table_file, stream=False)
+            material_table = config.material_table()
             for _, mat in material_table:
                 if mat.enable_mesh and (mat._stiffness_multiplier > 0.1) and (mat.mask_label is not None):
                     region_labels.append(mat.mask_label)

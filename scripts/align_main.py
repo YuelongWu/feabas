@@ -69,8 +69,7 @@ def generate_mesh_main():
     alt_mask_resolution = config.montage_resolution() * (2 ** alt_mask_mip_level)
     if alt_mask_dir is None:
         alt_mask_dir = storage.join_paths(align_dir, 'material_masks')
-    material_table_file = config.material_table_file()
-    material_table = material.MaterialTable.from_json(material_table_file, stream=False)
+    material_table = config.material_table()
     material_table = material_table.save_to_json(jsonname=None)
     mesh_func = partial(generate_mesh_from_mask, material_table=material_table, **mesh_config)
     kwargs_list = []

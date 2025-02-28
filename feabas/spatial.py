@@ -1209,18 +1209,9 @@ class Geometry:
 
     @staticmethod
     def region_names_from_material_dict(material_dict):
-        if isinstance(material_dict, str):
-            if '.json' in material_dict:
-                MT = material.MaterialTable.from_json(material_dict, stream=False)
-            else:
-                MT = material.MaterialTable.from_json(material_dict, stream=True)
-            material_dict = MT.label_table
-        elif isinstance(material_dict, material.MaterialTable):
-            material_dict = material_dict.label_table
-        elif isinstance(material_dict, dict):
-            pass
-        else:
-            raise TypeError('Invalid material dictionary type.')
+        if not isinstance(material_dict, dict):
+            mt = material.MaterialTable.from_pickleable(material_dict)
+            material_dict = mt.label_table
         region_names = OrderedDict()
         for label, mat in material_dict.items():
             if isinstance(mat, material.Material):

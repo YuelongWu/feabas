@@ -288,6 +288,7 @@ class Mesh:
             self.uid = float(uid)
             Mesh.uid_counter = float(max(Mesh.uid_counter, uid) + 1)
         self.is_outcast = False
+        self.modified_in_current_session = kwargs.get('modified', False)
 
 
     @classmethod
@@ -563,7 +564,8 @@ class Mesh:
             init_dict['stiffness_multiplier'] = self._stiffness_multiplier
         if save_material:
             init_dict['material_ids'] = self._material_ids
-            init_dict['material_table'] = self._material_table.save_to_json()
+            mtb = self._material_table.uid_filterred_material_table(np.unique(self._material_ids))
+            init_dict['material_table'] = mtb.save_to_json()
         init_dict['resolution'] = self._resolution
         init_dict['epsilon'] = self._epsilon
         if bool(self._name):
@@ -618,6 +620,7 @@ class Mesh:
                 init_dict['name'] = new_name
         if ('locked' not in kwargs):
             init_dict['locked'] = self.locked
+        init_dict['modified'] = self.modified_in_current_session
         return self.__class__(**init_dict)
 
 
@@ -688,6 +691,8 @@ class Mesh:
         triangles = []
         stiffness = []
         num_vertices = 0
+        locked = False
+        modified = False
         for m in meshes:
             m.change_resolution(resolution0)
             for g in const.MESH_GEARS:
@@ -699,8 +704,16 @@ class Mesh:
             stiffness.append(m.stiffness_multiplier)
             epsilon0 = min(epsilon0, m._epsilon)
             if save_material:
-                material_table0.combine_material_table(m._material_table)
-                material_ids.append(m._material_ids)
+                uid_changes = material_table0.combine_material_table(m._material_table)
+                material_ids_new = m._material_ids.copy()
+                for uidc in uid_changes:
+                    uid_old, uid_new = uidc
+                    material_ids_new[m._material_ids == uid_old] = uid_new
+                material_ids.append(material_ids_new)
+            if m.locked:
+                locked = True
+            if m.modified_in_current_session:
+                modified = True
         init_dict['vertices'] = np.concatenate(vertices[const.MESH_GEAR_INITIAL], axis=0)
         init_dict['triangles'] = np.concatenate(triangles, axis=0)
         if vertices_initialized[const.MESH_GEAR_FIXED]:
@@ -732,7 +745,8 @@ class Mesh:
         else:
             init_dict['name'] = meshes[0]._name
         init_dict['uid'] = np.floor(meshes[0].uid)
-        init_dict['locked'] = meshes[0].locked
+        init_dict['locked'] = locked
+        init_dict['modified'] = modified
         init_dict.update(kwargs)
         return cls(**init_dict)
 
@@ -1017,21 +1031,7 @@ class Mesh:
 
 
     def set_material_table(self, mtb):
-        if isinstance(mtb, str):
-            if mtb[-5:] == '.json':
-                material_table = material.MaterialTable.from_json(mtb, stream=False)
-            else:
-                material_table = material.MaterialTable.from_json(mtb, stream=True)
-        elif isinstance(mtb, material.MaterialTable):
-            material_table = mtb
-        elif isinstance(mtb, np.ndarray):
-            ss = common.numpy_to_str_ascii(mtb)
-            if ss[-5:] == '.json':
-                material_table = material.MaterialTable.from_json(ss, stream=False)
-            else:
-                material_table = material.MaterialTable.from_json(ss, stream=True)
-        else:
-            material_table = material.MaterialTable()
+        material_table = material.MaterialTable.from_pickleable(mtb)
         self._material_table = material_table
 
 
@@ -1106,7 +1106,6 @@ class Mesh:
     def linearize_material(self, gear=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING), delta_t=(1.0, 1.0)):
         if not self.is_linear:
             mtb = self.material_table
-            mx_mid = np.max(list(mtb.keys()))
             named_mtb = self.named_material_table
             m_name_lut = {m.uid: nm for nm, m in named_mtb.items()}
             mids = self.material_ids
@@ -1132,9 +1131,6 @@ class Mesh:
                         mat_dict = named_mtb[m_name].to_dict()
                         mat_dict.pop('stiffness_func_factory', None)
                         mat_dict.pop('stiffness_func_params', None)
-                        uid_new = mx_mid + 1
-                        mat_dict['uid'] = uid_new
-                        mx_mid += 1
                         mat_new = material.Material(**mat_dict)
                         self._material_table.add_material(m_name_new, mat_new)
                     stiffness_multiplier[tidx] = stiffness_multiplier[tidx] * modifier
@@ -1406,6 +1402,7 @@ class Mesh:
     def _vertices_changed(self, gear):
         self._update_caching_keys(gear=gear)
         self.clear_cached_attr(gear=gear)
+        self.modified_in_current_session = True
         for g in const.MESH_GEARS:
             if (g > gear) and (self._vertices[g] is None):
                 self._vertices_changed(gear=g)
@@ -2789,9 +2786,8 @@ def mesh_from_mask(mask, **kwargs):
         resolution = mask.resolution
     else:
         resolution = kwargs.get('resolution')
-    if not isinstance(material_table, material.MaterialTable):
-        material_table = material.MaterialTable.from_pickleable(material_table)
-        kwargs['material_table'] = material_table
+    material_table = material.MaterialTable.from_pickleable(material_table)
+    kwargs['material_table'] = material_table
     if isinstance(simplify_tol, dict):
         region_tols = defaultdict(lambda: 0.1)
         region_tols.update(simplify_tol)

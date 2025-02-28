@@ -64,19 +64,36 @@ def get_log_dir():
     return log_dir
 
 
+def merge_config(default_config, additional_config):
+    for k, v in additional_config.items():
+        if isinstance(v, dict) and (k in default_config):
+            merge_config(default_config[k], v)
+        else:
+            default_config[k] = v
+
+
+def load_yaml_configs(file_default, file_user=None):
+    if storage.file_exists(file_default):
+        conf = storage.load_yaml(file_default)
+    else:
+        conf = {}
+    if (file_user is not None) and storage.file_exists(file_user):
+        conf_usr = storage.load_yaml(file_user)
+        merge_config(conf, conf_usr)
+    return conf
+
+
 @lru_cache(maxsize=1)
 def stitch_config_file():
     work_dir = get_work_dir()
-    config_file = storage.join_paths(work_dir, 'configs', 'stitching_configs.yaml')
-    if not storage.file_exists(config_file):
-        config_file = storage.join_paths(_default_configuration_folder, 'default_stitching_configs.yaml')
-        assert(storage.file_exists(config_file))
-    return config_file
+    config_file_default = storage.join_paths(_default_configuration_folder, 'default_stitching_configs.yaml')
+    config_file_user = storage.join_paths(work_dir, 'configs', 'stitching_configs.yaml')
+    return config_file_default, config_file_user
 
 
 @lru_cache(maxsize=1)
 def stitch_configs():
-    conf = storage.load_yaml(stitch_config_file())
+    conf = load_yaml_configs(*stitch_config_file())
     return conf
 
 
@@ -92,25 +109,42 @@ def section_thickness():
 @lru_cache(maxsize=1)
 def material_table_file():
     work_dir = get_work_dir()
-    mt_file = storage.join_paths(work_dir, 'configs', 'material_table.json')
-    if not storage.file_exists(mt_file):
-        mt_file = storage.join_paths(_default_configuration_folder, 'default_material_table.json')
-    return mt_file
+    mt_file_default = storage.join_paths(_default_configuration_folder, 'default_material_table.yaml')
+    mt_file_user = storage.join_paths(work_dir, 'configs', 'material_table.yaml')
+    if not storage.file_exists(mt_file_default):
+        mt_file_default = None
+    if not storage.file_exists(mt_file_user):
+        mt_file_user = None
+    return mt_file_default, mt_file_user
+
+
+@lru_cache(maxsize=1)
+def material_table():
+    from feabas.material import MaterialTable
+    mt_file_default, mt_file_user = material_table_file()
+    if (mt_file_default is None) and (mt_file_user is None):
+        mt = MaterialTable()
+    elif mt_file_user is None:
+        mt = MaterialTable.from_pickleable(mt_file_default)
+    else:
+        mt = MaterialTable.from_pickleable(mt_file_user)
+        if mt_file_default is not None:
+            mt0 = MaterialTable.from_pickleable(mt_file_default)
+            mt.combine_material_table(mt0, force_update=False, check_label=True)
+    return mt
 
 
 @lru_cache(maxsize=1)
 def align_config_file():
     work_dir = get_work_dir()
-    config_file = storage.join_paths(work_dir, 'configs', 'alignment_configs.yaml')
-    if not storage.file_exists(config_file):
-        config_file = storage.join_paths(_default_configuration_folder, 'default_alignment_configs.yaml')
-        assert(storage.file_exists(config_file))
-    return config_file
+    config_file_default = storage.join_paths(_default_configuration_folder, 'default_alignment_configs.yaml')
+    config_file_user = storage.join_paths(work_dir, 'configs', 'alignment_configs.yaml')
+    return config_file_default, config_file_user
 
 
 @lru_cache(maxsize=1)
 def align_configs():
-    conf =  storage.load_yaml(align_config_file())
+    conf = load_yaml_configs(*align_config_file())
     if (SECTION_THICKNESS is not None) and (conf.get('matching', {}).get('working_mip_level', None) is None):
         align_mip = max(0, math.floor(math.log2(SECTION_THICKNESS / montage_resolution())))
         conf.setdefault('matching', {})
@@ -121,24 +155,21 @@ def align_configs():
 @lru_cache(maxsize=1)
 def thumbnail_config_file():
     work_dir = get_work_dir()
-    config_file = storage.join_paths(work_dir, 'configs', 'thumbnail_configs.yaml')
-    if not storage.file_exists(config_file):
-        config_file = storage.join_paths(_default_configuration_folder, 'default_thumbnail_configs.yaml')
-        assert(storage.file_exists(config_file))
-    return config_file
+    config_file_default = storage.join_paths(_default_configuration_folder, 'default_thumbnail_configs.yaml')
+    config_file_user = storage.join_paths(work_dir, 'configs', 'thumbnail_configs.yaml')
+    return config_file_default, config_file_user
 
 
 @lru_cache(maxsize=1)
 def thumbnail_configs():
-    conf = storage.load_yaml(thumbnail_config_file())
+    conf = load_yaml_configs(*thumbnail_config_file())
     return conf
 
 
 @lru_cache(maxsize=1)
 def stitch_render_dir():
-    config_file = stitch_config_file()       
-    stitch_configs = storage.load_yaml(config_file)
-    render_settings = stitch_configs.get('rendering', {})
+    stitch_conf = stitch_configs()
+    render_settings = stitch_conf.get('rendering', {})
     outdir = render_settings.get('out_dir', None)
     if outdir is None:
         work_dir = get_work_dir()
@@ -148,9 +179,8 @@ def stitch_render_dir():
 
 @lru_cache(maxsize=1)
 def align_render_dir():
-    config_file = align_config_file()
-    align_configs = storage.load_yaml(config_file)
-    render_settings = align_configs.get('rendering', {})
+    align_conf = align_configs()
+    render_settings = align_conf.get('rendering', {})
     outdir = render_settings.get('out_dir', None)
     if outdir is None:
         work_dir = get_work_dir()
@@ -160,9 +190,8 @@ def align_render_dir():
 
 @lru_cache(maxsize=1)
 def tensorstore_render_dir():
-    config_file = align_config_file()
-    align_configs = storage.load_yaml(config_file)
-    render_settings = align_configs.get('tensorstore_rendering', {})
+    align_conf = align_configs()
+    render_settings = align_conf.get('tensorstore_rendering', {})
     outdir = render_settings.get('out_dir', None)
     if outdir is None:
         work_dir = get_work_dir()
@@ -170,11 +199,8 @@ def tensorstore_render_dir():
     outdir = outdir.replace('\\', '/')
     if not outdir.endswith('/'):
         outdir = outdir + '/'
-    kv_headers = ('gs://', 'http://', 'https://', 'file://', 'memory://', 's3://')
-    for kvh in kv_headers:
-        if outdir.startswith(kvh):
-            break
-    else:
+    t_driver, outdir = storage.parse_file_driver(outdir)
+    if t_driver == 'file':
         outdir = 'file://' + outdir
     return outdir
 
