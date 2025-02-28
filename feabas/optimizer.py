@@ -698,8 +698,6 @@ class SLM:
                 needs more RAM but faster
         """
         if (self._crosslink_terms is None) or force_update:
-            start_gear = kwargs.get('start_gear', const.MESH_GEAR_MOVING)
-            targt_gear = kwargs.get('target_gear', const.MESH_GEAR_MOVING)
             batch_num_matches = kwargs.pop('batch_num_matches', None)
             if batch_num_matches is None:
                 batch_num_matches = self.num_matches / 10
