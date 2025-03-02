@@ -1,6 +1,7 @@
 from collections import defaultdict, OrderedDict
 import numpy as np
 import os
+from scipy.ndimage import distance_transform_cdt
 from scipy import sparse
 import scipy.sparse.csgraph as csgraph
 import shapely
@@ -198,6 +199,7 @@ class Stack:
                 else:
                     raise RuntimeError('no match list found.')
         self.match_list = self.filtered_match_list(match_list=match_list)
+        self.muted_match_list = []
         self.save_overflow = kwargs.get('save_overflow', True)
         self._logger = None
 
@@ -300,21 +302,38 @@ class Stack:
         """self._mesh_cache is a FIFO cache"""
         cached_name, cached_Ms = self._mesh_cache.popitem(last=False)
         rel_match_names = self.secname_to_matchname_mapper[cached_name]
-        if (self._mesh_out_dir is not None) and self.save_overflow:
-            anchored_meshes = [m for m in cached_Ms if not m.is_outcast]
-            if len(anchored_meshes) != len(cached_Ms):
-                logger = logging.get_logger(self._logger)
-                if len(anchored_meshes) == 0:
-                    self.lock_flags[cached_name] = False
-                    logger.warning(f'{cached_name}: not anchored.')
-                else:
-                    logger.warning(f'{cached_name}: partially not anchored.')
-            if len(anchored_meshes) > 0:
-                cached_M = Mesh.combine_mesh(anchored_meshes, save_material=True)
-                outname = storage.join_paths(self._mesh_out_dir, cached_name+'.h5')
-                cached_M.save_to_h5(outname, vertex_flags=const.MESH_GEARS, save_material=True)
+        if self.save_overflow:
+            self.save_mesh_for_one_section(cached_name, cached_Ms)
         for matchname in rel_match_names:
             self.dump_link(matchname)
+
+
+    def save_mesh_for_one_section(self, secname, Ms=None):
+        saved = False
+        if self._mesh_out_dir is None:
+            return saved
+        if Ms is None:
+            if secname in self._mesh_cache:
+                Ms = self._mesh_cache[secname]
+            else:
+                return saved
+        anchored_meshes = [m for m in Ms if not m.is_outcast]
+        if len(anchored_meshes) != len(Ms):
+            logger = logging.get_logger(self._logger)
+            if len(anchored_meshes) == 0:
+                self.lock_flags[secname] = False
+                logger.warning(f'{secname}: not anchored.')
+            else:
+                logger.warning(f'{secname}: partially not anchored.')
+        if len(anchored_meshes) > 0:
+            M = Mesh.combine_mesh(anchored_meshes, save_material=True)
+            outname = storage.join_paths(self._mesh_out_dir, secname + '.h5')
+            if M.modified_in_current_session or not storage.file_exists(outname):
+                M.save_to_h5(outname, vertex_flags=const.MESH_GEARS, save_material=True)
+                saved = True
+                for m in anchored_meshes:
+                    m.modified_in_current_session = False
+        return saved
 
 
     def get_link(self, matchname):
@@ -388,9 +407,14 @@ class Stack:
         # exist in the cache during the time of SLM creation. they are saved in
         # SLM anyway so no point to free them up now.
         mesh_cache_size0 = self._mesh_cache_size
+        link_cache_size = self._link_cache_size
         if secnames is None:
             secnames = self.section_list
         match_list = self.filtered_match_list(secnames=secnames, check_lock=True)
+        if link_cache_size is None:
+            self._link_cache_size = len(match_list)
+        else:
+            self._link_cache_size = max(len(match_list), link_cache_size)
         secnames = self.filter_section_list_from_matches(match_list=match_list)
         if mesh_cache_size0 is not None:
             self._mesh_cache_size = max(len(secnames), mesh_cache_size0)
@@ -402,110 +426,101 @@ class Stack:
             links.extend(self.get_link(matchname))
         optm = SLM(meshes, links, **kwargs)
         self._mesh_cache_size = mesh_cache_size0
+        self._link_cache_size = link_cache_size
         return optm
 
 
     def optimize_slide_window(self, **kwargs):
         num_workers = kwargs.pop('num_workers', 1)
-        locked_section = kwargs.pop('locked_section', None)
-        start_loc = kwargs.pop('start_loc', 'L') # L or R or M
+        start_loc = kwargs.get('start_loc', 'L') # L or R or M, in case no locked sections for references
         window_size = kwargs.get('window_size', None)
-        func_name = 'optimize_slide_window'
+        worker_settings = kwargs.get('worker_settings', {}).copy()
+        ensure_continuous = kwargs.pop('ensure_continuous', False) # ensure all sections are connected or linked to a reference section, otherwise align the largest bunch
         if kwargs.get('logger', None) is not None:
             self._logger = kwargs['logger']
         if (window_size is None) or window_size > self.num_sections:
             window_size = self.num_sections
-            start_loc = 'L'
-            buffer_size = 0
         else:
             buffer_size = kwargs.get('buffer_size', window_size//4)
-        if locked_section is not None:
-            self.unlock_all()
-            if not isinstance(locked_section, str):
-                locked_section = self.section_list[int(locked_section)]   # indexing by id
-            self.update_lock_flags({locked_section: True})
-            locked_idx = self.secname_to_id(locked_section)
-            init_idx0 = locked_idx - window_size//2
-            if (init_idx0 + window_size) >= self.num_sections:
-                init_idx0 = self.num_sections - window_size
-                start_loc = 'R'
-            elif init_idx0 <= 0:
-                init_idx0 = 0
-                start_loc = 'L'
+        if buffer_size < 1:
+            buffer_size = round(buffer_size * window_size)
+        residues = {}
+        to_optimize = ~self.locked_array
+        while np.any(to_optimize):
+            connected_free_sections = self.connected_sections(section_filter=to_optimize)
+            if len(connected_free_sections) > 1:
+                args_list = []
+                kwarg_list = [kwargs]
+                anchored = np.zeros(len(connected_free_sections), dtype=bool)
+                secnums = np.zeros(len(connected_free_sections), dtype=np.uint32)
+                for ks, slist in enumerate(connected_free_sections):
+                    secnames = self.pad_section_list_w_refs(section_list=slist)
+                    if len(secnames) > len(slist):
+                        anchored[ks] = True
+                    secnums[ks] = len(slist)
+                    args_list.append(self.init_dict(secnames=secnames, check_lock=True))
+                if ensure_continuous:
+                    if np.any(anchored):
+                        args_list = [s for flg, s in zip(anchored, args_list) if flg]
+                    else:
+                        indx = np.argmax(secnums)
+                        args_list = [args_list[indx]]
+                for res in submit_to_workers(Stack.subprocess_optimize_stack, args=args_list, kwargs=kwarg_list, num_workers=num_workers, **worker_settings):
+                    residues.update(res)
+                break
             else:
-                start_loc = 'M'
-        elif start_loc == 'L':
-            init_idx0 = 0
-        elif start_loc == 'R':
-            init_idx0 = self.num_sections - window_size
-        elif start_loc == 'M':
-            init_idx0 = (self.num_sections - window_size)//2
-        costs = {}
-        buffer_list = []
-        if start_loc == 'L':
-            indices0 = np.arange(init_idx0, self.num_sections, window_size-buffer_size)
-            for idx0 in indices0:
-                seclst = self.section_list[init_idx0:(idx0+window_size)]
-                if np.all([self.lock_flags[s] for s in seclst]):
-                    continue
-                cst = self.optimize_section_list(seclst, **kwargs)
-                if cst is not None:
-                    costs.update(cst)
-                if buffer_size > 0:
-                    self.update_lock_flags({s:True for s in seclst[:-buffer_size]})
-                    buffer_list = seclst[-buffer_size:]
+                seclist0 = connected_free_sections[0]
+                seclist_w_ref = self.pad_section_list_w_refs(section_list=seclist0)
+                if ensure_continuous and (len(seclist0) == len(seclist_w_ref)) and np.any(self.locked_array):
+                    break
+                if np.sum(to_optimize) <= (window_size + buffer_size):     
+                    res = self.optimize_section_list(seclist_w_ref, **kwargs)
+                    residues.update(res)
+                    for secname in seclist0:
+                        self.save_mesh_for_one_section(secname)
+                    self.update_lock_flags({s: True for s in seclist0})
                 else:
-                    self.update_lock_flags({s:True for s in seclst})
-            else:
-                self.update_lock_flags({s:True for s in buffer_list})
-                self.flush_meshes()
-        elif start_loc == 'R':
-            indices1 = np.arange(self.num_sections, 0, buffer_size-window_size)
-            for idx1 in indices1:
-                idx0 = max(0, idx1 - window_size)
-                seclst = self.section_list[idx0:]
-                if np.all([self.lock_flags[s] for s in seclst]):
-                    continue
-                cst = self.optimize_section_list(seclst, **kwargs)
-                if cst is not None:
-                    costs.update(cst)
-                if buffer_size > 0:
-                    self.update_lock_flags({s:True for s in seclst[buffer_size:]})
-                    buffer_list = seclst[:buffer_size]
-                else:
-                    self.update_lock_flags({s:True for s in seclst})
-            else:
-                self.update_lock_flags({s:True for s in buffer_list})
-                self.flush_meshes()
-        else:
-            assert window_size > 2 * buffer_size + 1
-            seclst = self.section_list[init_idx0:(init_idx0+window_size)]
-            cst = self.optimize_section_list(seclst, **kwargs)
-            if cst is not None:
-                costs.update(cst)
-            if buffer_size > 0:
-                sections_to_lock = seclst[buffer_size:-buffer_size]
-            else:
-                sections_to_lock = seclst
-            self.update_lock_flags({s:True for s in sections_to_lock})
-            self.flush_meshes()
-            kwargs.setdefault('need_anchor', True)
-            lock_id0, lock_id1 = self.secname_to_id(sections_to_lock[0]), self.secname_to_id(sections_to_lock[-1])
-            matchlist_l = self.filtered_match_list(secnames=self.section_list[lock_id0:], check_lock=True)
-            seclist_l = self.filter_section_list_from_matches(match_list=matchlist_l)
-            kwargs_l = kwargs.copy()
-            init_dict_l = self.init_dict(secnames=seclist_l, check_lock=True)
-            kwargs_l['start_loc'] = 'L'
-            matchlist_r = self.filtered_match_list(secnames=self.section_list[:lock_id1], check_lock=True)
-            seclist_r = self.filter_section_list_from_matches(match_list=matchlist_r)
-            init_dict_r = self.init_dict(secnames=seclist_r, check_lock=True)
-            kwargs_r = kwargs.copy()
-            kwargs_r['start_loc'] = 'R'
-            args_list = [(init_dict_l, func_name), (init_dict_r, func_name)]
-            kwargs_list = [kwargs_l, kwargs_r]
-            for cst in submit_to_workers(Stack.subprocess_optimize_stack, args=args_list, kwargs=kwargs_list, num_workers=num_workers):
-                costs.update(cst)
-        return costs
+                    seeding = to_optimize
+                    if np.all(seeding):
+                        seeding = seeding.copy()
+                        if isinstance(start_loc, int):
+                            seeding[start_loc] = False
+                        elif isinstance(start_loc, str):
+                            if start_loc.lower().startswith('l'):
+                                seeding[0] = False
+                            elif start_loc.lower().startswith('r'):
+                                seeding[-1] = False
+                            else:
+                                seeding[seeding.size//2] = False
+                        else:
+                            raise TypeError
+                    dis_seed = distance_transform_cdt(seeding)
+                    dis_seed[~to_optimize] = np.max(dis_seed) + 1
+                    indx_d = np.argsort(dis_seed)
+                    indx_opt = indx_d[:(window_size+buffer_size)]
+                    seclist_opt = [self.section_list[s] for s in indx_opt]
+                    if buffer_size == 0:
+                        seclist_cmt = seclist_opt
+                    else:
+                        flag_opt = np.zeros_like(to_optimize)
+                        flag_opt[indx_opt] = True
+                        flag_fut = to_optimize & (~flag_opt)
+                        dis_e = distance_transform_cdt(~flag_fut).clip(0, None)
+                        dis_t = -np.ones_like(dis_e, dtype=np.float32)
+                        lbl_opt = np.cumsum(np.diff(flag_opt, prepend=0).clip(0, None)) * flag_opt
+                        for lbl in range(1, np.max(lbl_opt)+1):
+                            idxt = lbl_opt == lbl
+                            dis_t[idxt] = min(np.max(dis_e[idxt]) / 2, buffer_size)
+                        indx_cmt = np.nonzero((dis_e > dis_t) & flag_opt)[0]
+                        seclist_cmt = [self.section_list[s] for s in indx_cmt]
+                    seclist = self.pad_section_list_w_refs(section_list=seclist_opt)
+                    res = self.optimize_section_list(seclist, **kwargs)
+                    residues.update(res)
+                    for secname in seclist_cmt:
+                        self.save_mesh_for_one_section(secname)
+                    self.update_lock_flags({s: True for s in seclist_cmt})
+                to_optimize = ~self.locked_array
+        return residues
 
 
     def optimize_section_list(self, section_list, **kwargs):
@@ -676,7 +691,7 @@ class Stack:
 
 
     @staticmethod
-    def subprocess_optimize_stack(init_dict, process_name, **kwargs):
+    def subprocess_optimize_stack(init_dict, process_name='optimize_slide_window', **kwargs):
         stack = Stack(**init_dict)
         func = getattr(stack, process_name)
         return func(**kwargs)

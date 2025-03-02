@@ -132,7 +132,12 @@ def save_mask_for_one_sections(mesh_file, out_name, resolution, **kwargs):
     fillval = kwargs.get('fillval', 0)
     mask_erode = kwargs.get('mask_erode', 0)
     rndr = MontageRenderer.from_h5(mesh_file)
-    img = 255 - rndr.generate_roi_mask(resolution, mask_erode=mask_erode)
+    roi_mask = rndr.generate_roi_mask(resolution, mask_erode=mask_erode)
+    material_table = config.material_table()
+    lbl_d = material_table['default'].mask_label
+    lbl_e = material_table['exclude'].mask_label
+    img = np.full_like(roi_mask, lbl_e)
+    img[roi_mask > 0] = lbl_d
     common.imwrite(out_name, img)
     if img_dir is not None:
         thumb_name = storage.join_paths(img_dir, os.path.basename(out_name))
@@ -183,13 +188,17 @@ def align_thumbnail_pairs(pairnames, image_dir, out_dir, **kwargs):
     from feabas import caching, thumbnail, common
     material_mask_dir = kwargs.pop('material_mask_dir', None)
     region_mask_dir = kwargs.pop('region_mask_dir', None)
-    region_labels = kwargs.pop('region_labels', [0])
+    region_labels = kwargs.pop('region_labels', None)
     match_name_delimiter = kwargs.pop('match_name_delimiter', '__to__')
     cache_size = kwargs.pop('cache_size', 3)
     feature_match_settings = kwargs.get('feature_matching', {})
     logger_info = kwargs.get('logger', None)
     logger = logging.get_logger(logger_info)
     prepared_cache = caching.CacheFIFO(maxlen=cache_size)
+    if region_labels is None:
+        material_table = config.material_table()
+        default_mat = material_table['default']
+        region_labels = [default_mat.mask_label]
     for pname in pairnames:
         try:
             sname0_ext, sname1_ext = pname
