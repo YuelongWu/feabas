@@ -494,16 +494,16 @@ if __name__ == '__main__':
         imglist = common.rearrange_section_order(imglist, section_order_file)[0]
         bname_list = [os.path.basename(s) for s in imglist]
         secname_list = [os.path.splitext(s)[0] for s in bname_list]
+        logger_info = logging.initialize_main_logger(logger_name='thumbnail_align', mp=num_workers>1)
+        logger= logging.get_logger(logger_info[0])
+        material_table = config.material_table()
         if (mode == 'matching') or (mode == 'alignment'):
             storage.makedirs(match_dir)
             storage.makedirs(manual_dir)
-            logger_info = logging.initialize_main_logger(logger_name='thumbnail_align', mp=num_workers>1)
             thumbnail_configs['logger'] = logger_info[0]
-            logger= logging.get_logger(logger_info[0])
             thumbnail_configs.setdefault('resolution', thumbnail_resolution)
             thumbnail_configs.setdefault('feature_match_dir', feature_match_dir)
             region_labels = []
-            material_table = config.material_table()
             for _, mat in material_table:
                 if mat.enable_mesh and (mat._stiffness_multiplier > 0.1) and (mat.mask_label is not None):
                     region_labels.append(mat.mask_label)
