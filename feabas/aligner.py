@@ -152,6 +152,11 @@ class Stack:
     def __init__(self, section_list=None, match_list=None, **kwargs):
         self._mesh_dir = kwargs.get('mesh_dir', None)
         self._mesh_out_dir = kwargs.get('mesh_out_dir', None)
+        self._tform_dir = kwargs.get('tform_dir', self._mesh_out_dir)
+        if self._tform_dir == self._mesh_out_dir:
+            self._mesh_dir_list = (self._mesh_dir, self._tform_dir)
+        else:
+            self._mesh_dir_list = (self._mesh_dir, self._mesh_out_dir, self._tform_dir)
         self._match_dir = kwargs.get('match_dir', None)
         self._chunk_dir = kwargs.get('chunk_dir', storage.join_paths(self._mesh_dir, 'chunks'))
         if section_list is None:
@@ -180,7 +185,7 @@ class Stack:
         self._link_cache.update(link_cache)
         self.lock_flags = defaultdict(lambda: False)
         if lock_flags is None:
-            lock_flags = self.aligned_and_committed
+            lock_flags = self.aligned_and_committed()
         if isinstance(lock_flags, dict):
             self.lock_flags.update(lock_flags)
         elif isinstance(lock_flags, (tuple, list, np.ndarray)):
@@ -199,7 +204,6 @@ class Stack:
                 else:
                     raise RuntimeError('no match list found.')
         self.match_list = self.filtered_match_list(match_list=match_list)
-        self.muted_match_list = []
         self.save_overflow = kwargs.get('save_overflow', True)
         self._logger = None
 
@@ -232,6 +236,7 @@ class Stack:
         init_dict = {}
         init_dict['mesh_dir'] = self._mesh_dir
         init_dict['mesh_out_dir'] = self._mesh_out_dir
+        init_dict['tform_dir'] = self._tform_dir
         init_dict['match_dir'] = self._match_dir
         match_list = self.filtered_match_list(secnames=secnames, check_lock=check_lock)
         section_list = self.filter_section_list_from_matches(match_list)
@@ -249,53 +254,84 @@ class Stack:
 
 
     def assign_section_to_chunks(self, chunk_map=None, **kwargs):
-        previous_chunk_map = kwargs.get('previous_chunk_map', None)
         default_chunk_size = kwargs.get('chunk_size', 16)
-        if previous_chunk_map is None:
-            default_file = storage.join_paths(self._chunk_dir, 'chunk_record.json')
-            if storage.file_exists(default_file):
-                previous_chunk_map = default_file
-        previous_chunk_map,_ = parse_json_file(previous_chunk_map)
+        chunk_map, _ = parse_json_file(chunk_map)
         if chunk_map is None:
-            default_file = storage.join_paths(self._mesh_dir, 'chuck_setting.json')
-            if storage.file_exists(default_file):
-                chunk_map = default_file
-        chunk_map, _ = parse_json_file(default_file)
-        if (chunk_map is None) and (previous_chunk_map is None):
-            pass
-        # TBC
+            chunk_map = {}
+            for k0 in range(0, self.num_sections, default_chunk_size):
+                secnames = self.section_list[k0:(k0+default_chunk_size)]
+                chunkname = '__'.join((secnames[0], secnames[-1]))
+                chunk_map[chunkname] = secnames
+        chunk_id_lut = {}
+        for k, secnames in enumerate(chunk_map.values()):
+            chunk_locks = self.aligned_and_committed(secnames=secnames)
+            self.update_lock_flags({s:l for s, l in zip(secnames, chunk_locks)})
+            for sn in secnames:
+                chunk_id_lut[sn] = k
+        secnames = [s for s in self.section_list if s in chunk_id_lut]
+        match_list = []
+        muted_match_list = []
+        for matchname in self.match_list:
+            name0, name1 = self.matchname_to_secnames(matchname)
+            if (name0 in chunk_id_lut) and (name1 in chunk_id_lut) and (chunk_id_lut[name0] == chunk_id_lut[name1]):
+                match_list.append(matchname)
+            else:
+                muted_match_list.append(matchname)
+        self.update_section_list(secnames)
+        self.update_match_list(match_list)
+        return chunk_map, muted_match_list
 
 
   ## --------------------------- meshes & matches -------------------------- ##
+    def update_section_list(self, section_list):
+        if self.section_list != section_list:
+            self.section_list = section_list
+            self._name_id_lut = None
+            self._section_connection_matrix = None
+            self._matchname_to_secids_mapper = None
+
+
+    def update_match_list(self, match_list):
+        if self.match_list != match_list:
+            self.match_list = match_list
+            self._secname_to_matchname_mapper = None
+            self._section_connection_matrix = None
+            self._matchname_to_secids_mapper = None
+
+
     def get_mesh(self, secname):
         if not isinstance(secname, str):
             secname = self.section_list[int(secname)]   # indexing by id
         if secname in self._mesh_cache:
             self._mesh_cache.move_to_end(secname, last=True)
             return self._mesh_cache[secname]
-        elif self._mesh_dir is None:
-            raise RuntimeError('mesh_dir not defined.')
         else:
-            meshpath = storage.join_paths(self._mesh_out_dir, secname+'.h5')
-            if not storage.file_exists(meshpath):
-                meshpath = storage.join_paths(self._mesh_dir, secname+'.h5')
-            if not storage.file_exists(meshpath):
-                raise RuntimeError(f'{meshpath} not found.')
-            uid = self.secname_to_id(secname)
-            locked = self.lock_flags[secname]
-            M = Mesh.from_h5(meshpath, uid=uid, locked=locked, name=secname)
-            M.change_resolution(self._resolution)
-            Ms = M.divide_disconnected_mesh(save_material=True)
-            if self._mesh_cache_size > 0:
-                self._mesh_cache[secname] = Ms
-            while len(self._mesh_cache) > self._mesh_cache_size:
-                self.dump_first_mesh()
+            for fdir in self._mesh_dir_list[::-1]:
+                meshpath = storage.join_paths(fdir, secname+'.h5')
+                if (meshpath is not None) and storage.file_exists(meshpath):
+                    uid = self.secname_to_id(secname)
+                    locked = self.lock_flags[secname]
+                    M = Mesh.from_h5(meshpath, uid=uid, locked=locked, name=secname)
+                    M.change_resolution(self._resolution)
+                    Ms = M.divide_disconnected_mesh(save_material=True)
+                    if (self._mesh_cache_size is None) or (self._mesh_cache_size > 0):
+                        self._mesh_cache[secname] = Ms
+                        self.trim_mesh_cache()
+                    break
+            else:
+                raise RuntimeError(f'mesh for {secname} not found.')
             return Ms
 
 
     def flush_meshes(self):
         while bool(self._mesh_cache):
             self.dump_first_mesh()
+
+
+    def trim_mesh_cache(self):
+        if self._mesh_cache_size is not None:
+            while len(self._mesh_cache) > self._mesh_cache_size:
+                self.dump_first_mesh()
 
 
     def dump_first_mesh(self):
@@ -310,7 +346,9 @@ class Stack:
 
     def save_mesh_for_one_section(self, secname, Ms=None):
         saved = False
-        if self._mesh_out_dir is None:
+        flag = max(1, np.max(list(self.mesh_versions.values())))
+        out_dir = self._mesh_dir_list[flag]
+        if out_dir is None:
             return saved
         if Ms is None:
             if secname in self._mesh_cache:
@@ -327,10 +365,11 @@ class Stack:
                 logger.warning(f'{secname}: partially not anchored.')
         if len(anchored_meshes) > 0:
             M = Mesh.combine_mesh(anchored_meshes, save_material=True)
-            outname = storage.join_paths(self._mesh_out_dir, secname + '.h5')
+            outname = storage.join_paths(out_dir, secname + '.h5')
             if M.modified_in_current_session or not storage.file_exists(outname):
                 M.save_to_h5(outname, vertex_flags=const.MESH_GEARS, save_material=True)
                 saved = True
+                self._mesh_versions[secname] = flag
                 for m in anchored_meshes:
                     m.modified_in_current_session = False
         return saved
@@ -444,29 +483,37 @@ class Stack:
             buffer_size = kwargs.get('buffer_size', window_size//4)
         if buffer_size < 1:
             buffer_size = round(buffer_size * window_size)
+        updated_sections = []
         residues = {}
         to_optimize = ~self.locked_array
         while np.any(to_optimize):
             connected_free_sections = self.connected_sections(section_filter=to_optimize)
             if len(connected_free_sections) > 1:
-                args_list = []
                 kwarg_list = [kwargs]
                 anchored = np.zeros(len(connected_free_sections), dtype=bool)
+                secname_lists = []
                 secnums = np.zeros(len(connected_free_sections), dtype=np.uint32)
                 for ks, slist in enumerate(connected_free_sections):
                     secnames = self.pad_section_list_w_refs(section_list=slist)
                     if len(secnames) > len(slist):
                         anchored[ks] = True
                     secnums[ks] = len(slist)
-                    args_list.append(self.init_dict(secnames=secnames, check_lock=True))
+                    secname_lists.append(secname)
                 if ensure_continuous:
                     if np.any(anchored):
-                        args_list = [s for flg, s in zip(anchored, args_list) if flg]
+                        secname_lists = [s for flg, s in zip(anchored, secname_lists) if flg]
                     else:
                         indx = np.argmax(secnums)
-                        args_list = [args_list[indx]]
-                for res in submit_to_workers(Stack.subprocess_optimize_stack, args=args_list, kwargs=kwarg_list, num_workers=num_workers, **worker_settings):
+                        secname_lists = [secname_lists[indx]]
+                args_list = [self.init_dict(secnames=sn, check_lock=True) for sn in secname_lists]
+                for reslt in submit_to_workers(Stack.subprocess_optimize_stack, args=args_list, kwargs=kwarg_list, num_workers=num_workers, **worker_settings):
+                    snms, res = reslt
+                    updated_sections.extend(snms)
                     residues.update(res)
+                    for sn in snms:
+                        self._mesh_cache.pop(sn, None)
+                self.update_lock_flags({s: True for s in updated_sections})
+                self._mesh_versions = None
                 break
             else:
                 seclist0 = connected_free_sections[0]
@@ -477,7 +524,9 @@ class Stack:
                     res = self.optimize_section_list(seclist_w_ref, **kwargs)
                     residues.update(res)
                     for secname in seclist0:
-                        self.save_mesh_for_one_section(secname)
+                        updated = self.save_mesh_for_one_section(secname)
+                        if updated:
+                            updated_sections.append(secname)
                     self.update_lock_flags({s: True for s in seclist0})
                 else:
                     seeding = to_optimize
@@ -517,10 +566,12 @@ class Stack:
                     res = self.optimize_section_list(seclist, **kwargs)
                     residues.update(res)
                     for secname in seclist_cmt:
-                        self.save_mesh_for_one_section(secname)
+                        updated = self.save_mesh_for_one_section(secname)
+                        if updated:
+                            updated_sections.append(secname)
                     self.update_lock_flags({s: True for s in seclist_cmt})
                 to_optimize = ~self.locked_array
-        return residues
+        return updated_sections, residues
 
 
     def optimize_section_list(self, section_list, **kwargs):
@@ -598,7 +649,7 @@ class Stack:
 
   ## -------------------------------- queries ------------------------------ ##
     def secname_to_id(self, secname):
-        if not hasattr(self, '_name_id_lut'):
+        if (not hasattr(self, '_name_id_lut')) or (self._name_id_lut is None):
             self._name_id_lut = {name: k for k, name in enumerate(self.section_list)}
         return self._name_id_lut.get(secname, -1)
 
@@ -609,7 +660,7 @@ class Stack:
 
     @property
     def section_connection_matrix(self):
-        if not hasattr(self, '_section_connection_matrix'):
+        if not hasattr(self, '_section_connection_matrix') or (self._section_connection_matrix is None):
             edges = np.array([s for s in self.matchname_to_secids_mapper.values()])
             idx0 = edges[:,0]
             idx1 = edges[:,1]
@@ -652,19 +703,30 @@ class Stack:
 
 
     @property
-    def aligned_and_committed(self):
-        if self._mesh_out_dir is None:
-            return np.zeros(self.num_sections, dtype=bool)
-        tform_list = storage.list_folder_content(storage.join_paths(self._mesh_out_dir, '*.h5'))
-        tnames = [os.path.basename(s).replace('.h5','') for s in tform_list]
-        flags = np.array([s in tnames for s in self.section_list])
-        return flags
+    def mesh_versions(self):
+        if (not hasattr(self, '_mesh_versions')) or (self._mesh_versions is None):
+            version_list = []
+            for k, fdir in enumerate(self._mesh_dir_list[1:]):
+                tlist = storage.list_folder_content(storage.join_paths(fdir, '*.h5'))
+                tnames = [os.path.basename(s).replace('.h5', '') for s in tlist]
+                version_list.append({s: (k+1) for s in tnames})
+            self._mesh_versions = defaultdict(int)
+            for tnames in version_list:
+                self._mesh_versions.update(tnames)
+        return self._mesh_versions
 
+
+    def aligned_and_committed(self, secnames=None):
+        if secnames is None:
+            secnames = self.section_list
+        flags = np.array([self.mesh_versions[s] for s in secnames])
+        committed = (flags > 0) & (flags == np.max(flags))
+        return committed
 
 
     @property
     def secname_to_matchname_mapper(self):
-        if not hasattr(self, '_secname_to_matchname_mapper'):
+        if not hasattr(self, '_secname_to_matchname_mapper') or (self._secname_to_matchname_mapper is None):
             self._secname_to_matchname_mapper = defaultdict(set)
             for matchname in self.match_list:
                 names = self.matchname_to_secnames(matchname)
@@ -675,7 +737,7 @@ class Stack:
 
     @property
     def matchname_to_secids_mapper(self):
-        if not hasattr(self, '_matchname_to_secids_mapper'):
+        if not hasattr(self, '_matchname_to_secids_mapper') or (self._matchname_to_secids_mapper is None):
             self._matchname_to_secids_mapper  = OrderedDict()
             for matchname in self.match_list:
                 names = self.matchname_to_secnames(matchname)

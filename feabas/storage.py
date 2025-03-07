@@ -53,6 +53,8 @@ def load_yaml(filename):
 
 
 def list_folder_content(pathname, recursive=False):
+    if pathname is None:
+        return []
     driver, pathname = parse_file_driver(pathname)
     if driver == 'file':
         flist = glob.glob(pathname, recursive=recursive)
@@ -72,6 +74,8 @@ def list_folder_content(pathname, recursive=False):
 
 
 def file_exists(filename):
+    if filename is None:
+        return False
     driver, filename = parse_file_driver(filename)
     if driver == 'gs':
         blob = GCP_get_blob(filename)
