@@ -356,11 +356,11 @@ class MaterialTable:
                 mat = Material.from_init_dict(template, name=name)
             self._table[name] = mat
         if 'exclude' not in self._table:
-            uid = MATERIAL_DEFAULT['uid']
+            uid = MATERIAL_EXCLUDE['uid']
             uids = self.uids
             while uid in uids:
                 uid -= 1
-            MATERIAL_DEFAULT['uid'] = uid
+            MATERIAL_EXCLUDE['uid'] = uid
             self._table['exclude'] =  Material(**MATERIAL_EXCLUDE)
         if check_uid:
             uids = self.uids

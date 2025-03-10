@@ -158,7 +158,6 @@ class Stack:
         else:
             self._mesh_dir_list = (self._mesh_dir, self._mesh_out_dir, self._tform_dir)
         self._match_dir = kwargs.get('match_dir', None)
-        self._chunk_dir = kwargs.get('chunk_dir', storage.join_paths(self._mesh_dir, 'chunks'))
         if section_list is None:
             if self._mesh_dir is None:
                 raise RuntimeError('mesh_dir not defined.')
