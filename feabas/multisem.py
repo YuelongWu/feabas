@@ -151,6 +151,10 @@ def filter_links_from_sfov_pattern(stitcher, **kwargs):
     cost0 = (0, 0)
     if residue_threshold is None:
         return num_disabled, cost0
+    elif residue_threshold <= 1:
+        overlap_width = np.median(stitcher.overlap_widths)
+        residue_threshold = residue_threshold * overlap_width
+        kwargs['residue_threshold'] = residue_threshold
     mfovids, beamids = mfovids_beamids_from_filenames(stitcher.imgrelpaths)
     _, mfovids = np.unique(mfovids, return_inverse=True)
     if stitcher._optimizer is None:

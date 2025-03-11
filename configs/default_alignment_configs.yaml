@@ -29,7 +29,6 @@ matching:
 optimization:
     stack_config:
         mip_level: 0    # all the matching points and meshes are scaled to this mip level before optimization
-        mesh_cache_size: 90 # number of meshes to cache in RAM. should be larger than window_size + buffer_size
     slide_window:
         num_workers: 2
         start_loc: M    # starting location of the optimization. L: left, R: right, M: start from middle and move in both directions

@@ -170,7 +170,7 @@ class Stack:
             section_list = rearrange_section_order(section_list, section_order_file)[0]
         assert len(section_list) == len(set(section_list))
         self.section_list = tuple(section_list)
-        self._mesh_cache_size = kwargs.get('mesh_cache_size', self.num_sections)
+        self._mesh_cache_size = kwargs.get('mesh_cache_size', 0)
         self._link_cache_size = kwargs.get('link_cache_size', None)
         self._match_name_delimiter = kwargs.get('match_name_delimiter', '__to__')
         lock_flags = kwargs.get('lock_flags', None)
@@ -474,6 +474,7 @@ class Stack:
         window_size = kwargs.get('window_size', None)
         worker_settings = kwargs.get('worker_settings', {}).copy()
         ensure_continuous = kwargs.pop('ensure_continuous', False) # ensure all sections are connected or linked to a reference section, otherwise align the largest bunch
+        no_slide = kwargs.get('no_slide', False)    # align only small segments of the stack that can be done in one shot and don't require window to slide
         if kwargs.get('logger', None) is not None:
             self._logger = kwargs['logger']
         if (window_size is None) or window_size > self.num_sections:
@@ -504,7 +505,11 @@ class Stack:
                     else:
                         indx = np.argmax(secnums)
                         secname_lists = [secname_lists[indx]]
+                if no_slide:
+                    secname_lists = [s for s in secname_lists if len(secname_lists) <= (window_size + buffer_size)]
                 args_list = [self.init_dict(secnames=sn, check_lock=True) for sn in secname_lists]
+                if len(args_list) == 0:
+                    break
                 for reslt in submit_to_workers(Stack.subprocess_optimize_stack, args=args_list, kwargs=kwarg_list, num_workers=num_workers, **worker_settings):
                     snms, res = reslt
                     updated_sections.extend(snms)
@@ -528,6 +533,8 @@ class Stack:
                             updated_sections.append(secname)
                     self.update_lock_flags({s: True for s in seclist0})
                 else:
+                    if no_slide:
+                        break
                     seeding = to_optimize
                     if np.all(seeding):
                         seeding = seeding.copy()
@@ -756,6 +763,73 @@ class Stack:
         stack = Stack(**init_dict)
         func = getattr(stack, process_name)
         return func(**kwargs)
+
+
+
+class SectionChunkMap():
+    def __init__(self, chunk_map):
+        if isinstance(chunk_map, str):
+            chunk_map, _ = parse_json_file(chunk_map)
+        self._chunk_map = chunk_map
+
+
+    def section_chunk_id(self, section_list):
+        indx_map = defaultdict(list)
+        for k, sname in enumerate(section_list):
+            for cname, slist in self._chunk_map.items():
+                if sname in slist:
+                    indx_map[cname].append(k)
+                    break
+        cnames = sorted(indx_map, key=lambda s: np.mean(indx_map[s]))
+        section_chunk_id = np.full(len(section_list), -1, dtype=np.int32)
+        for k, cnm in enumerate(cnames):
+            section_chunk_id[indx_map[cnm]] = k
+        return section_chunk_id, cnames
+
+
+
+class ChunkedAligner():
+    def __init__(self, mesh_dir, tform_dir, chunk_dir, match_dir, **kwargs):
+        self._mesh_dir = mesh_dir
+        self._tform_dir = tform_dir
+        self._chunk_dir = chunk_dir
+        self._match_dir = match_dir
+        chunk_map = kwargs.get('chunk_map', None)
+        mip_level = kwargs.get('mip_level', 0)
+        self._resolution = montage_resolution() * (2 ** mip_level)
+        if isinstance(chunk_map, str):
+            chunk_map, _ = parse_json_file(chunk_map)
+        self._chunk_map = chunk_map
+        chunk_map_file = kwargs.get('chunk_map_file', storage.join_paths(self._chunk_dir, 'chunk_map.json'))
+        self._chunk_size = kwargs.get('chunk_size', 16)
+        self._meta_dir = kwargs.get('meta_dir', storage.join_paths(self._chunk_dir, 'meta_sections'))
+        self._references = kwargs.get('references', [])
+        section_order_file = kwargs.get('section_order_file', storage.join_paths(self._mesh_dir, 'section_order.txt'))
+
+
+    def attach_fragments(self, **kwargs):
+        num_section_limit = kwargs.pop('num_section_limit', self._chunk_size)
+
+
+    def align_within_chunks(self):
+        pass
+
+
+    def generate_meta_sections(self):
+        pass
+
+
+    def align_meta_sections(self):
+        pass
+
+
+    def predeform_sections(self):
+        pass
+
+
+    def relax_junctions(self):
+        pass
+
 
 
 def get_convex_hull(tname, wkb=False, resolution=None):

@@ -53,16 +53,13 @@ alignment:
             mesh_size: 100  # mesh size in pixel of thumbnail resolution
             simplify_tol: 2
             area_thresh: 9
-        stack_config:
-            mip_level: 0    # all the matching points and meshes are scaled to this mip level before optimization
-            mesh_cache_size: 90 # number of meshes to cache in RAM. should be larger than window_size + buffer_size
         slide_window:
             num_workers: 2
             start_loc: M    # starting location of the optimization. L: left, R: right, M: start from middle and move in both directions
             window_size: 64 # the width of the sliding window
             buffer_size: 16 # the number of overlapping sections to re-optimize when window is moved, to minimize potential fringe effects.
             residue_mode: huber
-            residue_len: 20 # matching points with error larger than this width will be weakened in the second round of mesh relaxation
+            residue_len: 10 # matching points with error larger than this width will be weakened in the second round of mesh relaxation
             elastic_params:
                 tol: 1.0e-7 # convergence tolerance for the solver
                 atol: 0.001
