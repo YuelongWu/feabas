@@ -672,6 +672,7 @@ class Stitcher:
 
 
     def initialize_optimizer(self, **kwargs):
+        kwargs.setdefault('stiffness_lambda', 2000)
         if (not kwargs.get('force_update', False)) and (self._optimizer is not None):
             return False
         if (self.meshes is None) or (self.num_links == 0):
@@ -1732,6 +1733,7 @@ class MontageRenderer:
                 rendered_mask = np.zeros(mask_shape[::-1], dtype=np.uint8)
                 id_x, id_y = writer.morton_xy_grid()
                 rendered_mask[id_y, id_x] = checkpoints * 255
+                storage.makedirs(os.path.dirname(mask_out), exist_ok=True)
                 common.imwrite(mask_out, rendered_mask)
         bboxes_list, filenames_list, hits_list = self.divide_render_jobs(render_series,
             num_workers=num_workers, max_tile_per_job=20)

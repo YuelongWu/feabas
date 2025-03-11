@@ -1796,7 +1796,7 @@ def transform_mesh(mesh_unlocked, mesh_locked, **kwargs):
     mesh_unlocked.change_resolution(mesh_locked.resolution)
     xy_fix = mesh_locked.vertices_w_offset(gear=const.MESH_GEAR_INITIAL)
     xy0 = xy_fix
-    opt = SLM([mesh_locked, mesh_unlocked], stiffness_lambda=0.01)
+    opt = SLM([mesh_locked, mesh_unlocked], stiffness_lambda=1.0)
     opt.divide_disconnected_submeshes()
     opt.add_link_from_coordinates(mesh_locked.uid, mesh_unlocked.uid, xy0, xy0, check_duplicates=False)
     opt.optimize_affine_cascade()
