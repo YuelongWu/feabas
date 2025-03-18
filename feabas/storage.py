@@ -112,13 +112,14 @@ def makedirs(filename, exist_ok=True):
 
 def remove_file(filename):
     if not file_exists(filename):
-        return
+        return False
     driver, filename = parse_file_driver(filename)
     if driver == 'gs':
         blob = GCP_get_blob(filename)
         blob.delete()
     else:
         os.remove(filename)
+    return True
 
 
 def h5file_class():

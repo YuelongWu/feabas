@@ -148,7 +148,7 @@ def optimize_main(section_list):
     stk.update_lock_flags({s: storage.file_exists(storage.join_paths(tform_dir, s + '.h5')) for s in section_list})
     locked_flags = stk.locked_array
     logger.info(f'{locked_flags.size} images| {np.sum(locked_flags)} references')
-    cost = stk.optimize_slide_window(optimize_rigid=True, optimize_elastic=True,
+    _, cost = stk.optimize_slide_window(optimize_rigid=True, optimize_elastic=True,
         target_gear=const.MESH_GEAR_MOVING, **slide_window)
     if storage.file_exists(storage.join_paths(tform_dir, 'residue.csv')):
         cost0 = {}
@@ -372,7 +372,7 @@ if __name__ == '__main__':
         raise RuntimeError(f'{args.mode} not supported mode.')
 
 
-    from feabas import material, dal, common
+    from feabas import dal, common
     from feabas.mesh import Mesh
     from feabas.mipmap import get_image_loader, mip_map_one_section, mip_one_level_tensorstore_3d
     from feabas.aligner import match_section_from_initial_matches
@@ -468,6 +468,8 @@ if __name__ == '__main__':
                 canvas_bbox = [float(s) for s in line.strip().split('\t')]
                 logger.info(f'use canvas bounding box {canvas_bbox}')
                 align_config['canvas_bbox'] = canvas_bbox
+        if (canvas_bbox is not None) and (mip_level != 0):
+            canvas_bbox = [round(s / (2**mip_level)) for s in canvas_bbox]
         driver = align_config.get('driver', 'neuroglancer_precomputed')
         if driver == 'zarr':
             tensorstore_render_dir = tensorstore_render_dir + '0/'

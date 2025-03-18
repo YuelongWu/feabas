@@ -426,6 +426,7 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
     continue_on_flip = kwargs.get('continue_on_flip', True)
     callback_settings = kwargs.get('callback_settings', {'early_stop_thresh': 0.1, 'chances':10, 'eval_step': 5})
     render_weight_threshold = kwargs.get('render_weight_threshold', 0)
+    stiffness_lambda = kwargs.pop('stiffness_lambda', 1)
     if num_workers > 1 and batch_size is not None:
         batch_size = max(1, batch_size / num_workers)
     if isinstance(image_loader0, dal.AbstractImageLoader):
@@ -452,7 +453,7 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
         ht0 = bbox[3] - bbox[1]
         lside = max(wd0, ht0)
         spacings[spacings < 1] *= lside
-    opt = optimizer.SLM([mesh0, mesh1], stiffness_lambda=0.2)
+    opt = optimizer.SLM([mesh0, mesh1], stiffness_lambda=stiffness_lambda)
     if initial_matches is not None:
         xy0, xy1, weight = initial_matches
         opt.add_link_from_coordinates(mesh0.uid, mesh1.uid, xy0, xy1,

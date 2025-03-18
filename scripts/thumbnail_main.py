@@ -597,7 +597,7 @@ if __name__ == '__main__':
                 stk = Stack(section_list=secname_list, mesh_dir=tmp_mesh_dir, match_dir=match_dir, mesh_out_dir=tform_dir, **stack_config)
                 section_list = stk.section_list
                 stk.update_lock_flags({s: storage.file_exists(storage.join_paths(tform_dir, s + '.h5')) for s in section_list})
-                cost = stk.optimize_slide_window(optimize_rigid=True, optimize_elastic=True, 
+                _, cost = stk.optimize_slide_window(optimize_rigid=True, optimize_elastic=True, 
                     target_gear=constant.MESH_GEAR_MOVING, **slide_window)
         if (mode == 'render') or (mode == 'alignment'):
             render_configs = thumbnail_configs.get('render', {})

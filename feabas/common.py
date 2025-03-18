@@ -663,7 +663,8 @@ def rearrange_section_order(section_list, section_order_file, order_file_only=Tr
         assert len(section_orders) == len(set(section_orders))
         secnames = [os.path.splitext(os.path.basename(fname))[0] for fname in section_list]
         section_lut = {secname:fname for secname, fname in zip(secnames, section_list)}
-        section_orders = [s for s in section_orders if s in secnames]
+        secnames_set = set(secnames)
+        section_orders = [s for s in section_orders if s in secnames_set]
         if order_file_only:
             section_list_out = [section_lut[s] for s in section_orders if s in section_lut]
             z_indices = [z_lut[s] for s in section_orders if s in section_lut]
