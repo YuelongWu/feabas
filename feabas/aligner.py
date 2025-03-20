@@ -1,4 +1,5 @@
 from collections import defaultdict, OrderedDict
+from functools import partial
 import json
 import numpy as np
 import os
@@ -132,6 +133,36 @@ def match_section_from_initial_matches(match_name, meshes, loaders, out_dir, con
             f.create_dataset('name1', data=str_to_numpy_ascii(secnames[1]))
         return len(xy0)
 
+
+def get_convex_hull(tname, wkb=False, resolution=None):
+    M = Mesh.from_h5(tname)
+    if resolution is not None:
+        M.change_resolution(resolution)
+    R = M.shapely_regions(gear=const.MESH_GEAR_MOVING, offsetting=True)
+    R = shapely.convex_hull(R)
+    if wkb:
+        return shapely.to_wkb(R)
+    else:
+        return R
+
+
+def apply_transform_normalization(tname, out_dir=None, R=np.eye(3), txy=np.zeros(2),resolution=None):
+    M = Mesh.from_h5(tname)
+    locked = M.locked
+    M.locked = False
+    if resolution is not None:
+        M.change_resolution(resolution)
+    M.apply_affine(R, gear=const.MESH_GEAR_FIXED)
+    M.apply_translation(txy, gear=const.MESH_GEAR_FIXED)
+    if M.vertices_initialized(gear=const.MESH_GEAR_MOVING):
+        M.apply_affine(R, gear=const.MESH_GEAR_MOVING)
+        M.apply_translation(txy, gear=const.MESH_GEAR_MOVING)
+    if out_dir is not None:
+        outname = storage.join_paths(out_dir, os.path.basename(tname))
+    else:
+        outname = tname
+    M.locked = locked
+    M.save_to_h5(outname, vertex_flags=const.MESH_GEARS, save_material=True)
 
 
 class Stack:
@@ -812,6 +843,7 @@ class Aligner():
         self._meta_tform_dir = storage.join_paths(self._meta_dir, 'tform')
         self._meta_match_dir = storage.join_paths(self._meta_dir, 'matches')
         self._logger = storage.get('logger', None)
+        self._user_section_list = kwargs.get('section_list', None)
 
 
     def get_section_list(self):
@@ -822,6 +854,8 @@ class Aligner():
         sec_dict.update({os.path.basename(s).replace('.h5', ''): Aligner.CHUNK_ALIGNED for s in chunklist})
         sec_dict.update({os.path.basename(s).replace('.h5', ''): Aligner.ALIGNED for s in tformlist})
         secnames = sorted(sec_dict)
+        if self._user_section_list is not None:
+            secnames = [s for s in self._user_section_list if s in set(secnames)]
         if self._chunk_map is not None:
             secname_filt = set().union(*self._chunk_map.values())
             secnames = [s for s in secnames if s in secname_filt]
@@ -920,6 +954,28 @@ class Aligner():
         return self._mesh_versions
 
 
+    def mesh_locations(self, secnames=None):
+        if secnames is None:
+            secnames = self.section_list
+        mesh_dir_list = {Aligner.UNALIGNED: self._mesh_dir,
+                         Aligner.CHUNK_ALIGNED: self._chunk_dir,
+                         Aligner.ALIGNED: self._tform_dir}
+        locs = {}
+        for snm in secnames:
+            mvid = self.mesh_versions.get(snm, None)
+            if mvid is None:
+                locs[snm] = None
+            else:
+                pdir = mesh_dir_list[mvid]
+                locs[snm] = storage.join_paths(pdir, snm+'.h5')
+        return locs
+
+
+    @property
+    def mesh_versions_array(self):
+        return np.array([self.mesh_versions.get(s, Aligner.UNALIGNED) for s in self.section_list])
+
+
     @property
     def chunk_map(self):
         if self._chunk_map is None:
@@ -963,9 +1019,13 @@ class Aligner():
 
 
     def run(self, **kwargs):
-        nesting_depth = kwargs.pop('nesting_depth', 0)
+        num_workers = kwargs.pop('num_workers', 1)
+        slide_window = kwargs.setdefault('slide_window', {'num_workers': num_workers})
+        worker_settings = kwargs.get('worker_settings', {})
+        slide_window.setdefault('num_workers', num_workers)
+        chunked_to_depth = kwargs.pop('chunked_to_depth', 0)
         residues = {}
-        if nesting_depth == 0:
+        if chunked_to_depth == 0:
             kwargs.setdefault('ensure_continuous', True)
             residues.update(self.window_align(**kwargs))
         else:
@@ -973,22 +1033,25 @@ class Aligner():
             kwargs.pop('ensure_continuous', None)
             kwargs.pop('include_chunk_dir', None)
             residues.update(self.window_align(no_slide=True, ensure_continuous=True, include_chunk_dir=True, **kwargs))
-            residues.update(self.align_within_chunks(**kwargs))
-            meta_aligner_settings = {
-                "mesh_dir": self._meta_mesh_dir,
-                "tform_dir": self._meta_tform_dir,
-                "match_dir": self._meta_match_dir,
-                "match_name_delimiter": self._match_name_delimiter,
-                "mip_level": self._mip_level,
-                "junction_width": self._junction_width,
-                "default_chunk_size": self._default_chunk_size,
-                "logger": self._logger
-            }
-            meta_aligner = Aligner(**meta_aligner_settings)
-            if nesting_depth is not None:
-                nesting_depth -= 1
-            meta_aligner.run(nesting_depth=nesting_depth, **kwargs)
-            residues.update(self.window_align(no_slide=False, ensure_continuous=True, include_chunk_dir=True, **kwargs))
+            if np.any(self.mesh_versions_array != Aligner.ALIGNED):
+                residues.update(self.align_within_chunks(**kwargs))
+                meta_aligner_settings = {
+                    "mesh_dir": self._meta_mesh_dir,
+                    "tform_dir": self._meta_tform_dir,
+                    "match_dir": self._meta_match_dir,
+                    "match_name_delimiter": self._match_name_delimiter,
+                    "mip_level": self._mip_level,
+                    "junction_width": self._junction_width,
+                    "default_chunk_size": self._default_chunk_size,
+                    "logger": self._logger,
+                    "section_list": self.chunk_names
+                }
+                meta_aligner = Aligner(**meta_aligner_settings)
+                if chunked_to_depth is not None:
+                    chunked_to_depth -= 1
+                meta_aligner.run(chunked_to_depth=chunked_to_depth, **kwargs)
+                self.predeform_sections_by_chunk(num_workers=num_workers, worker_settings=worker_settings)
+                residues.update(self.window_align(no_slide=False, ensure_continuous=True, include_chunk_dir=True, **kwargs))
         return residues
 
 
@@ -999,8 +1062,7 @@ class Aligner():
         kwargs.setdefault('logger', self._logger)
         lock_flags = kwargs.get('lock_flags', None)
         if lock_flags is None:
-            mesh_versions = np.array([self.mesh_versions.get(s, Aligner.UNALIGNED) for s in self.section_list])
-            kwargs.setdefault('lock_flags', mesh_versions==Aligner.ALIGNED)
+            kwargs.setdefault('lock_flags', self.mesh_versions_array==Aligner.ALIGNED)
         if include_chunk_dir:
             kwargs.setdefault('mesh_out_dir', self._chunk_dir)
             kwargs.setdefault('tform_dir', self._tform_dir)
@@ -1026,7 +1088,9 @@ class Aligner():
     def align_within_chunks(self, **kwargs):
         stack_config = kwargs.get('stack_config', {}).copy()
         slide_window = kwargs.get('slide_window', {}).copy()
-        slide_window.setdefault('worker_settings', kwargs.pop('worker_settings', {}).copy())
+        num_workers = slide_window.get('num_workers', 1)
+        worker_settings = kwargs.pop('worker_settings', {})
+        worker_settings = slide_window.setdefault('worker_settings', worker_settings)
         slide_window.setdefault('no_slide', False)
         slide_window.setdefault('ensure_continuous', False)
         changed_chunks, _ = self.resolve_chunk_version_differences(remove_file=True)
@@ -1034,8 +1098,8 @@ class Aligner():
             storage.makedirs(os.path.dirname(self._chunk_map_file))
             with storage.File(self._chunk_map_file, 'w') as f:
                 json.dump(self.chunk_map, f, indent=2)
-        mesh_versions = np.array([self.mesh_versions.get(s, Aligner.UNALIGNED) for s in self.section_list])
-        lock_flags = mesh_versions > Aligner.UNALIGNED
+        mesh_versions_array = self.mesh_versions_array
+        lock_flags = mesh_versions_array > Aligner.UNALIGNED
         stack_config.setdefault('lock_flags', lock_flags)
         stack = self.initialize_stack(include_chunk_dir=True, **stack_config)
         if self._junction_width > 0:
@@ -1059,7 +1123,7 @@ class Aligner():
         storage.makedirs(self._meta_match_dir)
         section_chunk_id = self.section_chunk_id
         n_chunk = int(np.max(section_chunk_id)+1)
-        chunk_versions = np.maximum.at(np.arange(n_chunk), section_chunk_id, mesh_versions)
+        chunk_versions = np.maximum.at(np.arange(n_chunk), section_chunk_id, mesh_versions_array)
         chunk_lock_flags = chunk_versions == 2
         chunk_matches = defaultdict(list)
         resolution = stack._resolution
@@ -1077,6 +1141,7 @@ class Aligner():
             if locked0 and locked1:
                 continue
             chunk_matches[(cid0, cid1)].append(mtch)
+        args_list = []
         for cids, mtchnames in chunk_matches.items():
             cid0, cid1 = cids
             flip_flag = [False] * len(mtchnames)
@@ -1090,38 +1155,15 @@ class Aligner():
             outname = storage.join_paths(self._meta_match_dir, self.chunk_names[cid0] + self._match_name_delimiter + self.chunk_names[cid1] + '.h5')
             if (cid0 not in updated_chunks) and (cid1 not in updated_chunks) and storage.file_exists(outname):
                 continue
-            XY0 = []
-            XY1 = []
-            WTS = []
-            for mnm, flp in zip(mtchnames, flp):
-                mtchpath = storage.join_paths(self._match_dir, mnm+'.h5')
-                mtch = read_matches_from_h5(mtchpath, target_resolution=resolution)
-                xy0_i, xy1_i, wt = mtch
-                secnames = mnm.split(self._match_name_delimiter)
-                m0 = stack.get_mesh(secnames[0], divide=False)[0]
-                m1 = stack.get_mesh(secnames[1], divide=False)[0]
-                tid0, B0 = m0.cart2bary(xy0_i, gear=const.MESH_GEAR_INITIAL, tid=None, extrapolate=True)
-                tid1, B1 = m1.cart2bary(xy1_i, gear=const.MESH_GEAR_INITIAL, tid=None, extrapolate=True)
-                xy0 = m0.bary2cart(tid0, B0, gear=const.MESH_GEAR_MOVING, offsetting=True)
-                xy1 = m1.bary2cart(tid1, B1, gear=const.MESH_GEAR_MOVING, offsetting=True)
-                if flp:
-                    XY0.append(xy1)
-                    XY1.append(xy0)
-                else:
-                    XY0.append(xy0)
-                    XY1.append(xy1)
-                WTS.append(wt)
-            XY0 = np.concatenate(XY0, axis=0)
-            XY1 = np.concatenate(XY1, axis=0)
-            WTS = np.concatenate(WTS)
-            with H5File(outname, 'w') as f:
-                f.create_dataset('xy0', data=XY0, compression="gzip")
-                f.create_dataset('xy1', data=XY1, compression="gzip")
-                f.create_dataset('weight', data=WTS, compression="gzip")
-                f.create_dataset('resolution', data=resolution)
-                f.create_dataset('name0', data=str_to_numpy_ascii(self.chunk_names[cid0]))
-                f.create_dataset('name1', data=str_to_numpy_ascii(self.chunk_names[cid1]))
+            secnames = set(snm for mnm in mtchnames for snm in mnm.split(self._match_name_delimiter))
+            mesh_list = self.mesh_locations(secnames=secnames)
+            args_list.append([mtchnames, flip_flag, outname, mesh_list])
+        if len(args_list) > 0:
+            tfunc = partial(Aligner._merge_chunked_matches, match_dir=self._match_dir, resolution=resolution, match_name_delimiter=self._match_name_delimiter)
+            for _ in submit_to_workers(tfunc, args=args_list, num_workers=num_workers, **worker_settings):
+                pass
         relvant_chunk_ids = set().union(*chunk_matches)
+        args_list = []
         for cid in relvant_chunk_ids:
             chnkname = self.chunk_names[cid]
             if chunk_lock_flags[cid]:
@@ -1130,53 +1172,43 @@ class Aligner():
                 outname = storage.join_paths(self._meta_mesh_dir, chnkname + '.h5')
             if storage.file_exists(outname) and (cid not in updated_chunks):
                 continue
-            regions = []
-            region_areas = 0
-            num_tri = 0
+            secnames = self.chunk_map[chnkname]
+            mesh_list = self.mesh_locations(secnames=secnames)
             m_init_dict = {'resolution': resolution, 'name': chnkname, 'uid':cid, 'locked': chunk_lock_flags[cid]}
-            sec_idx = np.flatnonzero(section_chunk_id == cid)
-            for sid in sec_idx:
-                secname = self.section_list[sid]
-                m0 = stack.get_mesh(secname, divide=False)[0]
-                reg = m0.shapely_regions(gear=const.MESH_GEAR_MOVING, offsetting=True)
-                region_areas += reg.area
-                num_tri += m0.num_triangles
-                regions.append(shapely.convex_hull(reg))
-            if len(regions) > 0:
-                union_region = shapely.unary_union(regions)
-                mesh_size = 2 * (region_areas / num_tri) ** 0.5
-                M = Mesh.from_polygon_equilateral(union_region, mesh_size, **m_init_dict)
-                M.save_to_h5(outname, save_material=True)
+            args_list.append([mesh_list, outname, m_init_dict])
+        for _ in submit_to_workers(Aligner._merge_chunked_meshes, args=args_list, num_workers=num_workers, **worker_settings):
+            pass
         return residues
 
 
-    def predeform_sections_by_chunk(self):
+    def predeform_sections_by_chunk(self, **kwargs):
+        num_workers = kwargs.pop('num_workers', 1)
+        worker_settings = kwargs.get('worker_settings', {})
         junctional_sections = self.junctional_sections
         mesh_versions = self.mesh_versions
         section_chunk_id = self.section_chunk_id
-        chunk_aligned = np.array([mesh_versions.get(s, Aligner.UNALIGNED) for s in self.section_list]) == Aligner.CHUNK_ALIGNED
+        chunk_aligned = self.mesh_versions_array == Aligner.CHUNK_ALIGNED
         n_chunk = int(np.max(section_chunk_id)+1)
         chunks_to_process = np.flatnonzero(np.maximum.at(np.arange(n_chunk), section_chunk_id, chunk_aligned))
         logger = logging.get_logger(self._logger)
+        args_list = []
         for cid in chunks_to_process:
             chnkname = self.chunk_names[cid]
-            secnames = self.chunk_map[chnkname]
+            secnames0 = self.chunk_map[chnkname]
             meta_tform = storage.join_paths(self._meta_tform_dir, chnkname+'.h5')
             if not storage.file_exists(meta_tform):
                 logger.warning(f'tranformation for meta section {meta_tform} not found')
                 continue
-            Mc = Mesh.from_h5(meta_tform)
-            for snm in secnames:
-                if (mesh_versions.get(snm, None) != Aligner.CHUNK_ALIGNED) or (snm in junctional_sections):
-                    continue
-                outname = storage.join_paths(self._tform_dir, snm+'.h5')
-                if storage.file_exists(outname):
-                    continue
-                srcname = storage.join_paths(self._chunk_dir, snm+'.h5')
-                m0 = Mesh.from_h5(srcname)
-                m0 = transform_mesh(m0, Mc, gears=(const.MESH_GEAR_MOVING, const.MESH_GEAR_MOVING))
-                m0.save_to_h5(outname, save_material=True)
-                self._mesh_versions[snm] = Aligner.ALIGNED
+            secnames = []
+            for snm in secnames0:
+                if (mesh_versions.get(snm, None) == Aligner.CHUNK_ALIGNED) and (snm not in junctional_sections):
+                    secnames.append(snm)
+            if len(secnames) > 0:
+                args_list.append([meta_tform, secnames])
+        if len(args_list) > 0:
+            tfunc = partial(Aligner._predeform_meshes, src_dir=self._chunk_dir, outdir=self._tform_dir)
+            for res in submit_to_workers(tfunc, args=args_list, num_workers=num_workers, **worker_settings):
+                self._mesh_versions.update(res)
 
 
     def resolve_chunk_version_differences(self, remove_file=True):
@@ -1247,32 +1279,87 @@ class Aligner():
         return changed_chunks, changed_sections
 
 
-def get_convex_hull(tname, wkb=False, resolution=None):
-    M = Mesh.from_h5(tname)
-    if resolution is not None:
-        M.change_resolution(resolution)
-    R = M.shapely_regions(gear=const.MESH_GEAR_MOVING, offsetting=True)
-    R = shapely.convex_hull(R)
-    if wkb:
-        return shapely.to_wkb(R)
-    else:
-        return R
+    @staticmethod
+    def _predeform_meshes(tform_file, secnames, srcdir, outdir):
+        Mc = Mesh.from_h5(tform_file)
+        res = {}
+        for snm in secnames:
+            outname = storage.join_paths(outdir, snm +'.h5')
+            if not storage.file_exists(outname):
+                srcname = storage.join_paths(srcdir, snm+'.h5')
+                m0 = Mesh.from_h5(srcname)
+                m0 = transform_mesh(m0, Mc, gears=(const.MESH_GEAR_MOVING, const.MESH_GEAR_MOVING))
+                m0.save_to_h5(outname, save_material=True)
+            res[snm] = Aligner.ALIGNED
+        return res
 
 
-def apply_transform_normalization(tname, out_dir=None, R=np.eye(3), txy=np.zeros(2),resolution=None):
-    M = Mesh.from_h5(tname)
-    locked = M.locked
-    M.locked = False
-    if resolution is not None:
-        M.change_resolution(resolution)
-    M.apply_affine(R, gear=const.MESH_GEAR_FIXED)
-    M.apply_translation(txy, gear=const.MESH_GEAR_FIXED)
-    if M.vertices_initialized(gear=const.MESH_GEAR_MOVING):
-        M.apply_affine(R, gear=const.MESH_GEAR_MOVING)
-        M.apply_translation(txy, gear=const.MESH_GEAR_MOVING)
-    if out_dir is not None:
-        outname = storage.join_paths(out_dir, os.path.basename(tname))
-    else:
-        outname = tname
-    M.locked = locked
-    M.save_to_h5(outname, vertex_flags=const.MESH_GEARS, save_material=True)
+    @staticmethod
+    def _merge_chunked_meshes(mesh_list, outname, m_init_dict):
+        resolution = m_init_dict.get('resolution')
+        regions = []
+        region_areas = 0
+        num_tri = 0
+        updated = False
+        for meshname in mesh_list.values():
+            if meshname is None:
+                continue
+            m0 = Mesh.from_h5(meshname)
+            m0.change_resolution(resolution)
+            reg = m0.shapely_regions(gear=const.MESH_GEAR_MOVING, offsetting=True)
+            region_areas += reg.area
+            num_tri += m0.num_triangles
+            regions.append(shapely.convex_hull(reg))
+        if len(regions) > 0:
+            union_region = shapely.unary_union(regions)
+            mesh_size = 2 * (region_areas / num_tri) ** 0.5
+            M = Mesh.from_polygon_equilateral(union_region, mesh_size, **m_init_dict)
+            M.save_to_h5(outname, save_material=True)
+            updated = True
+        return {outname: updated}
+
+
+    @staticmethod
+    def _merge_chunked_matches(match_names, flipped, outname, mesh_list, **kwargs):
+        match_dir = kwargs.get('match_dir')
+        resolution = kwargs.get('resolution')
+        match_name_delimiter = kwargs.get('match_name_delimiter', '__to__')
+        updated = 0
+        XY0 = []
+        XY1 = []
+        WTS = []
+        for mnm, flp in zip(match_names, flipped):
+            mtchpath = storage.join_paths(match_dir, mnm+'.h5')
+            mtch = read_matches_from_h5(mtchpath, target_resolution=resolution)
+            xy0_i, xy1_i, wt = mtch
+            secnames = mnm.split(match_name_delimiter)
+            m0 = Mesh.from_mesh(mesh_list[secnames[0]])
+            m0.change_resolution(resolution)
+            m1 = Mesh.from_mesh(mesh_list[secnames[1]])
+            m1.change_resolution(resolution)
+            tid0, B0 = m0.cart2bary(xy0_i, gear=const.MESH_GEAR_INITIAL, tid=None, extrapolate=True)
+            tid1, B1 = m1.cart2bary(xy1_i, gear=const.MESH_GEAR_INITIAL, tid=None, extrapolate=True)
+            xy0 = m0.bary2cart(tid0, B0, gear=const.MESH_GEAR_MOVING, offsetting=True)
+            xy1 = m1.bary2cart(tid1, B1, gear=const.MESH_GEAR_MOVING, offsetting=True)
+            if flp:
+                XY0.append(xy1)
+                XY1.append(xy0)
+            else:
+                XY0.append(xy0)
+                XY1.append(xy1)
+            WTS.append(wt)
+        if len(XY0) > 0:
+            XY0 = np.concatenate(XY0, axis=0)
+            XY1 = np.concatenate(XY1, axis=0)
+            WTS = np.concatenate(WTS)
+            out_bname = os.path.basename(outname).replace('.h5', '')
+            chnknames = out_bname.split(match_name_delimiter)
+            with H5File(outname, 'w') as f:
+                f.create_dataset('xy0', data=XY0, compression="gzip")
+                f.create_dataset('xy1', data=XY1, compression="gzip")
+                f.create_dataset('weight', data=WTS, compression="gzip")
+                f.create_dataset('resolution', data=resolution)
+                f.create_dataset('name0', data=str_to_numpy_ascii(chnknames[0]))
+                f.create_dataset('name1', data=str_to_numpy_ascii(chnknames[1]))
+            updated = np.sum(WTS)
+        return {outname: updated}

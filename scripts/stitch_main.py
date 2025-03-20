@@ -5,7 +5,7 @@ import time
 
 import feabas
 from feabas.concurrent import submit_to_workers
-from feabas import config, logging, storage,common
+from feabas import config, logging, storage
 
 H5File = storage.h5file_class()
 
@@ -32,7 +32,7 @@ def match_main(coord_list, out_dir, **kwargs):
         t0 = time.time()
         fname = os.path.basename(coordname).replace('.txt', '')
         outname = storage.join_paths(out_dir, fname + '.h5')
-        if storage.file_exists(outname):
+        if storage.file_exists(outname, use_cache=True):
             continue
         logger.info(f'starting matching for {fname}')
         flag = match_one_section(coordname, outname, **kwargs)
@@ -46,7 +46,7 @@ def optimize_one_section(matchname, outname, **kwargs):
     from feabas.stitcher import Stitcher
     from feabas import multisem
     import numpy as np
-    if storage.file_exists(outname):
+    if storage.file_exists(outname, use_cache=True):
         return
     use_group = kwargs.get('use_group', True)
     msem = kwargs.get('msem', False)
@@ -135,7 +135,7 @@ def optmization_main(match_list, out_dir, **kwargs):
     args_list = []
     for matchname in match_list:
         outname = storage.join_paths(out_dir, os.path.basename(matchname))
-        if storage.file_exists(outname):
+        if storage.file_exists(outname, use_cache=True):
             continue
         args_list.append((matchname, outname))
     for _ in submit_to_workers(target_func, args=args_list, num_workers=num_workers):
@@ -174,7 +174,7 @@ def render_main(tform_list, out_dir, **kwargs):
                 meta_name = storage.join_paths(meta_dir, sec_name+'.json')
             else:
                 meta_name = storage.join_paths(sec_outdir, 'metadata.txt')
-            if storage.file_exists(meta_name):
+            if storage.file_exists(meta_name, use_cache=True):
                 continue
             logger.info(f'{sec_name}: start')
             if use_tensorstore:

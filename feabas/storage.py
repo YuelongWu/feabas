@@ -73,15 +73,27 @@ def list_folder_content(pathname, recursive=False):
     return flist
 
 
-def file_exists(filename):
-    if filename is None:
-        return False
-    driver, filename = parse_file_driver(filename)
-    if driver == 'gs':
-        blob = GCP_get_blob(filename)
-        return blob.exists()
+def file_exists(filename, use_cache=False):
+    if use_cache:
+        dir_name, b_name = os.path.split(filename)
+        bname_no_ext = os.path.splitext(b_name)[0]
+        b_name = b_name.replace(bname_no_ext, '*')
+        prefix = join_paths(dir_name, b_name)
+        file_list = _cached_folder_contents(prefix)
+        return (filename in file_list)
     else:
-        return os.path.isfile(filename)
+        if filename is None:
+            return False
+        driver, filename = parse_file_driver(filename)
+        if driver == 'gs':
+            blob = GCP_get_blob(filename)
+            return blob.exists()
+        else:
+            return os.path.isfile(filename)
+
+@lru_cache(maxsize=5)
+def _cached_folder_contents(pathname):
+    return set(list_folder_content(pathname))
 
 def dir_exists(dirname):
     driver, dirname = parse_file_driver(dirname)

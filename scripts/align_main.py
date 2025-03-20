@@ -75,7 +75,7 @@ def generate_mesh_main():
     kwargs_list = []
     for sname in secnames:
         outname = storage.join_paths(mesh_dir, sname + '.h5')
-        if storage.file_exists(outname):
+        if storage.file_exists(outname, use_cache=True):
             continue
         mask_names = [(storage.join_paths(alt_mask_dir, sname + '.json'), alt_mask_resolution),
                         (storage.join_paths(alt_mask_dir, sname + '.txt'), alt_mask_resolution),
@@ -108,7 +108,7 @@ def match_main(match_list):
         return
     for mname in match_list:
         outname = storage.join_paths(match_dir, os.path.basename(mname))
-        if storage.file_exists(outname):
+        if storage.file_exists(outname, use_cache=True):
             continue
         t0 = time.time()
         tname = os.path.basename(mname).replace('.h5', '')
@@ -136,30 +136,35 @@ def match_main(match_list):
 
 
 def optimize_main(section_list):
-    from feabas.aligner import Stack
+    from feabas.aligner import Aligner
+    chunk_settings = align_config.get('chunk_settings', {'chunked_to_depth': 0}).copy()
     stack_config = align_config.get('stack_config', {}).copy()
     slide_window = align_config.get('slide_window', {}).copy()
+    worker_settings = align_config.gey('worker_settings', {}).copy()
+    chunked_to_depth = stack_config.pop('chunked_to_depth', 0)
     logger_info = logging.initialize_main_logger(logger_name='align_optimization', mp=num_workers>1)
-    stack_config.setdefault('section_order_file', storage.join_paths(root_dir, 'section_order.txt'))
-    slide_window['logger'] = logger_info[0]
+    chunk_settings.setdefault('section_order_file', section_order_file)
+    chunk_settings.setdefault('match_name_delimiter', match_name_delimiter)
+    chunk_settings.setdefault('section_list', section_list)
+    chunk_settings.setdefault('chunk_map', chunk_map_file)
+    chunk_settings['logger'] = logger_info[0]
     logger = logging.get_logger(logger_info[0])
-    stk = Stack(section_list=section_list, mesh_dir=mesh_dir, match_dir=match_dir, mesh_out_dir=tform_dir, **stack_config)
-    section_list = stk.section_list
-    stk.update_lock_flags({s: storage.file_exists(storage.join_paths(tform_dir, s + '.h5')) for s in section_list})
-    locked_flags = stk.locked_array
+    algnr = Aligner(mesh_dir, tform_dir, match_dir, **chunk_settings)
+    locked_flags = algnr.mesh_versions_array == Aligner.ALIGNED
     logger.info(f'{locked_flags.size} images| {np.sum(locked_flags)} references')
-    _, cost = stk.optimize_slide_window(optimize_rigid=True, optimize_elastic=True,
-        target_gear=const.MESH_GEAR_MOVING, **slide_window)
-    if storage.file_exists(storage.join_paths(tform_dir, 'residue.csv')):
+    cost = algnr.run(num_workers=num_workers, chunked_to_depth=chunked_to_depth,
+              stack_config=stack_config, slide_window=slide_window,
+              worker_settings=worker_settings)
+    if storage.file_exists(residue_file):
         cost0 = {}
-        with storage.File(storage.join_paths(tform_dir, 'residue.csv'), 'r') as f:
+        with storage.File(residue_file, 'r') as f:
             lines = f.readlines()
             for line in lines:
                 mn, dis0, dis1 = line.split(', ')
                 cost0[mn] = (float(dis0), float(dis1))
         cost0.update(cost)
         cost = cost0
-    with storage.File(storage.join_paths(tform_dir, 'residue.csv'), 'w') as f:
+    with storage.File(residue_file, 'w') as f:
         mnames = sorted(list(cost.keys()))
         for key in mnames:
             val = cost[key]
@@ -180,9 +185,8 @@ def _get_bbox_for_one_section(mname, resolution=None):
 def offset_bbox_main():
     logger_info = logging.initialize_main_logger(logger_name='offset_bbox', mp=False)
     logger = logging.get_logger(logger_info[0])
-    outname = storage.join_paths(tform_dir, 'offset.txt')
     tform_list = sorted(storage.list_folder_content(storage.join_paths(tform_dir, '*.h5')))
-    if storage.file_exists(outname) or (len(tform_list) == 0):
+    if storage.file_exists(offset_file) or (len(tform_list) == 0):
         return
     num_workers = align_config.get('num_workers', 1)
     secnames = [os.path.splitext(os.path.basename(s))[0] for s in tform_list]
@@ -201,8 +205,8 @@ def offset_bbox_main():
             bbox_union = common.bbox_union((bbox_union, bbox))
     offset = -bbox_union[:2]
     bbox_union_new = bbox_union + np.tile(offset, 2)
-    if not storage.file_exists(outname):
-        with storage.File(outname, 'w') as f:
+    if not storage.file_exists(offset_file):
+        with storage.File(offset_file, 'w') as f:
             f.write('\t'.join([str(s) for s in offset]))
     logger.warning(f'bbox offsets at mip0: {tuple(bbox_union)} -> {tuple(bbox_union_new)}')
     logging.terminate_logger(*logger_info)
@@ -217,7 +221,7 @@ def render_one_section(h5name, z_prefix='', **kwargs):
     outdir = storage.join_paths(render_dir, 'mip'+str(mip_level), z_prefix+secname)
     resolution = config.montage_resolution() * (2 ** mip_level)
     meta_name = storage.join_paths(outdir, 'metadata.txt')
-    if storage.file_exists(meta_name):
+    if storage.file_exists(meta_name, use_cache=True):
         return None
     storage.makedirs(outdir)
     t0 = time.time()
@@ -257,9 +261,8 @@ def render_main(tform_list, z_prefix=None):
     cache_size = align_config.get('loader_config', {}).get('cache_size', None)
     if (cache_size is not None) and (num_workers > 1):
         align_config['loader_config']['cache_size'] = cache_size // num_workers
-    offset_name = storage.join_paths(tform_dir, 'offset.txt')
-    if storage.file_exists(offset_name):
-        with storage.File(offset_name, 'r') as f:
+    if storage.file_exists(offset_file):
+        with storage.File(offset_file, 'r') as f:
             line = f.readline()
         offset = np.array([float(s) for s in line.strip().split('\t')])
         logger.info(f'use offset {offset}')
@@ -322,10 +325,7 @@ if __name__ == '__main__':
         align_config = align_config['optimization']
         mode = 'optimization'
         start_loc = align_config.get('slide_window', {}).get('start_loc', 'M')
-        if start_loc.upper() == 'M':
-            num_workers = min(2, align_config.get('slide_window', {}).get('num_workers', 2))
-        else:
-            num_workers = 1
+        num_workers = align_config.get('num_workers', 1)
         num_workers = config.set_numpy_thread_from_num_workers(num_workers)
         align_config.setdefault('slide_window', {})
         align_config['slide_window']['num_workers'] = num_workers
@@ -383,12 +383,17 @@ if __name__ == '__main__':
     mesh_dir = storage.join_paths(align_dir, 'mesh')
     match_dir = storage.join_paths(align_dir, 'matches')
     tform_dir = storage.join_paths(align_dir, 'tform')
+    section_order_file = storage.join_paths(root_dir, 'section_order.txt')
     match_filename = storage.join_paths(align_dir, 'match_name.txt')
     thumbnail_dir = storage.join_paths(root_dir, 'thumbnail_align')
     initial_tform_dir = storage.join_paths(thumbnail_dir, 'tform')
     thumb_match_dir = storage.join_paths(thumbnail_dir, 'matches')
+    chunk_map_file = storage.join_paths(align_dir, 'chunk_map.json')
     render_dir = config.align_render_dir()
     tensorstore_render_dir = config.tensorstore_render_dir()
+    canvas_file = storage.join_paths(tform_dir, 'tensorstore_canvas.txt')
+    offset_file = storage.join_paths(tform_dir, 'offset.txt')
+    residue_file = storage.join_paths(tform_dir, 'residue.csv')
     ts_flag_dir = storage.join_paths(align_dir, 'render_flags')
     rendered_mask_file = storage.join_paths(align_dir, 'mask.png')
     ts_spec_file = storage.join_paths(align_dir, 'ts_spec.json')
@@ -431,8 +436,7 @@ if __name__ == '__main__':
         optimize_main(None)
     elif mode == 'rendering':
         if align_config.pop('offset_bbox', True):
-            offset_name = storage.join_paths(tform_dir, 'offset.txt')
-            if not storage.file_exists(offset_name):
+            if not storage.file_exists(offset_file):
                 time.sleep(0.1 * (1 + (args.start % args.step))) # avoid racing
                 offset_bbox_main()
         storage.makedirs(render_dir)
@@ -441,7 +445,6 @@ if __name__ == '__main__':
         z_prefix = defaultdict(lambda: '')
         if align_config.pop('prefix_z_number', True):
             seclist = sorted(storage.list_folder_content(storage.join_paths(mesh_dir, '*.h5')))
-            section_order_file = storage.join_paths(root_dir, 'section_order.txt')
             seclist, z_indx = common.rearrange_section_order(seclist, section_order_file)
             digit_num = math.ceil(math.log10(len(seclist)))
             z_prefix.update({os.path.basename(s): str(k).rjust(digit_num, '0')+'_'
@@ -461,7 +464,6 @@ if __name__ == '__main__':
         align_config.pop('out_dir', None)
         canvas_bbox = align_config.get('canvas_bbox', None)
         if (canvas_bbox is None):
-            canvas_file = storage.join_paths(tform_dir, 'tensorstore_canvas.txt')
             if storage.file_exists(canvas_file):
                 with storage.File(canvas_file, 'r') as f:
                     line = f.readline()
@@ -476,7 +478,6 @@ if __name__ == '__main__':
         elif driver == 'n5':
             tensorstore_render_dir = tensorstore_render_dir + 's0/'
         tform_list = sorted(storage.list_folder_content(storage.join_paths(tform_dir, '*.h5')))
-        section_order_file = storage.join_paths(root_dir, 'section_order.txt')
         tform_list, z_indx = common.rearrange_section_order(tform_list, section_order_file)
         stitch_dir = storage.join_paths(root_dir, 'stitch')
         loader_dir = storage.join_paths(stitch_dir, 'ts_specs')

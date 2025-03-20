@@ -30,7 +30,7 @@ def submit_to_workers(func, args=None, kwargs=None, **settings):
     if current_process().daemon:
         num_workers = 1
         force_remote = False
-    if (num_workers == 1) and (not force_remote):
+    if ((num_workers == 1) or (N == 1)) and (not force_remote):
         for k in range(N):
             args_b = args_n[k]
             kwargs_b = kwargs_n[k]

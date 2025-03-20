@@ -68,14 +68,14 @@ def generate_thumbnails(src_dir, out_dir, seclist=None, **kwargs):
     for sname in secnames:
         outname = storage.join_paths(out_dir, sname + '.png')
         if seclist is None:
-            if storage.file_exists(outname):
+            if storage.file_exists(outname, use_cache=True):
                 continue
             else:
                 updated[sname] = True
         else:
             if sname not in seclist:
                 continue
-            elif (seclist[sname]) or (not storage.file_exists(outname)):
+            elif (seclist[sname]) or (not storage.file_exists(outname, use_cache=True)):
                 updated[sname] = True
             else:
                 updated[sname] = False
@@ -104,14 +104,14 @@ def generate_thumbnails_tensorstore(src_dir, out_dir, seclist=None, **kwargs):
         sname = os.path.basename(meta_name).replace('.json', '')
         outname = storage.join_paths(out_dir, sname + '.png')
         if seclist is None:
-            if storage.file_exists(outname):
+            if storage.file_exists(outname, use_cache=True):
                 continue
             else:
                 updated[sname] = True
         else:
             if sname not in seclist:
                 continue
-            elif (seclist[sname]) or (not storage.file_exists(outname)):
+            elif (seclist[sname]) or (not storage.file_exists(outname, use_cache=True)):
                 updated[sname] = True
             else:
                 updated[sname] = False
@@ -169,12 +169,12 @@ def generate_thumbnail_masks(mesh_dir, out_dir, seclist=None, **kwargs):
         sname = os.path.basename(mname).replace('.h5', '')
         outname = storage.join_paths(out_dir, sname + '.png')
         if seclist is None:
-            if storage.file_exists(outname):
+            if storage.file_exists(outname, use_cache=True):
                 continue
         else:
             if sname not in seclist:
                 continue
-            elif (not seclist[sname]) and (storage.file_exists(outname)):
+            elif (not seclist[sname]) and (storage.file_exists(outname, use_cache=True)):
                 continue
         args_list.append((mname, outname))
     for _ in submit_to_workers(target_func, args=args_list, num_workers=num_workers):
@@ -205,7 +205,7 @@ def align_thumbnail_pairs(pairnames, image_dir, out_dir, **kwargs):
             sname0 = os.path.splitext(sname0_ext)[0]
             sname1 = os.path.splitext(sname1_ext)[0]
             outname = storage.join_paths(out_dir, sname0 + match_name_delimiter + sname1 + '.h5')
-            if storage.file_exists(outname):
+            if storage.file_exists(outname, use_cache=True):
                 continue
             if sname0 in prepared_cache:
                 minfo0 = prepared_cache[sname0]
@@ -394,8 +394,8 @@ if __name__ == '__main__':
     thumbnail_configs['num_workers'] = num_workers
 
 
-    from feabas import mipmap, common, material, constant
-    from feabas.aligner import apply_transform_normalization, get_convex_hull, Stack
+    from feabas import mipmap, common, constant
+    from feabas.aligner import apply_transform_normalization, get_convex_hull, Aligner
     from feabas.mipmap import mip_map_one_section
     from feabas.spatial import find_rotation_for_minimum_rectangle
     import numpy as np
@@ -423,6 +423,9 @@ if __name__ == '__main__':
     feature_match_dir = storage.join_paths(thumbnail_dir, 'feature_matches')
     tform_dir = storage.join_paths(thumbnail_dir, 'tform')
     render_prefix = storage.join_paths(thumbnail_dir, 'aligned_thumbnails_')
+    section_order_file = storage.join_paths(root_dir, 'section_order.txt')
+    chunk_map_file = storage.join_paths(thumbnail_dir, 'chunk_map.json')
+    residue_file = storage.join_paths(tform_dir, 'residue.csv')
     if mode == 'downsample':
         logger_info = logging.initialize_main_logger(logger_name='stitch_mipmap', mp=num_workers>1)
         thumbnail_configs['logger'] = logger_info[0]
@@ -490,12 +493,12 @@ if __name__ == '__main__':
         logging.terminate_logger(*logger_info)
     else:
         imglist = sorted(storage.list_folder_content(storage.join_paths(img_dir, '*.png')))
-        section_order_file = storage.join_paths(root_dir, 'section_order.txt')
         imglist = common.rearrange_section_order(imglist, section_order_file)[0]
         bname_list = [os.path.basename(s) for s in imglist]
         secname_list = [os.path.splitext(s)[0] for s in bname_list]
         logger_info = logging.initialize_main_logger(logger_name='thumbnail_align', mp=num_workers>1)
         logger= logging.get_logger(logger_info[0])
+        match_name_delimiter = thumbnail_configs.get('match_name_delimiter', '__to__')
         material_table = config.material_table()
         if (mode == 'matching') or (mode == 'alignment'):
             storage.makedirs(match_dir)
@@ -509,7 +512,6 @@ if __name__ == '__main__':
                     region_labels.append(mat.mask_label)
             thumbnail_configs.setdefault('region_labels', region_labels)
             pairnames = []
-            match_name_delimiter = thumbnail_configs.get('match_name_delimiter', '__to__')
             processed = []
             if storage.file_exists(match_filename):
                 with storage.File(match_filename, 'r') as f:
@@ -521,7 +523,7 @@ if __name__ == '__main__':
                     sname0, sname1 = snames[0], snames[1]
                     pairnames.append((sname0 + '.h5', sname1 + '.h5'))
                     outname = storage.join_paths(match_dir, sname0 + match_name_delimiter + sname1 + '.h5')
-                    if storage.file_exists(outname):
+                    if storage.file_exists(outname, use_cache=True):
                         processed.append(True)
                     else:
                         processed.append(False)
@@ -536,13 +538,12 @@ if __name__ == '__main__':
                         sname0 = os.path.splitext(sname0_ext)[0]
                         sname1 = os.path.splitext(sname1_ext)[0]
                         outname = storage.join_paths(match_dir, sname0 + match_name_delimiter + sname1 + '.h5')
-                        if storage.file_exists(outname):
+                        if storage.file_exists(outname, use_cache=True):
                             processed.append(True)
                         else:
                             processed.append(False)
                         pairnames.append((sname0_ext, sname1_ext))
             if len(pairnames) == len(pairnames[arg_indx]):
-
                 pairnames = [s for p, s in zip(processed, pairnames) if not p]
             pairnames.sort()
             pairnames = pairnames[arg_indx]
@@ -576,11 +577,11 @@ if __name__ == '__main__':
                 tform_name = storage.join_paths(tform_dir, sname+'.h5')
                 mask_name = storage.join_paths(mat_mask_dir, sname+'.png')
                 img_name = storage.join_paths(img_dir, sname+'.png')
-                if storage.file_exists(tform_name):
+                if storage.file_exists(tform_name, use_cache=True):
                     continue  
-                if storage.file_exists(mask_name):
+                if storage.file_exists(mask_name, use_cache=True):
                     tasks.append({'secname': sname, 'mask_name': mask_name})
-                elif storage.file_exists(img_name):
+                elif storage.file_exists(img_name, use_cache=True):
                     logger.warning(f'{sname} meshing: {mask_name} not found, use rectangular mesh.')
                     tasks.append({'secname': sname, 'mask_size': img_name})
                 else:
@@ -591,14 +592,33 @@ if __name__ == '__main__':
                     pass
             # optimization
                 logger.info('optimizing...')
+                chunk_settings = opt_configs.get('chunk_settings', {'chunked_to_depth': 0})
                 stack_config = opt_configs.get('stack_config', {})
                 slide_window = opt_configs.get('slide_window', {})
-                slide_window['logger'] = logger_info[0]
-                stk = Stack(section_list=secname_list, mesh_dir=tmp_mesh_dir, match_dir=match_dir, mesh_out_dir=tform_dir, **stack_config)
-                section_list = stk.section_list
-                stk.update_lock_flags({s: storage.file_exists(storage.join_paths(tform_dir, s + '.h5')) for s in section_list})
-                _, cost = stk.optimize_slide_window(optimize_rigid=True, optimize_elastic=True, 
-                    target_gear=constant.MESH_GEAR_MOVING, **slide_window)
+                worker_settings = opt_configs.gey('worker_settings', {})
+                chunked_to_depth = stack_config.pop('chunked_to_depth', 0)
+                chunk_settings.setdefault('match_name_delimiter', match_name_delimiter)
+                chunk_settings.setdefault('section_list', secname_list)
+                chunk_settings.setdefault('chunk_map', chunk_map_file)
+                chunk_settings['logger'] = logger_info[0]
+                algnr = Aligner(tmp_mesh_dir, tform_dir, match_dir, **chunk_settings)
+                cost = algnr.run(num_workers, chunked_to_depth=chunked_to_depth,
+                          stack_config=stack_config, slide_window=slide_window,
+                          worker_settings=worker_settings)
+                if storage.file_exists(residue_file):
+                    cost0 = {}
+                    with storage.File(residue_file, 'r') as f:
+                        lines = f.readlines()
+                        for line in lines:
+                            mn, dis0, dis1 = line.split(', ')
+                            cost0[mn] = (float(dis0), float(dis1))
+                    cost0.update(cost)
+                    cost = cost0
+                with storage.File(residue_file, 'w') as f:
+                    mnames = sorted(list(cost.keys()))
+                    for key in mnames:
+                        val = cost[key]
+                        f.write(f'{key}, {val[0]}, {val[1]}\n')
         if (mode == 'render') or (mode == 'alignment'):
             render_configs = thumbnail_configs.get('render', {})
             render_scale = render_configs.get('scale', None)
@@ -610,7 +630,13 @@ if __name__ == '__main__':
                 render_dir = render_prefix + str(int(render_resolution)) + 'nm'
                 storage.makedirs(render_dir, exist_ok=True)
                 rendered = storage.list_folder_content(storage.join_paths(render_dir, '*.png'))
-                tform_list = sorted(storage.list_folder_content(storage.join_paths(tform_dir, '*.h5')))
+                tform_list0 = sorted(storage.list_folder_content(storage.join_paths(tform_dir, '*.h5')))
+                tform_list = []
+                for tname in tform_list0:
+                    secname = os.path.basename(tname).replace('.h5', '.png')
+                    outname = storage.join_paths(render_dir, secname)
+                    if not storage.file_exists(outname, use_cache=True):
+                        tform_list.append(tname)
                 if len(rendered) > 0:
                     img = common.imread(rendered[0])
                     bbox_render = (0, 0, img.shape[1], img.shape[0])

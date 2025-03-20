@@ -697,9 +697,12 @@ def parse_json_file(filename, stream=None):
             try:
                 json_dict = json.loads(filename)
             except ValueError:
-                with storage.File(filename, 'r') as f:
-                    json_dict = json.load(f)
-                file_read = True
+                if storage.file_exists(filename):
+                    with storage.File(filename, 'r') as f:
+                        json_dict = json.load(f)
+                    file_read = True
+                else:
+                    json_dict = None
         elif isinstance(filename, dict):
             json_dict = filename
         else:
@@ -707,8 +710,11 @@ def parse_json_file(filename, stream=None):
     elif stream:
         json_dict = json.loads(filename)
     else:
-        with storage.File(filename, 'r') as f:
-            json_dict = json.load(f)
-            file_read = True
+        if storage.file_exists(filename):
+            with storage.File(filename, 'r') as f:
+                json_dict = json.load(f)
+                file_read = True
+        else:
+            json_dict = None
     return json_dict, file_read
 

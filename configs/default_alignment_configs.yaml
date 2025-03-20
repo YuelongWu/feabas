@@ -27,10 +27,14 @@ matching:
         render_weight_threshold: 0.1  # material with render weight smaller than this will not be rendered during the matching process
 
 optimization:
+    num_workers: 5
+    chunk_settings: # settings to control the behavior when alignment is done in chuncks
+        chunked_to_depth: 0  # if 0, use slide window directly. Otherwise, group sections into chunks, first align witin chunks, then treat each chunk as "meta-sections" and align those. depth>1 means meta-sections will also aligned in chunks until 'depth' recursion
+        default_chunk_size: 16  # the default size of chunks when chunk_map json file is not provided
+        junction_width: 0.2 # number of sections to be re-relaxed in the end at the junctions between chunks. If fraction, it's related to the chunk size.
     stack_config:
         mip_level: 0    # all the matching points and meshes are scaled to this mip level before optimization
     slide_window:
-        num_workers: 2
         start_loc: M    # starting location of the optimization. L: left, R: right, M: start from middle and move in both directions
         window_size: 64 # the width of the sliding window
         buffer_size: 16 # the number of overlapping sections to re-optimize when window is moved, to minimize potential fringe effects.
