@@ -595,14 +595,14 @@ if __name__ == '__main__':
                 chunk_settings = opt_configs.get('chunk_settings', {'chunked_to_depth': 0})
                 stack_config = opt_configs.get('stack_config', {})
                 slide_window = opt_configs.get('slide_window', {})
-                worker_settings = opt_configs.gey('worker_settings', {})
-                chunked_to_depth = stack_config.pop('chunked_to_depth', 0)
+                worker_settings = opt_configs.get('worker_settings', {})
+                chunked_to_depth = chunk_settings.pop('chunked_to_depth', 0)
                 chunk_settings.setdefault('match_name_delimiter', match_name_delimiter)
                 chunk_settings.setdefault('section_list', secname_list)
                 chunk_settings.setdefault('chunk_map', chunk_map_file)
                 chunk_settings['logger'] = logger_info[0]
                 algnr = Aligner(tmp_mesh_dir, tform_dir, match_dir, **chunk_settings)
-                cost = algnr.run(num_workers, chunked_to_depth=chunked_to_depth,
+                cost = algnr.run(num_workers=num_workers, chunked_to_depth=chunked_to_depth,
                           stack_config=stack_config, slide_window=slide_window,
                           worker_settings=worker_settings)
                 if storage.file_exists(residue_file):

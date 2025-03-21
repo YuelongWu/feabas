@@ -386,7 +386,7 @@ class Stack:
             else:
                 flag = None
         else:
-            flag = max(1, np.max(list(self.mesh_versions.values())))
+            flag = np.max(list(self.mesh_versions.values())+[1])
             out_dir = self._mesh_dir_list[flag]
         if out_dir is None:
             return saved
@@ -409,7 +409,7 @@ class Stack:
             if M.modified_in_current_session or not storage.file_exists(outname):
                 M.save_to_h5(outname, vertex_flags=const.MESH_GEARS, save_material=True)
                 saved = True
-                if flag is not None:
+                if (flag is not None) and hasattr(self, '_mesh_versions') and (self._mesh_versions is not None):
                     self._mesh_versions[secname] = flag
                 for m in anchored_meshes:
                     m.modified_in_current_session = False
@@ -543,7 +543,7 @@ class Stack:
                     if len(secnames) > len(slist):
                         anchored[ks] = True
                     secnums[ks] = len(slist)
-                    secname_lists.append(secname)
+                    secname_lists.append(secnames)
                 if ensure_continuous:
                     if np.any(anchored):
                         secname_lists = [s for flg, s in zip(anchored, secname_lists) if flg]
@@ -552,7 +552,7 @@ class Stack:
                         secname_lists = [secname_lists[indx]]
                 if no_slide:
                     secname_lists = [s for s in secname_lists if len(secname_lists) <= (window_size + buffer_size)]
-                args_list = [self.init_dict(secnames=sn, check_lock=True) for sn in secname_lists]
+                args_list = [(self.init_dict(secnames=sn, check_lock=True),) for sn in secname_lists]
                 if len(args_list) == 0:
                     break
                 for reslt in submit_to_workers(Stack.subprocess_optimize_stack, args=args_list, kwargs=kwarg_list, num_workers=num_workers, **worker_settings):
@@ -760,7 +760,8 @@ class Stack:
             version_list = []
             for k, fdir in enumerate(self._mesh_dir_list[1:]):
                 tlist = storage.list_folder_content(storage.join_paths(fdir, '*.h5'))
-                tnames = [os.path.basename(s).replace('.h5', '') for s in tlist]
+                tnames0 = [os.path.basename(s).replace('.h5', '') for s in tlist]
+                tnames = [s for s in tnames0 if s in self.section_list]
                 version_list.append({s: (k+1) for s in tnames})
             self._mesh_versions = defaultdict(int)
             for tnames in version_list:
@@ -821,7 +822,7 @@ class Aligner():
         self._tform_dir = tform_dir
         self._match_dir = match_dir
         self._section_order_file = kwargs.get('section_order_file', None)
-        self._chunk_dir = kwargs('chunk_dir', storage.join_paths(os.path.dirname(self._mesh_dir), 'chunked_tform'))
+        self._chunk_dir = kwargs.get('chunk_dir', storage.join_paths(os.path.dirname(self._mesh_dir), 'chunked_tform'))
         self._match_name_delimiter = kwargs.get('match_name_delimiter', '__to__')
         chunk_map = kwargs.get('chunk_map', None)
         self._mip_level = kwargs.get('mip_level', 0)
@@ -842,7 +843,7 @@ class Aligner():
         self._meta_mesh_dir = storage.join_paths(self._meta_dir, 'mesh')
         self._meta_tform_dir = storage.join_paths(self._meta_dir, 'tform')
         self._meta_match_dir = storage.join_paths(self._meta_dir, 'matches')
-        self._logger = storage.get('logger', None)
+        self._logger = kwargs.get('logger', None)
         self._user_section_list = kwargs.get('section_list', None)
 
 
@@ -875,7 +876,7 @@ class Aligner():
                 self._chunknames = []
                 for kc, k0 in enumerate(range(0, self.num_sections, step_c)):
                     secnames = self.section_list[k0:(k0+step_c)]
-                    prefix = os.path.commonprefix(secnames)
+                    prefix = os.path.commonprefix(secnames).rstrip('0123456789')
                     chnknm = '_'.join((secnames[0], (secnames[-1].replace(prefix, ''))))
                     self._chunknames.append(chnknm)
                     self._chunk_map[chnknm] = secnames
@@ -993,7 +994,7 @@ class Aligner():
     def chunk_names(self):
         if (not hasattr(self, '_chunknames')) or (self._chunknames is None):
             self.update_chunk_map()
-        return self.chunk_names
+        return self._chunknames
 
 
     @property
@@ -1005,7 +1006,7 @@ class Aligner():
     def junctional_sections(self):
         if (not hasattr(self, '_junctional_sections')) or (self._junctional_sections is None):
             section_chunk_id = self.section_chunk_id
-            edt0 = distance_transform_cdt(np.diff(section_chunk_id) != 0)
+            edt0 = distance_transform_cdt(np.diff(section_chunk_id) == 0)
             edt = np.insert(edt0, 0, 0)
             edt[:-1] = np.maximum(edt[:-1], edt[1:])
             if self._junction_width < 1:
@@ -1094,23 +1095,24 @@ class Aligner():
         slide_window.setdefault('no_slide', False)
         slide_window.setdefault('ensure_continuous', False)
         changed_chunks, _ = self.resolve_chunk_version_differences(remove_file=True)
-        if (self._chunk_map_file is not None) and (len(changed_chunks) > 0):
+        if (self._chunk_map_file is not None) and ((len(changed_chunks) > 0) or (self._previous_chunk_map is None)):
             storage.makedirs(os.path.dirname(self._chunk_map_file))
             with storage.File(self._chunk_map_file, 'w') as f:
                 json.dump(self.chunk_map, f, indent=2)
         mesh_versions_array = self.mesh_versions_array
-        lock_flags = mesh_versions_array > Aligner.UNALIGNED
-        stack_config.setdefault('lock_flags', lock_flags)
+        lock_flags = mesh_versions_array == Aligner.ALIGNED
+        stack_config['lock_flags'] = lock_flags
         stack = self.initialize_stack(include_chunk_dir=True, **stack_config)
         if self._junction_width > 0:
             junctional_sections = self.junctional_sections
             specified_out_dirs = {s: self._chunk_dir for s in junctional_sections}
-            stack._specified_out_dirs.upate(specified_out_dirs)
+            stack._specified_out_dirs.update(specified_out_dirs)
         # specified_out_dirs
         muted_match_list = stack.assign_section_to_chunks(self.chunk_map)
         storage.makedirs(self._chunk_dir)
         updated_sections, residues = stack.optimize_slide_window(**slide_window)
         section_name2id_lut = {s:k for k, s in enumerate(self.section_list)}
+        section_chunk_id = self.section_chunk_id
         if len(updated_sections) > 0:
             self._mesh_versions = None
             sids = np.array([section_name2id_lut.get(s, None) for s in updated_sections if s in section_name2id_lut])
@@ -1121,10 +1123,10 @@ class Aligner():
         storage.makedirs(self._meta_mesh_dir)
         storage.makedirs(self._meta_tform_dir)
         storage.makedirs(self._meta_match_dir)
-        section_chunk_id = self.section_chunk_id
         n_chunk = int(np.max(section_chunk_id)+1)
-        chunk_versions = np.maximum.at(np.arange(n_chunk), section_chunk_id, mesh_versions_array)
-        chunk_lock_flags = chunk_versions == 2
+        chunk_versions = np.full_like(mesh_versions_array, np.min(mesh_versions_array)-1, shape=n_chunk)
+        np.maximum.at(chunk_versions, section_chunk_id, mesh_versions_array)
+        chunk_lock_flags = chunk_versions == Aligner.ALIGNED
         chunk_matches = defaultdict(list)
         resolution = stack._resolution
         for mtch in muted_match_list:
@@ -1189,7 +1191,9 @@ class Aligner():
         section_chunk_id = self.section_chunk_id
         chunk_aligned = self.mesh_versions_array == Aligner.CHUNK_ALIGNED
         n_chunk = int(np.max(section_chunk_id)+1)
-        chunks_to_process = np.flatnonzero(np.maximum.at(np.arange(n_chunk), section_chunk_id, chunk_aligned))
+        needed_deform = np.zeros(n_chunk, dtype=bool)
+        np.maximum.at(needed_deform, section_chunk_id, chunk_aligned)
+        chunks_to_process = np.flatnonzero(needed_deform)
         logger = logging.get_logger(self._logger)
         args_list = []
         for cid in chunks_to_process:
@@ -1206,7 +1210,7 @@ class Aligner():
             if len(secnames) > 0:
                 args_list.append([meta_tform, secnames])
         if len(args_list) > 0:
-            tfunc = partial(Aligner._predeform_meshes, src_dir=self._chunk_dir, outdir=self._tform_dir)
+            tfunc = partial(Aligner._predeform_meshes, srcdir=self._chunk_dir, outdir=self._tform_dir)
             for res in submit_to_workers(tfunc, args=args_list, num_workers=num_workers, **worker_settings):
                 self._mesh_versions.update(res)
 
@@ -1313,7 +1317,7 @@ class Aligner():
         if len(regions) > 0:
             union_region = shapely.unary_union(regions)
             mesh_size = 2 * (region_areas / num_tri) ** 0.5
-            M = Mesh.from_polygon_equilateral(union_region, mesh_size, **m_init_dict)
+            M = Mesh.from_polygon_equilateral(union_region, mesh_size=mesh_size, **m_init_dict)
             M.save_to_h5(outname, save_material=True)
             updated = True
         return {outname: updated}
@@ -1333,9 +1337,9 @@ class Aligner():
             mtch = read_matches_from_h5(mtchpath, target_resolution=resolution)
             xy0_i, xy1_i, wt = mtch
             secnames = mnm.split(match_name_delimiter)
-            m0 = Mesh.from_mesh(mesh_list[secnames[0]])
+            m0 = Mesh.from_h5(mesh_list[secnames[0]])
             m0.change_resolution(resolution)
-            m1 = Mesh.from_mesh(mesh_list[secnames[1]])
+            m1 = Mesh.from_h5(mesh_list[secnames[1]])
             m1.change_resolution(resolution)
             tid0, B0 = m0.cart2bary(xy0_i, gear=const.MESH_GEAR_INITIAL, tid=None, extrapolate=True)
             tid1, B1 = m1.cart2bary(xy1_i, gear=const.MESH_GEAR_INITIAL, tid=None, extrapolate=True)
