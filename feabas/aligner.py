@@ -1,5 +1,6 @@
 from collections import defaultdict, OrderedDict
 from functools import partial
+import hashlib
 import json
 import numpy as np
 import os
@@ -879,8 +880,9 @@ class Aligner():
                 self._chunknames = []
                 for kc, k0 in enumerate(range(0, self.num_sections, step_c)):
                     secnames = self.section_list[k0:(k0+step_c)]
-                    prefix = os.path.commonprefix(secnames).rstrip('0123456789')
-                    chnknm = '_'.join((secnames[0], (secnames[-1].replace(prefix, ''))))
+                    prefix = secnames[0].split('_Meta')[0]
+                    postfix = Aligner._hash_name('_'.join(secnames), num_digits=len(prefix))
+                    chnknm = '_Meta'.join((prefix, postfix))
                     self._chunknames.append(chnknm)
                     self._chunk_map[chnknm] = secnames
                     self._section_chunk_id[k0:(k0+step_c)] = kc
@@ -909,8 +911,9 @@ class Aligner():
                         for cid in range(np.min(new_section_chunk_id), end_cid+1):
                             idxt = np.flatnonzero(new_section_chunk_id == cid)
                             secnames = [self.section_list[kt] for kt in idxt]
-                            prefix = os.path.commonprefix(secnames)
-                            chnknm = '_'.join((secnames[0], (secnames[-1].replace(prefix, ''))))
+                            prefix = secnames[0].split('_Meta')[0]
+                            postfix = Aligner._hash_name('_'.join(secnames), num_digits=len(prefix))
+                            chnknm = '_Meta'.join((prefix, postfix))
                             new_chunknames.append(chnknm)
                             self._chunk_map[chnknm] = secnames
                         self._chunknames = new_chunknames + self._chunknames[1:]
@@ -929,8 +932,9 @@ class Aligner():
                         for cid in range(end_cid, np.max(new_section_chunk_id)+1):
                             idxt = np.flatnonzero(new_section_chunk_id == cid)
                             secnames = [self.section_list[kt] for kt in idxt]
-                            prefix = os.path.commonprefix(secnames)
-                            chnknm = '_'.join((secnames[0], (secnames[-1].replace(prefix, ''))))
+                            prefix = secnames[0].split('_Meta')[0]
+                            postfix = Aligner._hash_name('_'.join(secnames), num_digits=len(prefix))
+                            chnknm = '_Meta'.join((prefix, postfix))
                             new_chunknames.append(chnknm)
                             self._chunk_map[chnknm] = secnames
                         self._chunknames =  self._chunknames[:-1] + new_chunknames
@@ -1109,8 +1113,9 @@ class Aligner():
         changed_chunks, _ = self.resolve_chunk_version_differences(remove_file=True)
         if (self._chunk_map_file is not None) and ((len(changed_chunks) > 0) or (self._previous_chunk_map is None)):
             storage.makedirs(os.path.dirname(self._chunk_map_file))
+            chunk_map_out = {ky:self.chunk_map[ky] for ky in self.chunk_names}
             with storage.File(self._chunk_map_file, 'w') as f:
-                json.dump(self.chunk_map, f, indent=2)
+                json.dump(chunk_map_out, f, indent=2)
         mesh_versions_array = self.mesh_versions_array
         lock_flags = mesh_versions_array == Aligner.ALIGNED
         stack_config['lock_flags'] = lock_flags
@@ -1319,12 +1324,26 @@ class Aligner():
 
 
     @staticmethod
+    def _hash_name(name, num_digits=9, collision_pool=None):
+        hashed_str = hashlib.sha256(name.encode()).hexdigest()
+        out_candidate = hashed_str[:num_digits]
+        if collision_pool is not None:
+            stt = 1
+            while out_candidate in collision_pool:
+                out_candidate = hashed_str[stt:(stt+num_digits)]
+                if len(out_candidate) < num_digits:
+                    raise RuntimeError('How could this still collide...')
+                stt += 1
+        return out_candidate
+
+
+    @staticmethod
     def _predeform_meshes(tform_file, secnames, srcdir, outdir):
         Mc = Mesh.from_h5(tform_file)
         res = {}
         for snm in secnames:
             outname = storage.join_paths(outdir, snm +'.h5')
-            if not storage.file_exists(outname):
+            if not storage.file_exists(outname, use_cache=True):
                 srcname = storage.join_paths(srcdir, snm+'.h5')
                 m0 = Mesh.from_h5(srcname)
                 m0 = transform_mesh(m0, Mc, gears=(const.MESH_GEAR_MOVING, const.MESH_GEAR_MOVING))
