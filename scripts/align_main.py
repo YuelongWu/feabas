@@ -54,14 +54,15 @@ def generate_mesh_from_mask(mask_names, outname, **kwargs):
     M.save_to_h5(outname, save_material=True, override_dict={'name': mshname})
 
 
-def generate_mesh_main():
+def generate_mesh_main(match_list=None):
     logger_info = logging.initialize_main_logger(logger_name='mesh_generation', mp=num_workers>1)
     mesh_config['logger'] = logger_info[0]
     logger = logging.get_logger(logger_info[0])
     thumbnail_mip_lvl = thumbnail_configs.get('thumbnail_mip_level', 6)
     thumbnail_resolution = config.montage_resolution() * (2 ** thumbnail_mip_lvl)
     thumbnail_mask_dir = storage.join_paths(thumbnail_dir, 'material_masks')
-    match_list = storage.list_folder_content(storage.join_paths(thumb_match_dir, '*.h5'))
+    if match_list is None:
+        match_list = storage.list_folder_content(storage.join_paths(thumb_match_dir, '*.h5'))
     match_names = [os.path.basename(s).replace('.h5', '').split(match_name_delimiter) for s in match_list]
     secnames = set([s for pp in match_names for s in pp])
     alt_mask_dir = mesh_config.get('mask_dir', None)
@@ -82,7 +83,7 @@ def generate_mesh_main():
                         (storage.join_paths(alt_mask_dir, sname + '.png'), alt_mask_resolution),
                         (storage.join_paths(thumbnail_mask_dir, sname + '.png'), thumbnail_resolution)]
         initial_tform = storage.join_paths(initial_tform_dir, sname + '.h5')
-        if not storage.file_exists(initial_tform):
+        if not storage.file_exists(initial_tform, use_cache=True):
             initial_tform = None
         kwargs_list.append({'mask_names': mask_names, 'outname': outname, 'initial_tform': initial_tform})
     for _ in submit_to_workers(mesh_func, kwargs=kwargs_list, num_workers=num_workers):
@@ -408,11 +409,7 @@ if __name__ == '__main__':
         full_run = False
     indx = slice(stt_idx, stp_idx, step)
     storage.makedirs(mesh_dir)
-    if mode == 'meshing':
-        generate_mesh_main()
-    elif mode == 'matching':
-        storage.makedirs(match_dir)
-        generate_mesh_main()
+    if (mode == 'meshing') or (mode == 'matching'):
         if storage.file_exists(match_filename):
             with storage.File(match_filename, 'r') as f:
                 match_list0 = f.readlines()
@@ -426,7 +423,12 @@ if __name__ == '__main__':
                 match_list.append(s)
         else:
             match_list = sorted(storage.list_folder_content(storage.join_paths(thumb_match_dir, '*.h5')))
+    if mode == 'meshing':
+        generate_mesh_main(match_list=match_list)
+    elif mode == 'matching':
+        storage.makedirs(match_dir)
         match_list = match_list[indx]
+        generate_mesh_main(match_list=match_list)
         if args.reverse:
             match_list = match_list[::-1]
         align_config.setdefault('match_name_delimiter',  match_name_delimiter)

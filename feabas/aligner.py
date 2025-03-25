@@ -277,8 +277,10 @@ class Stack:
         init_dict['section_list'] = section_list
         init_dict['match_list'] = match_list
         init_dict['lock_flags'] = {s: self.lock_flags[s] for s in section_list_set}
-        if len(self._specified_out_dirs) > 0:
+        if isinstance(self._specified_out_dirs, dict) and len(self._specified_out_dirs) > 0:
             init_dict['specified_out_dirs'] = {s:p for s,p in self._specified_out_dirs.items() if s in section_list_set}
+        elif isinstance(self._specified_out_dirs, str):
+            init_dict['specified_out_dirs'] = self._specified_out_dirs
         init_dict['resolution'] = self._resolution
         init_dict['mesh_cache_size'] = self._mesh_cache_size
         init_dict['link_cache_size'] = self._link_cache_size
@@ -379,17 +381,18 @@ class Stack:
 
     def save_mesh_for_one_section(self, secname, Ms=None):
         saved = False
-        if secname in self._specified_out_dirs:
+        flag = None
+        if isinstance(self._specified_out_dirs, str):
+            out_dir = self._specified_out_dirs
+        elif isinstance(self._specified_out_dirs, dict) and (secname in self._specified_out_dirs):
             out_dir = self._specified_out_dirs[secname]
-            if out_dir in self._mesh_dir_list:
-                flag = self._mesh_dir_list.index(out_dir)
-            else:
-                flag = None
         else:
             flag = np.max(list(self.mesh_versions.values())+[1])
             out_dir = self._mesh_dir_list[flag]
         if out_dir is None:
             return saved
+        if (flag is None) and (out_dir in self._mesh_dir_list):
+            flag = self._mesh_dir_list.index(out_dir)
         if Ms is None:
             if secname in self._mesh_cache:
                 Ms = self._mesh_cache[secname]
@@ -1033,7 +1036,7 @@ class Aligner():
             kwargs.pop('no_slide', None)
             kwargs.pop('ensure_continuous', None)
             kwargs.pop('include_chunk_dir', None)
-            residues.update(self.window_align(no_slide=True, ensure_continuous=True, include_chunk_dir=True, **kwargs))
+            residues.update(self.window_align(no_slide=True, ensure_continuous=True, include_chunk_dir=True, save_to_tform=True, **kwargs))
             if np.any(self.mesh_versions_array != Aligner.ALIGNED):
                 residues.update(self.align_within_chunks(**kwargs))
                 meta_aligner_settings = {
@@ -1052,7 +1055,7 @@ class Aligner():
                     chunked_to_depth -= 1
                 meta_aligner.run(chunked_to_depth=chunked_to_depth, **kwargs)
                 self.predeform_sections_by_chunk(num_workers=num_workers, worker_settings=worker_settings)
-                residues.update(self.window_align(no_slide=False, ensure_continuous=True, include_chunk_dir=True, **kwargs))
+                residues.update(self.window_align(no_slide=False, ensure_continuous=True, include_chunk_dir=True, save_to_tform=True, **kwargs))
         return residues
 
 
@@ -1076,6 +1079,9 @@ class Aligner():
         include_chunk_dir = kwargs.pop('include_chunk_dir', False)
         stack_config = kwargs.get('stack_config', {}).copy()
         slide_window = kwargs.get('slide_window', {}).copy()
+        save_to_tform = kwargs.pop('save_to_tform', False)
+        if save_to_tform:
+            stack_config['specified_out_dirs'] = self._tform_dir
         slide_window.setdefault('no_slide', kwargs.pop('no_slide', False))
         slide_window.setdefault('worker_settings', kwargs.pop('worker_settings', {}).copy())
         slide_window.setdefault('ensure_continuous', kwargs.pop('ensure_continuous', False))

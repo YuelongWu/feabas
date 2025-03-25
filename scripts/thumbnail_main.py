@@ -521,7 +521,7 @@ if __name__ == '__main__':
                     s = s.replace('.h5', '').replace(match_name_delimiter, '\t')
                     snames = s.split('\t')
                     sname0, sname1 = snames[0], snames[1]
-                    pairnames.append((sname0 + '.h5', sname1 + '.h5'))
+                    pairnames.append((sname0 + '.png', sname1 + '.png'))
                     outname = storage.join_paths(match_dir, sname0 + match_name_delimiter + sname1 + '.h5')
                     if storage.file_exists(outname, use_cache=True):
                         processed.append(True)
