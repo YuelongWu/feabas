@@ -153,23 +153,9 @@ def optimize_main(section_list):
     algnr = Aligner(mesh_dir, tform_dir, match_dir, **chunk_settings)
     locked_flags = algnr.mesh_versions_array == Aligner.ALIGNED
     logger.info(f'{locked_flags.size} images| {np.sum(locked_flags)} references')
-    cost = algnr.run(num_workers=num_workers, chunked_to_depth=chunked_to_depth,
+    algnr.run(num_workers=num_workers, chunked_to_depth=chunked_to_depth,
               stack_config=stack_config, slide_window=slide_window,
-              worker_settings=worker_settings)
-    if storage.file_exists(residue_file):
-        cost0 = {}
-        with storage.File(residue_file, 'r') as f:
-            lines = f.readlines()
-            for line in lines:
-                mn, dis0, dis1 = line.split(', ')
-                cost0[mn] = (float(dis0), float(dis1))
-        cost0.update(cost)
-        cost = cost0
-    with storage.File(residue_file, 'w') as f:
-        mnames = sorted(list(cost.keys()))
-        for key in mnames:
-            val = cost[key]
-            f.write(f'{key}, {val[0]}, {val[1]}\n')
+              worker_settings=worker_settings, residue_file=residue_file)
     logger.info('finished')
     logging.terminate_logger(*logger_info)
 

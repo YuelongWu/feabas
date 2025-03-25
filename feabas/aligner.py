@@ -1028,6 +1028,7 @@ class Aligner():
         worker_settings = kwargs.get('worker_settings', {})
         slide_window.setdefault('num_workers', num_workers)
         chunked_to_depth = kwargs.pop('chunked_to_depth', 0)
+        residue_file = kwargs.pop('residue_file', None)
         residues = {}
         if chunked_to_depth == 0:
             kwargs.setdefault('ensure_continuous', True)
@@ -1036,9 +1037,13 @@ class Aligner():
             kwargs.pop('no_slide', None)
             kwargs.pop('ensure_continuous', None)
             kwargs.pop('include_chunk_dir', None)
-            residues.update(self.window_align(no_slide=True, ensure_continuous=True, include_chunk_dir=True, save_to_tform=True, **kwargs))
+            res0 = self.window_align(no_slide=True, ensure_continuous=True, include_chunk_dir=True, save_to_tform=True, **kwargs)
+            residues.update(res0)
+            Aligner.write_residue_file(res0, residue_file)
             if np.any(self.mesh_versions_array != Aligner.ALIGNED):
-                residues.update(self.align_within_chunks(**kwargs))
+                res0 = self.align_within_chunks(**kwargs)
+                residues.update(res0)
+                Aligner.write_residue_file(res0, residue_file)
                 meta_aligner_settings = {
                     "mesh_dir": self._meta_mesh_dir,
                     "tform_dir": self._meta_tform_dir,
@@ -1056,6 +1061,7 @@ class Aligner():
                 meta_aligner.run(chunked_to_depth=chunked_to_depth, **kwargs)
                 self.predeform_sections_by_chunk(num_workers=num_workers, worker_settings=worker_settings)
                 residues.update(self.window_align(no_slide=False, ensure_continuous=True, include_chunk_dir=True, save_to_tform=True, **kwargs))
+        Aligner.write_residue_file(residues, residue_file)
         return residues
 
 
@@ -1287,6 +1293,29 @@ class Aligner():
                     changed_chunks.append(chknm)
                     changed_sections.append(secnames0)
         return changed_chunks, changed_sections
+
+
+    @staticmethod
+    def write_residue_file(residues, filename):
+        if (filename is None) or (len(residues) == 0):
+            return
+        res0 = {}
+        if storage.file_exists(filename):
+            with storage.File(filename, 'r') as f:
+                lines = f.readlines()
+            for line in lines:
+                strlist = line.split(', ')
+                if len(strlist) > 1:
+                    res0[strlist[0]] = [float(dis) for dis in strlist[1:]]
+        res0.update(residues)
+        if len(res0) > 0:
+            storage.makedirs(os.path.dirname(filename))
+            mnames = sorted(list(res0.keys()))
+            with storage.File(filename, 'w') as f:
+                for ky in mnames:
+                    strlist = [ky] + [str(s) for s in res0[ky]]
+                    line = ', '.join(strlist)
+                    f.write(line + '\n')
 
 
     @staticmethod
