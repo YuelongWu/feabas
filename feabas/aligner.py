@@ -1127,6 +1127,8 @@ class Aligner():
         # specified_out_dirs
         muted_match_list = stack.assign_section_to_chunks(self.chunk_map)
         storage.makedirs(self._chunk_dir)
+        section_locked_for_chunk = mesh_versions_array > Aligner.UNALIGNED
+        stack.update_lock_flags({s:l for s, l in zip(self.section_list, section_locked_for_chunk)})
         updated_sections, residues = stack.optimize_slide_window(**slide_window)
         section_name2id_lut = {s:k for k, s in enumerate(self.section_list)}
         section_chunk_id = self.section_chunk_id
