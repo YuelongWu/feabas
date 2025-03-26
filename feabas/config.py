@@ -28,7 +28,7 @@ DEFAULT_RESOLUTION = general_settings().get('full_resolution', constant.DEFAULT_
 TS_TIMEOUT = general_settings().get('tensorstore_timeout', None)
 TS_RETRY = 2
 CHECKPOINT_TIME_INTERVAL = 300 # is seconds
-MIN_RES_ENSURE_CONVERGE = False
+OPT_ENSURE_CONVERGE = False
 
 @lru_cache(maxsize=1)
 def parallel_framework():
