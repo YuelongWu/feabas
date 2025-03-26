@@ -6,7 +6,7 @@ import scipy
 from scipy import sparse
 import time
 
-from feabas import spatial, common, caching, storage
+from feabas import config, spatial, common, caching, storage
 import feabas.constant as const
 from feabas.mesh import Mesh
 
@@ -1765,7 +1765,7 @@ def solve(A, b, solver, x0=None, tol=1e-7, atol=None, maxiter=None, M=None, **kw
         except KeyboardInterrupt:
             x = cb.solution
             break
-        if cost <= atol:
+        if (cost <= atol) or config.OPT_ENSURE_CONVERGE:
             break
         if cb._exit_code != 0:
             break

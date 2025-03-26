@@ -880,9 +880,9 @@ class Aligner():
                 self._chunknames = []
                 for kc, k0 in enumerate(range(0, self.num_sections, step_c)):
                     secnames = self.section_list[k0:(k0+step_c)]
-                    prefix = secnames[0].split('_Meta')[0]
-                    postfix = Aligner._hash_name('_'.join(secnames), num_digits=len(prefix))
-                    chnknm = '_Meta'.join((prefix, postfix))
+                    prefix = secnames[0].split('_META')[0]
+                    postfix = Aligner._hash_name('_'.join(secnames))
+                    chnknm = '_META'.join((prefix, postfix))
                     self._chunknames.append(chnknm)
                     self._chunk_map[chnknm] = secnames
                     self._section_chunk_id[k0:(k0+step_c)] = kc
@@ -911,9 +911,9 @@ class Aligner():
                         for cid in range(np.min(new_section_chunk_id), end_cid+1):
                             idxt = np.flatnonzero(new_section_chunk_id == cid)
                             secnames = [self.section_list[kt] for kt in idxt]
-                            prefix = secnames[0].split('_Meta')[0]
-                            postfix = Aligner._hash_name('_'.join(secnames), num_digits=len(prefix))
-                            chnknm = '_Meta'.join((prefix, postfix))
+                            prefix = secnames[0].split('_META')[0]
+                            postfix = Aligner._hash_name('_'.join(secnames))
+                            chnknm = '_META'.join((prefix, postfix))
                             new_chunknames.append(chnknm)
                             self._chunk_map[chnknm] = secnames
                         self._chunknames = new_chunknames + self._chunknames[1:]
@@ -932,9 +932,9 @@ class Aligner():
                         for cid in range(end_cid, np.max(new_section_chunk_id)+1):
                             idxt = np.flatnonzero(new_section_chunk_id == cid)
                             secnames = [self.section_list[kt] for kt in idxt]
-                            prefix = secnames[0].split('_Meta')[0]
-                            postfix = Aligner._hash_name('_'.join(secnames), num_digits=len(prefix))
-                            chnknm = '_Meta'.join((prefix, postfix))
+                            prefix = secnames[0].split('_META')[0]
+                            postfix = Aligner._hash_name('_'.join(secnames))
+                            chnknm = '_META'.join((prefix, postfix))
                             new_chunknames.append(chnknm)
                             self._chunk_map[chnknm] = secnames
                         self._chunknames =  self._chunknames[:-1] + new_chunknames
