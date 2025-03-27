@@ -19,7 +19,7 @@ from feabas.matcher import section_matcher
 from feabas.optimizer import SLM
 import feabas.constant as const
 from feabas.common import str_to_numpy_ascii, Match, rearrange_section_order, parse_json_file
-from feabas.config import montage_resolution
+from feabas.config import montage_resolution, merge_config
 
 H5File = storage.h5file_class()
 
@@ -1026,13 +1026,21 @@ class Aligner():
         return self._junctional_sections
 
 
-    def run(self, **kwargs):
-        num_workers = kwargs.pop('num_workers', 1)
-        slide_window = kwargs.setdefault('slide_window', {'num_workers': num_workers})
+    def run(self, **kwargs0):
+        num_workers = kwargs0.get('num_workers', 1)
+        stiffness = kwargs0.pop('stiffness', 1.0)
+        chunked_to_depth = kwargs0.pop('chunked_to_depth', 0)
+        residue_file = kwargs0.pop('residue_file', None)
+        kwargs = {
+            'slide_window': {
+                'num_workers': num_workers,
+                'elastic_params':{
+                    'stiffness_lambda': stiffness
+                }
+            }
+        }
+        merge_config(kwargs, kwargs0)
         worker_settings = kwargs.get('worker_settings', {})
-        slide_window.setdefault('num_workers', num_workers)
-        chunked_to_depth = kwargs.pop('chunked_to_depth', 0)
-        residue_file = kwargs.pop('residue_file', None)
         residues = {}
         if chunked_to_depth == 0:
             kwargs.setdefault('ensure_continuous', True)
@@ -1062,7 +1070,7 @@ class Aligner():
                 meta_aligner = Aligner(**meta_aligner_settings)
                 if chunked_to_depth is not None:
                     chunked_to_depth -= 1
-                meta_aligner.run(chunked_to_depth=chunked_to_depth, **kwargs)
+                meta_aligner.run(stiffness=stiffness, chunked_to_depth=chunked_to_depth, **kwargs0)
                 self.predeform_sections_by_chunk(num_workers=num_workers, worker_settings=worker_settings)
                 residues.update(self.window_align(no_slide=False, ensure_continuous=True, include_chunk_dir=True, save_to_tform=True, **kwargs))
         Aligner.write_residue_file(residues, residue_file)
