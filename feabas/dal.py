@@ -1352,8 +1352,8 @@ class TensorStoreWriter(TensorStoreLoader):
                     glb_indices.append(slice(glb0, glb1, 1))
                     loc_indices.append(slice(loc0, loc1, 1))
                 if not target_empty:
-                    data_view = dataset[*glb_indices]
-                    img_crp = img[*loc_indices]
+                    data_view = dataset[tuple(glb_indices)]
+                    img_crp = img[tuple(loc_indices)]
                     while len(img_crp.shape) > len(data_view.shape):
                         img_crp = img_crp[..., 0]
                     while len(img_crp.shape) < len(data_view.shape):
