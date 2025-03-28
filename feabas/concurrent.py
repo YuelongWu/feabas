@@ -1,6 +1,8 @@
 from collections import defaultdict
 from feabas import config
+import sys
 
+PY_VERSION = tuple(sys.version_info)
 DEFAUL_FRAMEWORK = config.parallel_framework()
 
 def parse_inputs(args, kwargs):
@@ -56,7 +58,7 @@ def submit_to_process_pool(func, args=None, kwargs=None, **settings):
     num_workers = settings.get('num_workers', 1)
     max_tasks_per_child = settings.get('max_tasks_per_child', None)
     N, args, kwargs = parse_inputs(args, kwargs)
-    if (max_tasks_per_child is None) or (max_tasks_per_child == 1):
+    if ((max_tasks_per_child is None) or (max_tasks_per_child == 1)) and (PY_VERSION[1]>10):
         futures = []
         with ProcessPoolExecutor(max_workers=num_workers, mp_context=get_context('spawn'), max_tasks_per_child=max_tasks_per_child) as executor:
             for k in range(N):
@@ -68,7 +70,10 @@ def submit_to_process_pool(func, args=None, kwargs=None, **settings):
                 res = job.result()
                 yield res
     else:
-        batch_size = num_workers * max_tasks_per_child
+        if max_tasks_per_child is None:
+            batch_size = N
+        else:
+            batch_size = num_workers * max_tasks_per_child
         index0 = list(range(N))
         indices = [index0[k:(k+batch_size)] for k in range(0, N, batch_size)]
         for idx in indices:
