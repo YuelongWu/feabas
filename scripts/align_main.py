@@ -554,10 +554,10 @@ if __name__ == '__main__':
                                                                          mask_file=rendered_mask_file,
                                                                          **align_config)
             if err_raised:
-                logger.error('failed to generate mip{mip}, abort')
+                logger.error(f'failed to generate mip{mip}, abort')
                 break
             if (z_range is not None) and len(z_range) == 0:
-                logger.warning('no complete chunk to downsample at mip{mip}. skipping...')
+                logger.warning(f'no complete chunk to downsample at mip{mip}. skipping...')
                 break
             rendered_mips_spec[mip] = out_spec
             align_config['z_range'] = z_range
