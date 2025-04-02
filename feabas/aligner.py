@@ -896,6 +896,7 @@ class Aligner():
                     self._chunk_map = self._previous_chunk_map.copy()
                     self._chunknames = chunknames
                     edt, inds = distance_transform_cdt(section_chunk_id==-1, return_indices=True)
+                    inds = inds.ravel()
                     new_section_chunk_id = section_chunk_id[inds]
                     if section_chunk_id[0] == -1:
                         end_cid = new_section_chunk_id[0]
