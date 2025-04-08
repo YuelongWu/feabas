@@ -1060,7 +1060,7 @@ class Aligner():
                 residues.update(res0)
                 if len(def0) > 0:
                     deform_target = np.array(list(def0.values()))
-                    kwargs0['deform_target'] = np.median(deform_target)
+                    kwargs0['deform_target'] = np.median(deform_target) / 2
                     Aligner.write_residue_file(res0, residue_file)
                 meta_aligner_settings = {
                     "mesh_dir": self._meta_mesh_dir,
@@ -1230,6 +1230,7 @@ class Aligner():
         chunks_to_process = np.flatnonzero(needed_deform)
         logger = logging.get_logger(self._logger)
         args_list = []
+        args_list_j = []
         for cid in chunks_to_process:
             chnkname = self.chunk_names[cid]
             secnames0 = self.chunk_map[chnkname]
@@ -1238,20 +1239,25 @@ class Aligner():
                 logger.warning(f'tranformation for meta section {meta_tform} not found')
                 continue
             secnames = []
-            outdirs = []
+            secnames_j = []
             for snm in secnames0:
                 if (mesh_versions.get(snm, None) == Aligner.CHUNK_ALIGNED):
-                    secnames.append(snm)
                     if snm in junctional_sections:
-                        outdirs.append(self._chunk_dir)
+                        secnames_j.append(snm)
                     else:
-                        outdirs.append(self._tform_dir)
+                        secnames.append(snm)
             if len(secnames) > 0:
-                args_list.append([meta_tform, secnames, outdirs])
+                args_list.append([meta_tform, secnames])
+            if len(secnames_j) > 0:
+                args_list_j.append([meta_tform, secnames_j])
         if len(args_list) > 0:
-            tfunc = partial(Aligner._predeform_meshes, srcdir=self._chunk_dir)
+            tfunc = partial(Aligner._predeform_meshes, outdir=self._tform_dir, srcdir=self._chunk_dir)
             for res in submit_to_workers(tfunc, args=args_list, num_workers=num_workers, **worker_settings):
                 self._mesh_versions.update(res)
+        if len(args_list_j) > 0:
+            tfunc = partial(Aligner._predeform_meshes, outdir=self._chunk_dir, srcdir=self._chunk_dir)
+            for _ in submit_to_workers(tfunc, args=args_list_j, num_workers=num_workers, **worker_settings):
+                pass
 
 
     def resolve_chunk_version_differences(self, remove_file=True):
