@@ -672,9 +672,9 @@ class SLM:
                     return None, None
                 STIFF_M.append(stiff * m.soft_factor)
                 STRESS_v.append(stress * m.soft_factor)
-                v = m.vertices_w_offset(gear=gear[0])
+                v = m.vertices(gear=gear[0])
                 v = v - v.mean(axis=0, keepdims=True)
-                v = v.ravel() * 0.25
+                v = v.ravel()
                 self._elastic_energy += (stiff * m.soft_factor).dot(v).dot(v)
             stiffness_matrix = sparse.block_diag(STIFF_M, format='csr')
             stress_vector = np.concatenate(STRESS_v, axis=None)
@@ -1072,6 +1072,7 @@ class SLM:
         start_gear = kwargs.get('start_gear', targt_gear)
         stiffness_lambda = kwargs.get('stiffness_lambda', self._stiffness_lambda)
         crosslink_lambda = kwargs.get('crosslink_lambda', self._crosslink_lambda)
+        deform_target = kwargs.get('deform_target', None)
         inner_cache = kwargs.get('inner_cache', self._shared_cache)
         cont_on_flip = kwargs.get('continue_on_flip', False)
         batch_num_matches = kwargs.get('batch_num_matches', None)
@@ -1081,6 +1082,7 @@ class SLM:
         remove_material_dof = kwargs.get('remove_material_dof', None)
         check_flip = not cont_on_flip
         lock_flags = self.lock_flags
+        check_deform = (deform_target is not None) and (deform_target > 0)
         if np.all(lock_flags):
             return 0, 0 # all locked, nothing to optimize
         stiff_m, stress_v = self.stiffness_matrix(gear=(shape_gear,start_gear),
@@ -1090,10 +1092,6 @@ class SLM:
             return None, None # flipped triangles
         Cs_lft, Cs_rht = self.crosslink_terms(start_gear=start_gear,
             target_gear=targt_gear, batch_num_matches=batch_num_matches)
-        stiffness_lambda, crosslink_lambda = self.relative_lambda_virtual_potential(stiffness_lambda, crosslink_lambda)
-        A = stiffness_lambda * stiff_m + crosslink_lambda * Cs_lft
-        A = 0.5*(A + A.transpose())
-        b = crosslink_lambda * Cs_rht - stiffness_lambda * stress_v
         if isinstance(callback_settings, bool):
             if callback_settings:
                 callback_settings = {'chances':5, 'eval_step':10}
@@ -1161,6 +1159,7 @@ class SLM:
                         s[:3] = False
                     edc.append(s)
                 edc = np.concatenate(edc, axis=None)
+        E_s = self._elastic_energy
         if groupings is not None:
             group_u, indx, group_nm, g_cnt = np.unique(groupings, return_index=True, return_inverse=True, return_counts=True)
             if group_u.size < groupings.size:
@@ -1169,6 +1168,7 @@ class SLM:
                 lock_flags = grouped_lock_flags[group_nm]
                 if np.all(lock_flags):
                     return 0, 0
+                grp_fmindx = indx[~grouped_lock_flags]
                 vnum = [self.meshes[s].num_vertices * 2 for s in indx]
                 vnum = vnum * (~grouped_lock_flags)
                 vnum_accum = np.cumsum(vnum)
@@ -1191,18 +1191,41 @@ class SLM:
                 indx1 = np.concatenate(indx1, axis=None)
                 T_m = sparse.csr_matrix((np.ones_like(indx0, dtype=np.float32),
                                         (indx1, indx0)), shape=(grouped_dof, A.shape[0]))
-                A = T_m @ A @ T_m.transpose() / np.mean(g_cnt)
-                b = T_m @ b / np.mean(g_cnt)
+                stiff_m = T_m @ stiff_m @ T_m.transpose() / np.mean(g_cnt)
+                Cs_lft = T_m @ Cs_lft @ T_m.transpose() / np.mean(g_cnt)
+                stress_v = T_m @ stress_v / np.mean(g_cnt)
                 if edc is not None:
                     edc = (T_m @ edc) > 0
             else:
                 groupings = None
-        A_diag = A.diagonal()
-        if A_diag.max() > 0:
-            M = sparse.diags(1/(A_diag.clip(min(1.0, A_diag.max()/1000),None))) # Jacobi precondition
-        else:
-            M = None
-        dd = solve(A, b, solver, tol=tol, maxiter=maxiter, atol=atol, M=M, extra_dof_constraint=edc, **callback_settings)
+        stiffness_lambda, crosslink_lambda = self.relative_lambda_virtual_potential(stiffness_lambda, crosslink_lambda)
+        if check_deform:
+            stiffness_lambda_df = 0.5 * 0.25 * self._crosslink_energy * crosslink_lambda / (self._elastic_energy * np.mean(deform_target)**2)
+            stiffness_lambda = min(stiffness_lambda, stiffness_lambda_df)
+            if groupings is not None:
+                xy0 = [self.meshes[idx_m].vertices(gear=shape_gear) for idx_m in grp_fmindx]
+                xy0 = np.concatenate(xy0, axis=0)
+                xy0 = xy0 - np.mean(xy0, axis=0, keepdims=True)
+                E_s = stiff_m.dot(xy0.ravel()).dot(xy0.ravel())
+        while True:
+            A = stiffness_lambda * stiff_m + crosslink_lambda * Cs_lft
+            A = 0.5*(A + A.transpose())
+            b = crosslink_lambda * Cs_rht - stiffness_lambda * stress_v
+            A_diag = A.diagonal()
+            if A_diag.max() > 0:
+                M = sparse.diags(1/(A_diag.clip(min(1.0, A_diag.max()/1000),None))) # Jacobi precondition
+            else:
+                M = None
+            if not check_deform:
+                dd = solve(A, b, solver, tol=tol, maxiter=maxiter, atol=atol, M=M, extra_dof_constraint=edc, **callback_settings)
+                break
+            dd = solve(A, b, solver, tol=tol, maxiter=maxiter, check_converge=False, atol=atol, M=M, extra_dof_constraint=edc, **callback_settings)
+            deform_act = (stiff_m.dot(dd).dot(dd) / E_s) ** 0.5
+            if deform_act > np.max(deform_target):
+                stiffness_lambda = stiffness_lambda * max(2.0, (deform_act/np.mean(deform_target))**2)
+            else:
+                dd = solve(A, b, solver, x0=dd, tol=tol, maxiter=maxiter, atol=atol, M=M, extra_dof_constraint=edc, **callback_settings)
+                break
         cost = (np.linalg.norm(b), np.linalg.norm(A.dot(dd) - b))
         if cost[1] < cost[0]:
             index_offsets = self.index_offsets
@@ -1368,7 +1391,7 @@ class SLM:
             if (self._stiffness_matrix is None) or (self._crosslink_terms is None):
                 raise RuntimeError('System equation not initialized')
             ratio = abs(stiffness_lambda / crosslink_lambda)
-            stiffness_lambda = self._crosslink_energy * ratio / self._elastic_energy
+            stiffness_lambda = self._crosslink_energy * ratio / (self._elastic_energy * (2 * config.DEFAULT_DEFORM_BUDGET)**2)
             crosslink_lambda = 1.0
         return stiffness_lambda, crosslink_lambda
 
@@ -1717,6 +1740,7 @@ def solve(A, b, solver, x0=None, tol=1e-7, atol=None, maxiter=None, M=None, **kw
     chances = kwargs.get('chances', None)
     eval_step = kwargs.get('eval_step', 10)
     edc = kwargs.get('extra_dof_constraint', None)
+    check_converge = kwargs.get('check_converge', config.OPT_CHECK_CONVERGENCE)
     if maxiter == 0:
         return np.zeros_like(b)
     if edc is not None:
@@ -1765,7 +1789,7 @@ def solve(A, b, solver, x0=None, tol=1e-7, atol=None, maxiter=None, M=None, **kw
         except KeyboardInterrupt:
             x = cb.solution
             break
-        if (cost <= atol) or config.OPT_ENSURE_CONVERGE:
+        if (cost <= atol) or check_converge:
             break
         if cb._exit_code != 0:
             break

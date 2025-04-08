@@ -1032,11 +1032,13 @@ class Aligner():
         stiffness = kwargs0.pop('stiffness', 1.0)
         chunked_to_depth = kwargs0.pop('chunked_to_depth', 0)
         residue_file = kwargs0.pop('residue_file', None)
+        deform_target = kwargs0.pop('deform_target', None)
         kwargs = {
             'slide_window': {
                 'num_workers': num_workers,
                 'elastic_params':{
-                    'stiffness_lambda': stiffness
+                    'stiffness_lambda': stiffness,
+                    'deform_target': deform_target
                 }
             }
         }
@@ -1054,9 +1056,12 @@ class Aligner():
             residues.update(res0)
             Aligner.write_residue_file(res0, residue_file)
             if np.any(self.mesh_versions_array != Aligner.ALIGNED):
-                res0 = self.align_within_chunks(**kwargs)
+                res0, def0 = self.align_within_chunks(**kwargs)
                 residues.update(res0)
-                Aligner.write_residue_file(res0, residue_file)
+                if len(def0) > 0:
+                    deform_target = np.array(list(def0.values()))
+                    kwargs0['deform_target'] = np.median(deform_target)
+                    Aligner.write_residue_file(res0, residue_file)
                 meta_aligner_settings = {
                     "mesh_dir": self._meta_mesh_dir,
                     "tform_dir": self._meta_tform_dir,
@@ -1206,9 +1211,10 @@ class Aligner():
             mesh_list = self.mesh_locations(secnames=secnames)
             m_init_dict = {'resolution': resolution, 'name': chnkname, 'uid':cid, 'locked': chunk_lock_flags[cid]}
             args_list.append([mesh_list, outname, m_init_dict])
-        for _ in submit_to_workers(Aligner._merge_chunked_meshes, args=args_list, num_workers=num_workers, **worker_settings):
-            pass
-        return residues
+        deformations = {}
+        for df in submit_to_workers(Aligner._merge_chunked_meshes, args=args_list, num_workers=num_workers, **worker_settings):
+            deformations.update(df)
+        return residues, deformations
 
 
     def predeform_sections_by_chunk(self, **kwargs):
@@ -1232,13 +1238,18 @@ class Aligner():
                 logger.warning(f'tranformation for meta section {meta_tform} not found')
                 continue
             secnames = []
+            outdirs = []
             for snm in secnames0:
-                if (mesh_versions.get(snm, None) == Aligner.CHUNK_ALIGNED) and (snm not in junctional_sections):
+                if (mesh_versions.get(snm, None) == Aligner.CHUNK_ALIGNED):
                     secnames.append(snm)
+                    if snm in junctional_sections:
+                        outdirs.append(self._chunk_dir)
+                    else:
+                        outdirs.append(self._tform_dir)
             if len(secnames) > 0:
-                args_list.append([meta_tform, secnames])
+                args_list.append([meta_tform, secnames, outdirs])
         if len(args_list) > 0:
-            tfunc = partial(Aligner._predeform_meshes, srcdir=self._chunk_dir, outdir=self._tform_dir)
+            tfunc = partial(Aligner._predeform_meshes, srcdir=self._chunk_dir)
             for res in submit_to_workers(tfunc, args=args_list, num_workers=num_workers, **worker_settings):
                 self._mesh_versions.update(res)
 
@@ -1349,15 +1360,18 @@ class Aligner():
 
 
     @staticmethod
-    def _predeform_meshes(tform_file, secnames, srcdir, outdir):
+    def _predeform_meshes(tform_file, secnames, outdir, srcdir):
         Mc = Mesh.from_h5(tform_file)
         res = {}
-        for snm in secnames:
-            outname = storage.join_paths(outdir, snm +'.h5')
+        if isinstance(outdir, str):
+            outdir = [outdir] * len(secnames)
+        for snm, odir in zip(secnames, outdir):
+            outname = storage.join_paths(odir, snm +'.h5')
             if not storage.file_exists(outname, use_cache=True):
                 srcname = storage.join_paths(srcdir, snm+'.h5')
                 m0 = Mesh.from_h5(srcname)
                 m0 = transform_mesh(m0, Mc, gears=(const.MESH_GEAR_MOVING, const.MESH_GEAR_MOVING))
+                m0.anneal(gear=(const.MESH_GEAR_MOVING, const.MESH_GEAR_FIXED), mode=const.ANNEAL_COPY_EXACT)
                 m0.save_to_h5(outname, save_material=True)
             res[snm] = Aligner.ALIGNED
         return res
@@ -1369,12 +1383,21 @@ class Aligner():
         regions = []
         region_areas = 0
         num_tri = 0
-        updated = False
+        deformations = {}
         for meshname in mesh_list.values():
             if meshname is None:
                 continue
             m0 = Mesh.from_h5(meshname)
             m0.change_resolution(resolution)
+            v0 = m0.vertices(gear=const.MESH_GEAR_FIXED)
+            v1 = m0.vertices(gear=const.MESH_GEAR_MOVING)
+            dv = v1 - v0
+            dv = dv - np.mean(dv, axis=0, keepdims=True)
+            if np.any(dv != 0, axis=None):
+                v0 = v0 - np.mean(v0, axis=0, keepdims=True)
+                stiff_m, _ = m0.stiffness_matrix(gear=(const.MESH_GEAR_FIXED, const.MESH_GEAR_MOVING), continue_on_flip=True)
+                df = (stiff_m.dot(dv.ravel()).dot(dv.ravel()) / (stiff_m.dot(v0.ravel()).dot(v0.ravel()))) ** 0.5
+                deformations[os.path.basename(meshname)] = df
             reg = m0.shapely_regions(gear=const.MESH_GEAR_MOVING, offsetting=True)
             region_areas += reg.area
             num_tri += m0.num_triangles
@@ -1384,8 +1407,7 @@ class Aligner():
             mesh_size = 2 * (region_areas / num_tri) ** 0.5
             M = Mesh.from_polygon_equilateral(union_region, mesh_size=mesh_size, **m_init_dict)
             M.save_to_h5(outname, save_material=True)
-            updated = True
-        return {outname: updated}
+        return deformations
 
 
     @staticmethod
