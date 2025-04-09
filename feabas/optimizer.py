@@ -1190,10 +1190,11 @@ class SLM:
                 indx0 = np.concatenate(indx0, axis=None)
                 indx1 = np.concatenate(indx1, axis=None)
                 T_m = sparse.csr_matrix((np.ones_like(indx0, dtype=np.float32),
-                                        (indx1, indx0)), shape=(grouped_dof, A.shape[0]))
+                                        (indx1, indx0)), shape=(grouped_dof, stiff_m.shape[0]))
                 stiff_m = T_m @ stiff_m @ T_m.transpose() / np.mean(g_cnt)
                 Cs_lft = T_m @ Cs_lft @ T_m.transpose() / np.mean(g_cnt)
                 stress_v = T_m @ stress_v / np.mean(g_cnt)
+                Cs_rht = T_m @ Cs_rht / np.mean(g_cnt)
                 if edc is not None:
                     edc = (T_m @ edc) > 0
             else:

@@ -22,7 +22,7 @@ from feabas.optimizer import SLM
 from feabas import common, caching, storage, logging
 from feabas.spatial import scale_coordinates
 import feabas.constant as const
-from feabas.config import DEFAULT_RESOLUTION, SECTION_THICKNESS, data_resolution, CHECKPOINT_TIME_INTERVAL
+from feabas.config import DEFAULT_RESOLUTION, SECTION_THICKNESS, data_resolution, CHECKPOINT_TIME_INTERVAL, DEFAULT_DEFORM_BUDGET
 
 H5File = storage.h5file_class()
 
@@ -515,11 +515,6 @@ class Stitcher:
                 determine.
             interior_growth(float): increase of the mesh size in the interior
                 region.
-            match_soften(tuple): If set, the meshes will be soften based on
-                the strain during matching step. the tuple has two elements:
-                (upper_strain, lower_soft_factor), so that the soften factor
-                linearly changes from 1 to lower_soft_factor with a strain
-                from 0 to upper_strain.
             soft_top(float): the multiplier to apply to the stiffness to the top
                 part of the tile (there might be more distorsion at the beginning
                 of the scan, so make it weight less).
@@ -532,7 +527,6 @@ class Stitcher:
         """
         border_width = kwargs.get('border_width', None)
         interior_growth = kwargs.get('interior_growth', 3.0)
-        match_soften = kwargs.get('match_soften', None)
         soft_top = kwargs.get('soft_top', 0.2)
         soft_top_width = kwargs.get('soft_top_width', 0.0)
         soft_left = kwargs.get('soft_left', 0.2)
@@ -592,26 +586,21 @@ class Stitcher:
         else:
             stf_x = None
         # soften the mesh with the strain from matching
-        if (match_soften is None) or (match_soften[1] == 1):
-            tile_soft_factors = np.ones(self.num_tiles, dtype=np.float32)
-        else:
-            strain_list = list(self.match_strains.items())
-            overlap_indices = np.array([s[0] for s in strain_list])
-            strain_vals = np.array([(s[1], s[1]) for s in strain_list])
-            groupov_indices = groupings[overlap_indices]
-            # only probe the interfaces between groups
-            idxt = groupov_indices[:,0] != groupov_indices[:,1]
-            groupov_indices = groupov_indices[idxt].ravel()
-            strain_vals = strain_vals[idxt].ravel()
-            avg_strain = np.zeros(self.num_tiles, dtype=np.float32)
-            for g in np.unique(groupov_indices):
-                idxt = groupov_indices == g
-                strn = np.median(strain_vals[idxt])
-                avg_strain[groupings == g] = strn
-            upper_strain, lower_soft_factor = match_soften
-            soften_func = interp1d([0, upper_strain], [1, lower_soft_factor],
-                kind='linear', bounds_error=False, fill_value=(1, lower_soft_factor))
-            tile_soft_factors = soften_func(avg_strain)
+        strain_list = list(self.match_strains.items())
+        overlap_indices = np.array([s[0] for s in strain_list])
+        strain_vals = np.array([(s[1], s[1]) for s in strain_list])
+        groupov_indices = groupings[overlap_indices]
+        # only probe the interfaces between groups
+        idxt = groupov_indices[:,0] != groupov_indices[:,1]
+        groupov_indices = groupov_indices[idxt].ravel()
+        strain_vals = strain_vals[idxt].ravel()
+        avg_strain = np.zeros(self.num_tiles, dtype=np.float32)
+        for g in np.unique(groupov_indices):
+            idxt = groupov_indices == g
+            strn = np.median(strain_vals[idxt])
+            avg_strain[groupings == g] = strn
+        tile_soft_factors = 1 / (avg_strain + 1 / np.max(self.average_tile_size))
+        tile_soft_factors = tile_soft_factors / np.mean(tile_soft_factors)
         meshes = []
         mesh_indx = np.full(self.num_tiles, -1)
         mesh_params_ptr = {} # map the parameters of the mesh to
@@ -672,7 +661,9 @@ class Stitcher:
 
 
     def initialize_optimizer(self, **kwargs):
-        kwargs.setdefault('stiffness_lambda', 2000)
+        avg_deform = np.mean(list(self.match_strains.values()))
+        default_stiffness = (2 * DEFAULT_DEFORM_BUDGET / avg_deform) ** 2
+        kwargs.setdefault('stiffness_lambda', min(2000.0, default_stiffness))
         if (not kwargs.get('force_update', False)) and (self._optimizer is not None):
             return False
         if (self.meshes is None) or (self.num_links == 0):

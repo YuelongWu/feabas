@@ -454,20 +454,27 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
         lside = max(wd0, ht0)
         spacings[spacings < 1] *= lside
     opt = optimizer.SLM([mesh0, mesh1], stiffness_lambda=stiffness_lambda)
+    fixed_xy = []
     if initial_matches is not None:
         xy0, xy1, weight = initial_matches
         opt.add_link_from_coordinates(mesh0.uid, mesh1.uid, xy0, xy1,
             gear=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_INITIAL), weight=weight,
             check_duplicates=False, render_weight_threshold=render_weight_threshold)
         opt.optimize_affine_cascade(start_gear=const.MESH_GEAR_INITIAL, target_gear=const.MESH_GEAR_FIXED, svd_clip=(1,1))
+        if compute_strain:
+            for m in opt.meshes:
+                v0 = m.vertices(gear=const.MESH_GEAR_FIXED).copy()
+                fixed_xy.append(v0)
         opt.anneal(gear=(const.MESH_GEAR_FIXED, const.MESH_GEAR_MOVING), mode=const.ANNEAL_COPY_EXACT)
         if linear_system:
             opt.optimize_linear(tol=1e-6, batch_num_matches=np.inf, continue_on_flip=continue_on_flip, callback_settings=callback_settings)
         else:
             opt.optimize_Newton_Raphson(max_newtonstep=5, tol=1e-4, batch_num_matches=np.inf, continue_on_flip=continue_on_flip, callback_settings=callback_settings)
     else:
-        # mesh0.linearize_material(delta_t=(1/1.5,1.5))
-        # mesh1.linearize_material(delta_t=(1/1.5,1.5))
+        if compute_strain:
+            for m in opt.meshes:
+                v0 = m.vertices(gear=const.MESH_GEAR_FIXED).copy()
+                fixed_xy.append(v0)
         mesh0.anneal(gear=(const.MESH_GEAR_MOVING, const.MESH_GEAR_FIXED), mode=const.ANNEAL_COPY_EXACT)
         mesh1.anneal(gear=(const.MESH_GEAR_MOVING, const.MESH_GEAR_FIXED), mode=const.ANNEAL_COPY_EXACT)
     spacings = np.sort(spacings)[::-1]
@@ -639,11 +646,18 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
     xy1 = link.xy1(gear=const.MESH_GEAR_INITIAL, use_mask=True, combine=True)
     weight = link.weight(use_mask=True)
     if compute_strain:
-        for m in opt.meshes:
+        Es0 = 0
+        Es = 0
+        for m, v0 in zip(opt.meshes, fixed_xy):
             if not m.locked:
-                ss = np.exp(np.abs(np.log(m.triangle_tform_svd().clip(1e-3, None)))) - 1
-                smx = np.quantile(ss, 0.9, axis=None)
-                strain = max(strain, smx)
+                v1 = m.vertices(gear=const.MESH_GEAR_MOVING)
+                dv = v1 - v0
+                v0 = v0 - np.mean(v0, axis=0, keepdims=True)
+                dv = dv - np.mean(dv, axis=0, keepdims=True)
+                St, _ = m.stiffness_matrix()
+                Es += St.dot(dv.ravel()).dot(dv.ravel())
+                Es0 += St.dot(v0.ravel()).dot(v0.ravel())
+        strain = (Es / Es0) ** 0.5
     return xy0, xy1, weight, strain
 
 

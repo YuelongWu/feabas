@@ -26,7 +26,6 @@ optimization:
         mesh_sizes: [75, 150, 300]   # mesh sizes to select from based on how distorted are the matches
         cache_size: null    # size of the cache to save intermediate values. No need to worry about this unless very tight on RAM.
         border_width: null  # the overlap width where meshes are finer. null to decide dynamically
-        match_soften: [0.1, 0.2] # the default settings means if the overlapping regions deform by 10% percent during matching, then the mesh will only be 20% stiff during optimization, changes linearly.
         soft_top: 0.2       # to make the top part (less stablized) of the mesh for each tile softer during optimization. 0.2 means 20% stiff compare to the rest of mesh.
         soft_top_width: 0.0 # the width affected by the soft top in percentage to the tile height.
     translation:    # see stitcher.Stitcher.optimize_elastic for details
