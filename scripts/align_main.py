@@ -319,7 +319,7 @@ if __name__ == '__main__':
             if storage.file_exists(config_name):
                 align_config["worker_settings"] = {
                     "parallel_framework": "slurm",
-                    "config_name": storage.expand_dir(args.slurm_config)
+                    "config_name": config_name
                 }
         parallel_framework = align_config.get("worker_settings", {}).get("parallel_framework",  config.parallel_framework())
         if parallel_framework == 'slurm':
