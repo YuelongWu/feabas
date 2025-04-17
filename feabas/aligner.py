@@ -534,7 +534,10 @@ class Stack:
             buffer_size = round(buffer_size * window_size)
         updated_sections = []
         residues = {}
-        to_optimize = ~self.locked_array
+        if self.num_sections == 0:
+            to_optimize = False
+        else:
+            to_optimize = ~self.locked_array
         while np.any(to_optimize):
             connected_free_sections = self.connected_sections(section_filter=to_optimize)
             if len(connected_free_sections) > 1:

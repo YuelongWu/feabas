@@ -50,9 +50,7 @@ def parallel_framework():
 def get_work_dir():
     conf = general_settings()
     work_dir = conf.get('working_directory', './work_dir')
-    driver, work_dir = storage.parse_file_driver(work_dir)
-    if driver == 'file':
-        work_dir = os.path.abspath(os.path.expanduser(os.path.expandvars(work_dir)))
+    work_dir = storage.expand_dir(work_dir)
     return work_dir
 
 

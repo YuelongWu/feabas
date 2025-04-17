@@ -293,6 +293,8 @@ def parse_args(args=None):
     parser.add_argument("--step", metavar="step", type=int, default=1)
     parser.add_argument("--stop", metavar="stop", type=int)
     parser.add_argument("--reverse",  action='store_true')
+    parser.add_argument("--slurm_config", metavar="slurm_config", type=str, 
+                        help="path to the jobqueue.yaml config file to distribute optimization workloads via SLURM")
     return parser.parse_args(args)
 
 
@@ -311,9 +313,19 @@ if __name__ == '__main__':
     elif args.mode.lower().startswith('o'):
         align_config = align_config['optimization']
         mode = 'optimization'
-        start_loc = align_config.get('slide_window', {}).get('start_loc', 'M')
         num_workers = align_config.get('num_workers', 1)
-        num_workers = config.set_numpy_thread_from_num_workers(num_workers)
+        if (args.slurm_config is not None):
+            config_name = storage.expand_dir(args.slurm_config)
+            if storage.file_exists(config_name):
+                align_config["worker_settings"] = {
+                    "parallel_framework": "slurm",
+                    "config_name": storage.expand_dir(args.slurm_config)
+                }
+        parallel_framework = align_config.get("worker_settings", {}).get("parallel_framework",  config.parallel_framework())
+        if parallel_framework == 'slurm':
+            config.set_numpy_thread_from_num_workers(1)
+        else:
+            num_workers = config.set_numpy_thread_from_num_workers(num_workers)
         align_config.setdefault('slide_window', {})
         align_config['slide_window']['num_workers'] = num_workers
     elif args.mode.lower().startswith('ma'):

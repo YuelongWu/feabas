@@ -1,5 +1,5 @@
 from collections import defaultdict
-from feabas import config
+from feabas import config, storage
 import sys
 
 PY_VERSION = tuple(sys.version_info)
@@ -24,7 +24,7 @@ def parse_inputs(args, kwargs):
 def submit_to_workers(func, args=None, kwargs=None, **settings):
     parallel_framework = settings.pop('parallel_framework', DEFAUL_FRAMEWORK)
     num_workers = settings.get('num_workers', 1)
-    force_remote = settings.pop('force_remote', False)
+    force_remote = settings.pop('force_remote', parallel_framework=='slurm')
     N, args_n, kwargs_n = parse_inputs(args, kwargs)
     if N == 0:
         return []
@@ -45,6 +45,8 @@ def submit_to_workers(func, args=None, kwargs=None, **settings):
             yield from submit_to_thread_pool(func, args, kwargs, **settings)
         elif parallel_framework == 'dask':
             yield from submit_to_dask_localcluster(func, args, kwargs, **settings)
+        elif parallel_framework == 'slurm':
+            yield from submit_to_dask_slurmcluster(func, args, kwargs, **settings)
         else:
             raise ValueError(f'unsupported worker type {type}')
 
@@ -135,3 +137,31 @@ def submit_to_dask_localcluster(func, args=None, kwargs=None, **settings):
                     futures.append(fut)
                 for fut in as_completed(futures):
                     yield fut.result()
+
+
+def submit_to_dask_slurmcluster(func, args=None, kwargs=None, **settings):
+    """
+    Dask SLURMCluster scheduler: dask_jobqueue.SLURMCluster
+    """
+    from dask_jobqueue import SLURMCluster
+    from dask.distributed import Client, as_completed
+    num_workers = settings.pop('num_workers', 1)
+    config_name = settings.pop('config_name', None)
+    if (config_name is not None) and storage.file_exists(config_name):
+        cluster_settings = {'config_name': config_name}
+    else:
+        cluster_settings = settings
+    N, args, kwargs = parse_inputs(args, kwargs)
+    with SLURMCluster(**cluster_settings) as cluster:
+        cluster.scale(jobs=num_workers)
+        futures = []
+        with Client(cluster) as client:
+            client.wait_for_workers(num_workers)
+            for k in range(N):
+                args_b = args[k]
+                kwargs_b = kwargs[k]
+                job = client.submit(func, *args_b, **kwargs_b)
+                futures.append(job)
+            for job in as_completed(futures):
+                res = job.result()
+                yield res
