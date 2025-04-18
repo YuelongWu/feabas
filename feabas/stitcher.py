@@ -661,9 +661,7 @@ class Stitcher:
 
 
     def initialize_optimizer(self, **kwargs):
-        avg_deform = np.mean(list(self.match_strains.values()))
-        default_stiffness = (2 * DEFAULT_DEFORM_BUDGET / avg_deform) ** 2
-        kwargs.setdefault('stiffness_lambda', min(2000.0, default_stiffness))
+        kwargs.setdefault('stiffness_lambda', self.stiffness_lambda_from_strain)
         if (not kwargs.get('force_update', False)) and (self._optimizer is not None):
             return False
         if (self.meshes is None) or (self.num_links == 0):
@@ -785,7 +783,7 @@ class Stitcher:
         for M0 in sel_meshes:
             for gear in const.MESH_GEARS:
                 M0.set_default_cache(cache=default_caches[gear], gear=gear)
-        opt = SLM(sel_meshes)
+        opt = SLM(sel_meshes, stiffness_lambda=self.stiffness_lambda_from_strain)
         for uids0, uids1 in zip(match_uids, sel_match_uids):
             mtch = self.matches[tuple(uids0)]
             xy0, xy1, weight = mtch
@@ -1004,6 +1002,15 @@ class Stitcher:
             self._connected_subsystem = V_conn
         return self._connected_subsystem
 
+
+    @property
+    def stiffness_lambda_from_strain(self):
+        if not hasattr(self, '_stiffness_lambda_strain') or (self._stiffness_lambda_strain is None):
+            strains = np.array(list(self.match_strains.values()))
+            strains = strains.clip(1/np.max(self.average_tile_size), None)
+            avg_deform = np.mean(strains)
+            self._stiffness_lambda_strain = (2 * DEFAULT_DEFORM_BUDGET / avg_deform) ** 2
+        return self._stiffness_lambda_strain
 
     @property
     def has_groupings(self):

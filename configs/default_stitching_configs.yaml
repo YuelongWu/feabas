@@ -41,6 +41,8 @@ optimization:
     group_elastic: # see stitcher.Stitcher.optimize_group_intersection for details
         maxiter: null
         tol: 1.0e-6
+        residue_mode: threshold
+        residue_len: 5
     final_elastic:    # see stitcher.Stitcher.optimize_translation for details
         maxiter: null
         tol: 1.0e-4
