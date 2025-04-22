@@ -148,6 +148,12 @@ def submit_to_dask_slurmcluster(func, args=None, kwargs=None, **settings):
     num_workers = settings.pop('num_workers', 1)
     config_name = settings.pop('config_name', None)
     if (config_name is not None) and storage.file_exists(config_name):
+        cluster_settings = storage.load_yaml(config_name)
+        if 'jobqueue' in cluster_settings:
+            cluster_settings = cluster_settings['jobqueue']
+        if 'slurm' in  cluster_settings:
+            cluster_settings = cluster_settings['slurm']
+    elif config_name == 'slurm':
         cluster_settings = {'config_name': config_name}
     else:
         cluster_settings = settings
