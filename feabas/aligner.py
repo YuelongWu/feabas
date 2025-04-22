@@ -562,7 +562,7 @@ class Stack:
                 args_list = [(self.init_dict(secnames=sn, check_lock=True),) for sn in secname_lists]
                 if len(args_list) == 0:
                     break
-                for reslt in submit_to_workers(stack_subprocess_optimize_stack, args=args_list, kwargs=kwarg_list, num_workers=num_workers, **worker_settings):
+                for reslt in submit_to_workers(Stack.subprocess_optimize_stack, args=args_list, kwargs=kwarg_list, num_workers=num_workers, **worker_settings):
                     snms, res = reslt
                     updated_sections.extend(snms)
                     residues.update(res)
@@ -812,11 +812,11 @@ class Stack:
         return len(self.section_list)
 
 
-
-def stack_subprocess_optimize_stack(init_dict, process_name='optimize_slide_window', **kwargs):
-    stack = Stack(**init_dict)
-    func = getattr(stack, process_name)
-    return func(**kwargs)
+    @staticmethod
+    def subprocess_optimize_stack(init_dict, process_name='optimize_slide_window', **kwargs):
+        stack = Stack(**init_dict)
+        func = getattr(stack, process_name)
+        return func(**kwargs)
 
 
 
@@ -1197,7 +1197,7 @@ class Aligner():
             mesh_list = self.mesh_locations(secnames=secnames)
             args_list.append([mtchnames, flip_flag, outname, mesh_list])
         if len(args_list) > 0:
-            tfunc = partial(aligner_merge_chunked_matches, match_dir=self._match_dir, resolution=resolution, match_name_delimiter=self._match_name_delimiter)
+            tfunc = partial(Aligner._merge_chunked_matches, match_dir=self._match_dir, resolution=resolution, match_name_delimiter=self._match_name_delimiter)
             for _ in submit_to_workers(tfunc, args=args_list, num_workers=num_workers, **worker_settings):
                 pass
         relvant_chunk_ids = set().union(*chunk_matches)
@@ -1215,7 +1215,7 @@ class Aligner():
             m_init_dict = {'resolution': resolution, 'name': chnkname, 'uid':cid, 'locked': chunk_lock_flags[cid]}
             args_list.append([mesh_list, outname, m_init_dict])
         deformations = {}
-        for df in submit_to_workers(aligner_merge_chunked_matches, args=args_list, num_workers=num_workers, **worker_settings):
+        for df in submit_to_workers(Aligner._merge_chunked_meshes, args=args_list, num_workers=num_workers, **worker_settings):
             deformations.update(df)
         return residues, deformations
 
@@ -1254,11 +1254,11 @@ class Aligner():
             if len(secnames_j) > 0:
                 args_list_j.append([meta_tform, secnames_j])
         if len(args_list) > 0:
-            tfunc = partial(aligner_predeform_meshes, outdir=self._tform_dir, srcdir=self._chunk_dir)
+            tfunc = partial(Aligner._predeform_meshes, outdir=self._tform_dir, srcdir=self._chunk_dir)
             for res in submit_to_workers(tfunc, args=args_list, num_workers=num_workers, **worker_settings):
                 self._mesh_versions.update(res)
         if len(args_list_j) > 0:
-            tfunc = partial(aligner_predeform_meshes, outdir=self._chunk_dir, srcdir=self._chunk_dir)
+            tfunc = partial(Aligner._predeform_meshes, outdir=self._chunk_dir, srcdir=self._chunk_dir)
             for _ in submit_to_workers(tfunc, args=args_list_j, num_workers=num_workers, **worker_settings):
                 pass
 
@@ -1368,96 +1368,98 @@ class Aligner():
         return out_candidate
 
 
-def aligner_predeform_meshes(tform_file, secnames, outdir, srcdir):
-    Mc = Mesh.from_h5(tform_file)
-    res = {}
-    if isinstance(outdir, str):
-        outdir = [outdir] * len(secnames)
-    for snm, odir in zip(secnames, outdir):
-        outname = storage.join_paths(odir, snm +'.h5')
-        if not storage.file_exists(outname, use_cache=True):
-            srcname = storage.join_paths(srcdir, snm+'.h5')
-            m0 = Mesh.from_h5(srcname)
-            m0 = transform_mesh(m0, Mc, gears=(const.MESH_GEAR_MOVING, const.MESH_GEAR_MOVING))
-            m0.anneal(gear=(const.MESH_GEAR_MOVING, const.MESH_GEAR_FIXED), mode=const.ANNEAL_COPY_EXACT)
-            m0.save_to_h5(outname, save_material=True)
-        res[snm] = Aligner.ALIGNED
-    return res
+    @staticmethod
+    def _predeform_meshes(tform_file, secnames, outdir, srcdir):
+        Mc = Mesh.from_h5(tform_file)
+        res = {}
+        if isinstance(outdir, str):
+            outdir = [outdir] * len(secnames)
+        for snm, odir in zip(secnames, outdir):
+            outname = storage.join_paths(odir, snm +'.h5')
+            if not storage.file_exists(outname, use_cache=True):
+                srcname = storage.join_paths(srcdir, snm+'.h5')
+                m0 = Mesh.from_h5(srcname)
+                m0 = transform_mesh(m0, Mc, gears=(const.MESH_GEAR_MOVING, const.MESH_GEAR_MOVING))
+                m0.anneal(gear=(const.MESH_GEAR_MOVING, const.MESH_GEAR_FIXED), mode=const.ANNEAL_COPY_EXACT)
+                m0.save_to_h5(outname, save_material=True)
+            res[snm] = Aligner.ALIGNED
+        return res
 
 
-def aligner_merge_chunked_meshes(mesh_list, outname, m_init_dict):
-    resolution = m_init_dict.get('resolution')
-    regions = []
-    region_areas = 0
-    num_tri = 0
-    deformations = {}
-    for meshname in mesh_list.values():
-        if meshname is None:
-            continue
-        m0 = Mesh.from_h5(meshname)
-        m0.change_resolution(resolution)
-        v0 = m0.vertices(gear=const.MESH_GEAR_FIXED)
-        v1 = m0.vertices(gear=const.MESH_GEAR_MOVING)
-        dv = v1 - v0
-        dv = dv - np.mean(dv, axis=0, keepdims=True)
-        if np.any(dv != 0, axis=None):
-            v0 = v0 - np.mean(v0, axis=0, keepdims=True)
-            stiff_m, _ = m0.stiffness_matrix(gear=(const.MESH_GEAR_FIXED, const.MESH_GEAR_MOVING), continue_on_flip=True)
-            df = (stiff_m.dot(dv.ravel()).dot(dv.ravel()) / (stiff_m.dot(v0.ravel()).dot(v0.ravel()))) ** 0.5
-            deformations[os.path.basename(meshname)] = df
-        reg = m0.shapely_regions(gear=const.MESH_GEAR_MOVING, offsetting=True)
-        region_areas += reg.area
-        num_tri += m0.num_triangles
-        regions.append(shapely.convex_hull(reg))
-    if len(regions) > 0:
-        union_region = shapely.unary_union(regions)
-        mesh_size = 2 * (region_areas / num_tri) ** 0.5
-        M = Mesh.from_polygon_equilateral(union_region, mesh_size=mesh_size, **m_init_dict)
-        M.save_to_h5(outname, save_material=True)
-    return deformations
+    @staticmethod
+    def _merge_chunked_meshes(mesh_list, outname, m_init_dict):
+        resolution = m_init_dict.get('resolution')
+        regions = []
+        region_areas = 0
+        num_tri = 0
+        deformations = {}
+        for meshname in mesh_list.values():
+            if meshname is None:
+                continue
+            m0 = Mesh.from_h5(meshname)
+            m0.change_resolution(resolution)
+            v0 = m0.vertices(gear=const.MESH_GEAR_FIXED)
+            v1 = m0.vertices(gear=const.MESH_GEAR_MOVING)
+            dv = v1 - v0
+            dv = dv - np.mean(dv, axis=0, keepdims=True)
+            if np.any(dv != 0, axis=None):
+                v0 = v0 - np.mean(v0, axis=0, keepdims=True)
+                stiff_m, _ = m0.stiffness_matrix(gear=(const.MESH_GEAR_FIXED, const.MESH_GEAR_MOVING), continue_on_flip=True)
+                df = (stiff_m.dot(dv.ravel()).dot(dv.ravel()) / (stiff_m.dot(v0.ravel()).dot(v0.ravel()))) ** 0.5
+                deformations[os.path.basename(meshname)] = df
+            reg = m0.shapely_regions(gear=const.MESH_GEAR_MOVING, offsetting=True)
+            region_areas += reg.area
+            num_tri += m0.num_triangles
+            regions.append(shapely.convex_hull(reg))
+        if len(regions) > 0:
+            union_region = shapely.unary_union(regions)
+            mesh_size = 2 * (region_areas / num_tri) ** 0.5
+            M = Mesh.from_polygon_equilateral(union_region, mesh_size=mesh_size, **m_init_dict)
+            M.save_to_h5(outname, save_material=True)
+        return deformations
 
 
-
-def aligner_merge_chunked_matches(match_names, flipped, outname, mesh_list, **kwargs):
-    match_dir = kwargs.get('match_dir')
-    resolution = kwargs.get('resolution')
-    match_name_delimiter = kwargs.get('match_name_delimiter', '__to__')
-    updated = 0
-    XY0 = []
-    XY1 = []
-    WTS = []
-    for mnm, flp in zip(match_names, flipped):
-        mtchpath = storage.join_paths(match_dir, mnm+'.h5')
-        mtch = read_matches_from_h5(mtchpath, target_resolution=resolution)
-        xy0_i, xy1_i, wt = mtch
-        secnames = mnm.split(match_name_delimiter)
-        m0 = Mesh.from_h5(mesh_list[secnames[0]])
-        m0.change_resolution(resolution)
-        m1 = Mesh.from_h5(mesh_list[secnames[1]])
-        m1.change_resolution(resolution)
-        tid0, B0 = m0.cart2bary(xy0_i, gear=const.MESH_GEAR_INITIAL, tid=None, extrapolate=True)
-        tid1, B1 = m1.cart2bary(xy1_i, gear=const.MESH_GEAR_INITIAL, tid=None, extrapolate=True)
-        xy0 = m0.bary2cart(tid0, B0, gear=const.MESH_GEAR_MOVING, offsetting=True)
-        xy1 = m1.bary2cart(tid1, B1, gear=const.MESH_GEAR_MOVING, offsetting=True)
-        if flp:
-            XY0.append(xy1)
-            XY1.append(xy0)
-        else:
-            XY0.append(xy0)
-            XY1.append(xy1)
-        WTS.append(wt)
-    if len(XY0) > 0:
-        XY0 = np.concatenate(XY0, axis=0)
-        XY1 = np.concatenate(XY1, axis=0)
-        WTS = np.concatenate(WTS)
-        out_bname = os.path.basename(outname).replace('.h5', '')
-        chnknames = out_bname.split(match_name_delimiter)
-        with H5File(outname, 'w') as f:
-            f.create_dataset('xy0', data=XY0, compression="gzip")
-            f.create_dataset('xy1', data=XY1, compression="gzip")
-            f.create_dataset('weight', data=WTS, compression="gzip")
-            f.create_dataset('resolution', data=resolution)
-            f.create_dataset('name0', data=str_to_numpy_ascii(chnknames[0]))
-            f.create_dataset('name1', data=str_to_numpy_ascii(chnknames[1]))
-        updated = np.sum(WTS)
-    return {outname: updated}
+    @staticmethod
+    def _merge_chunked_matches(match_names, flipped, outname, mesh_list, **kwargs):
+        match_dir = kwargs.get('match_dir')
+        resolution = kwargs.get('resolution')
+        match_name_delimiter = kwargs.get('match_name_delimiter', '__to__')
+        updated = 0
+        XY0 = []
+        XY1 = []
+        WTS = []
+        for mnm, flp in zip(match_names, flipped):
+            mtchpath = storage.join_paths(match_dir, mnm+'.h5')
+            mtch = read_matches_from_h5(mtchpath, target_resolution=resolution)
+            xy0_i, xy1_i, wt = mtch
+            secnames = mnm.split(match_name_delimiter)
+            m0 = Mesh.from_h5(mesh_list[secnames[0]])
+            m0.change_resolution(resolution)
+            m1 = Mesh.from_h5(mesh_list[secnames[1]])
+            m1.change_resolution(resolution)
+            tid0, B0 = m0.cart2bary(xy0_i, gear=const.MESH_GEAR_INITIAL, tid=None, extrapolate=True)
+            tid1, B1 = m1.cart2bary(xy1_i, gear=const.MESH_GEAR_INITIAL, tid=None, extrapolate=True)
+            xy0 = m0.bary2cart(tid0, B0, gear=const.MESH_GEAR_MOVING, offsetting=True)
+            xy1 = m1.bary2cart(tid1, B1, gear=const.MESH_GEAR_MOVING, offsetting=True)
+            if flp:
+                XY0.append(xy1)
+                XY1.append(xy0)
+            else:
+                XY0.append(xy0)
+                XY1.append(xy1)
+            WTS.append(wt)
+        if len(XY0) > 0:
+            XY0 = np.concatenate(XY0, axis=0)
+            XY1 = np.concatenate(XY1, axis=0)
+            WTS = np.concatenate(WTS)
+            out_bname = os.path.basename(outname).replace('.h5', '')
+            chnknames = out_bname.split(match_name_delimiter)
+            with H5File(outname, 'w') as f:
+                f.create_dataset('xy0', data=XY0, compression="gzip")
+                f.create_dataset('xy1', data=XY1, compression="gzip")
+                f.create_dataset('weight', data=WTS, compression="gzip")
+                f.create_dataset('resolution', data=resolution)
+                f.create_dataset('name0', data=str_to_numpy_ascii(chnknames[0]))
+                f.create_dataset('name1', data=str_to_numpy_ascii(chnknames[1]))
+            updated = np.sum(WTS)
+        return {outname: updated}
