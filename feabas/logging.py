@@ -60,7 +60,7 @@ class QueueHandler(logging.handlers.QueueHandler):
 
     def enqueue(self, record):
         if self._is_local_queue:
-            return super().enqueue(record)
+            super().enqueue(record)
         else:   # in case it's dask distributed Queue
             self.queue.put(record)
 

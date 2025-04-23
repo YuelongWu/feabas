@@ -535,7 +535,7 @@ class Stack:
         updated_sections = []
         residues = {}
         if self.num_sections == 0:
-            to_optimize = False
+            to_optimize = np.zeros(1, dtype=bool)
         else:
             to_optimize = ~self.locked_array
         while np.any(to_optimize):
