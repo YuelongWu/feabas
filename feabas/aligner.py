@@ -1047,6 +1047,7 @@ class Aligner():
         }
         merge_config(kwargs, kwargs0)
         worker_settings = kwargs.get('worker_settings', {})
+        worker_settings = kwargs['slide_window'].setdefault('worker_settings', worker_settings)
         residues = {}
         if chunked_to_depth == 0:
             kwargs.setdefault('ensure_continuous', True)
@@ -1124,7 +1125,6 @@ class Aligner():
         slide_window = kwargs.get('slide_window', {}).copy()
         num_workers = slide_window.get('num_workers', 1)
         worker_settings = kwargs.pop('worker_settings', {})
-        worker_settings = slide_window.setdefault('worker_settings', worker_settings)
         slide_window.setdefault('no_slide', False)
         slide_window.setdefault('ensure_continuous', False)
         changed_chunks, _ = self.resolve_chunk_version_differences(remove_file=True)
