@@ -182,15 +182,15 @@ def submit_to_dask_slurmcluster(func, args=None, kwargs=None, **settings):
 def replace_w_dask_queues(input, dask_queues=None):
     from dask.distributed import Queue
     from multiprocessing import Process, managers
-    if queue_pairs is None:
-        queue_pairs = {}
+    if dask_queues is None:
+        dask_queues = {}
     if isinstance(input, (tuple, list)):
         for elm in input:
-            queue_pairs = replace_w_dask_queues(elm, queue_pairs)
+            dask_queues = replace_w_dask_queues(elm, dask_queues)
     elif isinstance(input, dict):
         for key, val in input.items():
             if isinstance(val, dict):
-                queue_pairs = replace_w_dask_queues(val, queue_pairs)
+                dask_queues = replace_w_dask_queues(val, dask_queues)
             elif isinstance(val, managers.BaseProxy):
                 id_val = id(val)
                 if id_val in dask_queues:
@@ -201,7 +201,7 @@ def replace_w_dask_queues(input, dask_queues=None):
                     proc.start()
                     dask_queues[id_val] = (dq, proc)
                 input[key] = dq
-    return queue_pairs
+    return dask_queues
 
 
 def relay_dask_queue(local_queue, dask_queue):
