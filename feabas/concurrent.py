@@ -163,11 +163,52 @@ def submit_to_dask_slurmcluster(func, args=None, kwargs=None, **settings):
         futures = []
         with Client(cluster) as client:
             client.wait_for_workers(num_workers)
+            dask_queues = {}
             for k in range(N):
                 args_b = args[k]
                 kwargs_b = kwargs[k]
+                dask_queues = replace_w_dask_queues(args_b, dask_queues)
+                dask_queues = replace_w_dask_queues(kwargs_b, dask_queues)
                 job = client.submit(func, *args_b, **kwargs_b)
                 futures.append(job)
             for job in as_completed(futures):
                 res = job.result()
                 yield res
+            for q in dask_queues:
+                _, proc = q
+                proc.join()
+
+
+def replace_w_dask_queues(input, dask_queues=None):
+    from dask.distributed import Queue
+    from multiprocessing import Process, managers
+    if queue_pairs is None:
+        queue_pairs = {}
+    if isinstance(input, (tuple, list)):
+        for elm in input:
+            queue_pairs = replace_w_dask_queues(elm, queue_pairs)
+    elif isinstance(input, dict):
+        for key, val in input.items():
+            if isinstance(val, dict):
+                queue_pairs = replace_w_dask_queues(val, queue_pairs)
+            elif isinstance(val, managers.BaseProxy):
+                id_val = id(val)
+                if id_val in dask_queues:
+                    dq, proc = dask_queues[id_val]
+                else:
+                    dq = Queue(maxsize=0)
+                    proc = Process(target=relay_dask_queue, args=(val, dq))
+                    proc.start()
+                    dask_queues[id_val] = (dq, proc)
+                input[key] = dq
+    return queue_pairs
+
+
+def relay_dask_queue(local_queue, dask_queue):
+    while True:
+        try:
+            item = dask_queue.get()
+            local_queue.put(item)
+        except Exception as e:
+            print(f'dask queue relay error: {e}')
+

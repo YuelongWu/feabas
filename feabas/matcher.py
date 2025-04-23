@@ -655,8 +655,8 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
                 v0 = v0 - np.mean(v0, axis=0, keepdims=True)
                 dv = dv - np.mean(dv, axis=0, keepdims=True)
                 St, _ = m.stiffness_matrix()
-                Es += St.dot(dv.ravel()).dot(dv.ravel())
-                Es0 += St.dot(v0.ravel()).dot(v0.ravel())
+                Es += max(0, St.dot(dv.ravel()).dot(dv.ravel()))
+                Es0 += max(0, St.dot(v0.ravel()).dot(v0.ravel()))
         strain = (Es / Es0) ** 0.5
     return xy0, xy1, weight, strain
 
