@@ -175,14 +175,13 @@ def submit_to_dask_slurmcluster(func, args=None, kwargs=None, **settings):
                 relay_dask_queue_records(dask_queues)
                 res = job.result()
                 yield res
-            relay_dask_queue_records(dask_queues)
 
 
 def relay_dask_queue_records(dask_queues):
     for qqs in dask_queues.values():
         dq, lq = qqs
         try:
-            records = dq.get(timeout=1, batch=True)
+            records = dq.get(timeout=0.1, batch=True)
             for rcrd in records:
                 lq.put(rcrd)
         except TimeoutError:
