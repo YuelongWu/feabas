@@ -11,7 +11,7 @@ import shapely
 import yaml
 import time
 
-from feabas import dal, logging, storage
+from feabas import config, dal, logging, storage
 from feabas.mesh import Mesh, transform_mesh
 from feabas.concurrent import submit_to_workers
 from feabas.spatial import scale_coordinates
@@ -19,7 +19,6 @@ from feabas.matcher import section_matcher
 from feabas.optimizer import SLM
 import feabas.constant as const
 from feabas.common import str_to_numpy_ascii, Match, rearrange_section_order, parse_json_file
-from feabas.config import montage_resolution, merge_config
 
 H5File = storage.h5file_class()
 
@@ -68,7 +67,7 @@ def match_section_from_initial_matches(match_name, meshes, loaders, out_dir, con
         raise TypeError('configuration type not supported.')
     match_name_delimiter = conf.get('match_name_delimiter', '__to__')
     working_mip_level = conf.get('working_mip_level', 0)
-    resolution = montage_resolution() * (2 ** working_mip_level)
+    resolution = config.montage_resolution() * (2 ** working_mip_level)
     loader_config = conf.get('loader_config', {}).copy()
     matcher_config = conf.get('matcher_config', {}).copy()
     secnames = os.path.splitext(os.path.basename(match_name))[0].split(match_name_delimiter)
@@ -212,7 +211,7 @@ class Stack:
         mesh_cache = kwargs.get('mesh_cache', {})
         link_cache = kwargs.get('link_cache', {})
         mip_level = kwargs.get('mip_level', 0)
-        self._resolution = montage_resolution() * (2 ** mip_level)
+        self._resolution = config.montage_resolution() * (2 ** mip_level)
         self._mesh_cache = OrderedDict()
         self._mesh_cache.update(mesh_cache)
         self._link_cache = OrderedDict()
@@ -532,6 +531,8 @@ class Stack:
             buffer_size = kwargs.get('buffer_size', window_size//4)
         if buffer_size < 1:
             buffer_size = round(buffer_size * window_size)
+        parallel_framework = worker_settings.get('parallel_framework', config.parallel_framework())
+        remote_compute = parallel_framework not in ('process', 'thread', 'dask')
         updated_sections = []
         residues = {}
         if self.num_sections == 0:
@@ -577,12 +578,22 @@ class Stack:
                 if ensure_continuous and (len(seclist0) == len(seclist_w_ref)) and np.any(self.locked_array):
                     break
                 if np.sum(to_optimize) <= (window_size + buffer_size):
-                    res = self.optimize_section_list(seclist_w_ref, **kwargs)
-                    residues.update(res)
-                    for secname in seclist0:
-                        updated = self.save_mesh_for_one_section(secname)
-                        if updated:
-                            updated_sections.append(secname)
+                    if remote_compute:
+                        args_list = [(self.init_dict(secnames=seclist_w_ref, check_lock=True),)]
+                        for reslt in submit_to_workers(Stack.subprocess_optimize_stack, args=args_list, kwargs=[kwargs], num_workers=1, **worker_settings):
+                            snms, res = reslt
+                            updated_sections.extend(snms)
+                            residues.update(res)
+                            for sn in snms:
+                                self._mesh_cache.pop(sn, None)
+                        self._mesh_versions = None
+                    else:
+                        res = self.optimize_section_list(seclist_w_ref, **kwargs)
+                        residues.update(res)
+                        for secname in seclist0:
+                            updated = self.save_mesh_for_one_section(secname)
+                            if updated:
+                                updated_sections.append(secname)
                     self.update_lock_flags({s: True for s in seclist0})
                 else:
                     if no_slide:
@@ -621,12 +632,22 @@ class Stack:
                         indx_cmt = np.nonzero((dis_e > dis_t) & flag_opt)[0]
                         seclist_cmt = [self.section_list[s] for s in indx_cmt]
                     seclist = self.pad_section_list_w_refs(section_list=seclist_opt)
-                    res = self.optimize_section_list(seclist, **kwargs)
-                    residues.update(res)
-                    for secname in seclist_cmt:
-                        updated = self.save_mesh_for_one_section(secname)
-                        if updated:
-                            updated_sections.append(secname)
+                    if remote_compute:
+                        args_list = [(self.init_dict(secnames=seclist, check_lock=True),)]
+                        for reslt in submit_to_workers(Stack.subprocess_optimize_stack, args=args_list, kwargs=[kwargs], num_workers=1, **worker_settings):
+                            snms, res = reslt
+                            updated_sections.extend(snms)
+                            residues.update(res)
+                            for sn in snms:
+                                self._mesh_cache.pop(sn, None)
+                        self._mesh_versions = None
+                    else:
+                        res = self.optimize_section_list(seclist, **kwargs)
+                        residues.update(res)
+                        for secname in seclist_cmt:
+                            updated = self.save_mesh_for_one_section(secname)
+                            if updated:
+                                updated_sections.append(secname)
                     self.update_lock_flags({s: True for s in seclist_cmt})
                 to_optimize = ~self.locked_array
         return updated_sections, residues
@@ -666,7 +687,7 @@ class Stack:
                 optm.anneal(gear=(target_gear, const.MESH_GEAR_FIXED), mode=const.ANNEAL_CONNECTED_RIGID)
         if optimize_elastic:
             if 'callback_settings' in elastic_params:
-                elastic_params['callback_settings'].setdefault('early_stop_thresh', montage_resolution() / self._resolution)
+                elastic_params['callback_settings'].setdefault('early_stop_thresh', config.montage_resolution() / self._resolution)
             cost = optm.optimize_elastic(target_gear=target_gear, **elastic_params)
             if (residue_mode is not None) and (residue_len > 0):
                 if residue_mode == 'huber':
@@ -833,7 +854,7 @@ class Aligner():
         self._match_name_delimiter = kwargs.get('match_name_delimiter', '__to__')
         chunk_map = kwargs.get('chunk_map', None)
         self._mip_level = kwargs.get('mip_level', 0)
-        self._resolution = montage_resolution() * (2 ** self._mip_level)
+        self._resolution = config.montage_resolution() * (2 ** self._mip_level)
         if isinstance(chunk_map, str):
             chunk_map, _ = parse_json_file(chunk_map)
         self._chunk_map = chunk_map
@@ -1045,7 +1066,7 @@ class Aligner():
                 }
             }
         }
-        merge_config(kwargs, kwargs0)
+        config.merge_config(kwargs, kwargs0)
         worker_settings = kwargs.get('worker_settings', {})
         worker_settings = kwargs['slide_window'].setdefault('worker_settings', worker_settings)
         residues = {}
