@@ -1790,6 +1790,22 @@ class Mesh:
         return unary_union(polygons)
 
 
+    def shape_compactness(self, gear=None, stiffness_threshold=0.9):
+        mat_ids = self.material_ids
+        mid_u, ind_inv = np.unique(mat_ids, return_inverse=True)
+        material_table = self.material_table
+        m_stiffness_u = np.zeros_like(mid_u, dtype=np.float32)
+        for k, mid in enumerate(mid_u):
+            mat = material_table[mid]
+            m_stiffness_u[k] = mat.stiffness_multiplier
+        m_stiffness = m_stiffness_u[ind_inv]
+        tri_mask = m_stiffness >= stiffness_threshold * np.max(m_stiffness_u)
+        G = self.shapely_regions(gear=gear, tri_mask=tri_mask, offsetting=False)
+        L = G.boundary.length
+        A = G.area
+        return L / A
+
+
     @config_cache('TBD')
     def triangle_affine_tform(self, gear=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING), tri_mask=None):
         """

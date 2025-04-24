@@ -4,6 +4,7 @@ import sys
 
 PY_VERSION = tuple(sys.version_info)
 DEFAUL_FRAMEWORK = config.parallel_framework()
+REMOTE_FRAMEWORKS = ('slurm',) # frame works that would force remote computing
 
 def parse_inputs(args, kwargs):
     if args is None:
@@ -21,15 +22,19 @@ def parse_inputs(args, kwargs):
     return N, args, kwargs
 
 
+def is_daemon_process():
+    from multiprocessing import current_process
+    return current_process().daemon
+
+
 def submit_to_workers(func, args=None, kwargs=None, **settings):
     parallel_framework = settings.pop('parallel_framework', DEFAUL_FRAMEWORK)
     num_workers = settings.get('num_workers', 1)
-    force_remote = settings.pop('force_remote', parallel_framework=='slurm')
+    force_remote = settings.pop('force_remote', parallel_framework in REMOTE_FRAMEWORKS)
     N, args_n, kwargs_n = parse_inputs(args, kwargs)
     if N == 0:
         return []
-    from multiprocessing import current_process
-    if current_process().daemon:
+    if is_daemon_process():
         num_workers = 1
         force_remote = False
     if ((num_workers == 1) or (N == 1)) and (not force_remote):

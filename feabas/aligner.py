@@ -2,7 +2,6 @@ from collections import defaultdict, OrderedDict
 from functools import partial
 import hashlib
 import json
-from multiprocessing import current_process
 import numpy as np
 import os
 from scipy.ndimage import distance_transform_cdt
@@ -14,7 +13,7 @@ import time
 
 from feabas import config, dal, logging, storage
 from feabas.mesh import Mesh, transform_mesh
-from feabas.concurrent import submit_to_workers
+from feabas.concurrent import submit_to_workers, REMOTE_FRAMEWORKS, is_daemon_process
 from feabas.spatial import scale_coordinates
 from feabas.matcher import section_matcher
 from feabas.optimizer import SLM
@@ -31,11 +30,17 @@ def read_matches_from_h5(match_name, target_resolution=None):
         resolution = f['resolution'][()]
         if isinstance(resolution, np.ndarray):
             resolution = resolution.item()
+        if 'strain' in f.keys():
+            strain = f['strain'][()]
+            if isinstance(strain, np.ndarray):
+                strain = strain.item()
+        else:
+            strain = config.DEFAULT_DEFORM_BUDGET
     if target_resolution is not None:
         scale = resolution / target_resolution
         xy0 = scale_coordinates(xy0, scale)
         xy1 = scale_coordinates(xy1, scale)
-    return Match(xy0, xy1, weight)
+    return Match(xy0, xy1, weight, strain)
 
 
 def match_section_from_initial_matches(match_name, meshes, loaders, out_dir, conf=None, ignore_initial_match=False):
@@ -120,7 +125,7 @@ def match_section_from_initial_matches(match_name, meshes, loaders, out_dir, con
         initial_matches = None
     else:
         initial_matches = read_matches_from_h5(match_name, target_resolution=resolution)
-    xy0, xy1, weight = section_matcher(mesh0, mesh1, loader0, loader1,
+    xy0, xy1, weight, strain = section_matcher(mesh0, mesh1, loader0, loader1,
         initial_matches=initial_matches, **matcher_config)
     if xy0 is None:
         return 0
@@ -130,6 +135,7 @@ def match_section_from_initial_matches(match_name, meshes, loaders, out_dir, con
             f.create_dataset('xy1', data=xy1, compression="gzip")
             f.create_dataset('weight', data=weight, compression="gzip")
             f.create_dataset('resolution', data=resolution)
+            f.create_dataset('strain', strain)
             f.create_dataset('name0', data=str_to_numpy_ascii(secnames[0]))
             f.create_dataset('name1', data=str_to_numpy_ascii(secnames[1]))
         return len(xy0)
@@ -533,7 +539,7 @@ class Stack:
         if buffer_size < 1:
             buffer_size = round(buffer_size * window_size)
         parallel_framework = worker_settings.get('parallel_framework', config.parallel_framework())
-        sent_to_remote = (parallel_framework not in ('process', 'thread', 'dask')) and (not current_process().daemon)
+        sent_to_remote = (parallel_framework in REMOTE_FRAMEWORKS) and (not is_daemon_process())
         updated_sections = []
         residues = {}
         if self.num_sections == 0:
@@ -1450,10 +1456,11 @@ class Aligner():
         XY0 = []
         XY1 = []
         WTS = []
+        STRNS = []
         for mnm, flp in zip(match_names, flipped):
             mtchpath = storage.join_paths(match_dir, mnm+'.h5')
             mtch = read_matches_from_h5(mtchpath, target_resolution=resolution)
-            xy0_i, xy1_i, wt = mtch
+            xy0_i, xy1_i, wt, strain = mtch
             secnames = mnm.split(match_name_delimiter)
             m0 = Mesh.from_h5(mesh_list[secnames[0]])
             m0.change_resolution(resolution)
@@ -1470,16 +1477,20 @@ class Aligner():
                 XY0.append(xy0)
                 XY1.append(xy1)
             WTS.append(wt)
+            STRNS.append((strain, np.sum(wt)))
         if len(XY0) > 0:
             XY0 = np.concatenate(XY0, axis=0)
             XY1 = np.concatenate(XY1, axis=0)
             WTS = np.concatenate(WTS)
+            STRNS = np.array(STRNS)
+            strain = np.sum(STRNS[:,0] * STRNS[:,1]) / np.sum(STRNS[:,1])
             out_bname = os.path.basename(outname).replace('.h5', '')
             chnknames = out_bname.split(match_name_delimiter)
             with H5File(outname, 'w') as f:
                 f.create_dataset('xy0', data=XY0, compression="gzip")
                 f.create_dataset('xy1', data=XY1, compression="gzip")
                 f.create_dataset('weight', data=WTS, compression="gzip")
+                f.create_dataset('strain', data=strain)
                 f.create_dataset('resolution', data=resolution)
                 f.create_dataset('name0', data=str_to_numpy_ascii(chnknames[0]))
                 f.create_dataset('name1', data=str_to_numpy_ascii(chnknames[1]))

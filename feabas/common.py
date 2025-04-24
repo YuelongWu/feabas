@@ -8,12 +8,11 @@ import numpy as np
 from scipy import sparse
 from scipy.ndimage import gaussian_filter1d
 import scipy.sparse.csgraph as csgraph
-import tensorstore as ts
 
 from feabas import storage
-from feabas.config import TS_RETRY, TS_TIMEOUT
+from feabas.config import TS_RETRY, TS_TIMEOUT, DEFAULT_DEFORM_BUDGET
 
-Match = namedtuple('Match', ('xy0', 'xy1', 'weight'))
+Match = namedtuple('Match', ('xy0', 'xy1', 'weight', 'strain'), defaults=(DEFAULT_DEFORM_BUDGET,))
 
 
 def imread(path, **kwargs):

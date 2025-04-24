@@ -382,7 +382,13 @@ class SLM:
             links = []
         self.meshes = MeshList.init(meshes, maxlen=kwargs.get('maxlen', None))
         self.links = links
-        self._stiffness_lambda = kwargs.get('stiffness_lambda', 1.0)
+        assert_dominance = kwargs.pop('assert_dominance', False)
+        dominant_mesh = kwargs.pop('dominant_mesh', None)
+        if assert_dominance:
+            self.make_dominant_section(dominant_mesh)
+            self._stiffness_lambda = kwargs.get('stiffness_lambda', 1.0) * config.MATCH_SOFTFACTOR_DOMINANCE
+        else:
+            self._stiffness_lambda = kwargs.get('stiffness_lambda', 1.0)
         self._crosslink_lambda = kwargs.get('crosslink_lambda', -1.0)
         self._shared_cache = kwargs.get('shared_cache', None)
         self.clear_cached_attr()
@@ -432,6 +438,21 @@ class SLM:
         self._crosslink_terms = None
         if instant_gc:
             gc.collect()
+
+
+    def make_dominant_section(self, dominant_mesh):
+        mx_soft_factor = 0.0
+        shape_compactness = []
+        for m in self.meshes:
+            mx_soft_factor = max(mx_soft_factor, m.soft_factor)
+            if dominant_mesh is None:
+                shape_compactness.append(m.shape_compactness(gear=const.MESH_GEAR_INITIAL))
+        if dominant_mesh is None:
+            indx = np.argmin(shape_compactness)
+            dominant_mesh = np.floor(self.meshes[indx].uid)
+        for m in self.meshes:
+            if np.floor(m.uid) == dominant_mesh:
+                m.soft_factor = mx_soft_factor * config.MATCH_SOFTFACTOR_DOMINANCE
 
 
   ## -------------------------- system manipulation ------------------------ ##

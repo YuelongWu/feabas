@@ -13,7 +13,7 @@ import feabas.constant as const
 def find_residue_for_one_match(matchname, meshname0, meshname1, **kwargs):
     resolution = kwargs.get('resolution', config.montage_resolution())
     p = kwargs.get('p', 4)
-    xy0, xy1, wt = read_matches_from_h5(match_name=matchname, target_resolution=resolution)
+    xy0, xy1, wt, _ = read_matches_from_h5(match_name=matchname, target_resolution=resolution)
     M0 = Mesh.from_h5(meshname0)
     M0.change_resolution(resolution)
     M1 = Mesh.from_h5(meshname1)
