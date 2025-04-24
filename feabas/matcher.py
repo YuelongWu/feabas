@@ -456,28 +456,21 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
         ht0 = bbox[3] - bbox[1]
         lside = max(wd0, ht0)
         spacings[spacings < 1] *= lside
-    opt = optimizer.SLM([mesh0, mesh1], stiffness_lambda=stiffness_lambda, assert_dominance=(not one_locked))
-    fixed_xy = []
+    if compute_strain:
+        mesh0_ori, mesh1_ori = mesh0.copy(), mesh1.copy()
+    opt = optimizer.SLM([mesh0, mesh1], stiffness_lambda=stiffness_lambda)
     if initial_matches is not None:
         xy0, xy1, weight = initial_matches.xy0, initial_matches.xy1, initial_matches.weight
         opt.add_link_from_coordinates(mesh0.uid, mesh1.uid, xy0, xy1,
             gear=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_INITIAL), weight=weight,
             check_duplicates=False, render_weight_threshold=render_weight_threshold)
         opt.optimize_affine_cascade(start_gear=const.MESH_GEAR_INITIAL, target_gear=const.MESH_GEAR_FIXED, svd_clip=(1,1))
-        if compute_strain:
-            for m in opt.meshes:
-                v0 = m.vertices(gear=const.MESH_GEAR_FIXED).copy()
-                fixed_xy.append(v0)
         opt.anneal(gear=(const.MESH_GEAR_FIXED, const.MESH_GEAR_MOVING), mode=const.ANNEAL_COPY_EXACT)
         if linear_system:
             opt.optimize_linear(tol=1e-6, batch_num_matches=np.inf, continue_on_flip=continue_on_flip, callback_settings=callback_settings)
         else:
             opt.optimize_Newton_Raphson(max_newtonstep=5, tol=1e-4, batch_num_matches=np.inf, continue_on_flip=continue_on_flip, callback_settings=callback_settings)
     else:
-        if compute_strain:
-            for m in opt.meshes:
-                v0 = m.vertices(gear=const.MESH_GEAR_FIXED).copy()
-                fixed_xy.append(v0)
         mesh0.anneal(gear=(const.MESH_GEAR_MOVING, const.MESH_GEAR_FIXED), mode=const.ANNEAL_COPY_EXACT)
         mesh1.anneal(gear=(const.MESH_GEAR_MOVING, const.MESH_GEAR_FIXED), mode=const.ANNEAL_COPY_EXACT)
     spacings = np.sort(spacings)[::-1]
@@ -649,12 +642,23 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
     xy1 = link.xy1(gear=const.MESH_GEAR_INITIAL, use_mask=True, combine=True)
     weight = link.weight(use_mask=True)
     if compute_strain:
+        opt = optimizer.SLM([mesh0_ori, mesh0_ori], stiffness_lambda=stiffness_lambda, assert_dominance=(not one_locked))
+        opt.add_link_from_coordinates(mesh0_ori.uid, mesh0_ori.uid, xy0, xy1,
+            gear=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_INITIAL), weight=weight,
+            check_duplicates=False, render_weight_threshold=render_weight_threshold)
+        opt.optimize_affine_cascade(start_gear=const.MESH_GEAR_INITIAL, target_gear=const.MESH_GEAR_FIXED, svd_clip=(1,1))
+        opt.anneal(gear=(const.MESH_GEAR_FIXED, const.MESH_GEAR_MOVING), mode=const.ANNEAL_COPY_EXACT)
+        if linear_system:
+            opt.optimize_linear(tol=1e-6, batch_num_matches=np.inf, continue_on_flip=continue_on_flip, callback_settings=callback_settings)
+        else:
+            opt.optimize_Newton_Raphson(max_newtonstep=5, tol=1e-4, batch_num_matches=np.inf, continue_on_flip=continue_on_flip, callback_settings=callback_settings)
         Es0 = 0
         Es = 0
         soft_factor_avg = np.mean([m.soft_factor for m in opt.meshes])
-        for m, v0 in zip(opt.meshes, fixed_xy):
+        for m in opt.meshes:
             to_include = (one_locked and (not m.locked)) or ((not one_locked) and (m.soft_factor<=soft_factor_avg))
             if to_include:
+                v0 = m.vertices(gear=const.MESH_GEAR_FIXED)
                 v1 = m.vertices(gear=const.MESH_GEAR_MOVING)
                 dv = v1 - v0
                 v0 = v0 - np.mean(v0, axis=0, keepdims=True)
