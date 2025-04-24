@@ -1146,7 +1146,7 @@ class Aligner():
         num_workers = slide_window.get('num_workers', 1)
         worker_settings = kwargs.pop('worker_settings', {})
         slide_window.setdefault('no_slide', False)
-        slide_window.setdefault('worker_settings', kwargs.pop('worker_settings', {}).copy())
+        slide_window.setdefault('worker_settings', worker_settings)
         slide_window.setdefault('ensure_continuous', False)
         changed_chunks, _ = self.resolve_chunk_version_differences(remove_file=True)
         if (self._chunk_map_file is not None) and ((len(changed_chunks) > 0) or (self._previous_chunk_map is None)):
