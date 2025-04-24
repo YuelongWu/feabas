@@ -17,6 +17,7 @@ class Link:
     """
     def __init__(self, mesh0, mesh1, tid0, tid1, B0, B1, weight=None, **kwargs):
         name = kwargs.get('name',  None)
+        self.strain = kwargs.get('strain', config.DEFAULT_DEFORM_BUDGET)
         self.uids = [mesh0.uid, mesh1.uid]
         if name is None:
             self.name = self.default_name
@@ -85,6 +86,8 @@ class Link:
             aB1 = other._B1
             atid0 = other._tid0
             atid1 = other._tid1
+        wtsum, ot_wtsum = np.sum(self._weight), np.sum(other._weight)
+        self.strain = (self.strain *wtsum + other.strain * ot_wtsum)/(wtsum + ot_wtsum)
         self._B0 = np.concatenate((self._B0, aB0), axis=0)
         self._B1 = np.concatenate((self._B1, aB1), axis=0)
         self._tid0 = np.concatenate((self._tid0, atid0), axis=0)
@@ -1644,6 +1647,7 @@ class SLM:
         if isinstance(link, Link):
             link_initialized = True
         elif isinstance(link, common.Match):
+            kwargs.setdefault('strain', link.strain)
             link_initialized = False
         else:
             raise TypeError

@@ -685,7 +685,6 @@ class Stack:
             return residue
         if need_anchor and (not np.any(optm.lock_flags)):
             logger.error(f'{optm.meshes[0].name} -> {optm.meshes[-1].name}: disconnected due to lack of matches. abort.')
-            return residue
         cost = None
         t0 = time.time()
         if optimize_rigid:
@@ -693,6 +692,10 @@ class Stack:
             if target_gear != const.MESH_GEAR_FIXED:
                 optm.anneal(gear=(target_gear, const.MESH_GEAR_FIXED), mode=const.ANNEAL_CONNECTED_RIGID)
         if optimize_elastic:
+                return residue
+        if elastic_params.get('stiffness_lambda', None) is None:
+            avg_deform = np.mean([lnk.strain for lnk in optm.links])
+            elastic_params['stiffness_lambda'] = (2 * config.DEFAULT_DEFORM_BUDGET / max(avg_deform, 5e-3)) ** 2
             if 'callback_settings' in elastic_params:
                 elastic_params['callback_settings'].setdefault('early_stop_thresh', config.montage_resolution() / self._resolution)
             cost = optm.optimize_elastic(target_gear=target_gear, **elastic_params)
@@ -1060,7 +1063,7 @@ class Aligner():
 
     def run(self, **kwargs0):
         num_workers = kwargs0.get('num_workers', 1)
-        stiffness = kwargs0.pop('stiffness', 1.0)
+        stiffness = kwargs0.pop('stiffness', None)
         chunked_to_depth = kwargs0.pop('chunked_to_depth', 0)
         residue_file = kwargs0.pop('residue_file', None)
         deform_target = kwargs0.pop('deform_target', None)
@@ -1089,10 +1092,10 @@ class Aligner():
             if np.any(self.mesh_versions_array != Aligner.ALIGNED):
                 res0, def0 = self.align_within_chunks(**kwargs)
                 residues.update(res0)
-                if len(def0) > 0:
+                if (len(def0) > 0) and (stiffness is not None):
                     deform_target = np.array(list(def0.values()))
                     kwargs0['deform_target'] = np.median(deform_target) / 2
-                    Aligner.write_residue_file(res0, residue_file)
+                Aligner.write_residue_file(res0, residue_file)
                 meta_aligner_settings = {
                     "mesh_dir": self._meta_mesh_dir,
                     "tform_dir": self._meta_tform_dir,
