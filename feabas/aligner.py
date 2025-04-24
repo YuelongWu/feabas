@@ -2,6 +2,7 @@ from collections import defaultdict, OrderedDict
 from functools import partial
 import hashlib
 import json
+from multiprocessing import current_process
 import numpy as np
 import os
 from scipy.ndimage import distance_transform_cdt
@@ -532,7 +533,7 @@ class Stack:
         if buffer_size < 1:
             buffer_size = round(buffer_size * window_size)
         parallel_framework = worker_settings.get('parallel_framework', config.parallel_framework())
-        remote_compute = parallel_framework not in ('process', 'thread', 'dask')
+        sent_to_remote = (parallel_framework not in ('process', 'thread', 'dask')) and (not current_process().daemon)
         updated_sections = []
         residues = {}
         if self.num_sections == 0:
@@ -578,7 +579,7 @@ class Stack:
                 if ensure_continuous and (len(seclist0) == len(seclist_w_ref)) and np.any(self.locked_array):
                     break
                 if np.sum(to_optimize) <= (window_size + buffer_size):
-                    if remote_compute:
+                    if sent_to_remote:
                         args_list = [(self.init_dict(secnames=seclist_w_ref, check_lock=True),)]
                         for reslt in submit_to_workers(Stack.subprocess_optimize_stack, args=args_list, kwargs=[kwargs], num_workers=1, **worker_settings):
                             snms, res = reslt
@@ -632,7 +633,7 @@ class Stack:
                         indx_cmt = np.nonzero((dis_e > dis_t) & flag_opt)[0]
                         seclist_cmt = [self.section_list[s] for s in indx_cmt]
                     seclist = self.pad_section_list_w_refs(section_list=seclist_opt)
-                    if remote_compute:
+                    if sent_to_remote:
                         args_list = [(self.init_dict(secnames=seclist, check_lock=True),)]
                         for reslt in submit_to_workers(Stack.subprocess_optimize_stack, args=args_list, kwargs=[kwargs], num_workers=1, **worker_settings):
                             snms, res = reslt
