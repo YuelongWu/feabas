@@ -695,7 +695,7 @@ class Stack:
                 return residue
         if elastic_params.get('stiffness_lambda', None) is None:
             avg_deform = np.mean([lnk.strain for lnk in optm.links])
-            elastic_params['stiffness_lambda'] = (2 * config.DEFAULT_DEFORM_BUDGET / max(avg_deform, 5e-3)) ** 2
+            elastic_params['stiffness_lambda'] = (2 * config.DEFAULT_DEFORM_BUDGET / max(avg_deform, 1e-3)) ** 2
             if 'callback_settings' in elastic_params:
                 elastic_params['callback_settings'].setdefault('early_stop_thresh', config.montage_resolution() / self._resolution)
             cost = optm.optimize_elastic(target_gear=target_gear, **elastic_params)
@@ -854,13 +854,21 @@ class Stack:
 class Aligner():
     UNALIGNED = 0
     CHUNK_ALIGNED = 1
-    ALIGNED = 2
+    PREDEFORMED = 2
+    ALIGNED = 3
     def __init__(self, mesh_dir, tform_dir, match_dir, **kwargs):
         self._mesh_dir = mesh_dir
         self._tform_dir = tform_dir
         self._match_dir = match_dir
         self._section_order_file = kwargs.get('section_order_file', None)
         self._chunk_dir = kwargs.get('chunk_dir', storage.join_paths(os.path.dirname(self._mesh_dir), 'chunked_tform'))
+        self._predeform_dir = kwargs.get('predeform_dir', storage.join_paths(self._chunk_dir, 'predeformed'))
+        self._mesh_dirs_map = (
+            (Aligner.UNALIGNED, self._mesh_dir),
+            (Aligner.CHUNK_ALIGNED, self._chunk_dir),
+            (Aligner.PREDEFORMED, self._predeform_dir),
+            (Aligner.ALIGNED, self._tform_dir),
+        )
         self._match_name_delimiter = kwargs.get('match_name_delimiter', '__to__')
         chunk_map = kwargs.get('chunk_map', None)
         self._mip_level = kwargs.get('mip_level', 0)
@@ -886,12 +894,11 @@ class Aligner():
 
 
     def get_section_list(self):
-        meshlist = storage.list_folder_content(storage.join_paths(self._mesh_dir, '*.h5'))
-        chunklist = storage.list_folder_content(storage.join_paths(self._chunk_dir, '*.h5'))
-        tformlist = storage.list_folder_content(storage.join_paths(self._tform_dir, '*.h5'))
-        sec_dict = {os.path.basename(s).replace('.h5', ''): Aligner.UNALIGNED for s in meshlist}
-        sec_dict.update({os.path.basename(s).replace('.h5', ''): Aligner.CHUNK_ALIGNED for s in chunklist})
-        sec_dict.update({os.path.basename(s).replace('.h5', ''): Aligner.ALIGNED for s in tformlist})
+        sec_dict = {}
+        for mvid_mdir in self._mesh_dirs_map:
+            mvid, mdir = mvid_mdir
+            meshlist = storage.list_folder_content(storage.join_paths(mdir, '*.h5'))
+            sec_dict.update({os.path.basename(s).replace('.h5', ''): mvid for s in meshlist})
         secnames = sorted(sec_dict)
         if self._user_section_list is not None:
             secnames = [s for s in self._user_section_list if s in set(secnames)]
@@ -1000,16 +1007,14 @@ class Aligner():
     def mesh_locations(self, secnames=None):
         if secnames is None:
             secnames = self.section_list
-        mesh_dir_list = {Aligner.UNALIGNED: self._mesh_dir,
-                         Aligner.CHUNK_ALIGNED: self._chunk_dir,
-                         Aligner.ALIGNED: self._tform_dir}
+        mesh_dir_dict = dict(self._mesh_dirs_map)
         locs = {}
         for snm in secnames:
             mvid = self.mesh_versions.get(snm, None)
             if mvid is None:
                 locs[snm] = None
             else:
-                pdir = mesh_dir_list[mvid]
+                pdir = mesh_dir_dict[mvid]
                 locs[snm] = storage.join_paths(pdir, snm+'.h5')
         return locs
 
@@ -1056,9 +1061,16 @@ class Aligner():
                 dis_thresh = cnts[invindx] * self._junction_width
             else:
                 dis_thresh = self._junction_width
-            juction_indx = np.flatnonzero(edt < dis_thresh)
+            self._in_junction = edt < dis_thresh
+            juction_indx = np.flatnonzero( self._in_junction)
             self._junctional_sections = set(self.section_list[s] for s in juction_indx)
         return self._junctional_sections
+
+
+    @property
+    def junctional_sections_array(self):
+        self.junctional_sections
+        return self._in_junction
 
 
     def run(self, **kwargs0):
@@ -1078,6 +1090,9 @@ class Aligner():
         }
         config.merge_config(kwargs, kwargs0)
         worker_settings = kwargs.get('worker_settings', {})
+        second_smooth = kwargs.get('second_smooth', True)
+        if residue_file is None:
+            residue_file = storage.join_paths(self._tform_dir, 'residue.csv')
         residues = {}
         if chunked_to_depth == 0:
             kwargs.setdefault('ensure_continuous', True)
@@ -1085,8 +1100,8 @@ class Aligner():
         else:
             kwargs.pop('no_slide', None)
             kwargs.pop('ensure_continuous', None)
-            kwargs.pop('include_chunk_dir', None)
-            res0 = self.window_align(no_slide=True, ensure_continuous=True, include_chunk_dir=True, save_to_tform=True, **kwargs)
+            kwargs.pop('intermediate_dir', None)
+            res0 = self.window_align(no_slide=True, ensure_continuous=True, intermediate_dir=self._predeform_dir, save_to_tform=True, **kwargs)
             residues.update(res0)
             Aligner.write_residue_file(res0, residue_file)
             if np.any(self.mesh_versions_array != Aligner.ALIGNED):
@@ -1111,13 +1126,25 @@ class Aligner():
                 if chunked_to_depth is not None:
                     chunked_to_depth -= 1
                 meta_aligner.run(stiffness=stiffness, chunked_to_depth=chunked_to_depth, **kwargs0)
-                self.predeform_sections_by_chunk(num_workers=num_workers, worker_settings=worker_settings)
-                residues.update(self.window_align(no_slide=False, ensure_continuous=True, include_chunk_dir=True, save_to_tform=True, **kwargs))
+                self.predeform_sections_by_chunk(num_workers=num_workers, worker_settings=worker_settings, commit_directly=(not second_smooth))
+                if second_smooth:
+                    locked_array = self.mesh_versions_array == Aligner.ALIGNED
+                    locked_array = locked_array | (~self.junctional_sections_array)
+                    specified_out_dirs = {s: None for s, lck in zip(self._section_list, locked_array) if lck}
+                    kwargs_smooth = {
+                        "stack_config":{
+                            "lock_flags": locked_array,
+                            "specified_out_dirs": specified_out_dirs
+                        }
+                    }
+                    config.merge_config(kwargs_smooth, kwargs)
+                    residues.update(self.window_align(no_slide=False, ensure_continuous=True, intermediate_dir=self._predeform_dir, save_to_tform=True, **kwargs_smooth))
+                residues.update(self.window_align(no_slide=False, ensure_continuous=True, intermediate_dir=self._predeform_dir, save_to_tform=True, **kwargs))
         Aligner.write_residue_file(residues, residue_file)
         return residues
 
 
-    def initialize_stack(self, include_chunk_dir=True, **kwargs):
+    def initialize_stack(self, intermediate_dir=None, **kwargs):
         kwargs.setdefault('mesh_dir', self._mesh_dir)
         kwargs.setdefault('match_dir', self._match_dir)
         kwargs.setdefault('section_list', self.section_list)
@@ -1125,8 +1152,8 @@ class Aligner():
         lock_flags = kwargs.get('lock_flags', None)
         if lock_flags is None:
             kwargs.setdefault('lock_flags', self.mesh_versions_array==Aligner.ALIGNED)
-        if include_chunk_dir:
-            kwargs.setdefault('mesh_out_dir', self._chunk_dir)
+        if intermediate_dir is not None:
+            kwargs.setdefault('mesh_out_dir', intermediate_dir)
             kwargs.setdefault('tform_dir', self._tform_dir)
         else:
             kwargs.setdefault('mesh_out_dir', self._tform_dir)
@@ -1134,16 +1161,21 @@ class Aligner():
 
 
     def window_align(self, **kwargs):
-        include_chunk_dir = kwargs.pop('include_chunk_dir', False)
+        intermediate_dir = kwargs.pop('intermediate_dir', None)
         stack_config = kwargs.get('stack_config', {}).copy()
         slide_window = kwargs.get('slide_window', {}).copy()
         save_to_tform = kwargs.pop('save_to_tform', False)
         if save_to_tform:
+            if isinstance(stack_config.get('specified_out_dirs', None), dict):
+                specified_out_dirs = {s: self._tform_dir for s in self.section_list}
+                specified_out_dirs.update(stack_config['specified_out_dirs'])
+            else:
+                specified_out_dirs = self._tform_dir
             stack_config['specified_out_dirs'] = self._tform_dir
         slide_window.setdefault('no_slide', kwargs.pop('no_slide', False))
         slide_window.setdefault('worker_settings', kwargs.pop('worker_settings', {}).copy())
         slide_window.setdefault('ensure_continuous', kwargs.pop('ensure_continuous', False))
-        stack = self.initialize_stack(include_chunk_dir=include_chunk_dir, **stack_config)
+        stack = self.initialize_stack(intermediate_dir=intermediate_dir, **stack_config)
         updated_sections, residues = stack.optimize_slide_window(**slide_window)
         if len(updated_sections) > 0:
             self._mesh_versions = None
@@ -1166,13 +1198,9 @@ class Aligner():
                 json.dump(chunk_map_out, f, indent=2)
         mesh_versions_array = self.mesh_versions_array
         lock_flags = mesh_versions_array == Aligner.ALIGNED
-        stack_config['lock_flags'] = lock_flags
+        stack_config['lock_flags'] = lock_flags # set the lock array so that muted matches are not filtered out during initialization
         stack = self.initialize_stack(include_chunk_dir=True, **stack_config)
-        if self._junction_width > 0:
-            junctional_sections = self.junctional_sections
-            specified_out_dirs = {s: self._chunk_dir for s in junctional_sections}
-            stack._specified_out_dirs.update(specified_out_dirs)
-        # specified_out_dirs
+        stack._specified_out_dirs = self._chunk_dir
         muted_match_list = stack.assign_section_to_chunks(self.chunk_map)
         storage.makedirs(self._chunk_dir)
         section_locked_for_chunk = mesh_versions_array > Aligner.UNALIGNED
@@ -1254,6 +1282,7 @@ class Aligner():
     def predeform_sections_by_chunk(self, **kwargs):
         num_workers = kwargs.pop('num_workers', 1)
         worker_settings = kwargs.get('worker_settings', {})
+        commit_directly = kwargs.get('commit_directly', True)
         junctional_sections = self.junctional_sections
         mesh_versions = self.mesh_versions
         section_chunk_id = self.section_chunk_id
@@ -1284,33 +1313,40 @@ class Aligner():
                 args_list.append([meta_tform, secnames])
             if len(secnames_j) > 0:
                 args_list_j.append([meta_tform, secnames_j])
+        storage.makedirs(self._predeform_dir)
+        if len(args_list_j) > 0:
+            tfunc = partial(Aligner._predeform_meshes, outdir=self._predeform_dir, srcdir=self._chunk_dir, flag=Aligner.PREDEFORMED)
+            for res in submit_to_workers(tfunc, args=args_list_j, num_workers=num_workers, **worker_settings):
+                self._mesh_versions.update(res)
         if len(args_list) > 0:
-            tfunc = partial(Aligner._predeform_meshes, outdir=self._tform_dir, srcdir=self._chunk_dir)
+            if commit_directly:
+                output_dir = self._tform_dir
+                flag=Aligner.ALIGNED
+            else:
+                output_dir = self._predeform_dir
+                flag=Aligner.PREDEFORMED
+            tfunc = partial(Aligner._predeform_meshes, outdir=output_dir, srcdir=self._chunk_dir, flag=flag)
             for res in submit_to_workers(tfunc, args=args_list, num_workers=num_workers, **worker_settings):
                 self._mesh_versions.update(res)
-        if len(args_list_j) > 0:
-            tfunc = partial(Aligner._predeform_meshes, outdir=self._chunk_dir, srcdir=self._chunk_dir)
-            for _ in submit_to_workers(tfunc, args=args_list_j, num_workers=num_workers, **worker_settings):
-                pass
 
 
     def resolve_chunk_version_differences(self, remove_file=True):
         changed_chunks, changed_sections = Aligner.compare_chunk_maps(self._previous_chunk_map, self.chunk_map)
         if self._previous_chunk_map is not None:
+            mesh_dir_list = (self._chunk_dir, self._predeform_dir)
+            meta_dir_list = (self._meta_mesh_dir, self._meta_tform_dir)
             if remove_file:
-                msh_list = storage.list_folder_content(storage.join_paths(self._chunk_dir, '*.h5'))
-                for secnm in msh_list:
-                    if os.path.basename(secnm).replace('.h5', '') in changed_sections:
-                        if storage.remove_file(secnm):
-                            self._mesh_versions = None
-                msh_list = storage.list_folder_content(storage.join_paths(self._meta_mesh_dir, '*.h5'))
-                for secnm in msh_list:
-                    if os.path.basename(secnm).replace('.h5', '') in changed_chunks:
-                        storage.remove_file(secnm)
-                msh_list = storage.list_folder_content(storage.join_paths(self._meta_tform_dir, '*.h5'))
-                for secnm in msh_list:
-                    if os.path.basename(secnm).replace('.h5', '') in changed_chunks:
-                        storage.remove_file(secnm)
+                for mesh_dir in mesh_dir_list:
+                    msh_list = storage.list_folder_content(storage.join_paths(mesh_dir, '*.h5'))
+                    for secnm in msh_list:
+                        if os.path.basename(secnm).replace('.h5', '') in changed_sections:
+                            if storage.remove_file(secnm):
+                                self._mesh_versions = None
+                for mesh_dir in meta_dir_list:
+                    msh_list = storage.list_folder_content(storage.join_paths(mesh_dir, '*.h5'))
+                    for secnm in msh_list:
+                        if os.path.basename(secnm).replace('.h5', '') in changed_chunks:
+                            storage.remove_file(secnm)
                 mtch_list = storage.list_folder_content(storage.join_paths(self._meta_match_dir, '*.h5'))
                 for mtchnm in mtch_list:
                     snms = os.path.basename(mtchnm).replace('.h5', '').split(self._match_name_delimiter)
@@ -1340,25 +1376,26 @@ class Aligner():
         changed_chunks = []
         changed_sections = []
         if old_map is not None:
+            old_secnames = set().union(*old_map.values())
             new_secnames = set().union(*new_map.values())
+            common_secnames = old_secnames.intersection(new_secnames)
+            new_map_breakdowns = {}
+            for chknm, secnames in new_map.items():
+                secname_shared = [s for s in secnames if s in common_secnames]
+                if len(secname_shared) == 0:
+                    continue
+                new_map_breakdowns[tuple(secname_shared)] = (chknm, len(secname_shared)==len(secnames))
             for chknm, secnames0 in old_map.items():
-                secnames1 = new_map.get(chknm, None)
-                to_remove = False
-                if secnames1 is None:
-                    for secnm in secnames0:
-                        if secnm in new_secnames:
-                            to_remove = True
-                            break
-                elif (len(secnames1) != len(secnames0)):
-                    to_remove = True
-                else:
-                    for secnm in secnames1:
-                        if secnm not in secnames0:
-                            to_remove = True
-                            break
-                if to_remove:
+                secname_shared = [s for s in secnames0 if s in common_secnames]
+                if len(secname_shared) == 0:
+                    continue
+                paired = new_map_breakdowns.get(tuple(secname_shared), None)
+                if paired is None:
+                    changed_sections.extend(secname_shared)
                     changed_chunks.append(chknm)
-                    changed_sections.append(secnames0)
+                elif (len(secname_shared) != len(secnames0)) or (paired != (chknm, True)):
+                    changed_chunks.append(chknm)
+        changed_chunks, changed_sections = set(changed_chunks), set(changed_sections)
         return changed_chunks, changed_sections
 
 
@@ -1400,7 +1437,7 @@ class Aligner():
 
 
     @staticmethod
-    def _predeform_meshes(tform_file, secnames, outdir, srcdir):
+    def _predeform_meshes(tform_file, secnames, outdir, srcdir, flag=None):
         Mc = Mesh.from_h5(tform_file)
         res = {}
         if isinstance(outdir, str):
@@ -1413,7 +1450,8 @@ class Aligner():
                 m0 = transform_mesh(m0, Mc, gears=(const.MESH_GEAR_MOVING, const.MESH_GEAR_MOVING))
                 m0.anneal(gear=(const.MESH_GEAR_MOVING, const.MESH_GEAR_FIXED), mode=const.ANNEAL_COPY_EXACT)
                 m0.save_to_h5(outname, save_material=True)
-            res[snm] = Aligner.ALIGNED
+            if flag is not None:
+                res[snm] = flag
         return res
 
 

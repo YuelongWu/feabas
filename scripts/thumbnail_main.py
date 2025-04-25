@@ -425,7 +425,6 @@ if __name__ == '__main__':
     render_prefix = storage.join_paths(thumbnail_dir, 'aligned_thumbnails_')
     section_order_file = storage.join_paths(root_dir, 'section_order.txt')
     chunk_map_file = storage.join_paths(thumbnail_dir, 'chunk_map.json')
-    residue_file = storage.join_paths(tform_dir, 'residue.csv')
     if mode == 'downsample':
         logger_info = logging.initialize_main_logger(logger_name='stitch_mipmap', mp=num_workers>1)
         thumbnail_configs['logger'] = logger_info[0]
@@ -604,7 +603,7 @@ if __name__ == '__main__':
                 algnr = Aligner(tmp_mesh_dir, tform_dir, match_dir, **chunk_settings)
                 algnr.run(num_workers=num_workers, chunked_to_depth=chunked_to_depth,
                           stack_config=stack_config, slide_window=slide_window,
-                          worker_settings=worker_settings, residue_file=residue_file)
+                          worker_settings=worker_settings)
         if (mode == 'render') or (mode == 'alignment'):
             render_configs = thumbnail_configs.get('render', {})
             render_scale = render_configs.get('scale', None)

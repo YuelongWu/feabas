@@ -155,7 +155,7 @@ def optimize_main(section_list):
     logger.info(f'{locked_flags.size} images| {np.sum(locked_flags)} references')
     algnr.run(num_workers=num_workers, chunked_to_depth=chunked_to_depth,
               stack_config=stack_config, slide_window=slide_window,
-              worker_settings=worker_settings, residue_file=residue_file)
+              worker_settings=worker_settings)
     logger.info('finished')
     logging.terminate_logger(*logger_info)
 
@@ -392,7 +392,6 @@ if __name__ == '__main__':
     tensorstore_render_dir = config.tensorstore_render_dir()
     canvas_file = storage.join_paths(tform_dir, 'tensorstore_canvas.txt')
     offset_file = storage.join_paths(tform_dir, 'offset.txt')
-    residue_file = storage.join_paths(tform_dir, 'residue.csv')
     ts_flag_dir = storage.join_paths(align_dir, 'render_flags')
     rendered_mask_file = storage.join_paths(align_dir, 'mask.png')
     ts_spec_file = storage.join_paths(align_dir, 'ts_spec.json')
