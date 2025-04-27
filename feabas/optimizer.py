@@ -1815,7 +1815,7 @@ def solve(A, b, solver, x0=None, tol=1e-7, atol=None, maxiter=None, M=None, **kw
         except KeyboardInterrupt:
             x = cb.solution
             break
-        if (cost <= atol) or check_converge:
+        if (cost <= atol) or not check_converge:
             break
         if cb._exit_code != 0:
             break
