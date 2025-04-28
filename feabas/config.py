@@ -31,7 +31,7 @@ CHECKPOINT_TIME_INTERVAL = 300 # is seconds
 OPT_CHECK_CONVERGENCE = True
 DEFAULT_DEFORM_BUDGET = 0.125
 MATCH_SOFTFACTOR_DOMINANCE = 200 # during matching, assume one mesh is much more rigid than the other so the system will not collapse
-
+PERTURBATION_TOLERANCE = 0.1    # mesh vertice positions with perturbation smaller than this (multiplied by data resolution) are considered essentially the same. used for optimization early stopping
 
 @lru_cache(maxsize=1)
 def parallel_framework():
