@@ -692,9 +692,17 @@ class Stack:
             if target_gear != const.MESH_GEAR_FIXED:
                 optm.anneal(gear=(target_gear, const.MESH_GEAR_FIXED), mode=const.ANNEAL_CONNECTED_RIGID)
         if optimize_elastic:
-            if elastic_params.get('stiffness_lambda', None) is None:
-                avg_deform = np.mean([lnk.strain for lnk in optm.links])
-                elastic_params['stiffness_lambda'] = (2 * config.DEFAULT_DEFORM_BUDGET / max(avg_deform, 1e-3)) ** 2
+            if elastic_params.get('stiffness_lambda', None) is None: # determine overall mesh stiffness based on matching strains
+                mesh_strains = defaultdict(list)
+                for lnk in optm.links:
+                    mesh_strains[lnk.uids[0]].append(lnk.strain)
+                    mesh_strains[lnk.uids[1]].append(lnk.strain)
+                for m_uid, stns in mesh_strains.items():
+                    mesh_strains[m_uid] = max(np.median(stns), 1e-3)
+                avg_deform = np.mean([s for s in mesh_strains.values()])
+                for m in optm.meshes:
+                    m.soft_factor = min(2, (avg_deform / mesh_strains.get(m.uid, avg_deform)) ** 1.5) # make mesh with high matching distortion softer
+                elastic_params['stiffness_lambda'] = (config.DEFAULT_DEFORM_BUDGET / avg_deform) ** 2
             if 'callback_settings' in elastic_params:
                 elastic_params['callback_settings'].setdefault('early_stop_thresh', config.montage_resolution() / self._resolution)
             cost = optm.optimize_elastic(target_gear=target_gear, **elastic_params)
