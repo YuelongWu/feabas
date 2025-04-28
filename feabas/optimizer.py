@@ -1243,9 +1243,9 @@ class SLM:
             else:
                 M = None
             if not check_deform:
-                dd = solve(A, b, solver, tol=tol, maxiter=maxiter, atol=atol, M=M, extra_dof_constraint=edc, **callback_settings)
+                dd = solve(A, b, solver, tol=tol, maxiter=maxiter, atol=atol, M=M, extra_dof_constraint=edc, tolerated_perturbation=tolerated_perturbation, **callback_settings)
                 break
-            dd = solve(A, b, solver, tol=tol, maxiter=maxiter, check_converge=False, atol=atol, M=M, extra_dof_constraint=edc, **callback_settings)
+            dd = solve(A, b, solver, tol=tol, maxiter=maxiter, check_converge=False, atol=atol, M=M, extra_dof_constraint=edc, tolerated_perturbation=tolerated_perturbation, **callback_settings)
             deform_act = (stiff_m.dot(dd).dot(dd) / E_s) ** 0.5
             if deform_act > np.max(deform_target):
                 stiffness_lambda = stiffness_lambda * max(2.0, (deform_act/np.mean(deform_target))**2)
