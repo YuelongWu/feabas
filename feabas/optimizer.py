@@ -1104,6 +1104,7 @@ class SLM:
         auto_clear = kwargs.get('auto_clear', True)
         remove_extra_dof = kwargs.get('remove_extra_dof', False)
         remove_material_dof = kwargs.get('remove_material_dof', None)
+        tolerated_perturbation = kwargs.get('tolerated_perturbation', config.PERTURBATION_TOLERANCE * config.data_resolution()/self.working_resolution)
         check_flip = not cont_on_flip
         lock_flags = self.lock_flags
         check_deform = (deform_target is not None) and (deform_target > 0)
@@ -1568,6 +1569,11 @@ class SLM:
         return [lnk for lnk in self.links if (self.link_is_relevant(lnk) == 1)]
 
 
+    @property
+    def working_resolution(self):
+        return self.meshes[0].resolution
+
+
     def match_residues(self, gear=const.MESH_GEAR_MOVING, use_mask=False, quantile=1):
         dis = []
         for lnk in self.links:
@@ -1767,6 +1773,14 @@ def solve(A, b, solver, x0=None, tol=1e-7, atol=None, maxiter=None, M=None, **kw
     eval_step = kwargs.get('eval_step', 10)
     edc = kwargs.get('extra_dof_constraint', None)
     check_converge = kwargs.get('check_converge', config.OPT_CHECK_CONVERGENCE)
+    tolerated_perturbation = kwargs.get('tolerated_perturbation', None) # if one round of optimization yields no larger benefit compared to recover from such perturbation, then do early stop.
+    if tolerated_perturbation is not None:
+        theta = np.random.uniform(low=0.0, high=2*np.pi, size=round((b.size + 0.1)/2))
+        sin_t = np.sin(theta)
+        cos_t = np.cos(theta)
+        dx_t = np.stack((sin_t, cos_t), axis=-1)
+        dx_t = dx_t.ravel()
+        tolerated_perturbation = tolerated_perturbation * dx_t[:b.size]
     if maxiter == 0:
         return np.zeros_like(b)
     if edc is not None:
@@ -1783,12 +1797,15 @@ def solve(A, b, solver, x0=None, tol=1e-7, atol=None, maxiter=None, M=None, **kw
             b = b[edc]
             if M is not None:
                 M = sparse.csr_matrix(M)[edc][:, edc]
+            if tolerated_perturbation is not None:
+                tolerated_perturbation = tolerated_perturbation[edc]
     kwargs_solver =  {'x0': x0, 'M': M}
     if atol is not None:
         rtol0 = atol / np.linalg.norm(b)
         tol = max(tol, rtol0)
     atol = tol * np.linalg.norm(b)
     timeout_t, maxiter_t = timeout, maxiter
+    previous_cost = np.linalg.norm(b)
     while True:
         # not sure how minres compute rtol... so need a loop to ensure target is met.
         cb = SLM_Callback(A, b, timeout=timeout_t, early_stop_thresh=early_stop_thresh, chances=chances, eval_step=eval_step, atol=atol)
@@ -1815,8 +1832,14 @@ def solve(A, b, solver, x0=None, tol=1e-7, atol=None, maxiter=None, M=None, **kw
         except KeyboardInterrupt:
             x = cb.solution
             break
-        if (cost <= atol) or not check_converge:
+        if (cost <= atol) or (not check_converge):
             break
+        if tolerated_perturbation is not None:
+            cost_purt = np.linalg.norm(A.dot(x+tolerated_perturbation) - b)
+            if (previous_cost - cost) < (cost_purt - cost):
+                break
+            else:
+                previous_cost = cost
         if cb._exit_code != 0:
             break
         if timeout_t is not None:
