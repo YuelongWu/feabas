@@ -1807,7 +1807,10 @@ def solve(A, b, solver, x0=None, tol=1e-7, atol=None, maxiter=None, M=None, **kw
         tol = max(tol, rtol0)
     atol = tol * np.linalg.norm(b)
     timeout_t, maxiter_t = timeout, maxiter
-    previous_cost = np.linalg.norm(b)
+    if x0 is None:
+        x = np.zeros_like(b)
+    else:
+        x = x0
     while True:
         # not sure how minres compute rtol... so need a loop to ensure target is met.
         cb = SLM_Callback(A, b, timeout=timeout_t, early_stop_thresh=early_stop_thresh, chances=chances, eval_step=eval_step, atol=atol)
@@ -1817,6 +1820,8 @@ def solve(A, b, solver, x0=None, tol=1e-7, atol=None, maxiter=None, M=None, **kw
             kwargs_solver['rtol'] = tol
         else:
             kwargs_solver['tol'] = tol
+        if tolerated_perturbation is not None:
+            previous_energy = 0.5 * A.dot(x).dot(x) - b.dot(x)
         try:
             if solver == 'bicgstab':
                 x, _ = sparse.linalg.bicgstab(A, b, **kwargs_solver)
@@ -1837,11 +1842,11 @@ def solve(A, b, solver, x0=None, tol=1e-7, atol=None, maxiter=None, M=None, **kw
         if (cost <= atol) or (not check_converge):
             break
         if tolerated_perturbation is not None:
-            cost_pert = np.linalg.norm(A.dot(x+tolerated_perturbation) - b)
-            if (previous_cost - cost) < (cost_pert - cost):
+            x_pert = x + tolerated_perturbation
+            current_energy = 0.5 * A.dot(x).dot(x) - b.dot(x)
+            pert_energy = 0.5 * A.dot(x_pert).dot(x_pert) - b.dot(x_pert)
+            if (previous_energy - current_energy) < (pert_energy - current_energy):
                 break
-            else:
-                previous_cost = cost
         if cb._exit_code != 0:
             break
         if timeout_t is not None:
