@@ -318,7 +318,7 @@ def section_matcher(mesh0, mesh1, image_loader0, image_loader1, **kwargs):
             **kwargs)
     else:
         opt = optimizer.SLM([mesh0, mesh1], stiffness_lambda=stiffness_lambda)
-        xy0, xy1, weight = initial_matches[:3]
+        xy0, xy1, weight = initial_matches.xy0, initial_matches.xy1, initial_matches.weight
         opt.add_link_from_coordinates(mesh0.uid, mesh1.uid, xy0, xy1,
             gear=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_INITIAL), weight=weight,
             check_duplicates=False)
@@ -331,7 +331,7 @@ def section_matcher(mesh0, mesh1, image_loader0, image_loader1, **kwargs):
             ini_xy0_t = lnk.xy0(gear=const.MESH_GEAR_INITIAL, use_mask=False, combine=True)
             ini_xy1_t = lnk.xy1(gear=const.MESH_GEAR_INITIAL, use_mask=False, combine=True)
             ini_wt_t = lnk.weight(use_mask=False)
-            ini_mtch_t = (ini_xy0_t, ini_xy1_t, ini_wt_t)
+            ini_mtch_t = common.Match(ini_xy0_t, ini_xy1_t, ini_wt_t)
             xy0_t, xy1_t, wt_t, strain = iterative_xcorr_matcher_w_mesh(msh0_t.copy(), msh1_t.copy(),
                 image_loader0, image_loader1, spacings=spacings, compute_strain=True,
                 initial_matches=ini_mtch_t, **kwargs)
@@ -466,7 +466,7 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
         mesh0_ori, mesh1_ori = mesh0.copy(), mesh1.copy()
     opt = optimizer.SLM([mesh0, mesh1], stiffness_lambda=stiffness_lambda)
     if initial_matches is not None:
-        xy0, xy1, weight = initial_matches[:3]
+        xy0, xy1, weight = initial_matches.xy0, initial_matches.xy1, initial_matches.weight
         opt.add_link_from_coordinates(mesh0.uid, mesh1.uid, xy0, xy1,
             gear=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_INITIAL), weight=weight,
             check_duplicates=False, render_weight_threshold=render_weight_threshold)
