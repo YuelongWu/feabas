@@ -318,7 +318,7 @@ def section_matcher(mesh0, mesh1, image_loader0, image_loader1, **kwargs):
             **kwargs)
     else:
         opt = optimizer.SLM([mesh0, mesh1], stiffness_lambda=stiffness_lambda)
-        xy0, xy1, weight = initial_matches.xy0, initial_matches.xy1, initial_matches.weight
+        xy0, xy1, weight = initial_matches[:3]
         opt.add_link_from_coordinates(mesh0.uid, mesh1.uid, xy0, xy1,
             gear=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_INITIAL), weight=weight,
             check_duplicates=False)
@@ -466,7 +466,7 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
         mesh0_ori, mesh1_ori = mesh0.copy(), mesh1.copy()
     opt = optimizer.SLM([mesh0, mesh1], stiffness_lambda=stiffness_lambda)
     if initial_matches is not None:
-        xy0, xy1, weight = initial_matches.xy0, initial_matches.xy1, initial_matches.weight
+        xy0, xy1, weight = initial_matches[:3]
         opt.add_link_from_coordinates(mesh0.uid, mesh1.uid, xy0, xy1,
             gear=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_INITIAL), weight=weight,
             check_duplicates=False, render_weight_threshold=render_weight_threshold)
