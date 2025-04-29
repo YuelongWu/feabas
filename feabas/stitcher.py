@@ -25,6 +25,8 @@ import feabas.constant as const
 from feabas.config import DEFAULT_RESOLUTION, SECTION_THICKNESS, data_resolution, CHECKPOINT_TIME_INTERVAL, DEFAULT_DEFORM_BUDGET
 
 H5File = storage.h5file_class()
+TOLERATED_PERTURBATION = 0.1
+
 
 class Stitcher:
     """
@@ -742,7 +744,7 @@ class Stitcher:
                               shape_gear=const.MESH_GEAR_FIXED,
                               target_gear = const.MESH_GEAR_MOVING,
                               start_gear = const.MESH_GEAR_FIXED,
-                              groupings=groupings)
+                              groupings=groupings, tolerated_perturbation=TOLERATED_PERTURBATION)
         if cost[1] < cost[0]:
             self._optimizer.apply_coarse_relaxation_results(opt_c, start_gear=start_gear, target_gear=target_gear)
         return cost
@@ -760,7 +762,7 @@ class Stitcher:
         check_residues = kwargs.get('check_residues', True)
         cache_size = kwargs.get('cache_size', None)
         target_gear = kwargs.setdefault('target_gear', const.MESH_GEAR_FIXED)
-        kwargs.setdefault('tolerated_perturbation', 0.2)
+        kwargs.setdefault('tolerated_perturbation', TOLERATED_PERTURBATION)
         if not self.has_groupings:
             return 0, 0
         groupings = self.groupings(normalize=True)
@@ -834,7 +836,7 @@ class Stitcher:
         residue_len = kwargs.get('residue_len', 0)
         residue_mode = kwargs.get('residue_mode', None)
         target_gear = kwargs.setdefault('target_gear', const.MESH_GEAR_MOVING)
-        kwargs.setdefault('tolerated_perturbation', 0.2)
+        kwargs.setdefault('tolerated_perturbation', TOLERATED_PERTURBATION)
         if use_groupings:
             groupings = self.groupings(normalize=True)
         else:

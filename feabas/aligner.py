@@ -1092,7 +1092,7 @@ class Aligner():
                 'elastic_params':{
                     'stiffness_lambda': stiffness,
                     'deform_target': deform_target,
-                    'tolerated_perturbation': 0.5,
+                    'tolerated_perturbation': 0.1,
                 }
             }
         }

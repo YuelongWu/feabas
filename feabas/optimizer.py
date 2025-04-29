@@ -1837,8 +1837,8 @@ def solve(A, b, solver, x0=None, tol=1e-7, atol=None, maxiter=None, M=None, **kw
         if (cost <= atol) or (not check_converge):
             break
         if tolerated_perturbation is not None:
-            cost_purt = np.linalg.norm(A.dot(x+tolerated_perturbation) - b)
-            if (previous_cost - cost) < (cost_purt - cost):
+            cost_pert = np.linalg.norm(A.dot(x+tolerated_perturbation) - b)
+            if (previous_cost - cost) < (cost_pert - cost):
                 break
             else:
                 previous_cost = cost
