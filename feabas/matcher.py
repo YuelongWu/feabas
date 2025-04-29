@@ -445,7 +445,8 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
         "batch_num_matches": np.inf,
         "continue_on_flip": continue_on_flip,
         "callback_settings": callback_settings,
-        "tolerated_perturbation": 0.25,
+        "tolerated_perturbation": 0.5,
+        "check_converge": False
     }
     linear_system = mesh0.is_linear and mesh1.is_linear
     one_locked = mesh0.locked or mesh1.locked

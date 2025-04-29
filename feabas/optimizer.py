@@ -1105,6 +1105,7 @@ class SLM:
         remove_extra_dof = kwargs.get('remove_extra_dof', False)
         remove_material_dof = kwargs.get('remove_material_dof', None)
         tolerated_perturbation = kwargs.get('tolerated_perturbation', None)
+        check_converge = kwargs.pop('check_converge', config.OPT_CHECK_CONVERGENCE)
         check_flip = not cont_on_flip
         lock_flags = self.lock_flags
         check_deform = (deform_target is not None) and (deform_target > 0)
@@ -1245,14 +1246,14 @@ class SLM:
             else:
                 M = None
             if not check_deform:
-                dd = solve(A, b, solver, tol=tol, maxiter=maxiter, atol=atol, M=M, extra_dof_constraint=edc, tolerated_perturbation=tolerated_perturbation, **callback_settings)
+                dd = solve(A, b, solver, tol=tol, maxiter=maxiter, check_converge=check_converge, atol=atol, M=M, extra_dof_constraint=edc, tolerated_perturbation=tolerated_perturbation, **callback_settings)
                 break
             dd = solve(A, b, solver, tol=tol, maxiter=maxiter, check_converge=False, atol=atol, M=M, extra_dof_constraint=edc, tolerated_perturbation=tolerated_perturbation, **callback_settings)
             deform_act = (stiff_m.dot(dd).dot(dd) / E_s) ** 0.5
             if deform_act > np.max(deform_target):
                 stiffness_lambda = stiffness_lambda * max(2.0, (deform_act/np.mean(deform_target))**2)
             else:
-                dd = solve(A, b, solver, x0=dd, tol=tol, maxiter=maxiter, atol=atol, M=M, extra_dof_constraint=edc, tolerated_perturbation=tolerated_perturbation, **callback_settings)
+                dd = solve(A, b, solver, x0=dd, tol=tol, maxiter=maxiter, check_converge=check_converge, atol=atol, M=M, extra_dof_constraint=edc, tolerated_perturbation=tolerated_perturbation, **callback_settings)
                 break
         cost = (np.linalg.norm(b), np.linalg.norm(A.dot(dd) - b))
         if cost[1] < cost[0]:
