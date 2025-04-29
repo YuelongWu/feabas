@@ -1104,10 +1104,12 @@ class SLM:
         auto_clear = kwargs.get('auto_clear', True)
         remove_extra_dof = kwargs.get('remove_extra_dof', False)
         remove_material_dof = kwargs.get('remove_material_dof', None)
-        tolerated_perturbation = kwargs.get('tolerated_perturbation', config.PERTURBATION_TOLERANCE * config.data_resolution()/self.working_resolution)
+        tolerated_perturbation = kwargs.get('tolerated_perturbation', None)
         check_flip = not cont_on_flip
         lock_flags = self.lock_flags
         check_deform = (deform_target is not None) and (deform_target > 0)
+        if tolerated_perturbation is not None:
+            tolerated_perturbation = tolerated_perturbation * config.data_resolution() / self.working_resolution
         if np.all(lock_flags):
             return 0, 0 # all locked, nothing to optimize
         stiff_m, stress_v = self.stiffness_matrix(gear=(shape_gear,start_gear),
@@ -1250,7 +1252,7 @@ class SLM:
             if deform_act > np.max(deform_target):
                 stiffness_lambda = stiffness_lambda * max(2.0, (deform_act/np.mean(deform_target))**2)
             else:
-                dd = solve(A, b, solver, x0=dd, tol=tol, maxiter=maxiter, atol=atol, M=M, extra_dof_constraint=edc, **callback_settings)
+                dd = solve(A, b, solver, x0=dd, tol=tol, maxiter=maxiter, atol=atol, M=M, extra_dof_constraint=edc, tolerated_perturbation=tolerated_perturbation, **callback_settings)
                 break
         cost = (np.linalg.norm(b), np.linalg.norm(A.dot(dd) - b))
         if cost[1] < cost[0]:

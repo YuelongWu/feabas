@@ -441,6 +441,12 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
         loader_dict1 = image_loader1
     # if any spacing value smaller than 1, means they are relative to longer side
     spacings = np.array(spacings, copy=False)
+    kwargs_opt = {
+        "batch_num_matches": np.inf,
+        "continue_on_flip": continue_on_flip,
+        "callback_settings": callback_settings,
+        "tolerated_perturbation": 1.0,
+    }
     linear_system = mesh0.is_linear and mesh1.is_linear
     one_locked = mesh0.locked or mesh1.locked
     min_block_size_multiplier = 4
@@ -467,9 +473,9 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
         opt.optimize_affine_cascade(start_gear=const.MESH_GEAR_INITIAL, target_gear=const.MESH_GEAR_FIXED, svd_clip=(1,1))
         opt.anneal(gear=(const.MESH_GEAR_FIXED, const.MESH_GEAR_MOVING), mode=const.ANNEAL_COPY_EXACT)
         if linear_system:
-            opt.optimize_linear(tol=1e-6, batch_num_matches=np.inf, continue_on_flip=continue_on_flip, callback_settings=callback_settings)
+            opt.optimize_linear(tol=1e-6, **kwargs_opt)
         else:
-            opt.optimize_Newton_Raphson(max_newtonstep=5, tol=1e-4, batch_num_matches=np.inf, continue_on_flip=continue_on_flip, callback_settings=callback_settings)
+            opt.optimize_Newton_Raphson(max_newtonstep=5, tol=1e-4, **kwargs_opt)
     else:
         mesh0.anneal(gear=(const.MESH_GEAR_MOVING, const.MESH_GEAR_FIXED), mode=const.ANNEAL_COPY_EXACT)
         mesh1.anneal(gear=(const.MESH_GEAR_MOVING, const.MESH_GEAR_FIXED), mode=const.ANNEAL_COPY_EXACT)
@@ -616,9 +622,9 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
                         check_duplicates=False, render_weight_threshold=render_weight_threshold)
         if max_dis > 0.1:
             if linear_system:
-                opt.optimize_linear(tol=opt_tol_t, batch_num_matches=np.inf, continue_on_flip=continue_on_flip, callback_settings=callback_settings)
+                opt.optimize_linear(tol=opt_tol_t, **kwargs_opt)
             else:
-                opt.optimize_Newton_Raphson(max_newtonstep=3, tol=opt_tol_t, batch_num_matches=np.inf, continue_on_flip=continue_on_flip, callback_settings=callback_settings)
+                opt.optimize_Newton_Raphson(max_newtonstep=3, tol=opt_tol_t, **kwargs_opt)
             if residue_len > 0:
                 if residue_mode == 'huber':
                     opt.set_link_residue_huber(residue_len)
@@ -629,9 +635,9 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
                 weight_modified, _ = opt.adjust_link_weight_by_residue()
                 if weight_modified and (sp_indx < spacings.size):
                     if linear_system:
-                        opt.optimize_linear(tol=opt_tol_t, batch_num_matches=np.inf, continue_on_flip=continue_on_flip, callback_settings=callback_settings)
+                        opt.optimize_linear(tol=opt_tol_t, **kwargs_opt)
                     else:
-                        opt.optimize_Newton_Raphson(max_newtonstep=3, tol=opt_tol_t, batch_num_matches=np.inf, continue_on_flip=continue_on_flip, callback_settings=callback_settings)
+                        opt.optimize_Newton_Raphson(max_newtonstep=3, tol=opt_tol_t, **kwargs_opt)
         initialized = True
         if (sp_indx < spacings.size) and (sp_indx >= 0):
             sp = spacings[sp_indx]
@@ -649,9 +655,9 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
         opt.optimize_affine_cascade(start_gear=const.MESH_GEAR_INITIAL, target_gear=const.MESH_GEAR_FIXED, svd_clip=(1,1))
         opt.anneal(gear=(const.MESH_GEAR_FIXED, const.MESH_GEAR_MOVING), mode=const.ANNEAL_COPY_EXACT)
         if linear_system:
-            opt.optimize_linear(tol=1e-6, batch_num_matches=np.inf, continue_on_flip=continue_on_flip, callback_settings=callback_settings)
+            opt.optimize_linear(tol=1e-6, **kwargs_opt)
         else:
-            opt.optimize_Newton_Raphson(max_newtonstep=5, tol=1e-4, batch_num_matches=np.inf, continue_on_flip=continue_on_flip, callback_settings=callback_settings)
+            opt.optimize_Newton_Raphson(max_newtonstep=5, tol=1e-4, **kwargs_opt)
         Es0 = 0
         Es = 0
         soft_factor_avg = np.mean([m.soft_factor for m in opt.meshes])

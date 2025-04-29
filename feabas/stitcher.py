@@ -760,6 +760,7 @@ class Stitcher:
         check_residues = kwargs.get('check_residues', True)
         cache_size = kwargs.get('cache_size', None)
         target_gear = kwargs.setdefault('target_gear', const.MESH_GEAR_FIXED)
+        kwargs.setdefault('tolerated_perturbation', 0.2)
         if not self.has_groupings:
             return 0, 0
         groupings = self.groupings(normalize=True)
@@ -833,6 +834,7 @@ class Stitcher:
         residue_len = kwargs.get('residue_len', 0)
         residue_mode = kwargs.get('residue_mode', None)
         target_gear = kwargs.setdefault('target_gear', const.MESH_GEAR_MOVING)
+        kwargs.setdefault('tolerated_perturbation', 0.2)
         if use_groupings:
             groupings = self.groupings(normalize=True)
         else:

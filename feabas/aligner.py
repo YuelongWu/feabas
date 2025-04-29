@@ -1091,7 +1091,8 @@ class Aligner():
                 'num_workers': num_workers,
                 'elastic_params':{
                     'stiffness_lambda': stiffness,
-                    'deform_target': deform_target
+                    'deform_target': deform_target,
+                    'tolerated_perturbation': 0.5,
                 }
             }
         }
