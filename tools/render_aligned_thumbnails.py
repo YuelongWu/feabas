@@ -11,8 +11,7 @@ from feabas.mesh import Mesh
 import feabas.constant as const
 from feabas.renderer import MeshRenderer
 
-thumbnail_mip_lvl = config.thumbnail_configs().get('thumbnail_mip_level', 6)
-default_thumbnail_resolution = config.montage_resolution() * (2 ** thumbnail_mip_lvl)
+default_thumbnail_resolution = config.thumbnail_resolution()
 
 def render_one_thumbnail(thumbnail_path, mesh_path, out_dir, **kwargs):
     thumbnail_resolution = kwargs.get('thumbnail_resolution', default_thumbnail_resolution)

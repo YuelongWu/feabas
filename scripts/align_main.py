@@ -58,8 +58,7 @@ def generate_mesh_main(match_list=None):
     logger_info = logging.initialize_main_logger(logger_name='mesh_generation', mp=num_workers>1)
     mesh_config['logger'] = logger_info[0]
     logger = logging.get_logger(logger_info[0])
-    thumbnail_mip_lvl = thumbnail_configs.get('thumbnail_mip_level', 6)
-    thumbnail_resolution = config.montage_resolution() * (2 ** thumbnail_mip_lvl)
+    thumbnail_resolution = config.thumbnail_resolution()
     thumbnail_mask_dir = storage.join_paths(thumbnail_dir, 'material_masks')
     if match_list is None:
         match_list = storage.list_folder_content(storage.join_paths(thumb_match_dir, '*.h5'))

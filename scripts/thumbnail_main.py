@@ -372,7 +372,7 @@ if __name__ == '__main__':
 
     thumbnail_configs = config.thumbnail_configs()
     thumbnail_mip_lvl = thumbnail_configs.get('thumbnail_mip_level', 6)
-    thumbnail_resolution = config.montage_resolution() * (2 ** thumbnail_mip_lvl)
+    thumbnail_resolution = config.thumbnail_resolution()
     if args.mode.lower().startswith('d'):
         thumbnail_configs = thumbnail_configs['downsample']
         mode = 'downsample'

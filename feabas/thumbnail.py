@@ -8,7 +8,7 @@ from shapely.affinity import affine_transform
 from skimage.feature import peak_local_max
 from itertools import combinations
 
-from feabas import common, logging, storage
+from feabas import common, config, logging, storage
 from feabas.spatial import fit_affine, Geometry, scale_coordinates
 from feabas.mesh import Mesh
 from feabas.optimizer import SLM
@@ -280,6 +280,7 @@ def prepare_image(img, mask=None, **kwargs):
     extract_settings = kwargs.get('extract_settings', {}).copy()
     mesh_size = kwargs.get('mesh_size', DEFAULT_FEATURE_SPACING * 2)
     scale = kwargs.get('scale', 1.0)
+    resolution = kwargs.get('resolution', config.thumbnail_resolution())
     if isinstance(img, dict):
         out = img
         img = out['image']
@@ -301,12 +302,13 @@ def prepare_image(img, mask=None, **kwargs):
             imght, imgwd = img.shape[:2]
             regions[1] = shpgeo.box(0,0,imgwd, imght)
             mesh = Mesh.from_bbox((0,0,imgwd, imght), cartesian=True,
-                                    mesh_size=mesh_size, uid=uid)
+                                    mesh_size=mesh_size, uid=uid, resolution=resolution/scale)
         else:
             meshes_stg = []
             for lb in np.unique(mask[mask>0]):
                 G0 = Geometry.from_image_mosaic(255 - 255 * (mask == lb).astype(np.uint8),
-                                                region_names={'default':0, 'exclude': 255})
+                                                region_names={'default':0, 'exclude': 255},
+                                                resolution=resolution/scale)
                 G0.simplify(region_tol={'exclude':1.5}, inplace=True)
                 regions[lb] = G0.region_default
                 meshes_stg.append(Mesh.from_PSLG(**G0.PSLG(), mesh_size=mesh_size,
@@ -520,7 +522,7 @@ def _scale_matches(match, scale):
 def align_two_thumbnails(img0, img1, outname, mask0=None, mask1=None, **kwargs):
     if storage.file_exists(outname):
         return
-    resolution = kwargs.get('resolution')
+    resolution = kwargs.get('resolution', config.thumbnail_resolution())
     feature_match_settings = kwargs.get('feature_matching', {}).copy()
     block_match_settings = kwargs.get('block_matching', {}).copy()
     feature_match_dir = kwargs.get('feature_match_dir', None)
