@@ -271,8 +271,7 @@ def montage_resolution():
 
 lru_cache(maxsize=1)
 def thumbnail_resolution():
-    thumbnail_configs = thumbnail_configs()
-    thumbnail_mip_lvl = thumbnail_configs.get('thumbnail_mip_level', 6)
+    thumbnail_mip_lvl = thumbnail_configs().get('thumbnail_mip_level', 6)
     thumbnail_resolution = montage_resolution() * (2 ** thumbnail_mip_lvl)
     return thumbnail_resolution
 
