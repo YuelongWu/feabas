@@ -7,7 +7,7 @@ from scipy.fftpack import next_fast_len
 import shapely.geometry as shpgeo
 from shapely.ops import unary_union
 
-from feabas.config import DEFAULT_DEFORM_BUDGET
+from feabas.config import DEFAULT_DEFORM_BUDGET, data_resolution
 from feabas.concurrent import submit_to_workers
 from feabas.mesh import Mesh
 from feabas.renderer import MeshRenderer
@@ -264,9 +264,10 @@ def stitching_matcher(img0, img1, **kwargs):
             img1_f = common.masked_dog_filter(img1_f, sigma*fine_downsample, mask=mask1_f)
     tx0 = tx0 * fine_downsample / coarse_downsample
     ty0 = ty0 * fine_downsample / coarse_downsample
+    working_resolution = data_resolution() / fine_downsample
     residue_len = residue_len * fine_downsample
-    img_loader0 = dal.StreamLoader(img0_f, fillval=0)
-    img_loader1 = dal.StreamLoader(img1_f, fillval=0)
+    img_loader0 = dal.StreamLoader(img0_f, fillval=0, resolution=working_resolution)
+    img_loader1 = dal.StreamLoader(img1_f, fillval=0, resolution=working_resolution)
     if np.any(spacings < 1):
         bbox0 = np.array(img_loader0.bounds) + np.tile((tx0, ty0), 2)
         bbox1 = img_loader1.bounds
@@ -278,9 +279,11 @@ def stitching_matcher(img0, img1, **kwargs):
     spacings = spacings * fine_downsample
     min_spacing = np.min(spacings)
     mesh0 = Mesh.from_bbox(img_loader0.bounds, cartesian=True,
-        mesh_size=min_spacing, min_num_blocks=min_num_blocks, uid=0)
+        mesh_size=min_spacing, min_num_blocks=min_num_blocks, uid=0,
+        resolution=img_loader0.resolution)
     mesh1 = Mesh.from_bbox(img_loader1.bounds, cartesian=True,
-        mesh_size=min_spacing, min_num_blocks=min_num_blocks, uid=1)
+        mesh_size=min_spacing, min_num_blocks=min_num_blocks, uid=1,
+        resolution=img_loader1.resolution)
     mesh0.apply_translation((tx0, ty0), const.MESH_GEAR_FIXED)
     mesh0.lock()
     xy0, xy1, weight, strain = iterative_xcorr_matcher_w_mesh(mesh0, mesh1, img_loader0, img_loader1,
