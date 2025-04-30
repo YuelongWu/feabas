@@ -691,7 +691,7 @@ def render_whole_mesh(mesh, image_loader, prefix, **kwargs):
         num_tile_per_job = max(1, int((num_tiles // num_workers)**0.5))
         if max_tile_per_job is not None:
             num_tile_per_job = min(num_tile_per_job, max_tile_per_job)
-            max_tasks_per_child = max(1, round(max_tasks_per_child/num_tile_per_job))
+            max_tasks_per_child = max(1, round(max_tile_per_job/num_tile_per_job))
         else:
             max_tasks_per_child = None
         N_jobs = max(1, round(num_tiles / num_tile_per_job))
