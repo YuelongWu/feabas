@@ -1843,7 +1843,9 @@ def solve(A, b, solver, x0=None, tol=1e-7, atol=None, maxiter=None, M=None, **kw
         if (cost <= atol) or (not check_converge):
             break
         if tolerated_perturbation is not None:
-            x_pert = x + tolerated_perturbation
+            x_abs = np.abs(x)
+            mask_pert = x_abs >= np.mean(x_abs)
+            x_pert = x + tolerated_perturbation * mask_pert
             current_energy = 0.5 * A.dot(x).dot(x) - b.dot(x)
             pert_energy = 0.5 * A.dot(x_pert).dot(x_pert) - b.dot(x_pert)
             if (previous_energy - current_energy) < (pert_energy - current_energy):
