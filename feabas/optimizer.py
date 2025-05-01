@@ -1321,6 +1321,10 @@ class SLM:
         batch_num_matches = kwargs.pop('batch_num_matches', None)
         shape_gear = const.MESH_GEAR_FIXED
         start_gear = const.MESH_GEAR_MOVING
+        aspect_ratio = config.section_thickness() / self.working_resolution
+        for k, rl in enumerate(residue_len):
+            if rl < 0:
+                residue_len[k] = abs(rl) * aspect_ratio
         if cont_on_flip:
             target_gear = kwargs.pop('target_gear', const.MESH_GEAR_MOVING)
         else:

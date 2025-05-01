@@ -482,8 +482,8 @@ if __name__ == '__main__':
         loader_list = [storage.join_paths(loader_dir, os.path.basename(s).replace('.h5', '.json')) for s in tform_list]
         resolution = config.montage_resolution() * (2 ** mip_level)
         vol_renderer = VolumeRenderer(tform_list, loader_list, tensorstore_render_dir,
-                                      z_indx = z_indx, resolution=resolution,
-                                      flag_dir = ts_flag_dir, **align_config)
+                                      z_indx=z_indx, resolution=resolution,
+                                      flag_dir=ts_flag_dir, **align_config)
         out_spec = vol_renderer.render_volume(skip_indx=indx, logger=logger_info[0], **align_config)
         with storage.File(ts_spec_file, 'w') as f:
             json.dump({mip_level: out_spec}, f)

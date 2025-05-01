@@ -7,7 +7,7 @@ from scipy.fftpack import next_fast_len
 import shapely.geometry as shpgeo
 from shapely.ops import unary_union
 
-from feabas.config import DEFAULT_DEFORM_BUDGET, data_resolution
+from feabas.config import DEFAULT_DEFORM_BUDGET, data_resolution, section_thickness
 from feabas.concurrent import submit_to_workers
 from feabas.mesh import Mesh
 from feabas.renderer import MeshRenderer
@@ -442,6 +442,9 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
         loader_dict1 = image_loader1.init_dict()
     else:
         loader_dict1 = image_loader1
+    if residue_len < 0:
+        aspect_ratio = section_thickness() / mesh0.resolution
+        residue_len = max(1, abs(residue_len) * aspect_ratio)
     # if any spacing value smaller than 1, means they are relative to longer side
     spacings = np.array(spacings, copy=False)
     kwargs_opt = {

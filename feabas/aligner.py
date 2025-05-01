@@ -671,6 +671,9 @@ class Stack:
         logger_info = kwargs.get('logger', None)
         need_anchor = kwargs.get('need_anchor', False)
         logger = logging.get_logger(logger_info)
+        if residue_len < 0:
+            aspect_ratio = config.section_thickness() / self._resolution
+            residue_len = max(1, abs(residue_len) * aspect_ratio)
         residue = {}
         if len(section_list) == 0:
             logger.info('no section to optimize.')

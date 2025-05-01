@@ -45,8 +45,8 @@ alignment:
         spacings: [150, 50] # spacings between grid points for matching, start from larger ones then use smaller ones to refine
         shrink_factor: 1    # the block size compared to the spacing
         distributor: intersect_triangulation    # the method to distribute grid points. cartesian_region | intersect_triangulation
-        residue_mode: threshold # ways to damp outlier matches. threshold | huber
-        residue_len: 3
+        residue_mode: huber # ways to damp outlier matches. threshold | huber
+        residue_len: -3
         min_boundary_distance: 20   # grid points are distributed away from the boundaries of the images by this amount
     optimization:
         meshing_config:
@@ -62,7 +62,7 @@ alignment:
             window_size: 64 # the width of the sliding window
             buffer_size: 16 # the number of overlapping sections to re-optimize when window is moved, to minimize potential fringe effects.
             residue_mode: huber
-            residue_len: 20 # matching points with error larger than this width will be weakened in the second round of mesh relaxation
+            residue_len: -3 # matching points with error larger than this width will be weakened in the second round of mesh relaxation
             elastic_params:
                 tol: 1.0e-7 # convergence tolerance for the solver
                 atol: 0.001

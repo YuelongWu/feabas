@@ -20,8 +20,8 @@ matching:
         distributor: cartesian_region   # cartesian_region/intersect_triangulation
         spacings: [400, 100]    # distance between grid points at each coarse-to-fine level
         shrink_factor: 0.7  # the size of the cropped fft tiles compared to the spacings
-        residue_mode: threshold # huber or threshold or None, deciding how to damp matches with large residue errors after optimization
-        residue_len: 3  # characteristic residue distance used for damping. use 0 to skip
+        residue_mode: huber # huber or threshold or None, deciding how to damp matches with large residue errors after optimization
+        residue_len: -2  # characteristic residue distance used for damping. use 0 to skip. if < 0, the residue_len will be converted to abs(residue_len)*section_thinkness/working_resolution
         min_boundary_distance: 20   # minimum distance allowed from a matching point to the boundary of the meshes
         stiffness_multiplier_threshold: 0.1 # material with stiffness multiplier smaller than this will not be considered during the matching process
         render_weight_threshold: 0.1  # material with render weight smaller than this will not be rendered during the matching process
@@ -39,7 +39,7 @@ optimization:
         window_size: 64 # the width of the sliding window
         buffer_size: 16 # the number of overlapping sections to re-optimize when window is moved, to minimize potential fringe effects.
         residue_mode: huber
-        residue_len: 20 # matching points with error larger than this width will be weakened in the second round of mesh relaxation
+        residue_len: -3 # matching points with error larger than this width will be weakened in the second round of mesh relaxation; if < 0, the residue_len will be converted to abs(residue_len)*section_thinkness/working_resolution
         elastic_params:
             tol: 1.0e-7 # convergence tolerance for the solver
             atol: 0.001
