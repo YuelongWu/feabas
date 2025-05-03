@@ -570,6 +570,7 @@ if __name__ == '__main__':
                 logger.warning(f'no complete chunk to downsample at mip{mip}. skipping...')
                 break
             rendered_mips_spec[mip] = out_spec
+            rendered_mips = np.array(sorted(list(rendered_mips_spec.keys())))
             align_config['z_range'] = z_range
             if full_run:
                 flag_list = storage.list_folder_content(flag_prefix + '*.json')
