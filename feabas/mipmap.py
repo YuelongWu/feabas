@@ -490,7 +490,7 @@ def mip_one_level_tensorstore_3d(src_spec, mipup=1, **kwargs):
     if pad_to_tile_size:
         Xmin = int(np.floor(Xmin / read_wd)) * read_wd
         Ymin = int(np.floor(Ymin / read_ht)) * read_ht
-        Ymin = int(np.ceil(Ymin / read_wd)) * read_wd
+        Xmax = int(np.ceil(Xmax / read_wd)) * read_wd
         Ymax = int(np.ceil(Ymax / read_ht)) * read_ht
         out_schema['domain']['exclusive_max'][:2] = [Xmax, Ymax]
         out_schema['domain']['inclusive_min'][:2] = [Xmin, Ymin]
