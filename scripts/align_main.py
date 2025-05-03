@@ -592,4 +592,5 @@ if __name__ == '__main__':
                 writer = dal.TensorStoreWriter.from_json_spec(out_spec)
                 writer.sort_precomputed_scale()
             logger.info(f'mip{mip} generated')
+        logging.terminate_logger(*logger_info)
             
