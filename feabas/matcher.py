@@ -445,6 +445,13 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
     if residue_len < 0:
         aspect_ratio = section_thickness() / mesh0.resolution
         residue_len = max(1, abs(residue_len) * aspect_ratio)
+    if isinstance(refine_mode, str):
+        if refine_mode.lower() == 'none':
+            refine_mode = 0
+        elif 'only' in refine_mode.lower():
+            refine_mode = 1
+        else:
+            refine_mode = 2
     # if any spacing value smaller than 1, means they are relative to longer side
     spacings = np.array(spacings, copy=False)
     kwargs_opt = {
