@@ -1788,7 +1788,7 @@ def solve(A, b, solver, x0=None, tol=1e-7, atol=None, maxiter=None, M=None, **kw
         dx_t = np.stack((sin_t, cos_t), axis=-1)
         dx_t = dx_t.ravel()
         tolerated_perturbation = tolerated_perturbation * dx_t[:b.size]
-    if maxiter == 0:
+    if (maxiter == 0) or (np.linalg.norm(b) == 0):
         return np.zeros_like(b)
     if edc is not None:
         if (not isinstance(edc, np.ndarray)) or (edc.dtype != bool):

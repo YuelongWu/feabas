@@ -862,6 +862,7 @@ def distribute_matching_blocks(mesh0, mesh1, spacing, dfunc='cartesian_region', 
     region1 = mesh1.shapely_regions(gear=gear)
     reg_crx0 = region0.intersection(region1)
     if reg_crx0.area == 0:
+        bboxes0, bboxes1 = np.empty((0,4)), np.empty((0,4))
         return bboxes0, bboxes1
     if not hasattr(shrink_factor, '__len__'):
         shrink_factor = (shrink_factor, shrink_factor)
