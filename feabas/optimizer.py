@@ -1923,7 +1923,10 @@ def relax_mesh(M, free_vertices=None, free_triangles=None, **kwargs):
     if not np.any(vmask):
         return modified
     vmask_pad = np.repeat(vmask, 2)
-    M.anneal(gear=gear[::-1],  mode=const.ANNEAL_CONNECTED_RIGID)
+    fixed_vertices = M.vertices(gear=gear[0])
+    fixed_offset = M.offset(gear=gear[0])
+    M.anneal(gear=(const.MESH_GEAR_INITIAL, gear[0]), mode=const.ANNEAL_COPY_EXACT)
+    M.anneal(gear=gear[::-1],  mode=const.ANNEAL_CONNECTED_AFFINE)
     M._vertices_changed(gear=gear[0])
     stiff_M, stress_v = M.stiffness_matrix(gear=gear, continue_on_flip=True, cache=False)
     A = stiff_M[vmask_pad][:,vmask_pad]
@@ -1938,5 +1941,7 @@ def relax_mesh(M, free_vertices=None, free_triangles=None, **kwargs):
     if (cost[1] < cost[0]) and np.any(dd != 0):
         modified = True
         M.apply_field(dd.reshape(-1,2), gear[-1], vtx_mask=vmask)
+    M.set_vertices(fixed_vertices, gear=gear[0])
+    M.set_offset(fixed_offset, gear=gear[0])
     M.locked = locked
     return modified
