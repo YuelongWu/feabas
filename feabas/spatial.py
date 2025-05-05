@@ -8,7 +8,7 @@ from shapely import wkb, get_coordinates, minimum_rotated_rectangle
 
 from feabas import dal, common, material
 import feabas.constant as const
-from feabas.config import DEFAULT_RESOLUTION
+from feabas.config import data_resolution
 from feabas.storage import h5file_class
 
 H5File = h5file_class()
@@ -532,7 +532,7 @@ class Geometry:
         self._roi = roi
         self._default_region = None
         self._regions = regions
-        self._resolution = kwargs.get('resolution', DEFAULT_RESOLUTION)
+        self._resolution = kwargs.get('resolution', data_resolution())
         self._zorder = kwargs.get('zorder', list(self._regions.keys()))
         self._committed = False
         self._epsilon = kwargs.get('epsilon', const.EPSILON0) # small value used for buffer
@@ -556,7 +556,7 @@ class Geometry:
             scale(float): if image_loader is not a MosaicLoader, use this to
                 define scaling factor.
         """
-        resolution = kwargs.get('resolution', DEFAULT_RESOLUTION)
+        resolution = kwargs.get('resolution', data_resolution())
         oor_label = kwargs.get('oor_label', None)
         roi_erosion = kwargs.get('roi_erosion', 0.5)
         dilate = kwargs.get('dilate', 0.1)
@@ -649,7 +649,7 @@ class Geometry:
 
 
     def add_regions_from_image(self, image, material_table=None, region_names=None, **kwargs):
-        resolution = kwargs.get('resolution', DEFAULT_RESOLUTION)
+        resolution = kwargs.get('resolution', data_resolution())
         dilate = kwargs.get('dilate', 0.1)
         scale = kwargs.get('scale', 1.0)
         mode = kwargs.get('mode', 'u')
@@ -690,7 +690,7 @@ class Geometry:
 
 
     def modify_roi_from_image(self, image, roi_label=0, **kwargs):
-        resolution = kwargs.get('resolution', DEFAULT_RESOLUTION)
+        resolution = kwargs.get('resolution', data_resolution())
         roi_erosion = kwargs.get('roi_erosion', 0)
         scale = kwargs.get('scale', 1.0)
         mode = kwargs.get('mode', 'r')
