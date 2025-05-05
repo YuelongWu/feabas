@@ -646,9 +646,30 @@ class SLM:
             m.anneal(gear=gear, mode=mode)
 
 
-    def adjust_link_weight_by_residue(self, gear=(const.MESH_GEAR_MOVING, const.MESH_GEAR_MOVING)):
+    def relax_higly_deformed(self, gear=(const.MESH_GEAR_FIXED, const.MESH_GEAR_MOVING), deform_cutoff=config.MAXIMUM_DEFORM_ALLOWED):
+        modified = False
+        deform_thresh = 1 - 1 / (abs(deform_cutoff) + 1)
+        for m in self.meshes:
+            if m.locked:
+                continue
+            svds = m.triangle_tform_svd(gear=gear)
+            defm = Mesh.svds_to_deform(svds)
+            tmask = defm > max(deform_thresh, np.quantile(defm, 0.5))
+            if not np.any(defm):
+                continue
+            tid = m.triangles[tmask]
+            vid = np.unique(tid)
+            vmask = np.isin(m.triangles, vid)
+            tmask = np.all(vmask, axis=-1)
+            md = relax_mesh(m, free_triangles=tmask, gear=gear)
+            modified = modified or md
+
+
+    def adjust_link_weight_by_residue(self, gear=(const.MESH_GEAR_MOVING, const.MESH_GEAR_MOVING), relax_first=False):
         weight_modified = False
         connection_modified = False
+        if relax_first:
+            self.relax_higly_deformed()
         for lnk in self.links:
             w,c = lnk.adjust_weight_from_residue(gear=gear)
             weight_modified |= w
@@ -1941,7 +1962,8 @@ def relax_mesh(M, free_vertices=None, free_triangles=None, **kwargs):
     if (cost[1] < cost[0]) and np.any(dd != 0):
         modified = True
         M.apply_field(dd.reshape(-1,2), gear[-1], vtx_mask=vmask)
-    M.set_vertices(fixed_vertices, gear=gear[0])
-    M.set_offset(fixed_offset, gear=gear[0])
+    if gear[0] != gear[1]:
+        M.set_vertices(fixed_vertices, gear=gear[0])
+        M.set_offset(fixed_offset, gear=gear[0])
     M.locked = locked
     return modified

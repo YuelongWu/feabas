@@ -646,7 +646,7 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
                     opt.set_link_residue_threshold(residue_len)
                 else:
                     raise ValueError
-                weight_modified, _ = opt.adjust_link_weight_by_residue()
+                weight_modified, _ = opt.adjust_link_weight_by_residue(relax_first=True)
                 if weight_modified and (sp_indx < spacings.size):
                     if linear_system:
                         opt.optimize_linear(tol=opt_tol_t, **kwargs_opt)

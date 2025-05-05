@@ -30,6 +30,7 @@ TS_RETRY = 2
 CHECKPOINT_TIME_INTERVAL = 300 # is seconds
 OPT_CHECK_CONVERGENCE = True
 DEFAULT_DEFORM_BUDGET = 0.125
+MAXIMUM_DEFORM_ALLOWED = 0.5
 MATCH_SOFTFACTOR_DOMINANCE = 200 # during matching, assume one mesh is much more rigid than the other so the system will not collapse
 
 

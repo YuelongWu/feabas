@@ -11,7 +11,7 @@ matching:   # see stitcher.Stitcher.subprocess_match_list_of_overlaps for detail
     matcher_config: # see matcher.stitching_matcher for details
         spacings: null   # the spacing between grid points. null to decide dynamically
         conf_thresh: 0.33   # cross-correlations with confidence value smaller than this will be rejected
-        residue_mode: threshold # huber or threshold or None, deciding how to damp matches with large residue errors after mesh relaxation
+        residue_mode: huber # huber or threshold or None, deciding how to damp matches with large residue errors after mesh relaxation
         residue_len: 5
         pad: true           # whether to do anti-aliasing padding for FFT crosscorrelation
         sigma: 2.5          # sigma of DoG filter applied to the images before matching

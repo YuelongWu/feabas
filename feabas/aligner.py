@@ -718,7 +718,7 @@ class Stack:
                     optm.set_link_residue_huber(residue_len)
                 else:
                     optm.set_link_residue_threshold(residue_len)
-                weight_modified, _ = optm.adjust_link_weight_by_residue(gear=(target_gear, target_gear))
+                weight_modified, _ = optm.adjust_link_weight_by_residue(gear=(target_gear, target_gear), relax_first=True)
                 if weight_modified:
                     cost1 = optm.optimize_elastic(target_gear=target_gear, **elastic_params)
                     cost = (cost[0], cost1[-1])

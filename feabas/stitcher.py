@@ -849,7 +849,7 @@ class Stitcher:
                 self._optimizer.set_link_residue_huber(residue_len)
             else:
                 self._optimizer.set_link_residue_threshold(residue_len)
-            weight_modified, _ = self._optimizer.adjust_link_weight_by_residue(gear=(target_gear, target_gear))
+            weight_modified, _ = self._optimizer.adjust_link_weight_by_residue(gear=(target_gear, target_gear), relax_first=True)
             if weight_modified:
                 if kwargs.get('tol', None) is not None:
                     kwargs['tol'] = max(1.0e-3, kwargs['tol'])
