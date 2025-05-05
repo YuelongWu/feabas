@@ -592,17 +592,23 @@ class Stitcher:
         overlap_indices = np.array([s[0] for s in strain_list])
         strain_vals = np.array([(s[1], s[1]) for s in strain_list])
         groupov_indices = groupings[overlap_indices]
+        solo_strain = np.zeros(self.num_tiles, dtype=np.float32)
+        for mid in np.unique(overlap_indices, axis=None):
+            idxt = overlap_indices == mid
+            solo_strain[mid] = np.median(strain_vals[idxt])
         # only probe the interfaces between groups
         idxt = groupov_indices[:,0] != groupov_indices[:,1]
         groupov_indices = groupov_indices[idxt].ravel()
         strain_vals = strain_vals[idxt].ravel()
-        avg_strain = np.zeros(self.num_tiles, dtype=np.float32)
+        group_strain = np.zeros(self.num_tiles, dtype=np.float32)
         for g in np.unique(groupov_indices):
             idxt = groupov_indices == g
             strn = np.median(strain_vals[idxt])
-            avg_strain[groupings == g] = strn
+            group_strain[groupings == g] = strn
+        avg_strain = np.maximum(group_strain, solo_strain)
         tile_soft_factors = 1 / (avg_strain + 1 / np.max(self.average_tile_size))
         tile_soft_factors = tile_soft_factors / np.mean(tile_soft_factors)
+        tile_soft_factors = tile_soft_factors.clip(None, 2.5)
         meshes = []
         mesh_indx = np.full(self.num_tiles, -1)
         mesh_params_ptr = {} # map the parameters of the mesh to
