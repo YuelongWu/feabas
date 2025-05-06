@@ -341,7 +341,7 @@ class Stitcher:
             if matched_counter > (len(overlaps)/10):
                 logger.debug(f'matching in progress: {num_new_matches}/{len(overlaps)}')
                 matched_counter = 0
-        if (second_chance) and (not err_raised):
+        if (second_chance) and (not err_raised) and (len(self.overlaps_without_matches) > 0):
             margin = kwargs.setdefault('margin', 1)
             if margin < MARGIN_RATIO_SWITCH:
                 kwargs['margin'] = min(MARGIN_RATIO_SWITCH, 2*margin)
@@ -394,6 +394,7 @@ class Stitcher:
                 M.apply_translation(offset, gear=const.MESH_GEAR_FIXED)
             self.meshes = meshes
             self.optimize_translation(residue_threshold=0.5)
+            self.connect_isolated_subsystem(explode_factor=1.0)
         txy = np.array([m.estimate_translation(gear=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING)) for m in self.meshes])
         self._refined_init_offset = np.round(txy - txy.min(axis=0)).astype(self._init_offset.dtype)
         txy_chg = self._refined_init_offset - self._init_offset
