@@ -341,14 +341,16 @@ class Stitcher:
             if matched_counter > (len(overlaps)/10):
                 logger.debug(f'matching in progress: {num_new_matches}/{len(overlaps)}')
                 matched_counter = 0
-        if second_chance:
+        if (second_chance) and (not err_raised):
             margin = kwargs.setdefault('margin', 1)
             if margin < MARGIN_RATIO_SWITCH:
                 kwargs['margin'] = min(MARGIN_RATIO_SWITCH, 2*margin)
             else:
                 kwargs['margin'] = 2 * margin
             self.refine_stage_positions()
-            self.dispatch_matchers(second_chance=False, loader_config=loader_config0, num_workers=num_workers, **kwargs)
+            num_new_matches_2nd, err_raised_2nd = self.dispatch_matchers(second_chance=False, loader_config=loader_config0, num_workers=num_workers, **kwargs)
+            num_new_matches += num_new_matches_2nd
+            err_raised = err_raised_2nd
         return num_new_matches, err_raised
 
 
