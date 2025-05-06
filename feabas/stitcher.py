@@ -395,7 +395,7 @@ class Stitcher:
             self.meshes = meshes
             self.optimize_translation(residue_threshold=0.5)
         txy = np.array([m.estimate_translation(gear=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING)) for m in self.meshes])
-        self._refined_init_offset = txy - txy.min(axis=0)
+        self._refined_init_offset = np.round(txy - txy.min(axis=0)).astype(self._init_offset.dtype)
         txy_chg = self._refined_init_offset - self._init_offset
         self._refined_init_bboxes = self._init_bboxes + np.tile(txy_chg, 2)
         self._overlaps = None
