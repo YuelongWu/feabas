@@ -647,7 +647,7 @@ class SLM:
 
 
     def relax_higly_deformed(self, gear=(const.MESH_GEAR_FIXED, const.MESH_GEAR_MOVING), deform_cutoff=config.MAXIMUM_DEFORM_ALLOWED):
-        modified = False
+        modified = 0
         deform_thresh = 1 - 1 / (abs(deform_cutoff) + 1)
         for m in self.meshes:
             if m.locked:
@@ -662,7 +662,8 @@ class SLM:
             vmask = np.isin(m.triangles, vid)
             tmask = np.all(vmask, axis=-1)
             md = relax_mesh(m, free_triangles=tmask, gear=gear)
-            modified = modified or md
+            modified = modified + md
+        return modified
 
 
     def adjust_link_weight_by_residue(self, gear=(const.MESH_GEAR_MOVING, const.MESH_GEAR_MOVING), relax_first=False):
@@ -1402,7 +1403,7 @@ class SLM:
                         self.set_link_residue_huber(residue_len[ke])
                     else:
                         self.set_link_residue_threshold(residue_len[ke])
-                self.adjust_link_weight_by_residue(gear=(target_gear, target_gear))
+                self.adjust_link_weight_by_residue(gear=(target_gear, target_gear), relax_first=True)
             _, _ = self.crosslink_terms(force_update=True, to_cache=True,
                 start_gear=target_gear, target_gear=target_gear,
                 batch_num_matches=batch_num_matches)
