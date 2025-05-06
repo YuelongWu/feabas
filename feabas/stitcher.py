@@ -22,11 +22,11 @@ from feabas.optimizer import SLM
 from feabas import common, caching, storage, logging
 from feabas.spatial import scale_coordinates
 import feabas.constant as const
-from feabas.config import DEFAULT_RESOLUTION, SECTION_THICKNESS, data_resolution, CHECKPOINT_TIME_INTERVAL, DEFAULT_DEFORM_BUDGET
+from feabas.config import SECTION_THICKNESS, data_resolution, CHECKPOINT_TIME_INTERVAL, DEFAULT_DEFORM_BUDGET
 
 H5File = storage.h5file_class()
 TOLERATED_PERTURBATION = 0.1
-
+MARGIN_RATIO_SWITCH = 2
 
 class Stitcher:
     """
@@ -46,7 +46,7 @@ class Stitcher:
         root_dir = kwargs.get('root_dir', None)
         groupings = kwargs.get('groupings', None)
         self._connected_subsystem = kwargs.get('connected_subsystem', None)
-        self.resolution = kwargs.get('resolution', DEFAULT_RESOLUTION)
+        self.resolution = kwargs.get('resolution', data_resolution())
         if bool(root_dir):
             self.imgrootdir = root_dir
             self.imgrelpaths = imgpaths
@@ -54,11 +54,13 @@ class Stitcher:
             self.imgrootdir = os.path.dirname(os.path.commonprefix(imgpaths))
             self.imgrelpaths = [os.path.relpath(s, self.imgrootdir) for s in imgpaths]
         bboxes = np.round(bboxes).astype(np.int32)
-        self.init_bboxes = bboxes
+        self._init_bboxes = bboxes
         self.tile_sizes = common.bbox_sizes(bboxes)
         self.average_tile_size = np.median(self.tile_sizes, axis=0)
         init_offset = bboxes[...,:2]
         self._init_offset = init_offset - init_offset.min(axis=0)
+        self._refined_init_bboxes = None
+        self._refined_init_offset = None
         self.matches = {}
         self.match_strains = {}
         self.meshes = None
@@ -129,7 +131,7 @@ class Stitcher:
             f.create_dataset('resolution', data=self.resolution)
             imgnames_encoded = common.str_to_numpy_ascii('\n'.join(self.imgrelpaths))
             create_dataset('imgrelpaths', data=imgnames_encoded)
-            create_dataset('init_bboxes', data=self.init_bboxes)
+            create_dataset('init_bboxes', data=self._init_bboxes)
             if self._groupings is not None:
                 create_dataset('groupings', data=self._groupings)
             if self.connected_subsystem is not None:
@@ -283,14 +285,18 @@ class Stitcher:
         overwrite = kwargs.pop('overwrite', False)
         num_workers = kwargs.pop('num_workers', 1)
         num_overlaps_per_job = kwargs.get('num_overlaps_per_job', 180) # 180 roughly number of overlaps in an MultiSEM mFoV
-        loader_config = kwargs.pop('loader_config', {}).copy()
+        loader_config0 = kwargs.pop('loader_config', {})
+        loader_config = loader_config0.copy()
         logger_info = kwargs.get('logger', None)
+        second_chance = kwargs.pop('second_chance', self.meshes is None)
         logger = logging.get_logger(logger_info)
         if bool(loader_config.get('cache_size', None)) and (num_workers > 1):
             loader_config['cache_size'] = int(np.ceil(loader_config['cache_size'] / num_workers))
         if bool(loader_config.get('cache_capacity', None)) and (num_workers > 1):
             loader_config['cache_capacity'] = loader_config['cache_capacity'] / num_workers
         loader_config['number_of_channels'] = 1 # only gray-scale matching are supported
+        if self.meshes is not None:
+            self.refine_stage_positions()
         target_func = partial(Stitcher.subprocess_match_list_of_overlaps,
                               root_dir=self.imgrootdir, loader_config=loader_config,
                               **kwargs)
@@ -335,6 +341,14 @@ class Stitcher:
             if matched_counter > (len(overlaps)/10):
                 logger.debug(f'matching in progress: {num_new_matches}/{len(overlaps)}')
                 matched_counter = 0
+        if second_chance:
+            margin = kwargs.setdefault('margin', 1)
+            if margin < MARGIN_RATIO_SWITCH:
+                kwargs['margin'] = min(MARGIN_RATIO_SWITCH, 2*margin)
+            else:
+                kwargs['margin'] = 2 * margin
+            self.refine_stage_positions()
+            self.dispatch_matchers(second_chance=False, loader_config=loader_config0, num_workers=num_workers, **kwargs)
         return num_new_matches, err_raised
 
 
@@ -355,6 +369,38 @@ class Stitcher:
         ov_indices = np.round((ov_cntr - ov_cntr.min(axis=0))/average_step_size)
         z_order = common.z_order(ov_indices)
         return overlaps[z_order]
+
+
+    def refine_stage_positions(self):
+        if self.meshes is None:
+            dummy_meshes = True
+        else:
+            dummy_meshes = False
+        if dummy_meshes:
+            mesh_cache = {}
+            meshes = []
+            for k, tilesz in self.tile_sizes:
+                mkey = tuple(tilesz)
+                if mkey in mesh_cache:
+                    M0 = mesh_cache[mkey].copy(override_dict={'uid':k})
+                else:
+                    tileht, tilewd = tilesz
+                    M0 = Mesh.from_bbox((0,0,tilewd,tileht), cartesian=True, mesh_size=max(tileht, tilewd), uid=k)
+                    mesh_cache[mkey] = M0
+                meshes.append(M0)
+            for M, offset in zip(meshes, self._init_offset):
+                M.apply_translation(offset, gear=const.MESH_GEAR_FIXED)
+            self.meshes = meshes
+            self.optimize_translation(residue_threshold=0.5)
+        txy = np.array([m.estimate_translation(gear=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING)) for m in self.meshes])
+        self._refined_init_offset = txy - txy.min(axis=0)
+        txy_chg = self._refined_init_offset - self._init_offset
+        self._refined_init_bboxes = self._init_bboxes + np.tile(txy_chg, 2)
+        self._overlaps = None
+        self._overlap_widths = None
+        if dummy_meshes:
+            self.meshes = None
+        
 
 
     @staticmethod
@@ -401,7 +447,6 @@ class Stitcher:
         instant_gc = kwargs.get('instant_gc', False)
         logger_info = kwargs.get('logger', None)
         logger = logging.get_logger(logger_info)
-        margin_ratio_switch = 2
         err_raised = False
         if len(overlaps) == 0:
             return {}, {}, err_raised
@@ -409,7 +454,7 @@ class Stitcher:
         if 'cache_border_margin' not in loader_config:
             loader_config = loader_config.copy()
             overlap_wd0 = 6 * np.median(np.abs(wds - np.median(wds))) + np.median(wds) + 1
-            if margin < margin_ratio_switch:
+            if margin <= MARGIN_RATIO_SWITCH:
                 loader_config['cache_border_margin'] = int(overlap_wd0 * (1 + margin))
             else:
                 loader_config['cache_border_margin'] = int(overlap_wd0 + margin)
@@ -439,7 +484,7 @@ class Stitcher:
         for indices, bbox_ov, wd in zip(overlaps, bboxes_overlap, wds):
             if wd <= min_width:
                 continue
-            if margin < margin_ratio_switch:
+            if margin <= MARGIN_RATIO_SWITCH:
                 real_margin = int(margin * wd)
             else:
                 real_margin = int(margin)
@@ -632,7 +677,7 @@ class Stitcher:
                 tileht, tilewd = tile_size
                 M0 = Mesh.from_boarder_bbox((0,0,tilewd,tileht), bd_width=tbwd,
                     mesh_growth=interior_growth, mesh_size=tmsz, uid=k,
-                    soft_factor=tsf)
+                    soft_factor=tsf, resolution=self.resolution)
                 M0.set_stiffness_multiplier_from_interp(xinterp=stf_x, yinterp=stf_y)
                 M0.center_meshes_w_offsets(gear=const.MESH_GEAR_FIXED)
                 mesh_params_ptr[key] = k
@@ -1037,6 +1082,21 @@ class Stitcher:
     def overlaps_without_matches(self):
         overlaps = self.overlaps
         return np.array([s for s in overlaps if (tuple(s) not in self.matches)])
+
+
+    @property
+    def init_bboxes(self):
+        if self._refined_init_bboxes is not None:
+            return self._refined_init_bboxes
+        else:
+            return self._init_bboxes
+
+    @property
+    def init_offset(self):
+        if self._refined_init_offset is not None:
+            return self._refined_init_offset
+        else:
+            return self._init_offset
 
 
     @property

@@ -16,6 +16,10 @@ def match_one_section(coordname, outname, **kwargs):
     if storage.file_exists(outname + '_err'):
         logger.info(f'loading previous results for {os.path.basename(coordname)}')
         stitcher.load_matches_from_h5(outname + '_err', check_order=True)
+    if storage.file_exists(outname + '_mesh'):
+        msh_loaded = stitcher.load_meshes_from_h5(outname + '_mesh', check_order=True)
+        if msh_loaded:
+            logger.info(f'loading previous transformation for {os.path.basename(coordname)}')
     _, err = stitcher.dispatch_matchers(verbose=False, **kwargs)
     if err:
         outname = outname + '_err'
