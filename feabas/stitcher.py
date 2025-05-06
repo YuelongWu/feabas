@@ -381,7 +381,7 @@ class Stitcher:
         if dummy_meshes:
             mesh_cache = {}
             meshes = []
-            for k, tilesz in self.tile_sizes:
+            for k, tilesz in enumerate(self.tile_sizes):
                 mkey = tuple(tilesz)
                 if mkey in mesh_cache:
                     M0 = mesh_cache[mkey].copy(override_dict={'uid':k})
