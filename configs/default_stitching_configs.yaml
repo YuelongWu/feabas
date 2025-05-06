@@ -24,7 +24,7 @@ optimization:
     msem: false          # if is MultiSEM data. used to group tiles.
     minweight: 0.1      # filter out matches with weight smaller than this
     mesh_settings:  # see stitcher.Stitcher.initialize_meshes
-        mesh_sizes: [75, 150, 300]   # mesh sizes to select from based on how distorted are the matches
+        mesh_sizes: [100, 300]   # mesh sizes to select from based on how distorted are the matches
         cache_size: null    # size of the cache to save intermediate values. No need to worry about this unless very tight on RAM.
         border_width: null  # the overlap width where meshes are finer. null to decide dynamically
         soft_top: 0.2       # to make the top part (less stablized) of the mesh for each tile softer during optimization. 0.2 means 20% stiff compare to the rest of mesh.

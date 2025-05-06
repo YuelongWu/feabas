@@ -82,7 +82,7 @@ def optimize_one_section(matchname, outname, **kwargs):
         groupings = None
     stitcher.set_groupings(groupings)
     mesh_settings = mesh_settings.copy()
-    mesh_sizes = mesh_settings.pop('mesh_sizes', [75, 150, 300])
+    mesh_sizes = mesh_settings.pop('mesh_sizes', [100, 300])
     stitcher.initialize_meshes(mesh_sizes, **mesh_settings)
     discrd = 0
     if msem:
