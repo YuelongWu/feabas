@@ -7,7 +7,6 @@ import feabas
 from feabas.concurrent import submit_to_workers
 from feabas import config, logging, storage
 
-H5File = storage.h5file_class()
 
 def match_one_section(coordname, outname, **kwargs):
     logger_info = kwargs.get('logger', None)
@@ -233,9 +232,7 @@ if __name__ == '__main__':
     num_workers = config.set_numpy_thread_from_num_workers(num_workers)
     stitch_configs['num_workers'] = num_workers
 
-    from feabas import dal
     from feabas.stitcher import Stitcher, MontageRenderer
-    import tensorstore as ts
 
     stitch_dir = storage.join_paths(root_dir, 'stitch')
     coord_dir = storage.join_paths(stitch_dir, 'stitch_coord')
