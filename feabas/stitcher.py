@@ -221,7 +221,7 @@ class Stitcher:
             moving_offsets = f['moving_offsets'][()]
             master_meshes = {}
             for uid_src in f['master_meshes']:
-                if (indx_mapper is not None) and (uid_src not in mesh_sharing_u):
+                if (indx_mapper is not None) and (int(uid_src) not in mesh_sharing_u):
                     continue
                 prefix = 'master_meshes/' + uid_src
                 M0 = Mesh.from_h5(f, prefix=prefix)
