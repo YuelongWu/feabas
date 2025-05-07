@@ -892,7 +892,6 @@ class Aligner():
         self._match_name_delimiter = kwargs.get('match_name_delimiter', '__to__')
         chunk_map = kwargs.get('chunk_map', None)
         self._mip_level = kwargs.get('mip_level', 0)
-        self._resolution = config.montage_resolution() * (2 ** self._mip_level)
         if isinstance(chunk_map, str):
             chunk_map, _ = parse_json_file(chunk_map)
         self._chunk_map = chunk_map
@@ -1170,6 +1169,7 @@ class Aligner():
         kwargs.setdefault('match_dir', self._match_dir)
         kwargs.setdefault('section_list', self.section_list)
         kwargs.setdefault('logger', self._logger)
+        kwargs.setdefault('mip_level', self._mip_level)
         lock_flags = kwargs.get('lock_flags', None)
         if lock_flags is None:
             kwargs.setdefault('lock_flags', self.mesh_versions_array==Aligner.ALIGNED)

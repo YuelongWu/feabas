@@ -154,6 +154,7 @@ def optimize_main(section_list):
     chunk_settings.setdefault('match_name_delimiter', match_name_delimiter)
     chunk_settings.setdefault('section_list', section_list)
     chunk_settings.setdefault('chunk_map', chunk_map_file)
+    chunk_settings.setdefault('mip_level', 0)
     chunk_settings['logger'] = logger_info[0]
     logger = logging.get_logger(logger_info[0])
     algnr = Aligner(mesh_dir, tform_dir, match_dir, **chunk_settings)
