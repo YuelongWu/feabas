@@ -542,7 +542,7 @@ class Stack:
         sent_to_remote = (parallel_framework in REMOTE_FRAMEWORKS) and (not is_daemon_process())
         updated_sections = []
         residues = {}
-        if (self.num_sections == 0):
+        if (self.num_sections == 0) or (len(self.match_list) == 0):
             to_optimize = np.zeros(1, dtype=bool)
         else:
             to_optimize = ~self.locked_array
