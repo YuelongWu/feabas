@@ -709,7 +709,7 @@ class Stack:
                     for m in optm.meshes:
                         m.soft_factor = min(2, (avg_deform / mesh_strains.get(m.uid, avg_deform)) ** mesh_soft_power) # make mesh with high matching distortion softer
                 if stiffness_lambda is None:
-                    elastic_params['stiffness_lambda'] = (config.DEFAULT_DEFORM_BUDGET / avg_deform) ** 2
+                    elastic_params['stiffness_lambda'] = 0.5 * (config.DEFAULT_DEFORM_BUDGET / avg_deform) ** 2
             if 'callback_settings' in elastic_params:
                 elastic_params['callback_settings'].setdefault('early_stop_thresh', config.montage_resolution() / self._resolution)
             cost = optm.optimize_elastic(target_gear=target_gear, **elastic_params)

@@ -645,7 +645,7 @@ def parse_coordinate_files(filename, **kwargs):
 
 
 def get_canvas_bbox(canvas_file, target_mip=0):
-    mipmap_canvases = parse_json_file(canvas_file, stream=None)
+    mipmap_canvases, _ = parse_json_file(canvas_file, stream=None)
     mipmap_canvases = {float(mm.replace('mip','')): cnvs for mm, cnvs in mipmap_canvases.items()}
     existing_mips = np.array(sorted(list(mipmap_canvases.keys())))
     indx = np.argmin(np.abs(existing_mips - target_mip))
