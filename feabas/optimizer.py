@@ -1948,7 +1948,7 @@ def relax_mesh(M, free_vertices=None, free_triangles=None, **kwargs):
     fixed_vertices = M.vertices(gear=gear[0])
     fixed_offset = M.offset(gear=gear[0])
     M.anneal(gear=(const.MESH_GEAR_INITIAL, gear[0]), mode=const.ANNEAL_COPY_EXACT)
-    M.anneal(gear=gear[::-1],  mode=const.ANNEAL_CONNECTED_AFFINE)
+    M.anneal(gear=gear[::-1],  mode=const.ANNEAL_CONNECTED_RIGID)
     M._vertices_changed(gear=gear[0])
     stiff_M, stress_v = M.stiffness_matrix(gear=gear, continue_on_flip=True, cache=False)
     A = stiff_M[vmask_pad][:,vmask_pad]

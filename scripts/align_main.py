@@ -16,7 +16,7 @@ os.environ["OPENCV_IO_MAX_IMAGE_PIXELS"] = str(pow(2,40)) # for large masks in m
 def generate_mesh_from_mask(mask_names, outname, **kwargs):
     if storage.file_exists(outname):
         return
-    from feabas import material, dal, mesh
+    from feabas import material, dal, mesh, optimizer
     material_table = kwargs.pop('material_table', material.MaterialTable())
     target_resolution = kwargs.pop('target_resolution', config.montage_resolution())
     mesh_size = kwargs.pop('mesh_size', 600)
@@ -49,7 +49,14 @@ def generate_mesh_from_mask(mask_names, outname, **kwargs):
     M.change_resolution(target_resolution)
     if initial_tform is not None:
         Mt = mesh.Mesh.from_h5(initial_tform)
-        M = mesh.transform_mesh(M, Mt, gears=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_FIXED), tgears=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING))
+        sgears = (const.MESH_GEAR_INITIAL, const.MESH_GEAR_FIXED)
+        tgears = (const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING)
+        M = mesh.transform_mesh(M, Mt, gears=sgears, tgears=tgears)
+        ss_t = Mt.triangle_tform_deform(gear=tgears)
+        ss_s = M.triangle_tform_deform(gear=sgears)
+        tmask = ss_s > np.max(ss_t)
+        if np.any(tmask):
+            optimizer.relax_mesh(M, free_triangles=tmask, gear=sgears)
     mshname = os.path.splitext(os.path.basename(mask_name))[0]
     M.save_to_h5(outname, save_material=True, override_dict={'name': mshname})
 
