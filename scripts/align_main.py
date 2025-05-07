@@ -219,6 +219,8 @@ def render_one_section(h5name, z_prefix='', **kwargs):
     loader_config['resolution'] = resolution
     if stitch_config.get('driver', 'image') == 'image':
         loader = get_image_loader(storage.join_paths(stitched_image_dir, secname), **loader_config)
+        if loader is None:
+            return 0
     else:
         stitch_dir = storage.join_paths(root_dir, 'stitch')
         loader_dir = storage.join_paths(stitch_dir, 'ts_specs', secname + '.json')

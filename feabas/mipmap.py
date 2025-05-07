@@ -175,6 +175,8 @@ def create_thumbnail(src_dir, outname=None, downsample=4, highpass=True, **kwarg
     kwargs.setdefault('cache_type', 'fifo')
     kwargs.setdefault('cache_size', 8)
     image_loader = get_image_loader(src_dir, **kwargs)
+    if image_loader is None:
+        return None
     M = _mesh_from_image_loader(image_loader)
     bounds0 = M.bbox()
     for bbox in image_loader.file_bboxes(margin=0):
