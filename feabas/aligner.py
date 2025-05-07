@@ -765,13 +765,13 @@ class Stack:
     def section_connection_matrix(self):
         if not hasattr(self, '_section_connection_matrix') or (self._section_connection_matrix is None):
             edges = np.array([s for s in self.matchname_to_secids_mapper.values()])
+            Nsec = self.num_sections
             if edges.size == 0:
                 A = sparse.csc_matrix((Nsec, Nsec), dtype=bool)
             else:
                 idx0 = edges[:,0]
                 idx1 = edges[:,1]
                 V = np.ones_like(idx0, dtype=bool)
-                Nsec = self.num_sections
                 A = sparse.csr_matrix((V, (idx0, idx1)), shape=(Nsec, Nsec))
                 A = (A + A.T) > 0
                 A.eliminate_zeros()
