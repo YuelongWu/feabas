@@ -1,5 +1,6 @@
 import argparse
 from functools import partial
+import json
 import numpy as np
 import shapely
 
@@ -40,15 +41,15 @@ if __name__ == '__main__':
     else:
         out_dir = args.tgt_dir
     
-    canvas_name = join_paths(out_dir, 'tensorstore_canvas.txt')
-    offset_name = join_paths(out_dir, 'offset.txt')
+    canvas_name = join_paths(out_dir, 'canvas.json')
+    mip0 = 0
 
     tlist = sorted(list_folder_content(join_paths(tform_dir, '*.h5')))
     if len(tlist) == 0:
         print(f'No meshes found in {tform_dir}')
         exit()
     makedirs(out_dir, exist_ok=True)
-    resolution0 = config.montage_resolution()
+    resolution0 = config.montage_resolution() * 2**(mip0)
 
     print('finding transformations')
     rfunc = partial(get_convex_hull, resolution=resolution0)
@@ -76,10 +77,9 @@ if __name__ == '__main__':
     bbox[:2] = np.floor(bbox[:2])
     bbox[-2:] = np.ceil(bbox[-2:]) + 1
     print(f'transformed bbox: {bbox}')
+    canvas_bbox = {f'mip{mip0}': [int(s) for s in bbox]}
     with File(canvas_name, 'w') as f:
-        f.write('\t'.join([str(s) for s in bbox]))
-    with File(offset_name, 'w') as f:
-        f.write('\t'.join([str(s) for s in -bbox[:2]]))
+        json.dump(canvas_bbox, f)
     tfunc = partial(apply_transform_normalization, out_dir=out_dir, R=R, txy=txy,resolution=resolution0)
     print('applying transforms.')
     for _ in submit_to_workers(tfunc, args=[(s,) for s in tlist], num_workers=args.worker):

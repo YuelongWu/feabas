@@ -179,8 +179,8 @@ def offset_bbox_main():
     logger_info = logging.initialize_main_logger(logger_name='offset_bbox', mp=False)
     logger = logging.get_logger(logger_info[0])
     tform_list = sorted(storage.list_folder_content(storage.join_paths(tform_dir, '*.h5')))
-    if storage.file_exists(offset_file) or (len(tform_list) == 0):
-        return
+    if storage.file_exists(canvas_file) or (len(tform_list) == 0):
+        return canvas_file
     num_workers = align_config.get('num_workers', 1)
     secnames = [os.path.splitext(os.path.basename(s))[0] for s in tform_list]
     mip_level = align_config.pop('get', 0)
@@ -196,13 +196,14 @@ def offset_bbox_main():
             bbox_union = bbox
         else:
             bbox_union = common.bbox_union((bbox_union, bbox))
-    offset = -bbox_union[:2]
-    bbox_union_new = bbox_union + np.tile(offset, 2)
-    if not storage.file_exists(offset_file):
-        with storage.File(offset_file, 'w') as f:
-            f.write('\t'.join([str(s) for s in offset]))
-    logger.warning(f'bbox offsets at mip0: {tuple(bbox_union)} -> {tuple(bbox_union_new)}')
+    bbox_union[:2] = np.floor(bbox_union[:2])
+    bbox_union[-2:] = np.ceil(bbox_union[-2:]) + 1
+    canvas_bbox = {f'mip{mip_level}': [int(s) for s in bbox_union]}
+    if not storage.file_exists(canvas_file):
+        with storage.File(canvas_file, 'w') as f:
+           json.dump(canvas_bbox, f)
     logging.terminate_logger(*logger_info)
+    return canvas_bbox
 
 
 def render_one_section(h5name, z_prefix='', **kwargs):
@@ -256,10 +257,9 @@ def render_main(tform_list, z_prefix=None):
     cache_size = align_config.get('loader_config', {}).get('cache_size', None)
     if (cache_size is not None) and (num_workers > 1):
         align_config['loader_config']['cache_size'] = cache_size // num_workers
-    if storage.file_exists(offset_file):
-        with storage.File(offset_file, 'r') as f:
-            line = f.readline()
-        offset = np.array([float(s) for s in line.strip().split('\t')])
+    if storage.file_exists(canvas_file):
+        canvas_bbox = common.get_canvas_bbox(canvas_file, target_mip=0)
+        offset = -np.array(canvas_bbox[:2])
         logger.info(f'use offset {offset}')
     else:
         offset = None
@@ -398,8 +398,7 @@ if __name__ == '__main__':
     chunk_map_file = storage.join_paths(align_dir, 'chunk_map.json')
     render_dir = config.align_render_dir()
     tensorstore_render_dir = config.tensorstore_render_dir()
-    canvas_file = storage.join_paths(tform_dir, 'tensorstore_canvas.txt')
-    offset_file = storage.join_paths(tform_dir, 'offset.txt')
+    canvas_file = storage.join_paths(tform_dir, 'canvas.json')
     ts_flag_dir = storage.join_paths(align_dir, 'render_flags')
     rendered_mask_file = storage.join_paths(align_dir, 'mask.png')
     ts_spec_file = storage.join_paths(align_dir, 'ts_spec.json')
@@ -443,9 +442,9 @@ if __name__ == '__main__':
         optimize_main(None)
     elif mode == 'rendering':
         if align_config.pop('offset_bbox', True):
-            if not storage.file_exists(offset_file):
+            if not storage.file_exists(canvas_file):
                 time.sleep(0.1 * (1 + (args.start % args.step))) # avoid racing
-                offset_bbox_main()
+                canvas_file = offset_bbox_main()
         storage.makedirs(render_dir)
         tform_list = sorted(storage.list_folder_content(storage.join_paths(tform_dir, '*.h5')))
         tform_list = tform_list[indx]
@@ -453,7 +452,7 @@ if __name__ == '__main__':
         if align_config.pop('prefix_z_number', True):
             seclist = sorted(storage.list_folder_content(storage.join_paths(mesh_dir, '*.h5')))
             seclist, z_indx = common.rearrange_section_order(seclist, section_order_file)
-            digit_num = math.ceil(math.log10(len(seclist)))
+            digit_num = math.ceil(math.log10(np.max(z_indx))) + 1
             z_prefix.update({os.path.basename(s): str(k).rjust(digit_num, '0')+'_'
                              for k, s in zip(z_indx, seclist)})
         render_main(tform_list, z_prefix)
@@ -470,15 +469,13 @@ if __name__ == '__main__':
         mip_level = align_config.pop('mip_level', 0)
         align_config.pop('out_dir', None)
         canvas_bbox = align_config.get('canvas_bbox', None)
-        if (canvas_bbox is None):
+        if canvas_bbox is None:
             if storage.file_exists(canvas_file):
-                with storage.File(canvas_file, 'r') as f:
-                    line = f.readline()
-                canvas_bbox = [float(s) for s in line.strip().split('\t')]
+                canvas_bbox = common.get_canvas_bbox(canvas_file, target_mip=mip_level)
                 logger.info(f'use canvas bounding box {canvas_bbox}')
-                align_config['canvas_bbox'] = canvas_bbox
-        if (canvas_bbox is not None) and (mip_level != 0):
-            canvas_bbox = [round(s / (2**mip_level)) for s in canvas_bbox]
+        elif (canvas_bbox is not None) and (mip_level != 0):
+            canvas_bbox = [int(round(s / (2**mip_level))) for s in canvas_bbox]
+        align_config['canvas_bbox'] = canvas_bbox
         driver = align_config.get('driver', 'neuroglancer_precomputed')
         if driver == 'zarr':
             tensorstore_render_dir = tensorstore_render_dir + '0/'
@@ -493,6 +490,11 @@ if __name__ == '__main__':
         vol_renderer = VolumeRenderer(tform_list, loader_list, tensorstore_render_dir,
                                       z_indx=z_indx, resolution=resolution,
                                       flag_dir=ts_flag_dir, **align_config)
+        if (stt_idx in (0, None)) and not storage.file_exists(canvas_file):
+            canvas_bbox = [int(s) for s in vol_renderer.canvas_bbox]
+            bbox_mip = {f'mip{mip_level}': canvas_bbox}
+            with storage.File(canvas_file, 'w') as f:
+                json.dump(bbox_mip, f)
         out_spec = vol_renderer.render_volume(skip_indx=indx, logger=logger_info[0], **align_config)
         with storage.File(ts_spec_file, 'w') as f:
             json.dump({mip_level: out_spec}, f)

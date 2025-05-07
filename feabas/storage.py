@@ -74,6 +74,8 @@ def list_folder_content(pathname, recursive=False):
 
 
 def file_exists(filename, use_cache=False):
+    if filename is None:
+        return False
     if use_cache:
         dir_name, b_name = os.path.split(filename)
         bname_no_ext = os.path.splitext(b_name)[0]
@@ -82,8 +84,6 @@ def file_exists(filename, use_cache=False):
         file_list = _cached_folder_contents(prefix)
         return (filename in file_list)
     else:
-        if filename is None:
-            return False
         driver, filename = parse_file_driver(filename)
         if driver == 'gs':
             blob = GCP_get_blob(filename)

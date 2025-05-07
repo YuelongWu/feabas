@@ -644,6 +644,21 @@ def parse_coordinate_files(filename, **kwargs):
     return imgpaths, bboxes, root_dir, resolution
 
 
+def get_canvas_bbox(canvas_file, target_mip=0):
+    mipmap_canvases = parse_json_file(canvas_file, stream=None)
+    mipmap_canvases = {float(mm.replace('mip','')): cnvs for mm, cnvs in mipmap_canvases.items()}
+    existing_mips = np.array(sorted(list(mipmap_canvases.keys())))
+    indx = np.argmin(np.abs(existing_mips - target_mip))
+    src_mip = existing_mips[indx]
+    bbox = mipmap_canvases[src_mip]
+    scale = 2**(src_mip - target_mip)
+    bbox = np.array(bbox).ravel() * scale
+    bbox[:2] = np.floor(bbox[:2])
+    bbox[-2:] = np.ceil(bbox[-2:])
+    bbox_out = [int(s) for s in bbox]
+    return bbox_out
+
+
 def rearrange_section_order(section_list, section_order_file, order_file_only=True, merge=False):
     if storage.file_exists(section_order_file):
         with storage.File(section_order_file, 'r') as f:

@@ -1,5 +1,6 @@
 import argparse
 from functools import partial
+import json
 import os
 import time
 
@@ -308,7 +309,7 @@ def normalize_transforms(tlist, angle=0.0, offset=(0,0), **kwargs):
     else:
         txy = np.array(offset).ravel() - corner_min
     xy_max = np.ceil((corner_max + txy) + (corner_min + txy).clip(0, None))
-    bbox_out = (0, 0, xy_max[0], xy_max[1])
+    bbox_out = (0, 0, int(xy_max[0]), int(xy_max[1]))
     if modify_tform:
         tfunc = partial(apply_transform_normalization, out_dir=None, R=R, txy=txy, resolution=resolution)
         for _ in submit_to_workers(tfunc, args=[(s,) for s in tlist], num_workers=num_workers):
@@ -422,6 +423,7 @@ if __name__ == '__main__':
     match_dir = storage.join_paths(thumbnail_dir, 'matches')
     feature_match_dir = storage.join_paths(thumbnail_dir, 'feature_matches')
     tform_dir = storage.join_paths(thumbnail_dir, 'tform')
+    canvas_file = storage.join_paths(tform_dir, 'canvas.json')
     render_prefix = storage.join_paths(thumbnail_dir, 'aligned_thumbnails_')
     section_order_file = storage.join_paths(root_dir, 'section_order.txt')
     chunk_map_file = storage.join_paths(thumbnail_dir, 'chunk_map.json')
@@ -612,9 +614,9 @@ if __name__ == '__main__':
             else:
                 to_render = True
                 render_resolution = thumbnail_resolution / render_scale
+                target_mip = thumbnail_mip_lvl - np.log2(render_scale)
                 render_dir = render_prefix + str(int(render_resolution)) + 'nm'
                 storage.makedirs(render_dir, exist_ok=True)
-                rendered = storage.list_folder_content(storage.join_paths(render_dir, '*.png'))
                 tform_list0 = sorted(storage.list_folder_content(storage.join_paths(tform_dir, '*.h5')))
                 tform_list = []
                 for tname in tform_list0:
@@ -622,13 +624,15 @@ if __name__ == '__main__':
                     outname = storage.join_paths(render_dir, secname)
                     if not storage.file_exists(outname, use_cache=True):
                         tform_list.append(tname)
-                if len(rendered) > 0:
-                    img = common.imread(rendered[0])
-                    bbox_render = (0, 0, img.shape[1], img.shape[0])
+                if storage.file_exists(canvas_file):
+                    bbox_render = common.get_canvas_bbox(canvas_file, target_mip=target_mip)
                 else:
                     angle = render_configs.get('rotation_angle', None)
                     offset = render_configs.get('bbox_offset', [0,0])
                     bbox_render = normalize_transforms(tform_list, angle=angle, offset=offset, num_workers=num_workers, resolution=render_resolution)
+                    canvas_bbox = {f'mip{target_mip}': [int(s) for s in bbox_render]}
+                    with storage.File(canvas_file, 'w') as f:
+                        json.dump(canvas_bbox, f)
                 rfunc = partial(render_one_thumbnail, thumbnail_dir=img_dir, out_dir=render_dir, src_resolution=thumbnail_resolution,
                                 out_resolution=render_resolution, bbox=bbox_render, logger=logger_info[0])
                 for _ in submit_to_workers(rfunc, args=[(s,) for s in tform_list], num_workers=num_workers):

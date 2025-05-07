@@ -817,9 +817,8 @@ class VolumeRenderer:
         driver: tensorstore driver type
         chunk_shape: shape of (write) chunks
         read_chunk_shape: shape of read chunks
-        canvas_bbox: bounding box of the canvas. Because its tensorstore, the
-            bounding box will not be offset to (0,0) in the output space, unlike
-            when rendering image tiles
+        canvas_bbox: bounding box of the canvas. By default it will be 
+            offset to (0,0) in the output space
         resolution: resolution of the renderer
         out_offset: xy offset of the output space
     """
@@ -833,13 +832,17 @@ class VolumeRenderer:
         self._zmin = kwargs.get('z_min', 0)
         self._zmax = kwargs.get('z_max', None)
         self._jpeg_compression = kwargs.get('jpeg_compression', False)
-        self._pad_to_tile_size = kwargs.get('pad_to_tile_size', not self._jpeg_compression)
+        self._pad_to_tile_size = kwargs.get('pad_to_tile_size', True)
         self._loaders = loaders
         driver = kwargs.get('driver', 'neuroglancer_precomputed')
         self.flag_dir = kwargs.get('flag_dir', None)
         self.checkpoint_dir = kwargs.get('checkpoint_dir', storage.join_paths(self.flag_dir, 'checkpoint'))
-        self._offset = kwargs.get('out_offset', np.zeros((1,2), dtype=np.int64))
         self._canvas_bbox = kwargs.get('canvas_bbox', None)
+        if self._canvas_bbox is not None:
+            default_offset = -np.array(self._canvas_bbox)[:2].reshape(1,2)
+        else:
+            default_offset =  np.zeros((1,2), dtype=np.int64)
+        self._offset = kwargs.get('out_offset', default_offset.astype(np.int64))
         self._ts_verified = False
         self.resolution = kwargs.get('resolution', montage_resolution())
         self.mip = int(np.log2(self.resolution / montage_resolution()))
