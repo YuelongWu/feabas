@@ -2817,7 +2817,7 @@ def transform_mesh(M0, Mt, **kwargs):
     Mt: mesh containing the transformatiom
     """
     gears = kwargs.get('gears', (const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING)) # for source mesh
-    tgears = kwargs.get('tgears', const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING) # for transformation mesh
+    tgears = kwargs.get('tgears', (const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING)) # for transformation mesh
     resolution0 = M0.resolution
     Mt.change_resolution(resolution0)
     v0 = M0.vertices_w_offset(gear=gears[0])
