@@ -767,7 +767,7 @@ class Stack:
             edges = np.array([s for s in self.matchname_to_secids_mapper.values()])
             Nsec = self.num_sections
             if edges.size == 0:
-                A = sparse.csc_matrix((Nsec, Nsec), dtype=bool)
+                self._section_connection_matrix = sparse.csc_matrix((Nsec, Nsec), dtype=bool)
             else:
                 idx0 = edges[:,0]
                 idx1 = edges[:,1]
