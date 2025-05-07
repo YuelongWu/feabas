@@ -560,7 +560,7 @@ class Stack:
                     secnums[ks] = len(slist)
                     secname_lists.append(secnames)
                 if ensure_continuous:
-                    if np.any(anchored):
+                    if np.any(self.locked_array):
                         secname_lists = [s for flg, s in zip(anchored, secname_lists) if flg]
                     else:
                         indx = np.argmax(secnums)
