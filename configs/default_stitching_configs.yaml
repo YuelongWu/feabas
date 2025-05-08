@@ -12,7 +12,7 @@ matching:   # see stitcher.Stitcher.subprocess_match_list_of_overlaps for detail
         spacings: null   # the spacing between grid points. null to decide dynamically
         conf_thresh: 0.33   # cross-correlations with confidence value smaller than this will be rejected
         residue_mode: huber # huber or threshold or None, deciding how to damp matches with large residue errors after mesh relaxation
-        residue_len: 5
+        residue_len: 2
         pad: true           # whether to do anti-aliasing padding for FFT crosscorrelation
         sigma: 2.5          # sigma of DoG filter applied to the images before matching
         coarse_downsample: 0.5      # down-sample the images at the coase-level matching
@@ -43,12 +43,12 @@ optimization:
         maxiter: null
         tol: 1.0e-6
         residue_mode: threshold
-        residue_len: 5
+        residue_len: 3
     final_elastic:    # see stitcher.Stitcher.optimize_translation for details
         maxiter: null
         tol: 1.0e-4
         residue_mode: huber # huber or threshold or None, deciding how to damp matches with large residue errors after optimization
-        residue_len: 5      # characteristic residue distance used for damping. use 0 to skip
+        residue_len: 3      # characteristic residue distance used for damping. use 0 to skip
         batch_num_matches: null # larger numberneeds more RAM but faster. default to (total # of matches)/10
         callback_settings:
             timeout: null   # if each round of equation solving last longer than this, stop the iterations and return the current value

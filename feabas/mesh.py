@@ -1651,6 +1651,14 @@ class Mesh:
         return D
 
 
+    @config_cache('TBD')
+    def triangle_areas(self, gear=const.MESH_GEAR_INITIAL):
+        vertices = self.vertices(gear=gear)
+        T = self.triangles
+        A = common.signed_area(vertices, T)
+        return A
+
+
     @config_cache(const.MESH_GEAR_INITIAL)
     def connected_vertices(self, tri_mask=None, local_index=True):
         """

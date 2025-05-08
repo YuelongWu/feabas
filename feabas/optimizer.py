@@ -18,6 +18,12 @@ class Link:
     def __init__(self, mesh0, mesh1, tid0, tid1, B0, B1, weight=None, **kwargs):
         name = kwargs.get('name',  None)
         self.strain = kwargs.get('strain', config.DEFAULT_DEFORM_BUDGET)
+        self._sample_err = kwargs.get('sample_err', None)
+        if self._sample_err is None:
+            A0 = mesh0.triangle_areas(gear=const.MESH_GEAR_INITIAL)[tid0]
+            A1 = mesh1.triangle_areas(gear=const.MESH_GEAR_INITIAL)[tid1]
+            sample_err = 0.4387 * (np.minimum(A0, A1))**0.5 * self.strain
+            self._sample_err = sample_err
         self.uids = [mesh0.uid, mesh1.uid]
         if name is None:
             self.name = self.default_name
@@ -154,6 +160,8 @@ class Link:
         previous_connection = self.num_matches > 0
         dxy = self.dxy(gear=gear, use_mask=False)
         dis = np.sum(dxy ** 2, axis=-1) ** 0.5
+        if self._sample_err is not None:
+            dis = (dis - self._sample_err).clip(0, None)
         residue_weight = self._weight_func(dis).astype(np.float32)
         if np.any(residue_weight != previous_weight):
             self._residue_weight = residue_weight
