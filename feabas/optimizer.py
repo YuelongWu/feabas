@@ -161,7 +161,7 @@ class Link:
         previous_connection = self.num_matches > 0
         dxy = self.dxy(gear=gear, use_mask=False)
         dis = np.sum(dxy ** 2, axis=-1) ** 0.5
-        dis = (dis - self.sample_err).clip(0, None)
+        dis = ((dis**2 - self.sample_err**2).clip(0, None))**0.5
         residue_weight = self._weight_func(dis).astype(np.float32)
         if np.any(residue_weight != previous_weight):
             self._residue_weight = residue_weight
