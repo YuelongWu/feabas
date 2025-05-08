@@ -100,6 +100,7 @@ class Link:
         self._tid1 = np.concatenate((self._tid1, atid1), axis=0)
         self._weight = np.concatenate((self._weight, other._weight), axis=0)
         self._residue_weight = np.concatenate((self._residue_weight, other._residue_weight), axis=0)
+        self._sample_err = np.concatenate((self.sample_err, other.sample_err), axis=0)
         self._mask = None
 
 
@@ -160,8 +161,7 @@ class Link:
         previous_connection = self.num_matches > 0
         dxy = self.dxy(gear=gear, use_mask=False)
         dis = np.sum(dxy ** 2, axis=-1) ** 0.5
-        if self._sample_err is not None:
-            dis = (dis - self._sample_err).clip(0, None)
+        dis = (dis - self.sample_err).clip(0, None)
         residue_weight = self._weight_func(dis).astype(np.float32)
         if np.any(residue_weight != previous_weight):
             self._residue_weight = residue_weight
@@ -333,6 +333,18 @@ class Link:
         if self._mask is None:
             self._mask = (self._weight * self._residue_weight) > 0
         return self._mask
+
+
+    @property
+    def sample_err(self):
+        num_mtch = self._tid0.size
+        if self._sample_err is None:
+            return np.zeros(num_mtch, dtype=np.float32)
+        else:
+            se = np.array(self._sample_err)
+            if se.size == 1:
+                se = np.full(num_mtch, se)
+            return se
 
 
 class MeshList:
