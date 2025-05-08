@@ -17,6 +17,7 @@ def generate_mesh_from_mask(mask_names, outname, **kwargs):
     if storage.file_exists(outname):
         return
     from feabas import material, dal, mesh, optimizer
+    import numpy as np
     material_table = kwargs.pop('material_table', material.MaterialTable())
     target_resolution = kwargs.pop('target_resolution', config.montage_resolution())
     mesh_size = kwargs.pop('mesh_size', 600)
