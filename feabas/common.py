@@ -1,6 +1,7 @@
 from collections import namedtuple
 import cv2
 import importlib
+import json
 import os
 
 import numpy as np
@@ -8,9 +9,10 @@ from scipy import sparse
 from scipy.ndimage import gaussian_filter1d
 import scipy.sparse.csgraph as csgraph
 
-from feabas.storage import GCP_client, File, file_exists, join_paths
+from feabas import storage
+from feabas.config import TS_RETRY, TS_TIMEOUT, DEFAULT_DEFORM_BUDGET
 
-Match = namedtuple('Match', ('xy0', 'xy1', 'weight'))
+Match = namedtuple('Match', ('xy0', 'xy1', 'weight', 'strain'), defaults=(DEFAULT_DEFORM_BUDGET,))
 
 
 def imread(path, **kwargs):
@@ -32,21 +34,28 @@ def imread(path, **kwargs):
             raise ValueError(f'format not supported: {path}')
         import tensorstore as ts
         js_spec = {'driver': driver, 'kvstore': path}
-        try:
-            ts_data = ts.open(js_spec).result()
-            img = ts_data.read().result()
-            if len(img.shape) < 3:
-                num_channels = 1
-            else:
-                num_channels = img.shape[-1]
-                if num_channels == 1:
-                    img = img[..., 0]
-            if flag == cv2.IMREAD_GRAYSCALE and num_channels != 1:
-                img = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
-            elif flag == cv2.IMREAD_COLOR and num_channels == 1:
-                img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
-        except ValueError:
-            img = None
+        for nt in range(TS_RETRY+1):
+            try:
+                ts_data = ts.open(js_spec).result(timeout=TS_TIMEOUT)
+                img = ts_data.read().result(timeout=TS_TIMEOUT)
+                if len(img.shape) < 3:
+                    num_channels = 1
+                else:
+                    num_channels = img.shape[-1]
+                    if num_channels == 1:
+                        img = img[..., 0]
+                if flag == cv2.IMREAD_GRAYSCALE and num_channels != 1:
+                    img = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+                elif flag == cv2.IMREAD_COLOR and num_channels == 1:
+                    img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
+                break
+            except ValueError:
+                img = None
+                break
+            except TimeoutError:
+                if nt >= (TS_RETRY):
+                    raise TimeoutError
+
     else:
         if path.startswith('file://'):
             path = path.replace('file://', '')
@@ -56,14 +65,16 @@ def imread(path, **kwargs):
 
 def imwrite(path, image):
     if path.startswith('gs://'):
-        plist = path.replace('gs://', '').split('/')
-        plist = [s for s in plist if s]
-        bucket = plist[0]
-        relpath = '/'.join(plist[1:])
-        _, encoded_img = cv2.imencode('.PNG', image)
-        bucket = GCP_client().get_bucket(bucket)
+        ext = os.path.splitext(path)[-1]
+        tmpname = hex(os.getpid())[2:] + '_' + hex(id(path))[2:] + ext
+        os.makedirs(storage.LOCAL_TEMP_FOLDER, exist_ok=True)
+        local_name = os.path.join(storage.LOCAL_TEMP_FOLDER, tmpname)
+        cv2.imwrite(local_name, image)
+        bucket, relpath = storage.GCP_parse_object_name(path)
+        bucket = storage.GCP_client().get_bucket(bucket)
         blob = bucket.blob(relpath)
-        blob.upload_from_string(encoded_img.tobytes(), content_type='image/png')
+        blob.upload_from_filename(local_name)
+        os.remove(local_name)
     else:
         if path.startswith('file://'):
             path = path.replace('file://', '')
@@ -579,7 +590,7 @@ def parse_coordinate_files(filename, **kwargs):
     resolution = kwargs.get('resolution', None)
     imgpaths = []
     bboxes = []
-    with File(filename, 'r') as f:
+    with storage.File(filename, 'r') as f:
         lines = f.readlines()
     if len(lines) == 0:
         raise RuntimeError(f'empty file: {filename}')
@@ -621,7 +632,7 @@ def parse_coordinate_files(filename, **kwargs):
         else:
             if tile_size is None:
                 if relpath:
-                    mpath_f = join_paths(root_dir, mpath)
+                    mpath_f = storage.join_paths(root_dir, mpath)
                 else:
                     mpath_f = mpath
                 img = imread(mpath_f, flag=cv2.IMREAD_GRAYSCALE)
@@ -633,9 +644,24 @@ def parse_coordinate_files(filename, **kwargs):
     return imgpaths, bboxes, root_dir, resolution
 
 
+def get_canvas_bbox(canvas_file, target_mip=0):
+    mipmap_canvases, _ = parse_json_file(canvas_file, stream=None)
+    mipmap_canvases = {float(mm.replace('mip','')): cnvs for mm, cnvs in mipmap_canvases.items()}
+    existing_mips = np.array(sorted(list(mipmap_canvases.keys())))
+    indx = np.argmin(np.abs(existing_mips - target_mip))
+    src_mip = existing_mips[indx]
+    bbox = mipmap_canvases[src_mip]
+    scale = 2**(src_mip - target_mip)
+    bbox = np.array(bbox).ravel() * scale
+    bbox[:2] = np.floor(bbox[:2])
+    bbox[-2:] = np.ceil(bbox[-2:])
+    bbox_out = [int(s) for s in bbox]
+    return bbox_out
+
+
 def rearrange_section_order(section_list, section_order_file, order_file_only=True, merge=False):
-    if file_exists(section_order_file):
-        with File(section_order_file, 'r') as f:
+    if storage.file_exists(section_order_file):
+        with storage.File(section_order_file, 'r') as f:
             section_orders0 = f.readlines()
         section_orders = []
         z_lut = {}
@@ -651,7 +677,8 @@ def rearrange_section_order(section_list, section_order_file, order_file_only=Tr
         assert len(section_orders) == len(set(section_orders))
         secnames = [os.path.splitext(os.path.basename(fname))[0] for fname in section_list]
         section_lut = {secname:fname for secname, fname in zip(secnames, section_list)}
-        section_orders = [s for s in section_orders if s in secnames]
+        secnames_set = set(secnames)
+        section_orders = [s for s in section_orders if s in secnames_set]
         if order_file_only:
             section_list_out = [section_lut[s] for s in section_orders if s in section_lut]
             z_indices = [z_lut[s] for s in section_orders if s in section_lut]
@@ -673,3 +700,35 @@ def rearrange_section_order(section_list, section_order_file, order_file_only=Tr
         return [section_lut.get(s, None) for s in sec_keys], z_indices
     else:
         return section_list, np.arange(len(section_list))
+
+
+def parse_json_file(filename, stream=None):
+    if filename is None:
+        json_dict =  None
+    file_read = False
+    if stream is None:
+        if isinstance(filename, str):
+            try:
+                json_dict = json.loads(filename)
+            except ValueError:
+                if storage.file_exists(filename):
+                    with storage.File(filename, 'r') as f:
+                        json_dict = json.load(f)
+                    file_read = True
+                else:
+                    json_dict = None
+        elif isinstance(filename, dict):
+            json_dict = filename
+        else:
+            raise TypeError
+    elif stream:
+        json_dict = json.loads(filename)
+    else:
+        if storage.file_exists(filename):
+            with storage.File(filename, 'r') as f:
+                json_dict = json.load(f)
+                file_read = True
+        else:
+            json_dict = None
+    return json_dict, file_read
+

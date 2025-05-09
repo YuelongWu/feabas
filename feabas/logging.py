@@ -2,7 +2,7 @@ import logging
 import logging.handlers
 import os
 import time
-from multiprocessing import Process, Manager
+from multiprocessing import Process, Manager, managers
 
 from feabas import config, storage
 
@@ -53,6 +53,18 @@ class FileHandler(logging.FileHandler):
             os.remove(self._localname)
 
 
+class QueueHandler(logging.handlers.QueueHandler):
+    def __init__(self, queue):
+        super().__init__(queue)
+        self._is_local_queue = isinstance(queue, managers.BaseProxy)
+
+    def enqueue(self, record):
+        if self._is_local_queue:
+            super().enqueue(record)
+        else:   # in case it's dask distributed Queue
+            self.queue.put(record)
+
+
 def get_main_logger(logger_name):
     main_logger = logging.getLogger(logger_name)
     main_logger.setLevel(logging.WARNING)
@@ -71,6 +83,7 @@ def get_main_logger(logger_name):
         archive_dir = storage.join_paths(log_dir, 'archive')
         import socket
         hostname = socket.gethostname()
+        hostname = hostname.split('.')[0]
         archivefile = storage.join_paths(archive_dir, _time_stamp + '_' + hostname + '_' + logger_prefix + '.log')
         archive_handler = FileHandler(archivefile, mode='a', delay=True)
         archive_handler.setFormatter(formatter)
@@ -80,6 +93,7 @@ def get_main_logger(logger_name):
         main_logger.setLevel(logging.DEBUG)
         import socket
         hostname = socket.gethostname()
+        hostname = hostname.split('.')[0]
         warnfile = storage.join_paths(log_dir, _time_stamp + '_' + hostname + '_' + logger_prefix + '.log')
         warn_handler = FileHandler(warnfile, mode='a', delay=True)
         warn_handler.setFormatter(formatter)
@@ -124,15 +138,14 @@ def get_logger(logger_info):
     else:
         logger = logging.Logger('worker')
         logger.setLevel(logging.DEBUG)
-        handler = logging.handlers.QueueHandler(logger_info)
+        handler = QueueHandler(logger_info)
         logger.addHandler(handler)
     return logger
 
 
 def terminate_logger(queue, listener):
     if listener is not None:
-        queue.put_nowait(None)
+        queue.put(None)
         listener.join()
     else:
         logging.shutdown()
-

@@ -26,15 +26,33 @@ def general_settings():
 
 DEFAULT_RESOLUTION = general_settings().get('full_resolution', constant.DEFAULT_RESOLUTION)
 TS_TIMEOUT = general_settings().get('tensorstore_timeout', None)
+TS_RETRY = 2
+CHECKPOINT_TIME_INTERVAL = 300 # is seconds
+OPT_CHECK_CONVERGENCE = True
+DEFAULT_DEFORM_BUDGET = 0.125
+MAXIMUM_DEFORM_ALLOWED = 0.5
+MATCH_SOFTFACTOR_DOMINANCE = 200 # during matching, assume one mesh is much more rigid than the other so the system will not collapse
+
+
+@lru_cache(maxsize=1)
+def parallel_framework():
+    frmwk = general_settings().get('parallel_framework', 'builtin')
+    if frmwk.startswith('pr'):
+        frmwk = 'process'
+    elif frmwk.startswith('th'):
+        frmwk = 'thread'
+    elif frmwk.startswith('da'):
+        frmwk = 'dask'
+    else:
+        raise ValueError(f'In {_default_configuration_folder}: unsupported parallel framework "{frmwk}"')
+    return frmwk
 
 
 @lru_cache(maxsize=1)
 def get_work_dir():
     conf = general_settings()
     work_dir = conf.get('working_directory', './work_dir')
-    driver, work_dir = storage.parse_file_driver(work_dir)
-    if driver == 'file':
-        work_dir = os.path.abspath(os.path.expanduser(os.path.expandvars(work_dir)))
+    work_dir = storage.expand_dir(work_dir)
     return work_dir
 
 
@@ -48,19 +66,36 @@ def get_log_dir():
     return log_dir
 
 
+def merge_config(default_config, additional_config):
+    for k, v in additional_config.items():
+        if isinstance(v, dict) and (k in default_config):
+            merge_config(default_config[k], v)
+        else:
+            default_config[k] = v
+
+
+def load_yaml_configs(file_default, file_user=None):
+    if storage.file_exists(file_default):
+        conf = storage.load_yaml(file_default)
+    else:
+        conf = {}
+    if (file_user is not None) and storage.file_exists(file_user):
+        conf_usr = storage.load_yaml(file_user)
+        merge_config(conf, conf_usr)
+    return conf
+
+
 @lru_cache(maxsize=1)
 def stitch_config_file():
     work_dir = get_work_dir()
-    config_file = storage.join_paths(work_dir, 'configs', 'stitching_configs.yaml')
-    if not storage.file_exists(config_file):
-        config_file = storage.join_paths(_default_configuration_folder, 'default_stitching_configs.yaml')
-        assert(storage.file_exists(config_file))
-    return config_file
+    config_file_default = storage.join_paths(_default_configuration_folder, 'default_stitching_configs.yaml')
+    config_file_user = storage.join_paths(work_dir, 'configs', 'stitching_configs.yaml')
+    return config_file_default, config_file_user
 
 
 @lru_cache(maxsize=1)
 def stitch_configs():
-    conf = storage.load_yaml(stitch_config_file())
+    conf = load_yaml_configs(*stitch_config_file())
     return conf
 
 
@@ -76,25 +111,42 @@ def section_thickness():
 @lru_cache(maxsize=1)
 def material_table_file():
     work_dir = get_work_dir()
-    mt_file = storage.join_paths(work_dir, 'configs', 'material_table.json')
-    if not storage.file_exists(mt_file):
-        mt_file = storage.join_paths(_default_configuration_folder, 'default_material_table.json')
-    return mt_file
+    mt_file_default = storage.join_paths(_default_configuration_folder, 'default_material_table.yaml')
+    mt_file_user = storage.join_paths(work_dir, 'configs', 'material_table.yaml')
+    if not storage.file_exists(mt_file_default):
+        mt_file_default = None
+    if not storage.file_exists(mt_file_user):
+        mt_file_user = None
+    return mt_file_default, mt_file_user
+
+
+@lru_cache(maxsize=1)
+def material_table():
+    from feabas.material import MaterialTable
+    mt_file_default, mt_file_user = material_table_file()
+    if (mt_file_default is None) and (mt_file_user is None):
+        mt = MaterialTable()
+    elif mt_file_user is None:
+        mt = MaterialTable.from_pickleable(mt_file_default)
+    else:
+        mt = MaterialTable.from_pickleable(mt_file_user)
+        if mt_file_default is not None:
+            mt0 = MaterialTable.from_pickleable(mt_file_default)
+            mt.combine_material_table(mt0, force_update=False, check_label=True)
+    return mt
 
 
 @lru_cache(maxsize=1)
 def align_config_file():
     work_dir = get_work_dir()
-    config_file = storage.join_paths(work_dir, 'configs', 'alignment_configs.yaml')
-    if not storage.file_exists(config_file):
-        config_file = storage.join_paths(_default_configuration_folder, 'default_alignment_configs.yaml')
-        assert(storage.file_exists(config_file))
-    return config_file
+    config_file_default = storage.join_paths(_default_configuration_folder, 'default_alignment_configs.yaml')
+    config_file_user = storage.join_paths(work_dir, 'configs', 'alignment_configs.yaml')
+    return config_file_default, config_file_user
 
 
 @lru_cache(maxsize=1)
 def align_configs():
-    conf =  storage.load_yaml(align_config_file())
+    conf = load_yaml_configs(*align_config_file())
     if (SECTION_THICKNESS is not None) and (conf.get('matching', {}).get('working_mip_level', None) is None):
         align_mip = max(0, math.floor(math.log2(SECTION_THICKNESS / montage_resolution())))
         conf.setdefault('matching', {})
@@ -105,24 +157,21 @@ def align_configs():
 @lru_cache(maxsize=1)
 def thumbnail_config_file():
     work_dir = get_work_dir()
-    config_file = storage.join_paths(work_dir, 'configs', 'thumbnail_configs.yaml')
-    if not storage.file_exists(config_file):
-        config_file = storage.join_paths(_default_configuration_folder, 'default_thumbnail_configs.yaml')
-        assert(storage.file_exists(config_file))
-    return config_file
+    config_file_default = storage.join_paths(_default_configuration_folder, 'default_thumbnail_configs.yaml')
+    config_file_user = storage.join_paths(work_dir, 'configs', 'thumbnail_configs.yaml')
+    return config_file_default, config_file_user
 
 
 @lru_cache(maxsize=1)
 def thumbnail_configs():
-    conf = storage.load_yaml(thumbnail_config_file())
+    conf = load_yaml_configs(*thumbnail_config_file())
     return conf
 
 
 @lru_cache(maxsize=1)
 def stitch_render_dir():
-    config_file = stitch_config_file()       
-    stitch_configs = storage.load_yaml(config_file)
-    render_settings = stitch_configs.get('rendering', {})
+    stitch_conf = stitch_configs()
+    render_settings = stitch_conf.get('rendering', {})
     outdir = render_settings.get('out_dir', None)
     if outdir is None:
         work_dir = get_work_dir()
@@ -132,9 +181,8 @@ def stitch_render_dir():
 
 @lru_cache(maxsize=1)
 def align_render_dir():
-    config_file = align_config_file()
-    align_configs = storage.load_yaml(config_file)
-    render_settings = align_configs.get('rendering', {})
+    align_conf = align_configs()
+    render_settings = align_conf.get('rendering', {})
     outdir = render_settings.get('out_dir', None)
     if outdir is None:
         work_dir = get_work_dir()
@@ -144,9 +192,8 @@ def align_render_dir():
 
 @lru_cache(maxsize=1)
 def tensorstore_render_dir():
-    config_file = align_config_file()
-    align_configs = storage.load_yaml(config_file)
-    render_settings = align_configs.get('tensorstore_rendering', {})
+    align_conf = align_configs()
+    render_settings = align_conf.get('tensorstore_rendering', {})
     outdir = render_settings.get('out_dir', None)
     if outdir is None:
         work_dir = get_work_dir()
@@ -154,11 +201,8 @@ def tensorstore_render_dir():
     outdir = outdir.replace('\\', '/')
     if not outdir.endswith('/'):
         outdir = outdir + '/'
-    kv_headers = ('gs://', 'http://', 'https://', 'file://', 'memory://', 's3://')
-    for kvh in kv_headers:
-        if outdir.startswith(kvh):
-            break
-    else:
+    t_driver, outdir = storage.parse_file_driver(outdir)
+    if t_driver == 'file':
         outdir = 'file://' + outdir
     return outdir
 
@@ -205,9 +249,7 @@ def data_resolution():
     # if coordinate list exists, cache data resolution
     if len(coord_list) > 0:
         res.update({'DATA_RESOLUTION': dt_res})
-        cf_driver, cache_file = storage.parse_file_driver(cache_file)
-        if cf_driver == 'file':
-            os.makedirs(os.path.dirname(cache_file), exist_ok=True)
+        storage.makedirs(os.path.dirname(cache_file), exist_ok=True)
         with storage.File(cache_file, 'w') as f:
             yaml.dump(res, f)
     return dt_res
@@ -228,6 +270,13 @@ def montage_resolution():
     return mt_res
 
 
+lru_cache(maxsize=1)
+def thumbnail_resolution():
+    thumbnail_mip_lvl = thumbnail_configs().get('thumbnail_mip_level', 6)
+    thumbnail_resolution = montage_resolution() * (2 ** thumbnail_mip_lvl)
+    return thumbnail_resolution
+
+
 SECTION_THICKNESS = section_thickness()
 
 def limit_numpy_thread(nthreads):
@@ -237,3 +286,15 @@ def limit_numpy_thread(nthreads):
     os.environ["MKL_NUM_THREADS"] = nthread_str
     os.environ["VECLIB_MAXIMUM_THREADS"] = nthread_str
     os.environ["NUMEXPR_NUM_THREADS"] = nthread_str
+
+
+def set_numpy_thread_from_num_workers(num_workers):
+    num_cpus = general_settings()['cpu_budget']
+    if num_workers > num_cpus:
+        num_workers = num_cpus
+    if parallel_framework() == 'thread':
+        nthreads = num_cpus
+    else:
+        nthreads = max(1, math.floor(num_cpus / num_workers))
+    limit_numpy_thread(nthreads)
+    return num_workers

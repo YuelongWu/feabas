@@ -1,11 +1,9 @@
 import cv2
 from collections import defaultdict, namedtuple
-from concurrent.futures.process import ProcessPoolExecutor
-from concurrent.futures import as_completed
 from functools import partial
 import gc
+import json
 import matplotlib.tri
-from multiprocessing import get_context
 import numpy as np
 import os
 from rtree import index
@@ -14,19 +12,21 @@ from scipy.ndimage import gaussian_filter, binary_dilation
 from scipy import sparse
 import scipy.sparse.csgraph as csgraph
 import tensorstore as ts
+import time
 
-from feabas.dal import StaticImageLoader
-from feabas import logging
+from feabas.concurrent import submit_to_workers
+from feabas.dal import StaticImageLoader, TensorStoreWriter
 from feabas.matcher import stitching_matcher
 from feabas.mesh import Mesh
 from feabas.optimizer import SLM
-from feabas import common, caching
+from feabas import common, caching, storage, logging
 from feabas.spatial import scale_coordinates
 import feabas.constant as const
-from feabas.config import DEFAULT_RESOLUTION, SECTION_THICKNESS, data_resolution, TS_TIMEOUT
-from feabas.storage import h5file_class, file_exists
+from feabas.config import SECTION_THICKNESS, data_resolution, CHECKPOINT_TIME_INTERVAL, DEFAULT_DEFORM_BUDGET
 
-H5File = h5file_class()
+H5File = storage.h5file_class()
+TOLERATED_PERTURBATION = 0.1
+MARGIN_RATIO_SWITCH = 2
 
 class Stitcher:
     """
@@ -46,7 +46,7 @@ class Stitcher:
         root_dir = kwargs.get('root_dir', None)
         groupings = kwargs.get('groupings', None)
         self._connected_subsystem = kwargs.get('connected_subsystem', None)
-        self.resolution = kwargs.get('resolution', DEFAULT_RESOLUTION)
+        self.resolution = kwargs.get('resolution', data_resolution())
         if bool(root_dir):
             self.imgrootdir = root_dir
             self.imgrelpaths = imgpaths
@@ -54,11 +54,13 @@ class Stitcher:
             self.imgrootdir = os.path.dirname(os.path.commonprefix(imgpaths))
             self.imgrelpaths = [os.path.relpath(s, self.imgrootdir) for s in imgpaths]
         bboxes = np.round(bboxes).astype(np.int32)
-        self.init_bboxes = bboxes
+        self._init_bboxes = bboxes
         self.tile_sizes = common.bbox_sizes(bboxes)
         self.average_tile_size = np.median(self.tile_sizes, axis=0)
         init_offset = bboxes[...,:2]
         self._init_offset = init_offset - init_offset.min(axis=0)
+        self._refined_init_bboxes = None
+        self._refined_init_offset = None
         self.matches = {}
         self.match_strains = {}
         self.meshes = None
@@ -129,7 +131,7 @@ class Stitcher:
             f.create_dataset('resolution', data=self.resolution)
             imgnames_encoded = common.str_to_numpy_ascii('\n'.join(self.imgrelpaths))
             create_dataset('imgrelpaths', data=imgnames_encoded)
-            create_dataset('init_bboxes', data=self.init_bboxes)
+            create_dataset('init_bboxes', data=self._init_bboxes)
             if self._groupings is not None:
                 create_dataset('groupings', data=self._groupings)
             if self.connected_subsystem is not None:
@@ -219,7 +221,7 @@ class Stitcher:
             moving_offsets = f['moving_offsets'][()]
             master_meshes = {}
             for uid_src in f['master_meshes']:
-                if (indx_mapper is not None) and (uid_src not in mesh_sharing_u):
+                if (indx_mapper is not None) and (int(uid_src) not in mesh_sharing_u):
                     continue
                 prefix = 'master_meshes/' + uid_src
                 M0 = Mesh.from_h5(f, prefix=prefix)
@@ -283,14 +285,18 @@ class Stitcher:
         overwrite = kwargs.pop('overwrite', False)
         num_workers = kwargs.pop('num_workers', 1)
         num_overlaps_per_job = kwargs.get('num_overlaps_per_job', 180) # 180 roughly number of overlaps in an MultiSEM mFoV
-        loader_config = kwargs.pop('loader_config', {}).copy()
+        loader_config0 = kwargs.pop('loader_config', {})
+        loader_config = loader_config0.copy()
         logger_info = kwargs.get('logger', None)
+        second_chance = kwargs.pop('second_chance', self.meshes is None)
         logger = logging.get_logger(logger_info)
         if bool(loader_config.get('cache_size', None)) and (num_workers > 1):
             loader_config['cache_size'] = int(np.ceil(loader_config['cache_size'] / num_workers))
         if bool(loader_config.get('cache_capacity', None)) and (num_workers > 1):
             loader_config['cache_capacity'] = loader_config['cache_capacity'] / num_workers
         loader_config['number_of_channels'] = 1 # only gray-scale matching are supported
+        if self.meshes is not None:
+            self.refine_stage_positions()
         target_func = partial(Stitcher.subprocess_match_list_of_overlaps,
                               root_dir=self.imgrootdir, loader_config=loader_config,
                               **kwargs)
@@ -308,33 +314,43 @@ class Stitcher:
             return len(new_matches), err_raised
         num_workers = min(num_workers, num_overlaps)
         num_overlaps_per_job = min(num_overlaps//num_workers, num_overlaps_per_job)
-        N_jobs = round(num_overlaps / num_overlaps_per_job)
+        N_jobs = max(1, round(num_overlaps / num_overlaps_per_job))
         indx_j = np.linspace(0, num_overlaps, num=N_jobs+1, endpoint=True)
         indx_j = np.unique(np.round(indx_j).astype(np.int32))
         # divide works
-        jobs = []
+        args_list = []
+        kwargs_list = []
         num_new_matches = 0
         err_raised = False
-        with ProcessPoolExecutor(max_workers=num_workers, mp_context=get_context('spawn')) as executor:
-            for idx0, idx1 in zip(indx_j[:-1], indx_j[1:]):
-                ovlp_g = overlaps[idx0:idx1] # global indices of overlaps
-                mapper, ovlp = np.unique(ovlp_g, return_inverse=True, axis=None)
-                ovlp = ovlp.reshape(ovlp_g.shape)
-                bboxes = self.init_bboxes[mapper]
-                imgpaths = [self.imgrelpaths[s] for s in mapper]
-                job = executor.submit(target_func, ovlp, imgpaths, bboxes, index_mapper=mapper)
-                jobs.append(job)
-            matched_counter = 0
-            for job in as_completed(jobs):
-                matches, match_strains, ouch = job.result()
-                err_raised = err_raised or ouch
-                num_new_matches += len(matches)
-                self.matches.update(matches)
-                self.match_strains.update(match_strains)
-                matched_counter += len(matches)
-                if matched_counter > (len(overlaps)/10):
-                    logger.debug(f'matching in progress: {num_new_matches}/{len(overlaps)}')
-                    matched_counter = 0
+        for idx0, idx1 in zip(indx_j[:-1], indx_j[1:]):
+            ovlp_g = overlaps[idx0:idx1] # global indices of overlaps
+            mapper, ovlp = np.unique(ovlp_g, return_inverse=True, axis=None)
+            ovlp = ovlp.reshape(ovlp_g.shape)
+            bboxes = self.init_bboxes[mapper]
+            imgpaths = [self.imgrelpaths[s] for s in mapper]
+            args_list.append((ovlp, imgpaths, bboxes))
+            kwargs_list.append({'index_mapper': mapper})
+        matched_counter = 0
+        for res in submit_to_workers(target_func, args=args_list, kwargs=kwargs_list, num_workers=num_workers):
+            matches, match_strains, ouch = res
+            err_raised = err_raised or ouch
+            num_new_matches += len(matches)
+            self.matches.update(matches)
+            self.match_strains.update(match_strains)
+            matched_counter += len(matches)
+            if matched_counter > (len(overlaps)/10):
+                logger.debug(f'matching in progress: {num_new_matches}/{len(overlaps)}')
+                matched_counter = 0
+        if (second_chance) and (not err_raised) and (len(self.overlaps_without_matches) > 0):
+            margin = kwargs.setdefault('margin', 1)
+            if margin < MARGIN_RATIO_SWITCH:
+                kwargs['margin'] = min(MARGIN_RATIO_SWITCH, 2*margin)
+            else:
+                kwargs['margin'] = 2 * margin
+            self.refine_stage_positions()
+            num_new_matches_2nd, err_raised_2nd = self.dispatch_matchers(second_chance=False, loader_config=loader_config0, num_workers=num_workers, **kwargs)
+            num_new_matches += num_new_matches_2nd
+            err_raised = err_raised_2nd
         return num_new_matches, err_raised
 
 
@@ -355,6 +371,39 @@ class Stitcher:
         ov_indices = np.round((ov_cntr - ov_cntr.min(axis=0))/average_step_size)
         z_order = common.z_order(ov_indices)
         return overlaps[z_order]
+
+
+    def refine_stage_positions(self):
+        if self.meshes is None:
+            dummy_meshes = True
+        else:
+            dummy_meshes = False
+        if dummy_meshes:
+            mesh_cache = {}
+            meshes = []
+            for k, tilesz in enumerate(self.tile_sizes):
+                mkey = tuple(tilesz)
+                if mkey in mesh_cache:
+                    M0 = mesh_cache[mkey].copy(override_dict={'uid':k})
+                else:
+                    tileht, tilewd = tilesz
+                    M0 = Mesh.from_bbox((0,0,tilewd,tileht), cartesian=True, mesh_size=max(tileht, tilewd), uid=k)
+                    mesh_cache[mkey] = M0
+                meshes.append(M0)
+            for M, offset in zip(meshes, self._init_offset):
+                M.apply_translation(offset, gear=const.MESH_GEAR_FIXED)
+            self.meshes = meshes
+            self.optimize_translation(residue_threshold=0.5)
+            self.connect_isolated_subsystem(explode_factor=1.0)
+        txy = np.array([m.estimate_translation(gear=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING)) for m in self.meshes])
+        self._refined_init_offset = np.round(txy - txy.min(axis=0)).astype(self._init_offset.dtype)
+        txy_chg = self._refined_init_offset - self._init_offset
+        self._refined_init_bboxes = self._init_bboxes + np.tile(txy_chg, 2)
+        self._overlaps = None
+        self._overlap_widths = None
+        if dummy_meshes:
+            self.meshes = None
+        
 
 
     @staticmethod
@@ -401,7 +450,6 @@ class Stitcher:
         instant_gc = kwargs.get('instant_gc', False)
         logger_info = kwargs.get('logger', None)
         logger = logging.get_logger(logger_info)
-        margin_ratio_switch = 2
         err_raised = False
         if len(overlaps) == 0:
             return {}, {}, err_raised
@@ -409,7 +457,7 @@ class Stitcher:
         if 'cache_border_margin' not in loader_config:
             loader_config = loader_config.copy()
             overlap_wd0 = 6 * np.median(np.abs(wds - np.median(wds))) + np.median(wds) + 1
-            if margin < margin_ratio_switch:
+            if margin <= MARGIN_RATIO_SWITCH:
                 loader_config['cache_border_margin'] = int(overlap_wd0 * (1 + margin))
             else:
                 loader_config['cache_border_margin'] = int(overlap_wd0 + margin)
@@ -422,7 +470,7 @@ class Stitcher:
                 mask_paths = [s for s in image_loader.filepaths_generator]
                 for sub0, sub1 in zip(image_to_mask_path[0], image_to_mask_path[1]):
                     mask_paths = [s.replace(sub0, sub1) for s in mask_paths]
-            mask_exist = np.array([file_exists(s) for s in mask_paths])
+            mask_exist = np.array([storage.file_exists(s) for s in mask_paths])
             loader_config = loader_config.copy()
             loader_config.update({'apply_CLAHE': False,
                                   'inverse': False,
@@ -435,10 +483,11 @@ class Stitcher:
         matches = {}
         strains = {}
         error_messages = []
+        err_count = 0
         for indices, bbox_ov, wd in zip(overlaps, bboxes_overlap, wds):
             if wd <= min_width:
                 continue
-            if margin < margin_ratio_switch:
+            if margin <= MARGIN_RATIO_SWITCH:
                 real_margin = int(margin * wd)
             else:
                 real_margin = int(margin)
@@ -484,11 +533,14 @@ class Stitcher:
                 matches[(idx0, idx1)] = (xy0, xy1, weight)
                 strains[(idx0, idx1)] = strain
             except Exception as err:
+                err_count += 1
                 if not err_raised:
-                    error_messages.append(f'{image_loader.imgrootdir}: {err}')
+                    error_messages.append(f'{image_loader.imgrootdir}: <NUM_ERRORS> errors')
+                    error_messages.append(f'\tfirst error encountered: {err}')
+                    error_messages.append(f'\t\t{image_loader.imgrelpaths[idx0]} <-> {image_loader.imgrelpaths[idx1]}')
                     err_raised = True
-                error_messages.append(f'\t{image_loader.imgrelpaths[idx0]} <-> {image_loader.imgrelpaths[idx1]}')
         if err_raised:
+            error_messages[0] = error_messages[0].replace('<NUM_ERRORS>', str(err_count))
             msg = '\n'.join(error_messages)
             logger.error(msg)
         image_loader.clear_cache()
@@ -513,11 +565,6 @@ class Stitcher:
                 determine.
             interior_growth(float): increase of the mesh size in the interior
                 region.
-            match_soften(tuple): If set, the meshes will be soften based on
-                the strain during matching step. the tuple has two elements:
-                (upper_strain, lower_soft_factor), so that the soften factor
-                linearly changes from 1 to lower_soft_factor with a strain
-                from 0 to upper_strain.
             soft_top(float): the multiplier to apply to the stiffness to the top
                 part of the tile (there might be more distorsion at the beginning
                 of the scan, so make it weight less).
@@ -530,7 +577,6 @@ class Stitcher:
         """
         border_width = kwargs.get('border_width', None)
         interior_growth = kwargs.get('interior_growth', 3.0)
-        match_soften = kwargs.get('match_soften', None)
         soft_top = kwargs.get('soft_top', 0.2)
         soft_top_width = kwargs.get('soft_top_width', 0.0)
         soft_left = kwargs.get('soft_left', 0.2)
@@ -562,12 +608,7 @@ class Stitcher:
                 idx = groupings == g
                 tile_mesh_sizes[idx] = np.min(tile_mesh_sizes[idx])
         if border_width is None:
-            indx = self.overlaps
-            bboxes = self.init_bboxes
-            _, ovlp_wds = common.bbox_intersections(bboxes[indx[:,0]], bboxes[indx[:,1]])
-            tile_border_widths = np.zeros(self.num_tiles, dtype=np.float32)
-            np.maximum.at(tile_border_widths, indx, np.stack((ovlp_wds, ovlp_wds), axis=-1))
-            tile_border_widths = tile_border_widths / np.min(self.tile_sizes, axis=-1)
+            tile_border_widths = self.overlap_widths / np.min(self.tile_sizes, axis=-1)
             # tiles in a group share mesh
             grp_u, cnt = np.unique(groupings, return_counts=True)
             grp_u = grp_u[cnt>1]
@@ -595,26 +636,27 @@ class Stitcher:
         else:
             stf_x = None
         # soften the mesh with the strain from matching
-        if (match_soften is None) or (match_soften[1] == 1):
-            tile_soft_factors = np.ones(self.num_tiles, dtype=np.float32)
-        else:
-            strain_list = list(self.match_strains.items())
-            overlap_indices = np.array([s[0] for s in strain_list])
-            strain_vals = np.array([(s[1], s[1]) for s in strain_list])
-            groupov_indices = groupings[overlap_indices]
-            # only probe the interfaces between groups
-            idxt = groupov_indices[:,0] != groupov_indices[:,1]
-            groupov_indices = groupov_indices[idxt].ravel()
-            strain_vals = strain_vals[idxt].ravel()
-            avg_strain = np.zeros(self.num_tiles, dtype=np.float32)
-            for g in np.unique(groupov_indices):
-                idxt = groupov_indices == g
-                strn = np.median(strain_vals[idxt])
-                avg_strain[groupings == g] = strn
-            upper_strain, lower_soft_factor = match_soften
-            soften_func = interp1d([0, upper_strain], [1, lower_soft_factor],
-                kind='linear', bounds_error=False, fill_value=(1, lower_soft_factor))
-            tile_soft_factors = soften_func(avg_strain)
+        strain_list = list(self.match_strains.items())
+        overlap_indices = np.array([s[0] for s in strain_list])
+        strain_vals = np.array([(s[1], s[1]) for s in strain_list])
+        groupov_indices = groupings[overlap_indices]
+        solo_strain = np.zeros(self.num_tiles, dtype=np.float32)
+        for mid in np.unique(overlap_indices, axis=None):
+            idxt = overlap_indices == mid
+            solo_strain[mid] = np.median(strain_vals[idxt])
+        # only probe the interfaces between groups
+        idxt = groupov_indices[:,0] != groupov_indices[:,1]
+        groupov_indices = groupov_indices[idxt].ravel()
+        strain_vals = strain_vals[idxt].ravel()
+        group_strain = np.zeros(self.num_tiles, dtype=np.float32)
+        for g in np.unique(groupov_indices):
+            idxt = groupov_indices == g
+            strn = np.median(strain_vals[idxt])
+            group_strain[groupings == g] = strn
+        avg_strain = np.maximum(group_strain, solo_strain)
+        tile_soft_factors = 1 / (avg_strain + 1 / np.max(self.average_tile_size))
+        tile_soft_factors = tile_soft_factors / np.mean(tile_soft_factors)
+        tile_soft_factors = tile_soft_factors.clip(None, 2.5)
         meshes = []
         mesh_indx = np.full(self.num_tiles, -1)
         mesh_params_ptr = {} # map the parameters of the mesh to
@@ -638,7 +680,7 @@ class Stitcher:
                 tileht, tilewd = tile_size
                 M0 = Mesh.from_boarder_bbox((0,0,tilewd,tileht), bd_width=tbwd,
                     mesh_growth=interior_growth, mesh_size=tmsz, uid=k,
-                    soft_factor=tsf)
+                    soft_factor=tsf, resolution=self.resolution)
                 M0.set_stiffness_multiplier_from_interp(xinterp=stf_x, yinterp=stf_y)
                 M0.center_meshes_w_offsets(gear=const.MESH_GEAR_FIXED)
                 mesh_params_ptr[key] = k
@@ -675,6 +717,7 @@ class Stitcher:
 
 
     def initialize_optimizer(self, **kwargs):
+        kwargs.setdefault('stiffness_lambda', self.stiffness_lambda_from_strain)
         if (not kwargs.get('force_update', False)) and (self._optimizer is not None):
             return False
         if (self.meshes is None) or (self.num_links == 0):
@@ -705,6 +748,10 @@ class Stitcher:
         """
         if self._optimizer is None:
             self.initialize_optimizer()
+        residue_threshold = kwargs.get('residue_threshold', None)
+        if (residue_threshold is not None) and (residue_threshold <= 1):
+            overlap_width = np.median(self.overlap_widths)
+            kwargs['residue_threshold'] = overlap_width * residue_threshold
         num_disabled, cost0 = self._optimizer.optimize_translation_w_filtering(**kwargs)
         return num_disabled, cost0
 
@@ -751,7 +798,7 @@ class Stitcher:
                               shape_gear=const.MESH_GEAR_FIXED,
                               target_gear = const.MESH_GEAR_MOVING,
                               start_gear = const.MESH_GEAR_FIXED,
-                              groupings=groupings)
+                              groupings=groupings, tolerated_perturbation=TOLERATED_PERTURBATION)
         if cost[1] < cost[0]:
             self._optimizer.apply_coarse_relaxation_results(opt_c, start_gear=start_gear, target_gear=target_gear)
         return cost
@@ -769,6 +816,7 @@ class Stitcher:
         check_residues = kwargs.get('check_residues', True)
         cache_size = kwargs.get('cache_size', None)
         target_gear = kwargs.setdefault('target_gear', const.MESH_GEAR_FIXED)
+        kwargs.setdefault('tolerated_perturbation', TOLERATED_PERTURBATION)
         if not self.has_groupings:
             return 0, 0
         groupings = self.groupings(normalize=True)
@@ -792,7 +840,7 @@ class Stitcher:
         for M0 in sel_meshes:
             for gear in const.MESH_GEARS:
                 M0.set_default_cache(cache=default_caches[gear], gear=gear)
-        opt = SLM(sel_meshes)
+        opt = SLM(sel_meshes, stiffness_lambda=self.stiffness_lambda_from_strain)
         for uids0, uids1 in zip(match_uids, sel_match_uids):
             mtch = self.matches[tuple(uids0)]
             xy0, xy1, weight = mtch
@@ -842,6 +890,7 @@ class Stitcher:
         residue_len = kwargs.get('residue_len', 0)
         residue_mode = kwargs.get('residue_mode', None)
         target_gear = kwargs.setdefault('target_gear', const.MESH_GEAR_MOVING)
+        kwargs.setdefault('tolerated_perturbation', TOLERATED_PERTURBATION)
         if use_groupings:
             groupings = self.groupings(normalize=True)
         else:
@@ -854,7 +903,7 @@ class Stitcher:
                 self._optimizer.set_link_residue_huber(residue_len)
             else:
                 self._optimizer.set_link_residue_threshold(residue_len)
-            weight_modified, _ = self._optimizer.adjust_link_weight_by_residue(gear=(target_gear, target_gear))
+            weight_modified, _ = self._optimizer.adjust_link_weight_by_residue(gear=(target_gear, target_gear), relax_first=True)
             if weight_modified:
                 if kwargs.get('tol', None) is not None:
                     kwargs['tol'] = max(1.0e-3, kwargs['tol'])
@@ -1013,6 +1062,15 @@ class Stitcher:
 
 
     @property
+    def stiffness_lambda_from_strain(self):
+        if not hasattr(self, '_stiffness_lambda_strain') or (self._stiffness_lambda_strain is None):
+            strains = np.array(list(self.match_strains.values()))
+            strains = strains.clip(1/np.max(self.average_tile_size), None)
+            avg_deform = np.mean(strains)
+            self._stiffness_lambda_strain = (2 * DEFAULT_DEFORM_BUDGET / avg_deform) ** 2
+        return self._stiffness_lambda_strain
+
+    @property
     def has_groupings(self):
         if self._groupings is None:
             return False
@@ -1030,10 +1088,36 @@ class Stitcher:
 
 
     @property
+    def init_bboxes(self):
+        if self._refined_init_bboxes is not None:
+            return self._refined_init_bboxes
+        else:
+            return self._init_bboxes
+
+    @property
+    def init_offset(self):
+        if self._refined_init_offset is not None:
+            return self._refined_init_offset
+        else:
+            return self._init_offset
+
+
+    @property
     def overlaps(self):
         if (not hasattr(self, '_overlaps')) or (self._overlaps is None):
             self._overlaps = self.find_overlaps()
         return self._overlaps
+
+    @property
+    def overlap_widths(self):
+        if (not hasattr(self, '_overlap_widths')) or (self._overlap_widths is None):
+            indx = self.overlaps
+            bboxes = self.init_bboxes
+            _, ovlp_wds = common.bbox_intersections(bboxes[indx[:,0]], bboxes[indx[:,1]])
+            tile_border_widths = np.zeros(self.num_tiles, dtype=np.float32)
+            np.maximum.at(tile_border_widths, indx, np.stack((ovlp_wds, ovlp_wds), axis=-1))
+            self._overlap_widths = tile_border_widths
+        return self._overlap_widths
 
 
     @property
@@ -1129,11 +1213,11 @@ class MontageRenderer:
                 tile_size = self._tile_sizes[selected]
             else:
                 tile_size = self._tile_sizes[0]
-            args = [imgpaths, mesh_info, tile_size]
-            kwargs = {}
-            kwargs['root_dir'] = self.imgrootdir
-            kwargs['loader_settings'] = self._loader_settings
-            kwargs['resolution'] = self.resolution
+        args = [imgpaths, mesh_info, tile_size]
+        kwargs = {}
+        kwargs['root_dir'] = self.imgrootdir
+        kwargs['loader_settings'] = self._loader_settings
+        kwargs['resolution'] = self.resolution
         return args, kwargs
 
 
@@ -1304,12 +1388,13 @@ class MontageRenderer:
 
 
     def render_series_to_file(self, bboxes, filenames, **kwargs):
-        if isinstance(filenames, (dict, ts.TensorStore)):
+        if isinstance(filenames, (dict, ts.TensorStore, TensorStoreWriter)):
             use_tensorstore = True
-            rendered = []
+            rendered = bboxes
         else:
             use_tensorstore = False
             rendered = {}
+        num_chunks = 0
         scale = kwargs.get('scale', 1.0)
         if scale > 0.33:
             self.image_loader._preprocess = None
@@ -1318,39 +1403,38 @@ class MontageRenderer:
             self.image_loader._preprocess = partial(cv2.blur, ksize=(ksz, ksz))
         if not use_tensorstore: # render as image tiles
             for bbox, filename in zip(bboxes, filenames):
-                if file_exists(filename):
+                if storage.file_exists(filename):
                     rendered[filename] = bbox
                     continue
                 imgt = self.crop(bbox, **kwargs)
                 if imgt is None:
                     continue
                 common.imwrite(filename, imgt)
+                num_chunks += 1
                 rendered[filename] = bbox
         else: # use tensorstore
-            if not isinstance(filenames, ts.TensorStore):
-                dataset = ts.open(filenames).result()
+            if not isinstance(filenames, TensorStoreWriter):
+                if isinstance(filenames, ts.TensorStore):
+                    writer = TensorStoreWriter(dataset=filenames)
+                else:
+                    writer = TensorStoreWriter.from_json_spec(filenames)
             else:
-                dataset = filenames
-            driver = dataset.spec().to_json()['driver']
+                writer = filenames
+            mindx = bboxes
+            id_x, id_y = writer.morton_xy_grid(indx=mindx)
+            bboxes = writer.grid_indices_to_bboxes(id_x, id_y)
+            driver = writer.spec['driver']
             if driver in ('neuroglancer_precomputed', 'n5'):
                 kwargs['fillval'] = 0
             for bbox in bboxes:
                 imgt = self.crop(bbox, **kwargs)
                 if imgt is None:
                     continue
-                xmin, ymin, _, _ = bbox
-                shp = imgt.shape
-                imght, imgwd = shp[0], shp[1]
-                data_view = dataset[xmin:(xmin+imgwd), ymin:(ymin+imght)]
-                try:
-                    data_view.write(imgt.T.reshape(data_view.shape)).result(timeout=TS_TIMEOUT)
-                except TimeoutError:
-                    dataset = ts.open(dataset.spec(minimal_spec=True)).result(timeout=TS_TIMEOUT)
-                    data_view = dataset[xmin:(xmin+imgwd), ymin:(ymin+imght)]
-                    data_view.write(imgt.T.reshape(data_view.shape)).result(timeout=TS_TIMEOUT)
-                rendered.append(tuple(bbox))
+                imgt = imgt.swapaxes(0, 1)
+                writer.write_single_chunk(bbox, imgt)
+                num_chunks += 1
         self.image_loader.clear_cache()
-        return rendered
+        return num_chunks, rendered
 
 
     def plan_render_series(self, tile_size, prefix='', **kwargs):
@@ -1368,51 +1452,59 @@ class MontageRenderer:
         """
         driver = kwargs.get('driver', 'image')
         scale = kwargs.get('scale', 1)
+        filename_settings = kwargs.get('filename_settings', {})
+        pattern = filename_settings.get('pattern', 'tr{ROW_IND}_tc{COL_IND}.png')
+        use_jpeg_compression = (pattern.lower().endswith('.jpg')) or (pattern.lower().endswith('.jpeg'))
+        pad_to_tile_size = kwargs.get('pad_to_tile_size', use_jpeg_compression)
+        checkpoint_file = kwargs.get('checkpoint_file', None)
         resolution = self.resolution / scale
         if not hasattr(tile_size, '__len__'):
             tile_ht, tile_wd = tile_size, tile_size
         else:
             tile_ht, tile_wd = tile_size[0], tile_size[-1]
+        read_chunk_size = kwargs.get('read_chunk_size', (max(256, tile_ht//16), max(256, tile_wd//16)))
         bounds = self.bounds
         if scale != 1:
             bounds = scale_coordinates(bounds, scale)
         montage_wd = int(np.ceil(bounds[2]))
         montage_ht = int(np.ceil(bounds[3]))
-        if driver != 'image':
-            while tile_ht > montage_ht or tile_wd > montage_wd:
-                tile_ht = tile_ht // 2
-                tile_wd = tile_wd // 2
         Ncol = int(np.ceil(montage_wd / tile_wd))
         Nrow = int(np.ceil(montage_ht / tile_ht))
-        cols, rows = np.meshgrid(np.arange(Ncol), np.arange(Nrow))
-        cols, rows = cols.ravel(), rows.ravel()
-        idxz = common.z_order(np.stack((rows, cols), axis=-1))
-        cols, rows =  cols[idxz], rows[idxz]
         if driver == 'image':
+            cols, rows = np.meshgrid(np.arange(Ncol), np.arange(Nrow))
+            cols, rows = cols.ravel(), rows.ravel()
+            idxz = common.z_order(np.stack((rows, cols), axis=-1))
+            cols, rows =  cols[idxz], rows[idxz]
             montage_ht, montage_wd = Nrow * tile_ht, Ncol * tile_wd
-            filename_settings = kwargs.get('filename_settings', {})
-            pattern = filename_settings.get('pattern', 'tr{ROW_IND}_tc{COL_IND}.png')
             one_based = filename_settings.get('one_based', False)
             keywords = ['{ROW_IND}', '{COL_IND}', '{X_MIN}', '{Y_MIN}', '{X_MAX}', '{Y_MAX}']
             filenames = []
+            x0, x1 = cols*tile_wd, ((cols+1)*tile_wd).clip(None, montage_wd)
+            y0, y1 = rows*tile_ht, ((rows+1)*tile_ht).clip(None, montage_ht)
+            bboxes0 = np.stack((x0, y0, x1, y1), axis=-1)
+            bboxes = []
         else:
             if not prefix.endswith('/'):
                 prefix = prefix + '/'
-            kv_headers = ('gs://', 'http://', 'https://', 'file://', 'memory://', 's3://')
-            for kvh in kv_headers:
-                if prefix.startswith(kvh):
-                    break
-            else:
+            tdriver, prefix = storage.parse_file_driver(prefix)
+            if tdriver == 'file':
                 prefix = 'file://' + prefix
             number_of_channels = self.number_of_channels
             dtype = self.dtype
             fillval = self.default_fillval
+            if pad_to_tile_size:
+                montage_ht = Nrow * tile_ht
+                montage_wd = Ncol * tile_wd
+            else:
+                while tile_ht > montage_ht or tile_wd > montage_wd:
+                    tile_ht = tile_ht // 2
+                    tile_wd = tile_wd // 2
             schema = {
                 "chunk_layout":{
                     "grid_origin": [0, 0, 0, 0],
                     "inner_order": [3, 2, 1, 0],
-                    "read_chunk": {"shape": [tile_wd, tile_ht, 1, number_of_channels]},
-                    "write_chunk": {"shape": [tile_wd, tile_ht, 1, number_of_channels]},
+                    "read_chunk": {"shape_soft_constraint": [tile_wd, tile_ht, 1, number_of_channels]},
+                    "write_chunk": {"shape_soft_constraint": [tile_wd, tile_ht, 1, number_of_channels]},
                 },
                 "domain":{
                     "exclusive_max": [montage_wd, montage_ht, 1, number_of_channels],
@@ -1451,34 +1543,52 @@ class MontageRenderer:
                     "delete_existing": False
                 }
             elif driver == 'neuroglancer_precomputed':
-                if tile_ht % 256 == 0:
-                    read_ht = 256
+                if not hasattr(read_chunk_size, '__len__'):
+                    tile_ht0, tile_wd0 = read_chunk_size, read_chunk_size
+                else:
+                    tile_ht0, tile_wd0 = read_chunk_size[0], read_chunk_size[-1]
+                if tile_ht % tile_ht0 == 0:
+                    read_ht = tile_ht0
                 else:
                     read_ht = tile_ht
-                if tile_wd % 256 == 0:
-                    read_wd = 256
+                if tile_wd % tile_wd0 == 0:
+                    read_wd = tile_wd0
                 else:
                     read_wd = tile_wd
-                schema["codec"]= {
-                    "driver": "neuroglancer_precomputed",
-                    "encoding": "raw",
-                    "shard_data_encoding": "gzip"
-                }
-                schema['chunk_layout']["read_chunk"]["shape"] = [read_wd, read_ht, 1, number_of_channels]
+                schema["codec"]= {"driver": "neuroglancer_precomputed"}
+                if use_jpeg_compression:
+                    schema["codec"].update({"encoding": 'jpeg', "jpeg_quality": 95})
+                    if (read_ht < tile_ht) or read_wd < tile_wd:
+                        schema["codec"].update({"shard_data_encoding": 'raw'})
+                else:
+                    schema["codec"].update({"encoding": "raw"})
+                    if (read_ht < tile_ht) or read_wd < tile_wd:
+                        schema["codec"].update({"shard_data_encoding": 'gzip'})
+                schema['chunk_layout']["read_chunk"]["shape_soft_constraint"] = [read_wd, read_ht, 1, number_of_channels]
                 filenames = {
                     "driver": "neuroglancer_precomputed",
                     "kvstore": prefix,
                     "schema": schema,
-                    "open": True,
-                    "create": True,
-                    "delete_existing": False
                 }
             else:
                 raise ValueError(f'{driver} not supported')
+            if (checkpoint_file is not None) and storage.file_exists(checkpoint_file):
+                with H5File(checkpoint_file, 'r') as f:
+                    checkpoint_flag = f['to_render'][()]
+                filenames.update({'open': True, 'create': True, 'delete_existing': False})
+            else:
+                checkpoint_flag = True
+                filenames.update({'open': False, 'create': True, 'delete_existing': True})
+            writer = TensorStoreWriter.from_json_spec(filenames)
+            filenames.update({'open': True, 'create': True, 'delete_existing': False})
+            Nx, Ny = writer.grid_shape[:2]
+            checkpoint_flag = checkpoint_flag & np.ones(Nx*Ny, dtype=bool)
+            id_x, id_y = writer.morton_xy_grid(indx=checkpoint_flag)
+            bboxes0 = writer.grid_indices_to_bboxes(id_x, id_y)
+            mindx0 = np.flatnonzero(checkpoint_flag)
+            bboxes = np.zeros(Nx*Ny, dtype=bool)
         hits = []
-        bboxes = []
-        for r, c in zip(rows, cols):
-            bbox = (c*tile_wd, r*tile_ht, min((c+1)*tile_wd, montage_wd), min((r+1)*tile_ht, montage_ht))
+        for kb, bbox in enumerate(bboxes0):
             if scale != 1:
                 bbox_hit = scale_coordinates(bbox, 1/scale)
             else:
@@ -1487,25 +1597,29 @@ class MontageRenderer:
             if len(hit) == 0:
                 continue
             hits.append(hit)
-            bboxes.append(bbox)
             if driver == 'image':
+                bboxes.append(bbox)
                 xmin, ymin, xmax, ymax = bbox
-                keyword_replaces = [str(r+one_based), str(c+one_based), str(xmin), str(ymin), str(xmax), str(ymax)]
+                keyword_replaces = [str(rows[kb]+one_based), str(cols[kb]+one_based), str(xmin), str(ymin), str(xmax), str(ymax)]
                 fname = pattern
                 for kw, kwr in zip(keywords, keyword_replaces):
                     fname = fname.replace(kw, kwr)
                 filenames.append(prefix + fname)
+            else:
+                bboxes[mindx0[kb]] = True
         return bboxes, filenames, hits
 
 
     def divide_render_jobs(self, render_series, num_workers=1, **kwargs):
         max_tile_per_job = kwargs.get('max_tile_per_job', None)
         bboxes, filenames, hits = render_series
+        if isinstance(bboxes, np.ndarray) and (bboxes.dtype == bool):
+            bboxes = np.flatnonzero(bboxes)
         num_tiles = len(bboxes)
         num_tile_per_job = max(1, num_tiles // num_workers)
         if max_tile_per_job is not None:
             num_tile_per_job = min(num_tile_per_job, max_tile_per_job)
-        N_jobs = round(num_tiles / num_tile_per_job)
+        N_jobs = max(1, round(num_tiles / num_tile_per_job))
         indices = np.round(np.linspace(0, num_tiles, num=N_jobs+1, endpoint=True))
         indices = np.unique(indices).astype(np.uint32)
         bboxes_list = []
@@ -1651,3 +1765,85 @@ class MontageRenderer:
         else:
             raise TypeError
         return M.render_series_to_file(bboxes, outnames, **kwargs)
+
+
+    def render_one_section(self, out_prefix, meta_name=None, **kwargs):
+        num_workers = kwargs.get('num_workers', 1)
+        tile_size = kwargs.pop('tile_size', [4096, 4096])
+        scale = kwargs.pop('scale', 1.0)
+        resolution = kwargs.pop('resolution', None)
+        render_settings = kwargs.get('render_settings', {}).copy()
+        driver = kwargs.get('driver', 'image')
+        mask_out = kwargs.get('mask_out', None)
+        use_tensorstore = driver != 'image'
+        if meta_name is not None:
+            if storage.file_exists(meta_name):
+                return 0
+            else:
+                checkpoint_file = os.path.splitext(meta_name)[0] + '.h5'
+        else:
+            checkpoint_file = None
+        if resolution is not None:
+            scale = self.resolution / resolution
+        else:
+            resolution = self.resolution / scale
+        render_settings['scale'] = scale
+        out_prefix = out_prefix.replace('\\', '/')
+        render_series = self.plan_render_series(tile_size, prefix=out_prefix,
+            scale=scale, checkpoint_file=checkpoint_file, **kwargs)
+        if use_tensorstore:
+            checkpoints = render_series[0]
+            out_spec = render_series[1].copy()
+            if (checkpoint_file is not None) and storage.file_exists(checkpoint_file):
+                fresh_start = False
+            else:
+                fresh_start = True
+            writer = TensorStoreWriter.from_json_spec(out_spec)
+            if (mask_out is not None) and fresh_start:
+                mask_shape = writer.grid_shape[:2]
+                rendered_mask = np.zeros(mask_shape[::-1], dtype=np.uint8)
+                id_x, id_y = writer.morton_xy_grid()
+                rendered_mask[id_y, id_x] = checkpoints * 255
+                storage.makedirs(os.path.dirname(mask_out), exist_ok=True)
+                common.imwrite(mask_out, rendered_mask)
+        bboxes_list, filenames_list, hits_list = self.divide_render_jobs(render_series,
+            num_workers=num_workers, max_tile_per_job=20)
+        if not use_tensorstore:
+            metadata = {}
+        target_func = partial(MontageRenderer.subprocess_render_montages, **render_settings)
+        args_list = []
+        num_chunks = 0
+        for bboxes, filenames, hits in zip(bboxes_list, filenames_list, hits_list):
+            init_args = self.init_args(selected=hits)
+            args_list.append((init_args, bboxes, filenames))
+        t_check = time.time()
+        res_cnt = 0
+        for res in submit_to_workers(target_func, args=args_list, num_workers=num_workers):
+            nmck, meta = res
+            num_chunks += nmck
+            res_cnt += 1
+            if use_tensorstore:
+                checkpoints[meta] = False
+                if (checkpoint_file is not None) and ((time.time() - t_check) > CHECKPOINT_TIME_INTERVAL) and (res_cnt>=num_workers):
+                    storage.makedirs(os.path.dirname(checkpoint_file))
+                    res_cnt = 0
+                    t_check = time.time()
+                    with H5File(checkpoint_file, 'w') as f:
+                        f.create_dataset('to_render', data=checkpoints, compression="gzip")
+            else:
+                metadata.update(meta)
+        if meta_name is not None:
+            if use_tensorstore:
+                if not np.any(checkpoints):
+                    with storage.File(meta_name, 'w') as f:
+                        json.dump({0: writer.spec}, f)
+                    storage.remove_file(checkpoint_file)
+            else:
+                if len(metadata) > 0:
+                    fnames = sorted(list(metadata.keys()))
+                    bboxes = []
+                    for fname in fnames:
+                        bboxes.append(metadata[fname])
+                    out_loader = StaticImageLoader(fnames, bboxes=bboxes, resolution=resolution)
+                    out_loader.to_coordinate_file(meta_name)
+        return num_chunks

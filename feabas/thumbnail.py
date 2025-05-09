@@ -8,7 +8,7 @@ from shapely.affinity import affine_transform
 from skimage.feature import peak_local_max
 from itertools import combinations
 
-from feabas import common, logging, storage
+from feabas import common, config, logging, storage
 from feabas.spatial import fit_affine, Geometry, scale_coordinates
 from feabas.mesh import Mesh
 from feabas.optimizer import SLM
@@ -280,6 +280,7 @@ def prepare_image(img, mask=None, **kwargs):
     extract_settings = kwargs.get('extract_settings', {}).copy()
     mesh_size = kwargs.get('mesh_size', DEFAULT_FEATURE_SPACING * 2)
     scale = kwargs.get('scale', 1.0)
+    resolution = kwargs.get('resolution', config.thumbnail_resolution())
     if isinstance(img, dict):
         out = img
         img = out['image']
@@ -301,12 +302,13 @@ def prepare_image(img, mask=None, **kwargs):
             imght, imgwd = img.shape[:2]
             regions[1] = shpgeo.box(0,0,imgwd, imght)
             mesh = Mesh.from_bbox((0,0,imgwd, imght), cartesian=True,
-                                    mesh_size=mesh_size, uid=uid)
+                                    mesh_size=mesh_size, uid=uid, resolution=resolution/scale)
         else:
             meshes_stg = []
             for lb in np.unique(mask[mask>0]):
                 G0 = Geometry.from_image_mosaic(255 - 255 * (mask == lb).astype(np.uint8),
-                                                region_names={'default':0, 'exclude': 255})
+                                                region_names={'default':0, 'exclude': 255},
+                                                resolution=resolution/scale)
                 G0.simplify(region_tol={'exclude':1.5}, inplace=True)
                 regions[lb] = G0.region_default
                 meshes_stg.append(Mesh.from_PSLG(**G0.PSLG(), mesh_size=mesh_size,
@@ -346,7 +348,7 @@ def match_two_thumbnails_LRadon(img0, img1, mask0=None, mask1=None, **kwargs):
     kps0, kps1 = info0['kps'], info1['kps']
     mesh0.uid = 0.0
     mesh1.uid = 1.0
-    optm = SLM([mesh0, mesh1], stiffness_lambda=1.0)
+    optm = SLM([mesh0, mesh1], stiffness_lambda=0.5)
     optm.divide_disconnected_submeshes(prune_links=False)
     xy0 = []
     xy1 = []
@@ -495,14 +497,14 @@ def match_two_thumbnails_pmcc(img0, img1, mask0=None, mask1=None, **kwargs):
         info0['dog_image'] = common.masked_dog_filter(info0['image'], sigma=sigma, mask=info0['mask'])
     if not 'dog_image' in info1:
         info1['dog_image'] = common.masked_dog_filter(info1['image'], sigma=sigma, mask=info1['mask'])
-    loader0 = StreamLoader(info0['dog_image'])
-    loader1 = StreamLoader(info1['dog_image'])
-    xy0, xy1, weight = section_matcher(mesh0, mesh1, loader0, loader1, **kwargs)
+    loader0 = StreamLoader(info0['dog_image'], resolution=mesh0.resolution)
+    loader1 = StreamLoader(info1['dog_image'], resolution=mesh1.resolution)
+    xy0, xy1, weight, strain = section_matcher(mesh0, mesh1, loader0, loader1, **kwargs)
     if xy0 is None:
         return None
     xy0 = scale_coordinates(xy0, 1 / scale)
     xy1 = scale_coordinates(xy1, 1 / scale)
-    return common.Match(xy0, xy1, weight)
+    return common.Match(xy0, xy1, weight, strain)
 
 
 
@@ -510,17 +512,17 @@ def _scale_matches(match, scale):
     scale = np.atleast_1d(scale)
     if (match is None) or np.all(scale == 1):
         return match
-    xy0, xy1, weight = match
+    xy0, xy1, weight, strain = match
     xy0 = scale_coordinates(xy0, scale[0])
     xy1 = scale_coordinates(xy1, scale[-1])
-    return common.Match(xy0, xy1, weight)
+    return common.Match(xy0, xy1, weight, strain)
 
 
 
 def align_two_thumbnails(img0, img1, outname, mask0=None, mask1=None, **kwargs):
     if storage.file_exists(outname):
         return
-    resolution = kwargs.get('resolution')
+    resolution = kwargs.get('resolution', config.thumbnail_resolution())
     feature_match_settings = kwargs.get('feature_matching', {}).copy()
     block_match_settings = kwargs.get('block_matching', {}).copy()
     feature_match_dir = kwargs.get('feature_match_dir', None)
@@ -542,10 +544,8 @@ def align_two_thumbnails(img0, img1, outname, mask0=None, mask1=None, **kwargs):
             logger.warning(f'{bname}: fail to find matches.')
             return 0
         if save_feature_match:
-            xy0, xy1, weight = mtch0
-            tdriver, feature_match_dir = storage.parse_file_driver(feature_match_dir)
-            if tdriver == 'file':
-                os.makedirs(feature_match_dir, exist_ok=True)
+            xy0, xy1, weight, _ = mtch0
+            storage.makedirs(feature_match_dir)
             with H5File(feature_matchname, 'w') as f:
                 f.create_dataset('xy0', data=xy0, compression="gzip")
                 f.create_dataset('xy1', data=xy1, compression="gzip")
@@ -559,14 +559,13 @@ def align_two_thumbnails(img0, img1, outname, mask0=None, mask1=None, **kwargs):
         logger.warning(f'{bname}: fail to find matches.')
         return 0
     else:
-        xy0, xy1, weight = mtch1
-        tdriver, outname = storage.parse_file_driver(outname)
-        if tdriver == 'file':
-            os.makedirs(os.path.dirname(outname), exist_ok=True)
+        xy0, xy1, weight, strain = mtch1
+        storage.makedirs(os.path.dirname(outname), exist_ok=True)
         with H5File(outname, 'w') as f:
             f.create_dataset('xy0', data=xy0, compression="gzip")
             f.create_dataset('xy1', data=xy1, compression="gzip")
             f.create_dataset('weight', data=weight, compression="gzip")
+            f.create_dataset('strain', data=strain)
             f.create_dataset('resolution', data=resolution)
         return xy0.shape[0]
 

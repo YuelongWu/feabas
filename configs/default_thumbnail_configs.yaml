@@ -4,9 +4,10 @@ downsample:
     num_workers: 10
     parallel_within_section: true   # whether to parallel among tiles within a section, or among sections
     # max_mip: 5
-    format: jpg                 # for image tile output, the extension of the low resolution image tiles
+    format: jpg                 # for image tile output (only for mipmaps, not thumbnails), the extension of the low resolution image tiles.
     thumbnail_highpass: true    # whether to use high-pass filter to enhance contrast when generating thumbnail.
     highpass_inter_mip_lvl: 4   # the intermediate mip level to apply high-pass filter on if the feature is turned on
+    thumbnail_format: png       # image format of the thumbnails
 
 
 alignment:
@@ -29,22 +30,51 @@ alignment:
             beam_radius: 15
         matching_settings:
             exhaustive: true    # set to true for slower but more robust matching
-        strain_filter_settings:
-            strain_limit: 0.2
-            shear_limit: 45
+        strain_filter_settings: # geometric filtering
+            strain_limit: 0.2       # max strain allowed
+            shear_limit: 45         # max shear (in degree) allowed
             sample_ratio: 0.05
             inlier_thresh: 0.5
-        ransac_filter_settings:
+        ransac_filter_settings: # ransac filtering
             maxiter: 10000
             dis_tol: 4
     block_matching:
-        sigma: 3.5
-        scale: 1.0
-        conf_thresh: 0.35
-        pad: True
-        spacings: [150, 50]
-        shrink_factor: 1
-        distributor: intersect_triangulation
-        residue_mode: threshold
-        residue_len: 3
-        min_boundary_distance: 20
+        sigma: 3.5  # sigma of band pass filter used to preprocess thumbnail images
+        scale: 1.0  # image scale to do PMCC block matching
+        conf_thresh: 0.35   # threshold to reject low-confidence matches
+        pad: True   # whether to pad the blocks to help with displacement larger than half the block size
+        spacings: [150, 50] # spacings between grid points for matching, start from larger ones then use smaller ones to refine
+        shrink_factor: 1    # the block size compared to the spacing
+        distributor: intersect_triangulation    # the method to distribute grid points. cartesian_region | intersect_triangulation
+        residue_mode: huber # ways to damp outlier matches. threshold | huber
+        residue_len: -3
+        min_boundary_distance: 20   # grid points are distributed away from the boundaries of the images by this amount
+    optimization:
+        meshing_config:
+            mesh_size: 100  # mesh size in pixel of thumbnail resolution
+            simplify_tol: 2
+            area_thresh: 9
+        chunk_settings: # settings to control the behavior when alignment is done in chuncks
+            chunked_to_depth: 0  # if 0, use slide window directly. Otherwise, group sections into chunks, first align witin chunks, then treat each chunk as "meta-sections" and align those. depth>1 means meta-sections will also aligned in chunks until 'depth' recursion
+            default_chunk_size: 16  # the default size of chunks when chunk_map json file is not provided
+            junction_width: 0.2 # number of sections to be re-relaxed in the end at the junctions between chunks. If fraction, it's related to the chunk size.
+        slide_window:
+            start_loc: M    # starting location of the optimization. L: left, R: right, M: start from middle and move in both directions
+            window_size: 64 # the width of the sliding window
+            buffer_size: 16 # the number of overlapping sections to re-optimize when window is moved, to minimize potential fringe effects.
+            residue_mode: huber
+            residue_len: -3 # matching points with error larger than this width will be weakened in the second round of mesh relaxation
+            elastic_params:
+                tol: 1.0e-7 # convergence tolerance for the solver
+                atol: 0.001
+                continue_on_flip: true # if to continue the process when a flipped triangle is detected. otherwise stop the program and raise error
+                batch_num_matches: null # larger numberneeds more RAM but faster. default to (total # of matches)/10
+                callback_settings:
+                    timeout: null   # maximum time (in second) allowed for each round of optimization. After the timeout, select the best solution so far
+                    early_stop_thresh: null # if after each step, the maximum movement of the mesh points is smaller than this, consider it a insiginificant update
+                    chances: null   # number of insignificant or diverge steps allowed before an early stop envoked
+                    eval_step: 10   # the interval (in steps) when the significance of the updates is evaluated
+    render:
+        scale: 1.0  # aligned thumbnail render scale. set to null to skip rendering
+        bbox_offset: [0, 0] # move the bounding box so that it starts this coordinates. Set to null to skip
+        rotation_angle: 0     # the degree in which to rotate the transforms

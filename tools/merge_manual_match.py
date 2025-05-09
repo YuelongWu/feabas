@@ -10,16 +10,27 @@ from feabas.storage import h5file_class, join_paths, list_folder_content
 H5File = h5file_class()
 
 def _merge_matches(fname0, fname1, outname, clearance=0, weight=1):
+    STRNS = []
     with H5File(fname0, 'r') as f:
         xy0 = f['xy0'][()]
         xy1 = f['xy1'][()]
         resolution = f['resolution'][()]
         weight0 = f['weight'][()]
+        if 'strain' in f.keys():
+            STRNS.append((f['strain'][()], np.sum(weight0)))
     with H5File(fname1, 'r') as f:
         xy0_a = f['xy0'][()]
         xy1_a = f['xy1'][()]
         resolution_a = f['resolution'][()]
         weight_a = f['weight'][()] * weight
+        if 'strain' in f.keys():
+           STRNS.append((f['strain'][()], np.sum(weight_a)))
+    if len(STRNS) == 0:
+        strain = config.DEFAULT_DEFORM_BUDGET
+    else:
+        ST = np.array([s[0] for s in STRNS]).ravel()
+        WT = np.array([s[1] for s in STRNS]).ravel()
+        strain = np.sum(ST * WT) / np.sum(WT)
     if resolution_a != resolution:
         scale = resolution_a / resolution
         xy0_a = scale_coordinates(xy0_a, scale)
@@ -40,6 +51,7 @@ def _merge_matches(fname0, fname1, outname, clearance=0, weight=1):
         f.create_dataset('xy0', data=xy0, compression="gzip")
         f.create_dataset('xy1', data=xy1, compression="gzip")
         f.create_dataset('weight', data=weight0, compression="gzip")
+        f.create_dataset('strain', data=strain)
         f.create_dataset('resolution', data=resolution)
 
 

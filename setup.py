@@ -1,13 +1,15 @@
 from setuptools import setup, find_packages
 import platform
 
-VERSION = '2.1.1'
+VERSION = '3.0.1'
 
 def readme():
     with open('README.md') as f:
         return f.read()
 
 install_requires = [
+    'dask[array,distributed,diagnostics]',
+    'dask-jobqueue',
     'dill',
     'google-cloud-storage',
     'h5py',
@@ -20,7 +22,7 @@ install_requires = [
     'scipy',
     'shapely>=2.0.0',
     'tensorstore',
-    'triangle',
+    'triangle'
 ]
 
 if (platform.python_version() < '3.12') and (platform.system() == 'Windows'):

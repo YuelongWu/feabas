@@ -4,9 +4,19 @@ FEABAS (Finite-Element Assisted Brain Assembly System) is a Python library power
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT) [![PyPI](https://img.shields.io/pypi/v/feabas.svg)](https://pypi.org/project/feabas/) [![Python](https://img.shields.io/pypi/pyversions/feabas)](https://www.python.org/downloads/)
 
+
+If you have any question using this package, feel free to open a [issue](https://github.com/YuelongWu/feabas/issues) or leave me a message on the [discussion page](https://github.com/YuelongWu/feabas/discussions).
+
+
 ## Installation
 
-We used Python 3.10.4 to develop and test the package, but the codebase should be compatible with Python 3.8+. To install FEABAS, you can clone the [GitHub repository](https://github.com/YuelongWu/feabas) and pip-install it into a proper virtual environment:
+We used Python 3.12.2 to develop and test the package, but the codebase should be compatible with Python 3.8+. To install FEABAS, you can easily download from [PyPI](https://pypi.org/project/feabas/) with the command:
+
+```bash
+pip install feabas
+```
+
+or alternatively, clone the the lastest version on [GitHub repository](https://github.com/YuelongWu/feabas) and pip-install it in editable mode:
 
 ```bash
 git clone https://github.com/YuelongWu/feabas.git
@@ -40,11 +50,15 @@ The user needs to first create a dedicated *working directory* for each dataset 
  |-- section_order.txt (optional)
 ```
 
+During the stitching & alignment process, FEABAS will write to this working directory with many intermediate results. If a same command is run again, it will skip the parts where the cached intermediate results can be found, and only work on the unprocessed ones. Therefore, if a change is made in the upstream, the user should carefully clean up the affected cached results to force the code to rerun.
+
+Starting from version 3.0.1, in additional to local filesystems, the working directly can also sit on a [Google Cloud bucket](https://cloud.google.com/storage/docs/creating-buckets)
+
 #### configuration files
-The `configs` folder in the *working directory* contains project-specific configuration files that override the default settings. If any of these files don't exist, FEABAS will use the corresponding default configuration files in the `configs` folder under the repository root directory (NOT the *working directory*) with the same file names but prefixed by `default_`, e.g. `default_stitching_configs.yaml`. The user can copy these default configuration files to their *working directory* `configs` folder, remove the prefix in the filename, and adjust the file contents accordingly based on the specific needs of their dataset.
+The `configs` folder in the *working directory* contains project-specific configuration files that override the default settings. If any of these files don't exist, FEABAS will use the corresponding default configuration files in the `configs` folder under the repository root directory (NOT the *working directory*) with the same file names but prefixed by `default_`, e.g. `default_stitching_configs.yaml`. The user can copy these default configuration files to their *working directory* `configs` folder, REMOVE the prefix in the filename, and adjust the file contents accordingly based on the specific needs of their dataset. Since version 3.0.1, a user can define only a subset of the settings in their configuration files, and FEABAS will automatically copy from the default files for the unspecified ones.
 
 #### stitch coordinate files
-The .txt files in the `stitch/stitch_coord` folder are user-created [TSV](https://en.wikipedia.org/wiki/Tab-separated_values) files specifying the approximate tile arrangement for each section. They are the inputs to the stitcher pipeline of FEABAS and usually can be derived from the metadata from the microscopy. In one coordinate file, it first defines some metadata info like the root directory of the images, the pixel resolution (in nanometers), and the size of each image tile (height followed by width, in pixels). Following the metadata is a table of all the image tiles associated with that section, with the first column giving the relative path of each image file relative to the root directory, and the second and the third column defining the x and y coordinates (in pixels) of the images. An example stitch coordinate text file looks like this:
+The .txt files in the `stitch/stitch_coord` folder are user-created [TSV](https://en.wikipedia.org/wiki/Tab-separated_values) files specifying the approximate tile arrangement for each section. They are the inputs to the stitcher pipeline of FEABAS and usually can be derived from the metadata from the microscopy. In one coordinate file, it first defines some metadata info like the root directory of the images (can be a Google Cloud bucket `gs://{bucket-name}/path/to/your/image/folder`), the pixel resolution (in nanometers), and the size of each image tile (height followed by width, in pixels). Following the metadata is a table of all the image tiles associated with that section, with the first column giving the relative path of each image file relative to the root directory, and the second and the third column defining the x and y coordinates (in pixels) of the images. An example stitch coordinate text file looks like this:
 
 <div><code><ins>s0001.txt</ins></code></div>
 
@@ -60,7 +74,7 @@ Tile_0005.tif	3600	2700
 Tile_0006.tif	7200	2700
 ```
 
-It describes a section whose raw image tiles from the microscopy are saved under the directory `/home/feabas/my_project/raw_data/s0001`. It contains 6 images with height of 3000 pixels and width of 4000 pixels, arranged on a 2-rows-by-3-columns grid with 10% overlaps. Note that in general the images do not necessarily need to be arranged in a rectilinear pattern and the image files can have arbitrary names, as long as the coordinates are as accurate as possible. Also, make sure that the fields in the coordinate files are separated by Horizontal Tab `\t`, other delimiters are currently not supported.
+It describes a section whose raw image tiles from the microscopy are saved under the directory `/home/feabas/my_project/raw_data/s0001`. It contains 6 images with height of 3000 pixels and width of 4000 pixels, arranged on a 2-rows-by-3-columns grid with 10% overlaps. Pay attention that for TILE_SIZE, the first enetry is the height and the second entry is the width, while for image coordinates, the x (horizontal) coordinates come first, followed by the y (vertical) ones. Also, make sure that the fields in the coordinate files are separated by Horizontal Tab `\t`, other delimiters are currently not supported. In general the images do not necessarily need to be arranged in a rectilinear pattern and the image files can have arbitrary names, as long as the coordinates are as accurate as possible. This makes FEABAS also work for microscopes like [Zeiss MultiSEM](https://www.zeiss.com/microscopy/us/products/sem-fib-sem/sem/multisem.html). 
 
 #### section order file (optional)
 The filenames of the stitch coordinate text files define the name of the sections. By default, FEABAS assumes the order of sections in the final aligned stack can be reconstructed by sorting the section name alphabetically. If that's not the case, the user can define the right section order by providing an optional `section_order.txt` file directly under the working directory. In the file, each line is a section name corresponding to the stitch coordinate filenames (without `.txt` extension), and their positions in the file define their position in the aligned stack.
@@ -73,14 +87,16 @@ To enable FEABAS to identify the dataset it needs to process, the user needs to 
 ```yaml
 working_directory: FULL_PATH_TO_THE_WORKING_DIRECTORY_OF_THE_CURRENT_PROJECT
 cpu_budget: null
+parallel_framework: process
 
 full_resolution: 4
+section_thinkness: 30
 
 # logging configs
 ...
 ```
 
-The user can also define the number of CPU cores to use and the logging behaviors in `general_configs.yaml`. By default, FEABAS will try to use all the CPUs available; and log important info to the `logs` folder under the *working directory*, while keeping a more detailed record in the `logs/archive` folder.
+The user can also define the number of CPU cores to use and the logging behaviors in `general_configs.yaml`. By default, FEABAS will try to use all the CPUs available; and log important info to the `logs` folder under the *working directory*, while keeping a more detailed record in the `logs/archive` folder. When the image resolution is not defined in the stitching coordinate files, the default `full_resolution` value will be used. Similarly, if section thickness is not defined in the user `stitching_configs.yaml`, the thickness defined here in `general_configs.yaml` will be used.
 
 ### Stitching
 
@@ -116,7 +132,7 @@ To launch the rendering step, navigate to the FEABAS root directory, and run:
 python scripts/stitch_main.py --mode rendering
 ```
 
-It reads the transformation files in `(work_dir)/stitch/tform` folder, and renders the stitched section in the form of non-overlapping PNG tiles or [TensorStore](https://google.github.io/tensorstore/python/api/index.html) datasets (e.g. Neuroglancer precomputed format). The user can control the rendering process (like the output tile size, whether to use [CLAHE](https://en.wikipedia.org/wiki/Adaptive_histogram_equalization#Contrast_Limited_AHE) etc.) by manipulating the `rendering` element in the *working directory*'s `configs/stitching_configs.yaml` file. By default, FEABAS will render the images to the *working directory*. If the user would like to keep the *working directory* lightweight and put the stitched images elsewhere, it can be achieved by defining the target path (currently supporting local storage or [Google Cloud Storage](https://cloud.google.com/storage)) to `rendering: out_dir` field in the stitching configuration file
+It reads the transformation files in `(work_dir)/stitch/tform` folder, and renders the stitched section in the form of non-overlapping PNG tiles or [TensorStore](https://google.github.io/tensorstore/python/api/index.html) datasets (e.g. Neuroglancer precomputed format). The user can control the rendering process (like the output tile size, whether to use [CLAHE](https://en.wikipedia.org/wiki/Adaptive_histogram_equalization#Contrast_Limited_AHE) etc.) by manipulating the `rendering` element in the *working directory*'s `configs/stitching_configs.yaml` file. By default, FEABAS will render the images to the *working directory*. If the user would like to keep the *working directory* lightweight and put the stitched images elsewhere, it can be achieved by defining the target path (currently supporting local storage or [Google Cloud Storage](https://cloud.google.com/storage)) to `rendering: out_dir` field in the stitching configuration file.
 
 ### Thumbnail Alignment
 
@@ -150,7 +166,24 @@ This is the most error-prone step in the entire pipeline, so we'd like to advise
 
 As a last resort when thumbnail matching fails, FEABAS allows the user to manually define matching points via Fiji [BigWarp](https://imagej.net/plugins/bigwarp). First, load the failed pair of thumbnails from `(work_dir)/thumbnail_align/thumbnails` into [Fiji](https://imagej.net/software/fiji/), launch BigWarp, and select the first section as the `moving image` and the second section as the `target image`. Manually mark some corresponding points, preferably covering most of the overlapping regions, and export the landmarks as `(section_name_0)__to__(section_name_1).csv` file to `(work_dir)/thumbnail_align/manual_matches` folder. Navigate to the FEABAS root directory, then run `python tools/convert_manual_thumbnail_matches.py`, which will convert the manually defined matches and incorporate them into the downstream process.
 
-By default, the thumbnail-matching step assumes all the connected regions in the thumbnail should have smooth transformation fields when aligning with their neighbors. However, that is not always the case. For example, if a section is broken into multiple pieces, and all the pieces are imaged as a single montage, then these disconnected parts may need very different transformations to be pieced back together. FEABAS allows the user to address this issue by modifying the mask files saved in the `(work_dir)/thumbnail_align/material_masks`. Each section has one corresponding mask file in PNG format that should overlay with its thumbnail. In the mask images, black color defines the regions within the ROI and white defines those outside of the ROI. The user can simply use the white color to label the split site, and break the black partial sections into disconnected 'islands'. Then FEABAS will automatically find transformations distinctive to each broken piece (as long as the pieces are not too fragmented). More about the masks in the "Advanced Topic: Non-Smooth Transformation in Alignment" segment of this readme.
+By default, the thumbnail-matching step assumes all the connected regions in the thumbnail should have smooth transformation fields when aligning with their neighbors. However, that is not always the case. For example, if a section is broken into multiple pieces, and all the pieces are imaged as a single montage, then these disconnected parts may need very different transformations to be pieced back together. FEABAS allows the user to address this issue by modifying the mask files saved in the `(work_dir)/thumbnail_align/material_masks`. Each section has one corresponding mask file in PNG format that should overlay with its thumbnail. In the mask images, black color defines the regions within the ROI and white defines those outside of the ROI. The user can simply use the white color to label the split site, and break the black partial sections into disconnected 'islands'. Then FEABAS will automatically try to find transformations distinctive to each broken piece (as long as the pieces are not too fragmented). More about the masks in the "Advanced Topic: Non-Smooth Transformation in Alignment" segment of this readme.
+
+In some applications where the user only needs to use FEABAS for alignment of a single-tile stack, bypassing stitching, they can structure their working directory by making their images as if they were thumbnails; and start with the thumbnails step. If the image extention is not PNG, the setting `thumbnail_format` in `(work_dir)\configs\thumbnail_configs.yaml` needed to be changed to relect that. Also be sure to provide the mask files in `(work_dir)/thumbnail_align/material_masks`. Each mask file (in PNG format) should be the same size as its correspoding image files, with regions that contain the actually data painted black, and regions outside of the ROI painted white. If FEABAS, matchings are done after band-pass filtering the images, therefore telling the software where the imaged areas start by providing the mask is important to ensure the sharp borders will not interfere with the alignment. The mask files are also used for generaing the meshes for the optimization step. If the entire image contains data, a completely black image of the same size can be used as the material mask.
+
+For a standard FEABAS workflow, the user can go from here and directly go to the fine alignment steps. However, from version 3.0.1, FEABAS also provide the options to carry out the optimization and the rendering steps at the thumbnail level, by calling:
+
+```bash
+python scripts/thumbnail_main.py --mode optimization
+```
+
+and
+
+```bash
+python scripts/thumbnail_main.py --mode render
+```
+
+respectively. If the thumbnail optimization is done before the fine alignment, the transformations obtained will be applied to the full resolution fine meshes, making it the starting point of the fine alignment. The rendering step will render the images to the folder `(work_dir)/thumbnail_align/aligned_thumbnails_{thumbnail_resolution}nm`.
+
 
 ### Fine Alignment
 
@@ -175,6 +208,8 @@ python scripts/align_main.py --mode matching
 
 It reads all the matching files from the thumbnail alignment, finds the right images from the folder that stores the stitched images, and performs template matching at a higher resolution. The results will be saved to `(work_dir)/align/matches`. The working resolution for the fine matching step can be defined by `matching: working_mip_level` field in `alignment_configs.yaml`. It is advisable to select a working mipmap level that makes the xy resolution of the image closer to its section thickness, making it more isotropic. For example, with 4nm full-resolution datasets, one can elect mip2 (16nm) or mip3 (32nm) for 30nm thick sections, or mip4 (64nm) for 80 nm sections.
 
+Personally, I like to run `tools\visualize_align_match_coverage.py` after the matching step to generate the visualizations of the matching locations (saved to `(work_dir)/align/matches/match_cover/`). In these visualization, colored areas indicates a lack of matches. I found it is very useful for quality control.
+
 
 #### optimization
 
@@ -184,7 +219,27 @@ To run the optimization step of the alignment workflow, navigate to the FEABAS r
 python scripts/align_main.py --mode optimization
 ```
 
-It loads the meshes in `(work_dir)/align/mesh` folder, arranges them in alphabetical order (or follows the order in `(work_dir)/section_order.txt` if provided), and uses the matches in `(work_dir)/align/matches` to drive the meshes into alignment. The aligned meshes are saved to `(work_dir)/align/tform` folder. FEABAS follows a "sliding window" strategy to perform the optimization step. It first selects a continuous subblock in the stack (size and location defined by `window_size` and `start_loc` fields in `alignment_configs.yaml`), optimizes within the block, and then moves the "window" to a neighboring block to repeat the process. The blocks before and after the "window" movement share a fixed number of sections (defined by `buffer_size` in `alignment_configs.yaml`), so that they are anchored to the same coordinate system.
+It loads the meshes in `(work_dir)/align/mesh` folder, arranges them in alphabetical order (or follows the order in `(work_dir)/section_order.txt` if provided), and uses the matches in `(work_dir)/align/matches` to drive the meshes into alignment. The aligned meshes are saved to `(work_dir)/align/tform` folder. FEABAS offers two options to perform the optimization step:
+
+- "sliding window": It first selects a continuous subblock in the stack (size and location defined by `window_size` and `start_loc` fields in `alignment_configs.yaml`), optimizes within the block, and then moves the "window" to a neighboring block to repeat the process. The blocks before and after the "window" movement share a fixed number of sections (defined by `buffer_size` in `alignment_configs.yaml`), so that they are anchored to the same coordinate system.
+
+- "chunked": The stack will first be broken into small continuous "chunks" and do the optimization within each chunks. Then the sections within each chunk aligned to each other will be merged as a "meta-section", and the matches at the interfaces between the chunks will be used to align these "meta-sections". The transformtion of each "meta-section" after the meta-section alignment will be applied to its member sections. Finally, some local relaxation will be done to smoothen the transition between chunks.
+
+	The choice between the two options is controled by `optimization: chunk_settings` in `alignment_configs.yaml` config file. For example, the following is one possible settings:
+
+	```yaml
+	# in alignment_configs.yaml
+	optimization:
+		chunk_settings:
+			chunked_to_depth: 1
+			default_chunk_size: 16
+			junction_width: 0.2
+		...
+	```
+
+	- chunked_to_depth: if set to 0, the "sliding window" strategy will be used. Anything larger than 0 indicates that the "chunked" strategy is used. Note that the "meta-section" alignment could also be chunked. The `chunk_to_depth` setting basically defines how many layers of "meta-section" alignment would be "chunked". For example, if set to 2, then the orignal sections would be chunked,  their meta-sections would also be "chunked", but the "meta-sections" of the first layer of "meta-sections" would be aligned using the "sliding window" option.
+	- default_chunk_size: determines the number of sections in each chunk. If more control is needed over how the sections are chunked (e.g. for [ibeam-msem system](https://academic.oup.com/mam/article/30/Supplement_1/ozae044.313/7720269)), a user can create a json file at `(work_dir)/align/chunk_map.json`, with the names the chunks as its property names and the lists of section names as its property values (e.g. {"chunk1": ["section0", "section1, "section2"], "chunk2":["section3", "section4", "section5"], ...}). 
+	- junction_width: determines the number of sections (w.r.t. the chunk sizes) at the interfaces between chunks considered as 'junctional sections'. The junctional sections are relaxed again in the final step of the "chunked" alignment to smoothen the transition between chunks.
 
 Note that if there are meshes already existing in `(work_dir)/align/tform` folder when the optimization command is executed, the program will load those meshes instead of the meshes of the corresponding sections in `(work_dir)/align/mesh` folder; and treat those sections as 'locked', i.e. not allowed to move and only serve as references to the rest of the stack during the remaining optimization process.
 
@@ -202,23 +257,27 @@ Again, the user can control the details of the rendering process via `rendering`
 Alternatively, the aligned stack can also be rendered as a [TensorStore](https://google.github.io/tensorstore/python/api/index.html) volume, instead by running:
 
 ```bash
-python scripts/align_main.py --mode tensorstore_render
+python scripts/align_main.py --mode tsr
 ```
 
 The details of the rendering process are controlled by the `tensorstore_rendering` settings in `alignment_configs.yaml`. Note that currently the `rendering` settings and `tensorstore_rendering` are independent, i.e. change to one will not affect the behavior of the other alternative rendering format. The TensorStore rendering supports both local storage and Google Cloud storage destinations.
 
 
-#### generate mipmaps for VAST
+#### generate mipmaps
 
-The user can also run:
+If the user used `--mode render` in the last step, they can also run:
 
 ```bash
 python scripts/align_main.py --mode downsample
 ```
 to generate the mipmaps of the aligned stack for visualization in [VAST](https://lichtman.rc.fas.harvard.edu/vast/).
 
-If in the previous step, the aligned stack was rendered as a Tensorstore Volume, FEABAS currently does not provide a convenient way to create mipmaps. But this can easily achieved from existing third-party tools, e.g. [igneous](https://github.com/seung-lab/igneous#downsampling-downsampletask).
 
+If `--mode tsr` was used in the last step, the following command should be used instead to generate mipmaps:
+
+```bash
+python scripts/align_main.py --mode tsd
+```
 
 ### distribute works on different machines
 
@@ -229,7 +288,12 @@ python scripts/stitch_main.py --mode rendering --start 5 --stop 20 --step 3
 ```
 will only render every third section, starting from section #5 until section #20.
 
-This becomes handy for distributing works on multiple machines in e.g. an production environment managed by [Slurm](https://slurm.schedmd.com/documentation.html)
+This becomes handy for distributing works on multiple machines in e.g. an production environment managed by [Slurm](https://slurm.schedmd.com/documentation.html). For some steps, like downsampling aligned TensorStore images, it is advised to run the command again on a single machine without arguments to make sure every part of the data is covered.
+
+
+### TensorStore related RAM issue
+
+I noticed that on some machines, the FEABAS steps involving usage of [TensorStore](https://google.github.io/tensorstore/) (e.g. rendering, downsampling, alignment matching) may lead to large RAM usage, which based on my current theory is caused by memory fragmentation. If you are on a linux machine, this can be mitigated by switiching to a different allocator (e.g. tcmalloc), or lowering the `MALLOC_ARENA_MAX` environment variable.
 
 
 ### Advanced Topic: Non-Smooth Transformation in Alignment
@@ -238,24 +302,22 @@ The strength of finite element analysis lies in its ability to handle a wide ran
 
 At the core of this feature's interface are two key components: material property configuration files and material masks.
 
-- material property configuration files: this can be either `configs/material_table.json` file in the working directory, or `configs/default_material_table.json` in the FEABAS directory if the previous one is not present. The JSON files provided a list of materials, their properties, and their corresponding labels in the material masks. Here is an example of the definition of one material called "wrinkle" in `default_material_table.json`:
-	```json
-	"wrinkle": {
-	"mask_label": 50,
-	"enable_mesh": true,
-	"area_constraint": 0,
-	"render": true,
-	"render_weight": 1.0e-3,
-	"type": "MATERIAL_MODEL_ENG",
-	"poisson_ratio": 0.0,
-	"stiffness_multiplier": 0.05,
-	"stiffness_func_factory": "feabas.material.asymmetrical_elasticity",
-	"stiffness_func_params": {
-		"strain": [0.0, 0.75, 1.0, 1.01],
-		"stiffness": [1.5, 1.0, 0.5, 0.0]
-		},
-	"uid": 3
-	}
+- material property configuration files: this can be either `configs/material_table.yaml` file in the working directory, or `configs/default_material_table.yaml` in the FEABAS directory if the previous one is not present. The JSON files provided a list of materials, their properties, and their corresponding labels in the material masks. Here is an example of the definition of one material called "wrinkle" in `default_material_table.yaml`:
+
+	```yaml
+	wrinkle: 
+		mask_label: 50
+		enable_mesh: true
+		area_constraint: 0
+		render: true
+		render_weight: 1.0e-3
+		type: MATERIAL_MODEL_ENG
+		stiffness_multiplier: 0.4
+		poisson_ratio: 0.0
+		stiffness_func_factory: feabas.material.asymmetrical_elasticity
+		stiffness_func_params:
+			strain: [0.0, 0.75, 1.0, 1.01]
+			stiffness: [1.5, 1.0, 0.5, 0.0]
 	```
 	- mask_label: the label representing this material in the material mask image files. For example, here all the pixels with a grayscale value of 50 will be designated as "wrinkle" material. Label 0 is reserved for default (normal) material, and 255 is reserved for empty regions.
 	- enable_mesh: whether to generate mesh on regions defined by the material. If set to false, the labeled region will be excluded and considered empty.
@@ -263,10 +325,9 @@ At the core of this feature's interface are two key components: material propert
 	- render: whether to render the region assigned to this material. If set to false, the material will still exert its mechanical effects during the mesh relaxation step, but will not be rendered eventually.
 	- render_weight: this is a variable that defines the priority for rendering. After transforming the mesh, some regions of the mesh may collide with other regions of the same mesh. In that case, materials with larger "render_weight" values will have a higher priority to be rendered. If the colliding parts have the same "render_weight", then the overlapping region will be split along the mid-line and each colliding partner will render its own half.
 	- type: the type of the element to use for this material. Options are: `"MATERIAL_MODEL_ENG"` for [engineering (linear)](https://en.wikipedia.org/wiki/Linear_elasticity) model, `"MATERIAL_MODEL_SVK"` for [Saint Venant-Kirchhoff](https://en.wikipedia.org/wiki/Hyperelastic_material#Saint_Venant.E2.80.93Kirchhoff_model) model, or `"MATERIAL_MODEL_NHK"` for [Neo-Hookean](https://en.wikipedia.org/wiki/Neo-Hookean_solid) model. In practice, we found that `"MATERIAL_MODEL_ENG"` is sufficient for most of the cases.
-	- poisson_ratio: [Poisson's ratio](https://en.wikipedia.org/wiki/Poisson%27s_ratio) to use if `type` is set to `"MATERIAL_MODEL_ENG"`.
 	- stiffness_multiplier: multiplier applied to the stiffness matrix. Smaller values give softer materials and larger values make more rigid ones. The default material has a multiplier of 1.0.
+	- poisson_ratio: [Poisson's ratio](https://en.wikipedia.org/wiki/Poisson%27s_ratio) to use if `type` is set to `"MATERIAL_MODEL_ENG"`.
 	- stiffness_func_factory: function used to define nonlinear stress/strain relationship. It takes the keyword arguments defined in `stiffness_func_params`, and returns a function that maps the relative area change to a stiffness multiplier. For example, here I implemented `feabas.material.asymmetrical_elasticity` which is a wrapper around a linear interolator. By providing it with the strain/stiffness sample points in `stiffness_func_params`, it describes a material that can freely expand (strain > 1) but is hard to compress (strain < 1), which is exactly what we need to model the wrinkles. If set to null, the material stiffness is not a function of its area change.
-	- uid: a unique identifier for each material. can be any integer other than 0 (reserved for the default material) and -1 (reserved for empty regions).
 
 - material masks: for each section with artifacts that requires a non-smooth deformation field to align, a material mask should be provided. A material mask is a single PNG image (or a coordinate TXT file) that sits in the stitched image space. The grayscale value (`mask_label` in `material_table.json`) of each pixel in the mask image specifies the material type of the corresponding pixels of the stitched image (of the same mipmap level). Without any special treatment, FEABAS will automatically generate a mask for each section during the `thumbnail alignment > downsample` step. Those masks are at the same mipmap level as the thumbnails, and assume the section has normal properties (smooth deformation) everywhere within the imaged ROI. As mentioned earlier, a user can modify those masks to amend severe artifacts like split sections during the thumbnail alignment process. Later during the fine alignment step, FEABAS will use these thumbnail masks by default. However, a user can provide more precise masks at a higher resolution in `(work_dir)/align/material_masks` folder and specify their mipmap levels in the `alignment_configs.yaml` file. FEABAS will automatically use the higher-quality masks if they are available during the meshing/matching steps of the fine alignment workflow.
 The generation of such masks falls outside the scope of this package. It can be done manually, or the user can try out a specialized deep-learning tool [PyTorch Connectomics](https://connectomics.readthedocs.io/en/latest/tutorials/artifact.html) developed by our collaborators from Pfister Lab at Harvard University.

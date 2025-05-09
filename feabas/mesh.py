@@ -17,9 +17,9 @@ import shapely.geometry as shpgeo
 from shapely.ops import polygonize, unary_union
 import triangle
 
-from feabas import common, material, spatial, caching
+from feabas import common, dal, material, spatial, caching
 import feabas.constant as const
-from feabas.config import DEFAULT_RESOLUTION
+from feabas.config import data_resolution
 from feabas.storage import h5file_class, join_paths
 
 H5File = h5file_class()
@@ -262,7 +262,7 @@ class Mesh:
                 self._stiffness_multiplier = self._stiffness_multiplier[indx]
         self.triangles = triangles
         self._material_ids = material_ids
-        self._resolution = kwargs.get('resolution', DEFAULT_RESOLUTION)
+        self._resolution = kwargs.get('resolution', data_resolution())
         self._epsilon = kwargs.get('epsilon', const.EPSILON0)
         self._name = kwargs.get('name', '')
         if isinstance(self._name, np.ndarray):
@@ -288,6 +288,7 @@ class Mesh:
             self.uid = float(uid)
             Mesh.uid_counter = float(max(Mesh.uid_counter, uid) + 1)
         self.is_outcast = False
+        self.modified_in_current_session = kwargs.get('modified', False)
 
 
     @classmethod
@@ -305,8 +306,8 @@ class Mesh:
                 meshing performance, default to 0.
         """
         material_table = kwargs.get('material_table', material.MaterialTable())
-        resolution = kwargs.get('resolution', DEFAULT_RESOLUTION)
-        mesh_size = kwargs.get('mesh_size', (400*DEFAULT_RESOLUTION/resolution))
+        resolution = kwargs.get('resolution', data_resolution())
+        mesh_size = kwargs.get('mesh_size', (400*data_resolution()/resolution))
         min_angle = kwargs.get('min_mesh_angle', 0)
         mesh_area = mesh_size ** 2
         regions = []
@@ -386,8 +387,8 @@ class Mesh:
         initialize an equilateral mesh that covers the (Multi)Polygon region
         defined by mask.
         """
-        resolution = kwargs.get('resolution', DEFAULT_RESOLUTION)
-        mesh_size = kwargs.get('mesh_size', (400*DEFAULT_RESOLUTION/resolution))
+        resolution = kwargs.get('resolution', data_resolution())
+        mesh_size = kwargs.get('mesh_size', (400*data_resolution()/resolution))
         vertices = spatial.generate_equilat_grid_mask(mask, mesh_size)
         triangles = triangle.delaunay(vertices)
         edges = Mesh.triangle2edge(triangles, directional=True)
@@ -403,8 +404,8 @@ class Mesh:
         # [xmin, ymin, xmax, ymax]
         if cartesian:
             # return a mesh from cartetian grids
-            resolution = kwargs.get('resolution', DEFAULT_RESOLUTION)
-            mesh_size = kwargs.get('mesh_size', (100*DEFAULT_RESOLUTION/resolution)) # tentative block size
+            resolution = kwargs.get('resolution', data_resolution())
+            mesh_size = kwargs.get('mesh_size', (100*data_resolution()/resolution)) # tentative block size
             max_aspect_ratio = kwargs.get('max_aspect_ratio', 2) # the maximum aspect ratio of each block
             min_num_blocks = kwargs.get('min_num_blocks', 1) # minimum number of blocks on each side
             xmin, ymin, xmax, ymax = bbox
@@ -448,8 +449,8 @@ class Mesh:
                 multiples of the mesh size. Otherwise, adjust the mesh size
             mesh_growth: increase of the mesh size in the interior region.
         """
-        resolution = kwargs.get('resolution', DEFAULT_RESOLUTION)
-        mesh_size = kwargs.get('mesh_size', (400*DEFAULT_RESOLUTION/resolution))
+        resolution = kwargs.get('resolution', data_resolution())
+        mesh_size = kwargs.get('mesh_size', (400*data_resolution()/resolution))
         tan_theta = np.tan(55*np.pi/180) / 2
         xmin, ymin, xmax, ymax = bbox
         ht = ymax - ymin
@@ -563,7 +564,8 @@ class Mesh:
             init_dict['stiffness_multiplier'] = self._stiffness_multiplier
         if save_material:
             init_dict['material_ids'] = self._material_ids
-            init_dict['material_table'] = self._material_table.save_to_json()
+            mtb = self._material_table.uid_filterred_material_table(np.unique(self._material_ids))
+            init_dict['material_table'] = mtb.save_to_json()
         init_dict['resolution'] = self._resolution
         init_dict['epsilon'] = self._epsilon
         if bool(self._name):
@@ -618,6 +620,7 @@ class Mesh:
                 init_dict['name'] = new_name
         if ('locked' not in kwargs):
             init_dict['locked'] = self.locked
+        init_dict['modified'] = self.modified_in_current_session
         return self.__class__(**init_dict)
 
 
@@ -688,6 +691,8 @@ class Mesh:
         triangles = []
         stiffness = []
         num_vertices = 0
+        locked = False
+        modified = False
         for m in meshes:
             m.change_resolution(resolution0)
             for g in const.MESH_GEARS:
@@ -699,8 +704,16 @@ class Mesh:
             stiffness.append(m.stiffness_multiplier)
             epsilon0 = min(epsilon0, m._epsilon)
             if save_material:
-                material_table0.combine_material_table(m._material_table)
-                material_ids.append(m._material_ids)
+                uid_changes = material_table0.combine_material_table(m._material_table)
+                material_ids_new = m._material_ids.copy()
+                for uidc in uid_changes:
+                    uid_old, uid_new = uidc
+                    material_ids_new[m._material_ids == uid_old] = uid_new
+                material_ids.append(material_ids_new)
+            if m.locked:
+                locked = True
+            if m.modified_in_current_session:
+                modified = True
         init_dict['vertices'] = np.concatenate(vertices[const.MESH_GEAR_INITIAL], axis=0)
         init_dict['triangles'] = np.concatenate(triangles, axis=0)
         if vertices_initialized[const.MESH_GEAR_FIXED]:
@@ -732,7 +745,8 @@ class Mesh:
         else:
             init_dict['name'] = meshes[0]._name
         init_dict['uid'] = np.floor(meshes[0].uid)
-        init_dict['locked'] = meshes[0].locked
+        init_dict['locked'] = locked
+        init_dict['modified'] = modified
         init_dict.update(kwargs)
         return cls(**init_dict)
 
@@ -761,10 +775,11 @@ class Mesh:
         return cls(**init_dict)
 
 
-    def save_to_h5(self, fname, vertex_flags=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING),
-                   override_dict=None, **kwargs):
+    def save_to_h5(self, fname, vertex_flags=None, override_dict=None, **kwargs):
         if override_dict is None:
             override_dict = {}
+        if vertex_flags is None:
+            vertex_flags = [g for g in const.MESH_GEARS if self.vertices_initialized(gear=g)]
         prefix = kwargs.get('prefix', '')
         save_material = kwargs.get('save_material', True)
         compression = kwargs.get('compression', True)
@@ -1016,21 +1031,7 @@ class Mesh:
 
 
     def set_material_table(self, mtb):
-        if isinstance(mtb, str):
-            if mtb[-5:] == '.json':
-                material_table = material.MaterialTable.from_json(mtb, stream=False)
-            else:
-                material_table = material.MaterialTable.from_json(mtb, stream=True)
-        elif isinstance(mtb, material.MaterialTable):
-            material_table = mtb
-        elif isinstance(mtb, np.ndarray):
-            ss = common.numpy_to_str_ascii(mtb)
-            if ss[-5:] == '.json':
-                material_table = material.MaterialTable.from_json(ss, stream=False)
-            else:
-                material_table = material.MaterialTable.from_json(ss, stream=True)
-        else:
-            material_table = material.MaterialTable()
+        material_table = material.MaterialTable.from_pickleable(mtb)
         self._material_table = material_table
 
 
@@ -1105,7 +1106,6 @@ class Mesh:
     def linearize_material(self, gear=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING), delta_t=(1.0, 1.0)):
         if not self.is_linear:
             mtb = self.material_table
-            mx_mid = np.max(list(mtb.keys()))
             named_mtb = self.named_material_table
             m_name_lut = {m.uid: nm for nm, m in named_mtb.items()}
             mids = self.material_ids
@@ -1131,13 +1131,13 @@ class Mesh:
                         mat_dict = named_mtb[m_name].to_dict()
                         mat_dict.pop('stiffness_func_factory', None)
                         mat_dict.pop('stiffness_func_params', None)
-                        uid_new = mx_mid + 1
-                        mat_dict['uid'] = uid_new
-                        mx_mid += 1
                         mat_new = material.Material(**mat_dict)
+                        uid_new = mat_new.uid
                         self._material_table.add_material(m_name_new, mat_new)
                     stiffness_multiplier[tidx] = stiffness_multiplier[tidx] * modifier
                     self._material_ids[tidx] = uid_new
+            self._linearity = None
+            self._linear_triangle_mask = None
             self.set_stiffness_multiplier(stiffness_multiplier)
 
 
@@ -1405,6 +1405,7 @@ class Mesh:
     def _vertices_changed(self, gear):
         self._update_caching_keys(gear=gear)
         self.clear_cached_attr(gear=gear)
+        self.modified_in_current_session = True
         for g in const.MESH_GEARS:
             if (g > gear) and (self._vertices[g] is None):
                 self._vertices_changed(gear=g)
@@ -1491,6 +1492,19 @@ class Mesh:
                     break
             self._linearity = linearity
         return self._linearity
+
+
+    @property
+    def linear_triangle_mask(self):
+        if (not hasattr(self, '_linear_triangle_mask')) or (self._linear_triangle_mask is None):
+            self._linear_triangle_mask = np.ones(self.num_triangles, dtype=bool)
+            material_table = self.material_table
+            for mid in np.unique(self.material_ids):
+                mat = material_table[mid]
+                if not mat.is_linear:
+                    self._linear_triangle_mask[self.material_ids == mid] = False
+        return self._linear_triangle_mask
+
 
 
     def segments(self, tri_mask=None, **kwargs):
@@ -1637,6 +1651,14 @@ class Mesh:
         return D
 
 
+    @config_cache('TBD')
+    def triangle_areas(self, gear=const.MESH_GEAR_INITIAL):
+        vertices = self.vertices(gear=gear)
+        T = self.triangles
+        A = common.signed_area(vertices, T)
+        return A
+
+
     @config_cache(const.MESH_GEAR_INITIAL)
     def connected_vertices(self, tri_mask=None, local_index=True):
         """
@@ -1774,6 +1796,22 @@ class Mesh:
                     if Lt.intersection(pp).area > 0:
                         polygons.append(pp)   
         return unary_union(polygons)
+
+
+    def shape_compactness(self, gear=None, stiffness_threshold=0.9):
+        mat_ids = self.material_ids
+        mid_u, ind_inv = np.unique(mat_ids, return_inverse=True)
+        material_table = self.material_table
+        m_stiffness_u = np.zeros_like(mid_u, dtype=np.float32)
+        for k, mid in enumerate(mid_u):
+            mat = material_table[mid]
+            m_stiffness_u[k] = mat.stiffness_multiplier
+        m_stiffness = m_stiffness_u[ind_inv]
+        tri_mask = m_stiffness >= stiffness_threshold * np.max(m_stiffness_u)
+        G = self.shapely_regions(gear=gear, tri_mask=tri_mask, offsetting=False)
+        L = G.boundary.length
+        A = G.area
+        return L / A
 
 
     @config_cache('TBD')
@@ -2618,11 +2656,28 @@ class Mesh:
         indices = []
         F0 = []
         F1 = []
+        tri_areas = None
         for mid, vals in shape_matrices.items():
             mat = material_table[mid]
             indx, Ms = vals
             uv = dxy[self.triangles[indx]].reshape(-1, 6)
-            K, P, flp = mat.element_stiffness_matrices_from_shape_matrices(Ms, uv=uv, **kwargs)
+            if not mat.is_linear:
+                if tri_areas is None:
+                    v_ini = self.vertices(gear=const.MESH_GEAR_INITIAL)
+                    area0 = common.signed_area(v_ini, self.triangles)
+                    area1 = common.signed_area(v1, self.triangles)
+                    linear_triangle_mask = self.linear_triangle_mask
+                    if np.any(linear_triangle_mask):
+                        baseline_ratio = np.sum(np.abs(area1[linear_triangle_mask])) / np.sum(np.abs(area0[linear_triangle_mask]))                        
+                    else:
+                        baseline_ratio = np.sum(np.abs(area1)) / np.sum(np.abs(area0))
+                    tri_areas = (area0, area1)
+                area0, area1 = tri_areas
+                area_stretch = np.sum(area1[indx]) / np.sum(area0[indx])
+                area_stretch = area_stretch / baseline_ratio
+            else:
+                area_stretch = None
+            K, P, flp = mat.element_stiffness_matrices_from_shape_matrices(Ms, uv=uv, area_stretch=area_stretch, **kwargs)
             if flp:
                 flipped = True
                 if not continue_on_flip:
@@ -2770,7 +2825,7 @@ def transform_mesh(M0, Mt, **kwargs):
     Mt: mesh containing the transformatiom
     """
     gears = kwargs.get('gears', (const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING)) # for source mesh
-    tgears=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING) # for transformation mesh
+    tgears = kwargs.get('tgears', (const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING)) # for transformation mesh
     resolution0 = M0.resolution
     Mt.change_resolution(resolution0)
     v0 = M0.vertices_w_offset(gear=gears[0])
@@ -2778,3 +2833,29 @@ def transform_mesh(M0, Mt, **kwargs):
     v1 = Mt.bary2cart(tid, B, tgears[1], offsetting=True)
     M0.set_field(v1-v0, gear=gears)
     return M0
+
+
+def mesh_from_mask(mask, **kwargs):
+    material_table = kwargs.get('material_table', material.MaterialTable())
+    simplify_tol = kwargs.pop('simplify_tol', 2)
+    area_thresh = kwargs.pop('area_thresh', 0)
+    if isinstance(mask, dal.AbstractImageLoader):
+        resolution = mask.resolution
+    else:
+        resolution = kwargs.get('resolution')
+    material_table = material.MaterialTable.from_pickleable(material_table)
+    kwargs['material_table'] = material_table
+    if isinstance(simplify_tol, dict):
+        region_tols = defaultdict(lambda: 0.1)
+        region_tols.update(simplify_tol)
+    else:
+        region_tols = defaultdict(lambda: simplify_tol)
+    G = spatial.Geometry.from_image_mosaic(mask, material_table=material_table, resolution=resolution)
+    PSLG = G.PSLG(region_tol=region_tols, roi_tol=0, area_thresh=area_thresh)
+    PSLG.update(kwargs)
+    M = Mesh.from_PSLG(**PSLG)
+    if ('split' in material_table.named_table):
+        mid = material_table.named_table['split'].uid
+        m_indx = M.material_ids == mid
+        M.incise_region(m_indx)
+    return M

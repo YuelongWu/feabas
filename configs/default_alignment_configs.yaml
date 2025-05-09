@@ -2,7 +2,7 @@ meshing:
     num_workers: 15
     mesh_size: 600  # spacings between mesh grids in pixel at mip0
     simplify_tol: 2 # when approximate regions defined by mask images to polygon, the tolerance of distance error
-    mask_dir: null  # the folder contains the material masks. if set to null, default to working_directory/align/material_masks. If mask not exist in this folder, use the one in the thumbnail folder     
+    mask_dir: null  # the folder contains the material masks. if set to null, default to working_directory/align/material_masks. If mask not exist in this folder, use the one in the thumbnail folder
     mask_mip_level: 4 # the resolution of the masks in mask_dir folder
     area_thresh: 25 # regions with area smaller than the threshold will be discarded
 
@@ -20,23 +20,26 @@ matching:
         distributor: cartesian_region   # cartesian_region/intersect_triangulation
         spacings: [400, 100]    # distance between grid points at each coarse-to-fine level
         shrink_factor: 0.7  # the size of the cropped fft tiles compared to the spacings
-        residue_mode: threshold # huber or threshold or None, deciding how to damp matches with large residue errors after optimization
-        residue_len: 3  # characteristic residue distance used for damping. use 0 to skip
+        residue_mode: huber # huber or threshold or None, deciding how to damp matches with large residue errors after optimization
+        residue_len: -2  # characteristic residue distance used for damping. use 0 to skip. if < 0, the residue_len will be converted to abs(residue_len)*section_thinkness/working_resolution
         min_boundary_distance: 20   # minimum distance allowed from a matching point to the boundary of the meshes
         stiffness_multiplier_threshold: 0.1 # material with stiffness multiplier smaller than this will not be considered during the matching process
         render_weight_threshold: 0.1  # material with render weight smaller than this will not be rendered during the matching process
 
 optimization:
+    num_workers: 5
+    chunk_settings: # settings to control the behavior when alignment is done in chuncks
+        chunked_to_depth: 0  # if 0, use slide window directly. Otherwise, group sections into chunks, first align witin chunks, then treat each chunk as "meta-sections" and align those. depth>1 means meta-sections will also aligned in chunks until 'depth' recursion
+        default_chunk_size: 16  # the default size of chunks when chunk_map json file is not provided
+        junction_width: 0.2 # number of sections to be re-relaxed in the end at the junctions between chunks. If fraction, it's related to the chunk size.
     stack_config:
         mip_level: 0    # all the matching points and meshes are scaled to this mip level before optimization
-        mesh_cache_size: 90 # number of meshes to cache in RAM. should be larger than window_size + buffer_size
     slide_window:
-        num_workers: 2
         start_loc: M    # starting location of the optimization. L: left, R: right, M: start from middle and move in both directions
         window_size: 64 # the width of the sliding window
         buffer_size: 16 # the number of overlapping sections to re-optimize when window is moved, to minimize potential fringe effects.
         residue_mode: huber
-        residue_len: 20 # matching points with error larger than this width will be weakened in the second round of mesh relaxation
+        residue_len: -3 # matching points with error larger than this width will be weakened in the second round of mesh relaxation; if < 0, the residue_len will be converted to abs(residue_len)*section_thinkness/working_resolution
         elastic_params:
             tol: 1.0e-7 # convergence tolerance for the solver
             atol: 0.001
@@ -46,7 +49,7 @@ optimization:
                 timeout: null   # maximum time (in second) allowed for each round of optimization. After the timeout, select the best solution so far
                 early_stop_thresh: null # if after each step, the maximum movement of the mesh points is smaller than this, consider it a insiginificant update
                 chances: null   # number of insignificant or diverge steps allowed before an early stop envoked
-                eval_step: 10   # the interval (in steps) when the significance of the updates is evaluated 
+                eval_step: 10   # the interval (in steps) when the significance of the updates is evaluated
 
 rendering:
     num_workers: 15
@@ -63,7 +66,7 @@ rendering:
     loader_config:
         cache_size: 50
         fillval: 0
-        apply_CLAHE: false  # should already be applied during stitching 
+        apply_CLAHE: false  # should already be applied during stitching
 
 downsample:
     num_workers: 15
@@ -78,13 +81,26 @@ tensorstore_rendering: # render to tensorstore volume
     z_min: 0    # minimum z index of the volume. value other than 0 seems to cause error for some reason...
     z_max: null # maximum z index (exclusive) of the volume. If set to null, count the section number.
     driver: neuroglancer_precomputed
-    outdir: null # directory to save the aligned stack. if set to null, default to working_directory/aligned_tensorstore
-    chunk_shape: [1024, 1024, 16]
-    read_chunk_shape: [128, 128, 16]
+    jpeg_compression: false
+    out_dir: null # directory to save the aligned stack. if set to null, default to working_directory/aligned_tensorstore
+    chunk_shape: [2048, 2048, 64]
+    read_chunk_shape: [256, 256, 16]
     canvas_bbox: null   # if set to null, use the extremes of all the meshes to determine: may be problematic if the transformations are changed between different rendering rounds
-    max_tile_per_job: 320
+    cache_capacity: 30000  # use to control pool restart, in MiB
+    max_tile_per_job: null
     remap_interp: LANCZOS # LANCZOS | CUBIC | LINEAR | NEAREST
     loader_config:
         cache_size: 0
         fillval: 0
-        apply_CLAHE: false  # should already be applied during stitching 
+        apply_CLAHE: false  # should already be applied during stitching
+
+
+tensorstore_downsample:
+    num_workers: 5
+    mip_levels: [1, 3, 5, 7]
+    z_range: null
+    cache_capacity: 20000    # use to control pool restart, in MiB
+    downsample_z: auto      # a list of the same length to mip_levels, or "auto" to maintain isotropy when possible
+    keep_chunk_layout: True # if use the same chunk shape as the high-res volume, or shrink it
+    out_dir: null    # if set to null, place to the same directory as the full-res images
+    jpeg_compression: True  # whether to use jpeg encoding

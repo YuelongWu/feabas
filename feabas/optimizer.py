@@ -6,7 +6,7 @@ import scipy
 from scipy import sparse
 import time
 
-from feabas import spatial, common, caching, storage
+from feabas import config, spatial, common, caching, storage
 import feabas.constant as const
 from feabas.mesh import Mesh
 
@@ -17,6 +17,13 @@ class Link:
     """
     def __init__(self, mesh0, mesh1, tid0, tid1, B0, B1, weight=None, **kwargs):
         name = kwargs.get('name',  None)
+        self.strain = kwargs.get('strain', config.DEFAULT_DEFORM_BUDGET)
+        self._sample_err = kwargs.get('sample_err', None)
+        if self._sample_err is None:
+            A0 = mesh0.triangle_areas(gear=const.MESH_GEAR_INITIAL)[tid0]
+            A1 = mesh1.triangle_areas(gear=const.MESH_GEAR_INITIAL)[tid1]
+            sample_err = 0.4387 * (np.minimum(A0, A1))**0.5 * self.strain
+            self._sample_err = sample_err
         self.uids = [mesh0.uid, mesh1.uid]
         if name is None:
             self.name = self.default_name
@@ -85,24 +92,34 @@ class Link:
             aB1 = other._B1
             atid0 = other._tid0
             atid1 = other._tid1
+        wtsum, ot_wtsum = np.sum(self._weight), np.sum(other._weight)
+        self.strain = (self.strain *wtsum + other.strain * ot_wtsum)/(wtsum + ot_wtsum)
         self._B0 = np.concatenate((self._B0, aB0), axis=0)
         self._B1 = np.concatenate((self._B1, aB1), axis=0)
         self._tid0 = np.concatenate((self._tid0, atid0), axis=0)
         self._tid1 = np.concatenate((self._tid1, atid1), axis=0)
         self._weight = np.concatenate((self._weight, other._weight), axis=0)
         self._residue_weight = np.concatenate((self._residue_weight, other._residue_weight), axis=0)
+        self._sample_err = np.concatenate((self.sample_err, other.sample_err), axis=0)
         self._mask = None
 
 
     def equation_contrib(self, index_offsets, **kwargs):
         """computing the contribution needed to add to the FEM assembled matrix."""
         if (not self.relevant) or (self.num_matches == 0) or ((index_offsets[0] < 0) and (index_offsets[1] < 0)):
-            return None, None, None, None
+            return None, None, None, None, 0
         start_gear = kwargs.get('start_gear', const.MESH_GEAR_MOVING)
         targt_gear = kwargs.get('target_gear', const.MESH_GEAR_MOVING)
+        shape_gear = kwargs.get('shape_gear', const.MESH_GEAR_FIXED)
         num_matches = self.num_matches
         gears = [targt_gear if m.locked else start_gear for m in self.meshes]
         m_rht = self.dxy(gear=gears, use_mask=True)
+        wt  = self.weight(use_mask=True)
+        if shape_gear != start_gear:
+            dxy_energy = self.dxy(gear=[targt_gear if m.locked else shape_gear for m in self.meshes], use_mask=True)
+        else:
+            dxy_energy = m_rht
+        energy = np.sum(np.sum(dxy_energy ** 2, axis=-1) * wt)
         L_b = []  # barycentric coordinate matrices
         L_indx = [] # indices in the assembled system matrix
         if not self.meshes[0].locked:
@@ -123,7 +140,6 @@ class Link:
         # left-hand side:
         indx0_lft = np.concatenate((indx0.ravel(), indx0.ravel()+1))
         indx1_lft = np.concatenate((indx1.ravel(), indx1.ravel()+1))
-        wt  = self.weight(use_mask=True)
         if np.any(wt != 1):
             C = wt.reshape(-1,1,1) * C
             rht_x = wt.reshape(-1,1) * rht_x
@@ -132,7 +148,7 @@ class Link:
         # right-hand side
         indx_rht = np.concatenate((indx.ravel(), indx.ravel()+1))
         V_rht = np.concatenate((rht_x.ravel(), rht_y.ravel()))
-        return V_lft, (indx0_lft, indx1_lft), V_rht, indx_rht
+        return V_lft, (indx0_lft, indx1_lft), V_rht, indx_rht, energy
 
 
     def adjust_weight_from_residue(self, gear=(const.MESH_GEAR_MOVING, const.MESH_GEAR_MOVING)):
@@ -145,6 +161,7 @@ class Link:
         previous_connection = self.num_matches > 0
         dxy = self.dxy(gear=gear, use_mask=False)
         dis = np.sum(dxy ** 2, axis=-1) ** 0.5
+        dis = ((dis**2 - self.sample_err**2).clip(0, None))**0.5
         residue_weight = self._weight_func(dis).astype(np.float32)
         if np.any(residue_weight != previous_weight):
             self._residue_weight = residue_weight
@@ -318,6 +335,18 @@ class Link:
         return self._mask
 
 
+    @property
+    def sample_err(self):
+        num_mtch = self._tid0.size
+        if self._sample_err is None:
+            return np.zeros(num_mtch, dtype=np.float32)
+        else:
+            se = np.array(self._sample_err)
+            if se.size == 1:
+                se = np.full(num_mtch, se)
+            return se
+
+
 class MeshList:
     """
     list of meshes. Each element could be a Mesh object, or as string direct to
@@ -376,7 +405,13 @@ class SLM:
             links = []
         self.meshes = MeshList.init(meshes, maxlen=kwargs.get('maxlen', None))
         self.links = links
-        self._stiffness_lambda = kwargs.get('stiffness_lambda', 1.0)
+        assert_dominance = kwargs.pop('assert_dominance', False)
+        dominant_mesh = kwargs.pop('dominant_mesh', None)
+        if assert_dominance:
+            self.make_dominant_section(dominant_mesh)
+            self._stiffness_lambda = kwargs.get('stiffness_lambda', 1.0) * config.MATCH_SOFTFACTOR_DOMINANCE
+        else:
+            self._stiffness_lambda = kwargs.get('stiffness_lambda', 1.0)
         self._crosslink_lambda = kwargs.get('crosslink_lambda', -1.0)
         self._shared_cache = kwargs.get('shared_cache', None)
         self.clear_cached_attr()
@@ -426,6 +461,21 @@ class SLM:
         self._crosslink_terms = None
         if instant_gc:
             gc.collect()
+
+
+    def make_dominant_section(self, dominant_mesh):
+        mx_soft_factor = 0.0
+        shape_compactness = []
+        for m in self.meshes:
+            mx_soft_factor = max(mx_soft_factor, m.soft_factor)
+            if dominant_mesh is None:
+                shape_compactness.append(m.shape_compactness(gear=const.MESH_GEAR_INITIAL))
+        if dominant_mesh is None:
+            indx = np.argmin(shape_compactness)
+            dominant_mesh = np.floor(self.meshes[indx].uid)
+        for m in self.meshes:
+            if np.floor(m.uid) == dominant_mesh:
+                m.soft_factor = mx_soft_factor * config.MATCH_SOFTFACTOR_DOMINANCE
 
 
   ## -------------------------- system manipulation ------------------------ ##
@@ -616,9 +666,31 @@ class SLM:
             m.anneal(gear=gear, mode=mode)
 
 
-    def adjust_link_weight_by_residue(self, gear=(const.MESH_GEAR_MOVING, const.MESH_GEAR_MOVING)):
+    def relax_higly_deformed(self, gear=(const.MESH_GEAR_FIXED, const.MESH_GEAR_MOVING), deform_cutoff=config.MAXIMUM_DEFORM_ALLOWED):
+        modified = 0
+        deform_thresh = 1 - 1 / (abs(deform_cutoff) + 1)
+        for m in self.meshes:
+            if m.locked:
+                continue
+            svds = m.triangle_tform_svd(gear=gear)
+            defm = Mesh.svds_to_deform(svds)
+            tmask = defm > max(deform_thresh, np.quantile(defm, 0.5))
+            if not np.any(defm):
+                continue
+            tid = m.triangles[tmask]
+            vid = np.unique(tid)
+            vmask = np.isin(m.triangles, vid)
+            tmask = np.all(vmask, axis=-1)
+            md = relax_mesh(m, free_triangles=tmask, gear=gear)
+            modified = modified + md
+        return modified
+
+
+    def adjust_link_weight_by_residue(self, gear=(const.MESH_GEAR_MOVING, const.MESH_GEAR_MOVING), relax_first=False):
         weight_modified = False
         connection_modified = False
+        if relax_first:
+            self.relax_higly_deformed()
         for lnk in self.links:
             w,c = lnk.adjust_weight_from_residue(gear=gear)
             weight_modified |= w
@@ -657,6 +729,7 @@ class SLM:
         if (self._stiffness_matrix is None) or force_update:
             STIFF_M = []
             STRESS_v = []
+            self._elastic_energy = 0
             for m in self.meshes:
                 if m.locked:
                     continue
@@ -665,6 +738,10 @@ class SLM:
                     return None, None
                 STIFF_M.append(stiff * m.soft_factor)
                 STRESS_v.append(stress * m.soft_factor)
+                v = m.vertices(gear=gear[0])
+                v = v - v.mean(axis=0, keepdims=True)
+                v = v.ravel()
+                self._elastic_energy += (stiff * m.soft_factor).dot(v).dot(v)
             stiffness_matrix = sparse.block_diag(STIFF_M, format='csr')
             stress_vector = np.concatenate(STRESS_v, axis=None)
             if to_cache:
@@ -687,9 +764,7 @@ class SLM:
                 needs more RAM but faster
         """
         if (self._crosslink_terms is None) or force_update:
-            start_gear = kwargs.get('start_gear', const.MESH_GEAR_MOVING)
-            targt_gear = kwargs.get('target_gear', const.MESH_GEAR_MOVING)
-            batch_num_matches = kwargs.get('batch_num_matches', None)
+            batch_num_matches = kwargs.pop('batch_num_matches', None)
             if batch_num_matches is None:
                 batch_num_matches = self.num_matches / 10
             if batch_num_matches < 1:
@@ -700,14 +775,15 @@ class SLM:
             V_lft_a = []
             I_lft0_a = []
             I_lft1_a = []
+            self._crosslink_energy = 0
             index_offsets_mapper = self.index_offsets
             num_match = 0
             for lnk in self.links:
                 indx_offst = [index_offsets_mapper[uid] for uid in lnk.uids]
-                v_lft, indices_lft, v_rht, indx_rht = lnk.equation_contrib(indx_offst,
-                    start_gear=start_gear, target_gear=targt_gear)
+                v_lft, indices_lft, v_rht, indx_rht, energy = lnk.equation_contrib(indx_offst, **kwargs)
                 if v_lft is None:
                     continue
+                self._crosslink_energy += energy
                 V_lft_a.append(v_lft)
                 I_lft0_a.append(indices_lft[0])
                 I_lft1_a.append(indices_lft[1])
@@ -1025,9 +1101,9 @@ class SLM:
         """
         optimize the linear system or the tangent problem of non-linear system.
         kwargs:
-            maxiter: maximum number of iterations in bicgstab. None if no limit.
-            tol: the relative stopping tolerance of the bicgstab.
-            atol: the absolute stopping tolerance of the bicgstab.
+            maxiter: maximum number of iterations in bicgstab/minres. None if no limit.
+            tol: the relative stopping tolerance of the bicgstab/minres.
+            atol: the absolute stopping tolerance of the bicgstab/minres.
             shape_gear: gear to caculate shape matrix.
             start_gear: the gear that associated with the vertex positions before
                 applying the field from optimization. Also used for computing
@@ -1052,6 +1128,7 @@ class SLM:
                 optimization is done. In some occasions, like flip checking
                 in Newton_Raphson method, this could be set to False.
         """
+        solver = kwargs.get('solver', 'minres')
         maxiter = kwargs.get('maxiter', None)
         tol = kwargs.get('tol', 1e-7)
         atol = kwargs.get('atol', 0.0)
@@ -1061,6 +1138,7 @@ class SLM:
         start_gear = kwargs.get('start_gear', targt_gear)
         stiffness_lambda = kwargs.get('stiffness_lambda', self._stiffness_lambda)
         crosslink_lambda = kwargs.get('crosslink_lambda', self._crosslink_lambda)
+        deform_target = kwargs.get('deform_target', None)
         inner_cache = kwargs.get('inner_cache', self._shared_cache)
         cont_on_flip = kwargs.get('continue_on_flip', False)
         batch_num_matches = kwargs.get('batch_num_matches', None)
@@ -1068,15 +1146,22 @@ class SLM:
         auto_clear = kwargs.get('auto_clear', True)
         remove_extra_dof = kwargs.get('remove_extra_dof', False)
         remove_material_dof = kwargs.get('remove_material_dof', None)
+        tolerated_perturbation = kwargs.get('tolerated_perturbation', None)
+        check_converge = kwargs.pop('check_converge', config.OPT_CHECK_CONVERGENCE)
         check_flip = not cont_on_flip
+        lock_flags = self.lock_flags
+        check_deform = (deform_target is not None) and (deform_target > 0)
+        if tolerated_perturbation is not None:
+            tolerated_perturbation = tolerated_perturbation * config.data_resolution() / self.working_resolution
+        if np.all(lock_flags):
+            return 0, 0 # all locked, nothing to optimize
         stiff_m, stress_v = self.stiffness_matrix(gear=(shape_gear,start_gear),
             inner_cache=inner_cache, check_flip=check_flip,
             continue_on_flip=cont_on_flip)
-        lock_flags = self.lock_flags
-        if np.all(lock_flags):
-            return 0, 0 # all locked, nothing to optimize
         if stiff_m is None:
             return None, None # flipped triangles
+        Cs_lft, Cs_rht = self.crosslink_terms(start_gear=start_gear,
+            target_gear=targt_gear, batch_num_matches=batch_num_matches)
         if isinstance(callback_settings, bool):
             if callback_settings:
                 callback_settings = {'chances':5, 'eval_step':10}
@@ -1144,12 +1229,7 @@ class SLM:
                         s[:3] = False
                     edc.append(s)
                 edc = np.concatenate(edc, axis=None)
-        Cs_lft, Cs_rht = self.crosslink_terms(start_gear=start_gear,
-            target_gear=targt_gear, batch_num_matches=batch_num_matches)
-        stiffness_lambda, crosslink_lambda = self.relative_lambda(stiffness_lambda, crosslink_lambda)
-        A = stiffness_lambda * stiff_m + crosslink_lambda * Cs_lft
-        A = 0.5*(A + A.transpose())
-        b = crosslink_lambda * Cs_rht - stiffness_lambda * stress_v
+        E_s = self._elastic_energy
         if groupings is not None:
             group_u, indx, group_nm, g_cnt = np.unique(groupings, return_index=True, return_inverse=True, return_counts=True)
             if group_u.size < groupings.size:
@@ -1158,6 +1238,7 @@ class SLM:
                 lock_flags = grouped_lock_flags[group_nm]
                 if np.all(lock_flags):
                     return 0, 0
+                grp_fmindx = indx[~grouped_lock_flags]
                 vnum = [self.meshes[s].num_vertices * 2 for s in indx]
                 vnum = vnum * (~grouped_lock_flags)
                 vnum_accum = np.cumsum(vnum)
@@ -1179,20 +1260,43 @@ class SLM:
                 indx0 = np.concatenate(indx0, axis=None)
                 indx1 = np.concatenate(indx1, axis=None)
                 T_m = sparse.csr_matrix((np.ones_like(indx0, dtype=np.float32),
-                                        (indx1, indx0)), shape=(grouped_dof, A.shape[0]))
-                A = T_m @ A @ T_m.transpose() / np.mean(g_cnt)
-                b = T_m @ b / np.mean(g_cnt)
+                                        (indx1, indx0)), shape=(grouped_dof, stiff_m.shape[0]))
+                stiff_m = T_m @ stiff_m @ T_m.transpose() / np.mean(g_cnt)
+                Cs_lft = T_m @ Cs_lft @ T_m.transpose() / np.mean(g_cnt)
+                stress_v = T_m @ stress_v / np.mean(g_cnt)
+                Cs_rht = T_m @ Cs_rht / np.mean(g_cnt)
                 if edc is not None:
                     edc = (T_m @ edc) > 0
             else:
                 groupings = None
-        A_diag = A.diagonal()
-        if A_diag.max() > 0:
-            M = sparse.diags(1/(A_diag.clip(min(1.0, A_diag.max()/1000),None))) # Jacobi precondition
-        else:
-            M = None
-        # dd, _ = sparse.linalg.bicgstab(A, b, tol=tol, maxiter=maxiter, atol=atol, M=M)
-        dd = bicgstab(A, b, tol=tol, maxiter=maxiter, atol=atol, M=M, extra_dof_constraint=edc, **callback_settings)
+        stiffness_lambda, crosslink_lambda = self.relative_lambda_virtual_potential(stiffness_lambda, crosslink_lambda)
+        if check_deform:
+            stiffness_lambda_df = 0.5 * 0.25 * self._crosslink_energy * crosslink_lambda / (self._elastic_energy * np.mean(deform_target)**2)
+            stiffness_lambda = min(stiffness_lambda, stiffness_lambda_df)
+            if groupings is not None:
+                xy0 = [self.meshes[idx_m].vertices(gear=shape_gear) for idx_m in grp_fmindx]
+                xy0 = np.concatenate(xy0, axis=0)
+                xy0 = xy0 - np.mean(xy0, axis=0, keepdims=True)
+                E_s = stiff_m.dot(xy0.ravel()).dot(xy0.ravel())
+        while True:
+            A = stiffness_lambda * stiff_m + crosslink_lambda * Cs_lft
+            A = 0.5*(A + A.transpose())
+            b = crosslink_lambda * Cs_rht - stiffness_lambda * stress_v
+            A_diag = A.diagonal()
+            if A_diag.max() > 0:
+                M = sparse.diags(1/(A_diag.clip(min(1.0, A_diag.max()/1000),None))) # Jacobi precondition
+            else:
+                M = None
+            if not check_deform:
+                dd = solve(A, b, solver, tol=tol, maxiter=maxiter, check_converge=check_converge, atol=atol, M=M, extra_dof_constraint=edc, tolerated_perturbation=tolerated_perturbation, **callback_settings)
+                break
+            dd = solve(A, b, solver, tol=tol, maxiter=maxiter, check_converge=False, atol=atol, M=M, extra_dof_constraint=edc, tolerated_perturbation=tolerated_perturbation, **callback_settings)
+            deform_act = (stiff_m.dot(dd).dot(dd) / E_s) ** 0.5
+            if deform_act > np.max(deform_target):
+                stiffness_lambda = stiffness_lambda * max(2.0, (deform_act/np.mean(deform_target))**2)
+            else:
+                dd = solve(A, b, solver, x0=dd, tol=tol, maxiter=maxiter, check_converge=check_converge, atol=atol, M=M, extra_dof_constraint=edc, tolerated_perturbation=tolerated_perturbation, **callback_settings)
+                break
         cost = (np.linalg.norm(b), np.linalg.norm(A.dot(dd) - b))
         if cost[1] < cost[0]:
             index_offsets = self.index_offsets
@@ -1259,6 +1363,10 @@ class SLM:
         batch_num_matches = kwargs.pop('batch_num_matches', None)
         shape_gear = const.MESH_GEAR_FIXED
         start_gear = const.MESH_GEAR_MOVING
+        aspect_ratio = config.section_thickness() / self.working_resolution
+        for k, rl in enumerate(residue_len):
+            if rl < 0:
+                residue_len[k] = abs(rl) * aspect_ratio
         if cont_on_flip:
             target_gear = kwargs.pop('target_gear', const.MESH_GEAR_MOVING)
         else:
@@ -1315,7 +1423,7 @@ class SLM:
                         self.set_link_residue_huber(residue_len[ke])
                     else:
                         self.set_link_residue_threshold(residue_len[ke])
-                self.adjust_link_weight_by_residue(gear=(target_gear, target_gear))
+                self.adjust_link_weight_by_residue(gear=(target_gear, target_gear), relax_first=True)
             _, _ = self.crosslink_terms(force_update=True, to_cache=True,
                 start_gear=target_gear, target_gear=target_gear,
                 batch_num_matches=batch_num_matches)
@@ -1337,7 +1445,8 @@ class SLM:
             return self.optimize_Newton_Raphson(**kwargs)
 
 
-    def relative_lambda(self, stiffness_lambda, crosslink_lambda):
+    def relative_lambda_frobenius(self, stiffness_lambda, crosslink_lambda):
+        # adjust normal based on the Frobenius norms of the matrices
         if (stiffness_lambda < 0) or (crosslink_lambda < 0):
             if (self._stiffness_matrix is None) or (self._crosslink_terms is None):
                 raise RuntimeError('System equation not initialized')
@@ -1351,13 +1460,24 @@ class SLM:
         return stiffness_lambda, crosslink_lambda
 
 
+    def relative_lambda_virtual_potential(self, stiffness_lambda, crosslink_lambda):
+        # adjust normal based on the potential energy changes
+        if (stiffness_lambda < 0) or (crosslink_lambda < 0): 
+            if (self._stiffness_matrix is None) or (self._crosslink_terms is None):
+                raise RuntimeError('System equation not initialized')
+            ratio = abs(stiffness_lambda / crosslink_lambda)
+            stiffness_lambda = self._crosslink_energy * ratio / (self._elastic_energy * (2 * config.DEFAULT_DEFORM_BUDGET)**2)
+            crosslink_lambda = 1.0
+        return stiffness_lambda, crosslink_lambda
+
+
     def cost(self, stiffness_lambda, crosslink_lambda):
         if (self._stiffness_matrix is None) or (self._crosslink_terms is None):
             raise RuntimeError('System equation not initialized')
         stiff_m, stress_v = self._stiffness_matrix
         if stiff_m is None:
             return None
-        stiffness_lambda, crosslink_lambda = self.relative_lambda(stiffness_lambda, crosslink_lambda)
+        stiffness_lambda, crosslink_lambda = self.relative_lambda_virtual_potential(stiffness_lambda, crosslink_lambda)
         Cs_rht, Cs_rht = self._crosslink_terms
         return np.linalg.norm(crosslink_lambda * Cs_rht - stiffness_lambda * stress_v)
 
@@ -1498,6 +1618,11 @@ class SLM:
         return [lnk for lnk in self.links if (self.link_is_relevant(lnk) == 1)]
 
 
+    @property
+    def working_resolution(self):
+        return self.meshes[0].resolution
+
+
     def match_residues(self, gear=const.MESH_GEAR_MOVING, use_mask=False, quantile=1):
         dis = []
         for lnk in self.links:
@@ -1577,6 +1702,7 @@ class SLM:
         if isinstance(link, Link):
             link_initialized = True
         elif isinstance(link, common.Match):
+            kwargs.setdefault('strain', link.strain)
             link_initialized = False
         else:
             raise TypeError
@@ -1627,7 +1753,7 @@ class EarlyStopFlag(Exception):
 
 class SLM_Callback:
     """
-    call back function class fed to bicgstab optimizer.
+    call back function class fed to iterative solver.
     Args:
         A, b: equation terms to solve x: Ax = b.
     Kwargs:
@@ -1638,10 +1764,12 @@ class SLM_Callback:
         chances: if the number of consecutive iterations with enlarged cost or
             small updates is larger than this number, envoke early stopping.
     """
-    def __init__(self, A, b, timeout=None, early_stop_thresh=None, chances=5, eval_step=10):
+    def __init__(self, A, b, timeout=None, early_stop_thresh=None, chances=5, eval_step=10, atol=None):
         self._A = A
         self._b = b
-        self._timout = timeout
+        self._timeout = timeout
+        self._atol = atol
+        self._time_elapse = 0
         self._early_stop_thresh = early_stop_thresh
         self._eval_step = eval_step
         self._t0 = time.time()
@@ -1652,18 +1780,22 @@ class SLM_Callback:
         self._count = 0
         self._chances = chances
         self._exit_count = 0
+        self._exit_code = 0
 
 
     def callback(self, x):
+        self._count += 1
         if (self._count % self._eval_step == 0) or (self._count < min(self._eval_step, 5)):
+            self._time_elapse = time.time() - self._t0
             cost = np.linalg.norm(self._A.dot(x) - self._b)
             if cost < self.min_cost:
                 self.min_cost = cost
                 self.solution = x.copy()
-            if self._timout is not None:
-                t = time.time() - self._t0
-                if t > self._timout:
-                    raise EarlyStopFlag
+            if (self._timeout is not None) and (self._time_elapse > self._timeout):
+                self._exit_code = 1
+                raise EarlyStopFlag
+            if (self._atol is not None) and (cost < self._atol):
+                raise EarlyStopFlag
             if (self._chances is not None) and (self._count >= self._eval_step):
                 if cost > self._last_cost:
                     self._exit_count += 1
@@ -1676,20 +1808,29 @@ class SLM_Callback:
                 else:
                     self._exit_count = 0
                 if self._exit_count > self._chances:
+                    self._exit_code = 2
                     raise EarlyStopFlag
                 self._last_x = x.copy()
                 self._last_cost = cost
-        self._count += 1
         return False
 
 
-def bicgstab(A, b, tol=1e-07, atol=None, maxiter=None, M=None, **kwargs):
+def solve(A, b, solver, x0=None, tol=1e-7, atol=None, maxiter=None, M=None, **kwargs):
     timeout = kwargs.get('timeout', None)
     early_stop_thresh = kwargs.get('early_stop_thresh', None)
     chances = kwargs.get('chances', None)
     eval_step = kwargs.get('eval_step', 10)
     edc = kwargs.get('extra_dof_constraint', None)
-    if maxiter == 0:
+    check_converge = kwargs.get('check_converge', config.OPT_CHECK_CONVERGENCE)
+    tolerated_perturbation = kwargs.get('tolerated_perturbation', None) # if one round of optimization yields no larger benefit compared to recover from such perturbation, then do early stop.
+    if tolerated_perturbation is not None:
+        theta = np.random.uniform(low=0.0, high=2*np.pi, size=round((b.size + 0.1)/2))
+        sin_t = np.sin(theta)
+        cos_t = np.cos(theta)
+        dx_t = np.stack((sin_t, cos_t), axis=-1)
+        dx_t = dx_t.ravel()
+        tolerated_perturbation = tolerated_perturbation * dx_t[:b.size]
+    if (maxiter == 0) or (np.linalg.norm(b) == 0):
         return np.zeros_like(b)
     if edc is not None:
         if (not isinstance(edc, np.ndarray)) or (edc.dtype != bool):
@@ -1705,24 +1846,73 @@ def bicgstab(A, b, tol=1e-07, atol=None, maxiter=None, M=None, **kwargs):
             b = b[edc]
             if M is not None:
                 M = sparse.csr_matrix(M)[edc][:, edc]
-    cb = SLM_Callback(A, b, timeout=timeout, early_stop_thresh=early_stop_thresh, chances=chances, eval_step=eval_step)
-    callback = cb.callback
-    try:
+            if tolerated_perturbation is not None:
+                tolerated_perturbation = tolerated_perturbation[edc]
+    kwargs_solver =  {'x0': x0, 'M': M}
+    if atol is not None:
+        rtol0 = atol / np.linalg.norm(b)
+        tol = max(tol, rtol0)
+    atol = tol * np.linalg.norm(b)
+    timeout_t, maxiter_t = timeout, maxiter
+    if x0 is None:
+        x = np.zeros_like(b)
+    else:
+        x = x0
+    while True:
+        # not sure how minres compute rtol... so need a loop to ensure target is met.
+        cb = SLM_Callback(A, b, timeout=timeout_t, early_stop_thresh=early_stop_thresh, chances=chances, eval_step=eval_step, atol=atol)
+        callback = cb.callback
+        kwargs_solver.update({'maxiter': maxiter_t, 'callback': callback})
         if scipy.__version__ >= '1.12.0':
-            x, _ = sparse.linalg.bicgstab(A, b, rtol=tol, maxiter=maxiter, atol=atol, M=M, callback=callback)
+            kwargs_solver['rtol'] = tol
         else:
-            x, _ = sparse.linalg.bicgstab(A, b, tol=tol, maxiter=maxiter, atol=atol, M=M, callback=callback)
-        cost0 = np.linalg.norm(A.dot(x) - b)
-        if cost0 > cb.min_cost:
+            kwargs_solver['tol'] = tol
+        if tolerated_perturbation is not None:
+            previous_energy = 0.5 * A.dot(x).dot(x) - b.dot(x)
+        try:
+            if solver == 'bicgstab':
+                x, _ = sparse.linalg.bicgstab(A, b, **kwargs_solver)
+            elif solver == 'minres':
+                x, _ = sparse.linalg.minres(A, b, **kwargs_solver)
+            else:
+                raise ValueError
+            cost0 = np.linalg.norm(A.dot(x) - b)
+            if cost0 > cb.min_cost:
+                x = cb.solution
+            cost = min(cost0, cb.min_cost)
+        except EarlyStopFlag:
             x = cb.solution
-    except EarlyStopFlag:
-        x = cb.solution
+            cost = cb.min_cost
+        except KeyboardInterrupt:
+            x = cb.solution
+            break
+        if (cost <= atol) or (not check_converge):
+            break
+        if tolerated_perturbation is not None:
+            x_abs = np.abs(x)
+            mask_pert = x_abs >= np.mean(x_abs)
+            x_pert = x + tolerated_perturbation * mask_pert
+            current_energy = 0.5 * A.dot(x).dot(x) - b.dot(x)
+            pert_energy = 0.5 * A.dot(x_pert).dot(x_pert) - b.dot(x_pert)
+            if (previous_energy - current_energy) < (pert_energy - current_energy):
+                break
+        if cb._exit_code != 0:
+            break
+        if timeout_t is not None:
+            timeout_t -= cb._time_elapse
+            if timeout_t <= 0:
+                break
+        if maxiter_t is not None:
+            maxiter_t -= cb._count
+            if maxiter_t <= 0:
+                break
+        tol *= tol * atol / cost
+        kwargs_solver.update({'x0': x})
     if edc is not None:
         x0 = x
         x = np.zeros_like(b, shape=edc.shape)
         x[edc] = x0
     return x
-
 
 
 def transform_mesh(mesh_unlocked, mesh_locked, **kwargs):
@@ -1734,10 +1924,8 @@ def transform_mesh(mesh_unlocked, mesh_locked, **kwargs):
     mesh_unlocked = mesh_unlocked.copy(override_dict={'locked': False, 'uid': 1})
     mesh_unlocked.change_resolution(mesh_locked.resolution)
     xy_fix = mesh_locked.vertices_w_offset(gear=const.MESH_GEAR_INITIAL)
-    # xy_mov = mesh_unlocked.vertices_w_offset(gear=const.MESH_GEAR_INITIAL)
-    # xy0 = np.concatenate((xy_fix, xy_mov), axis=0)
     xy0 = xy_fix
-    opt = SLM([mesh_locked, mesh_unlocked], stiffness_lambda=0.01)
+    opt = SLM([mesh_locked, mesh_unlocked], stiffness_lambda=1.0)
     opt.divide_disconnected_submeshes()
     opt.add_link_from_coordinates(mesh_locked.uid, mesh_unlocked.uid, xy0, xy0, check_duplicates=False)
     opt.optimize_affine_cascade()
@@ -1756,6 +1944,7 @@ def transform_mesh(mesh_unlocked, mesh_locked, **kwargs):
 
 
 def relax_mesh(M, free_vertices=None, free_triangles=None, **kwargs):
+    solver = kwargs.get('solver', 'minres')
     gear = kwargs.get('gear', (const.MESH_GEAR_FIXED, const.MESH_GEAR_MOVING))
     maxiter = kwargs.get('maxiter', None)
     tol = kwargs.get('tol', 1e-7)
@@ -1776,6 +1965,9 @@ def relax_mesh(M, free_vertices=None, free_triangles=None, **kwargs):
     if not np.any(vmask):
         return modified
     vmask_pad = np.repeat(vmask, 2)
+    fixed_vertices = M.vertices(gear=gear[0])
+    fixed_offset = M.offset(gear=gear[0])
+    M.anneal(gear=(const.MESH_GEAR_INITIAL, gear[0]), mode=const.ANNEAL_COPY_EXACT)
     M.anneal(gear=gear[::-1],  mode=const.ANNEAL_CONNECTED_RIGID)
     M._vertices_changed(gear=gear[0])
     stiff_M, stress_v = M.stiffness_matrix(gear=gear, continue_on_flip=True, cache=False)
@@ -1786,10 +1978,13 @@ def relax_mesh(M, free_vertices=None, free_triangles=None, **kwargs):
         cond = sparse.diags(1/(A_diag.clip(min(1.0, A_diag.max()/1000),None))) # Jacobi precondition
     else:
         cond = None
-    dd = bicgstab(A, b, tol=tol, maxiter=maxiter, atol=atol, M=cond, **callback_settings)
+    dd = solve(A, b, solver, tol=tol, maxiter=maxiter, atol=atol, M=cond, **callback_settings)
     cost = (np.linalg.norm(b), np.linalg.norm(A.dot(dd) - b))
     if (cost[1] < cost[0]) and np.any(dd != 0):
         modified = True
         M.apply_field(dd.reshape(-1,2), gear[-1], vtx_mask=vmask)
+    if gear[0] != gear[1]:
+        M.set_vertices(fixed_vertices, gear=gear[0])
+        M.set_offset(fixed_offset, gear=gear[0])
     M.locked = locked
     return modified

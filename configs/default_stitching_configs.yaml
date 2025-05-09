@@ -11,7 +11,8 @@ matching:   # see stitcher.Stitcher.subprocess_match_list_of_overlaps for detail
     matcher_config: # see matcher.stitching_matcher for details
         spacings: null   # the spacing between grid points. null to decide dynamically
         conf_thresh: 0.33   # cross-correlations with confidence value smaller than this will be rejected
-        residue_mode: threshold # huber or threshold or None, deciding how to damp matches with large residue errors after mesh relaxation
+        residue_mode: huber # huber or threshold or None, deciding how to damp matches with large residue errors after mesh relaxation
+        residue_len: 2
         pad: true           # whether to do anti-aliasing padding for FFT crosscorrelation
         sigma: 2.5          # sigma of DoG filter applied to the images before matching
         coarse_downsample: 0.5      # down-sample the images at the coase-level matching
@@ -23,16 +24,15 @@ optimization:
     msem: false          # if is MultiSEM data. used to group tiles.
     minweight: 0.1      # filter out matches with weight smaller than this
     mesh_settings:  # see stitcher.Stitcher.initialize_meshes
-        mesh_sizes: [75, 150, 300]   # mesh sizes to select from based on how distorted are the matches
+        mesh_sizes: [100, 300]   # mesh sizes to select from based on how distorted are the matches
         cache_size: null    # size of the cache to save intermediate values. No need to worry about this unless very tight on RAM.
         border_width: null  # the overlap width where meshes are finer. null to decide dynamically
-        match_soften: [0.1, 0.2] # the default settings means if the overlapping regions deform by 10% percent during matching, then the mesh will only be 20% stiff during optimization, changes linearly.
         soft_top: 0.2       # to make the top part (less stablized) of the mesh for each tile softer during optimization. 0.2 means 20% stiff compare to the rest of mesh.
         soft_top_width: 0.0 # the width affected by the soft top in percentage to the tile height.
     translation:    # see stitcher.Stitcher.optimize_elastic for details
         maxiter: null
         tol: 1.0e-7
-        residue_threshold: 50   # after translational optimzation, matches with residue error larger than this are considered spurious and discarded. I usually use half of the overlapping width in pixels.
+        residue_threshold: 0.5   # after translational optimzation, matches with residue error larger than this are considered spurious and discarded. If set to a number < 1, it is the ratio wrt the overlapping width
     affine: # see stitcher.Stitcher.optimize_affine for details
         maxiter: 0
         tol: 1.0e-6
@@ -42,11 +42,13 @@ optimization:
     group_elastic: # see stitcher.Stitcher.optimize_group_intersection for details
         maxiter: null
         tol: 1.0e-6
+        residue_mode: threshold
+        residue_len: 3
     final_elastic:    # see stitcher.Stitcher.optimize_translation for details
         maxiter: null
         tol: 1.0e-4
         residue_mode: huber # huber or threshold or None, deciding how to damp matches with large residue errors after optimization
-        residue_len: 5      # characteristic residue distance used for damping. use 0 to skip
+        residue_len: 3      # characteristic residue distance used for damping. use 0 to skip
         batch_num_matches: null # larger numberneeds more RAM but faster. default to (total # of matches)/10
         callback_settings:
             timeout: null   # if each round of equation solving last longer than this, stop the iterations and return the current value
@@ -64,6 +66,8 @@ rendering:
     driver: neuroglancer_precomputed   # image(PNG tiles), neuroglancer_precomputed, zarr(not tested), n5(not tested) 
     num_workers: 15
     tile_size: [4096, 4096] # output tile size
+    read_chunk_size: [256, 256] # for sharded precomputed format
+    pad_to_tile_size: true  # pad the border images to make uniform tile size
     resolution: null    # if null, use the intrinsic image resolution; otherwise scale to this resolution
     loader_settings: # see dal.AbstractImageLoader for details
         cache_size: 150

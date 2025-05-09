@@ -1,10 +1,7 @@
-from concurrent.futures.process import ProcessPoolExecutor
-from concurrent.futures import as_completed
 import cv2
-import json
-from multiprocessing import get_context
 import numpy as np
 from functools import partial
+import json
 from scipy.interpolate import interp1d
 from scipy.ndimage import binary_dilation
 import shapely.geometry as shpgeo
@@ -13,13 +10,15 @@ import os
 import tensorstore as ts
 import time
 
+from feabas.concurrent import submit_to_workers
 from feabas.dal import MosaicLoader, get_tensorstore_spec
 from feabas import common, logging, dal, storage
 from feabas.spatial import Geometry
 from feabas.mesh import Mesh
 from feabas.renderer import render_whole_mesh, MeshRenderer
-from feabas.config import TS_TIMEOUT
+from feabas.config import CHECKPOINT_TIME_INTERVAL
 
+H5File = storage.h5file_class()
 
 def get_image_loader(src_dir, **kwargs):
     ext = kwargs.pop('input_formats', ('png', 'jpg', 'tif', 'bmp'))
@@ -106,9 +105,7 @@ def mip_one_level(src_dir, out_dir, **kwargs):
             prefix0 = prefix0.split(splitter)[0]
         prefix = storage.join_paths(out_dir, prefix0)
         out_root_dir = os.path.dirname(prefix)
-        tdriver, out_root_dir = storage.parse_file_driver(out_root_dir)
-        if tdriver == 'file':
-            os.makedirs(out_root_dir, exist_ok=True)
+        storage.makedirs(out_root_dir, exist_ok=True)
         kwargs.setdefault('seeds', downsample)
         kwargs.setdefault('mx_dis', (tile_size[0]/2+4, tile_size[-1]/2+4))
         rendered = render_whole_mesh(M, image_loader, prefix, tile_size=tile_size,
@@ -178,6 +175,8 @@ def create_thumbnail(src_dir, outname=None, downsample=4, highpass=True, **kwarg
     kwargs.setdefault('cache_type', 'fifo')
     kwargs.setdefault('cache_size', 8)
     image_loader = get_image_loader(src_dir, **kwargs)
+    if image_loader is None:
+        return None
     M = _mesh_from_image_loader(image_loader)
     bounds0 = M.bbox()
     for bbox in image_loader.file_bboxes(margin=0):
@@ -207,142 +206,44 @@ def create_thumbnail(src_dir, outname=None, downsample=4, highpass=True, **kwarg
 
 
 def generate_target_tensorstore_scale(metafile, mip=None, **kwargs):
-    num_workers = kwargs.get('num_workers', 1)
-    max_tile_per_job = kwargs.get('max_tile_per_job', 16)
+    max_tile_per_job = kwargs.pop('max_tile_per_job', 16)
+    use_jpeg_compression = kwargs.pop('format', None) in ('jpg', 'jpeg')
+    kwargs['use_jpeg_compression'] = use_jpeg_compression
+    kwargs['cache_size'] = max_tile_per_job
+    kwargs['downsample_z'] = 1
     write_to_file = False
-    if isinstance(metafile, str):
-        try:
-            json_obj = json.loads(metafile)
-        except ValueError:
-            write_to_file = True
-            if metafile.startswith('gs:'):
-                json_ts = ts.open({"driver": "json", "kvstore": metafile}).result()
-                s = json_ts.read().result()
-                json_obj = s.item()
-            else:
-                with storage.File(metafile, 'r') as f:
-                    json_obj = json.load(f)
-    elif isinstance(metafile, dict):
-        json_obj = metafile
-    ds_spec, src_mip, mip, mipmaps = get_tensorstore_spec(json_obj, mip=mip, return_mips=True, **kwargs)
-    if src_mip == mip:
-        return None
-    ts_dsp = ts.open(ds_spec).result()
-    ts_src = ts_dsp.base
-    src_spec = ts_src.spec(minimal_spec=True).to_json()
-    tgt_spec = {}
-    driver = src_spec['driver']
-    tgt_spec['driver'] = driver
-    tgt_spec['kvstore'] = src_spec['kvstore']
-    if driver == 'neuroglancer_precomputed':
-        pass
-    elif driver == 'n5':
-        pth = tgt_spec['kvstore']['path']
-        pth = pth[::-1].replace(str(src_mip)+'s', str(mip)+'s', 1)[::-1]
-        tgt_spec['kvstore']['path'] = pth
-    elif driver == 'zarr':
-        pth = tgt_spec['kvstore']['path']
-        pth = pth[::-1].replace(str(src_mip), str(mip), 1)[::-1]
-        tgt_spec['kvstore']['path'] = pth
-    else:
-        raise ValueError(f'driver type {driver} not supported.')
-    tgt_schema = ts_src.schema.to_json()
-    ds_schema = ts_dsp.schema.to_json()
-    tgt_schema['domain'] = ds_schema['domain']
-    tgt_schema['dimension_units'] = ds_schema['dimension_units']
-    inclusive_min = ts_dsp.domain.inclusive_min
-    exclusive_max = ts_dsp.domain.exclusive_max
-    Xmin, Ymin = inclusive_min[0], inclusive_min[1]
-    Xmax, Ymax = exclusive_max[0], exclusive_max[1]
-    chunk_shape = ts_src.schema.chunk_layout.write_chunk.shape
-    tile_wd, tile_ht = chunk_shape[0], chunk_shape[1]
-    while tile_wd > (Xmax - Xmin) or tile_ht > (Ymax - Ymin):
-        tile_wd = tile_wd // 2
-        tile_ht = tile_ht // 2
-    tgt_schema['chunk_layout']['write_chunk']['shape'][:2] = [tile_wd, tile_ht]
-    read_chunk_shape = ts_src.schema.chunk_layout.read_chunk.shape
-    read_wd, read_ht = read_chunk_shape[0], read_chunk_shape[1]
-    while read_wd > (Xmax - Xmin) or read_ht > (Ymax - Ymin):
-        read_wd = read_wd // 2
-        read_ht = read_ht // 2
-    tgt_schema['chunk_layout']['read_chunk']['shape'][:2] = [read_wd, read_ht]
-    tgt_spec['schema'] = tgt_schema
-    x1d = np.arange(Xmin, Xmax, tile_wd, dtype=np.int64)
-    y1d = np.arange(Ymin, Ymax, tile_ht, dtype=np.int64)
-    xmn, ymn = np.meshgrid(x1d, y1d)
-    xmn, ymn = xmn.ravel(), ymn.ravel()
-    idxz = common.z_order(np.stack((xmn // tile_wd, ymn // tile_ht), axis=-1))
-    xmn, ymn =  xmn[idxz], ymn[idxz]
-    xmx = (xmn + tile_wd).clip(Xmin, Xmax)
-    ymx = (ymn + tile_ht).clip(Ymin, Ymax)
-    bboxes = np.stack((xmn, ymn, xmx, ymx), axis=-1)
-    if num_workers == 1:
-        out_spec = _write_downsample_tensorstore(ds_spec, tgt_spec, bboxes, **kwargs)
-    else:
-        n_tiles = xmn.size
-        num_tile_per_job = max(1, n_tiles // num_workers)
-        if max_tile_per_job is not None:
-            num_tile_per_job = min(num_tile_per_job, max_tile_per_job)
-        N_jobs = round(n_tiles / num_tile_per_job)
-        indices = np.round(np.linspace(0, n_tiles, num=N_jobs+1, endpoint=True))
-        indices = np.unique(indices).astype(np.uint32)
-        jobs = []
-        out_spec = None
-        with ProcessPoolExecutor(max_workers=num_workers, mp_context=get_context('spawn')) as executor:
-            for idx0, idx1 in zip(indices[:-1], indices[1:]):
-                idx0, idx1 = int(idx0), int(idx1)
-                bbox_t = bboxes[idx0:idx1]
-                job = executor.submit(_write_downsample_tensorstore, ds_spec, tgt_spec, bbox_t, **kwargs)
-                jobs.append(job)
-            for job in as_completed(jobs):
-                out_spec = job.result()
-    mipmaps.update({mip: out_spec})
+    json_obj, write_to_file = common.parse_json_file(metafile)
     if write_to_file:
-        kv_headers = ('gs://', 'http://', 'https://', 'file://', 'memory://', 's3://')
-        for kvh in kv_headers:
-            if metafile.startswith(kvh):
-                break
-        else:
-            metafile = 'file://' + metafile
-        meta_ts = ts.open({"driver": "json", "kvstore": metafile}).result()
-        meta_ts.write(mipmaps).result()
-    return mipmaps
+        kwargs['checkpoint_prefix'] = os.path.splitext(metafile)[0] + f'_mip{mip}_'
+    _, src_mip, mip, mipmaps = get_tensorstore_spec(json_obj, mip=mip, return_mips=True, **kwargs)
+    if src_mip == mip:
+        return False, None
+    src_spec = mipmaps[src_mip]
+    err_raised, out_spec, _ = mip_one_level_tensorstore_3d(src_spec, mipup=mip-src_mip, **kwargs)
+    mipmaps.update({int(mip): out_spec})
+    if (not err_raised) and write_to_file:
+        with storage.File(metafile, 'w') as f:
+            json.dump(mipmaps, f)
+    return err_raised, mipmaps
 
 
 def generate_tensorstore_scales(metafile, mips, **kwargs):
-    logger_info = kwargs.pop('logger', None)
+    logger_info = kwargs.get('logger', None)
     t0 = time.time()
     logger = logging.get_logger(logger_info)
     mips = np.sort(mips)
     sec_name = os.path.basename(metafile).replace('.json', '')
     updated = False
     for mip in mips:
-        specs = generate_target_tensorstore_scale(metafile, mip=mip, **kwargs)
+        err_raised, specs = generate_target_tensorstore_scale(metafile, mip=mip, **kwargs)
+        if err_raised:
+            break
         if specs is not None:
             updated = True
     if updated:
         logger.info(f'{sec_name}: {(time.time()-t0)/60} min')
     return {sec_name: updated}
 
-
-def _write_downsample_tensorstore(src_spec, tgt_spec, bboxes, **kwargs):
-    src_loader = dal.TensorStoreLoader.from_json_spec(src_spec, **kwargs)
-    tgt_spec.update({'open': True, 'create': True, 'delete_existing': False})
-    ts_out = ts.open(tgt_spec).result()
-    for bbox in bboxes:
-        img = src_loader.crop(bbox, return_empty=False, **kwargs)
-        if img is None:
-            continue
-        xmin, ymin, xmax, ymax = bbox
-        out_view = ts_out[xmin:xmax, ymin:ymax]
-        img = np.swapaxes(img, 0, 1)
-        try:
-            out_view.write(img.reshape(out_view.shape)).result(timeout=TS_TIMEOUT)
-        except TimeoutError:
-            ts_out = ts.open(tgt_spec).result(timeout=TS_TIMEOUT)
-            out_view = ts_out[xmin:xmax, ymin:ymax]
-            out_view.write(img.reshape(out_view.shape)).result(timeout=TS_TIMEOUT)
-    return ts_out.spec(minimal_spec=True).to_json()
 
 
 def create_thumbnail_tensorstore(metafile, mip, outname=None, highpass=True, **kwargs):
@@ -500,3 +401,271 @@ def _smooth_filter(img, blur=2, sigma=0.0, downsample=True):
             else:
                 img = cv2.blur(img, (round(blur-1), round(blur-1)))
     return img
+
+
+def _write_ts_block_from_indices(ind_x, ind_y, ind_z, src_spec, out_spec, **kwargs):
+    task_id = kwargs.pop('task_id', None)
+    src_data = dal.TensorStoreLoader.from_json_spec(src_spec, **kwargs)
+    out_data = dal.TensorStoreWriter.from_json_spec(out_spec)
+    bboxes = out_data.grid_indices_to_bboxes(ind_x, ind_y, ind_z)
+    flag = np.ones(len(bboxes), dtype=bool)
+    errmsg = ''
+    for k, bbox in enumerate(bboxes):
+        try:
+            chunk = src_data.get_chunk(bbox)
+            if chunk is not None:
+                out_data.write_single_chunk(bbox, chunk)
+        except Exception as err:
+            errmsg = errmsg + f'\t{bbox}: {err}\n'
+            break
+        else:
+            flag[k] = False
+    if np.all(flag):
+        flag = True
+    elif not np.any(flag):
+        flag = False
+    return task_id, flag, errmsg
+
+
+
+def mip_one_level_tensorstore_3d(src_spec, mipup=1, **kwargs):
+    num_workers = kwargs.get('num_workers', 1)
+    keep_chunk_layout = kwargs.get('keep_chunk_layout', True)
+    downsample_z = kwargs.get('downsample_z', 'auto')
+    z_range = kwargs.get('z_range', None)
+    full_chunk_only = kwargs.get('full_chunk_only', z_range is not None)
+    downsample_method = kwargs.get("downsample_method", "mean")
+    kvstore_out = kwargs.get('kvstore_out', None)
+    use_jpeg_compression = kwargs.get('use_jpeg_compression', True)
+    pad_to_tile_size = kwargs.get('pad_to_tile_size', use_jpeg_compression)
+    mask_file = kwargs.get('mask_file', None)
+    cache_capacity = kwargs.get('cache_capacity', None)
+    cache_size = kwargs.get('cache_size', None)
+    logger_info = kwargs.get('logger', None)
+    logger = logging.get_logger(logger_info)
+    flag_prefix = kwargs.get('flag_prefix', None)
+    checkpoint_prefix = kwargs.get('checkpoint_prefix', None)
+    err_raised = False
+    if (flag_prefix is not None) and (checkpoint_prefix is None):
+        checkpoint_dir = storage.join_paths(os.path.dirname(flag_prefix), 'checkpoints')
+        flag_filename = os.path.basename(flag_prefix)
+        checkpoint_prefix = storage.join_paths(checkpoint_dir, flag_filename + '_')
+        storage.makedirs(os.path.dirname(checkpoint_prefix))
+    src_loader = dal.TensorStoreLoader.from_json_spec(src_spec)
+    src_data = src_loader.dataset
+    src_spec = src_data.spec(minimal_spec=True).to_json()
+    if kvstore_out is None:
+        kvstore_out = src_spec["kvstore"]
+    scl = 2 ** mipup
+    if downsample_z == 'auto':
+        resln0, _, thick0 = src_loader.pixel_size
+        new_resln = resln0 * scl
+        downsample_z = 2**max(0, round(np.log(new_resln/thick0)/np.log(2)))
+    downsample_factors = [scl, scl, downsample_z, 1]
+    dsp_spec = {
+        "driver": "downsample",
+        "downsample_factors": downsample_factors,
+        "downsample_method": downsample_method,
+        "base": src_spec
+    }
+    dsp_loader = dal.TensorStoreLoader.from_json_spec(dsp_spec)
+    dsp_data = dsp_loader.dataset
+    out_spec = {"driver": "neuroglancer_precomputed", "kvstore": kvstore_out}
+    src_schema = src_data.schema.to_json()
+    dsp_schema = dsp_data.schema.to_json()
+    out_schema = src_schema.copy()
+    out_schema["dimension_units"] = dsp_schema["dimension_units"]
+    if keep_chunk_layout:
+        chunk_layout = src_schema["chunk_layout"]
+    else:
+        chunk_layout = dsp_schema["chunk_layout"]
+    write_shape = chunk_layout["write_chunk"].pop("shape")
+    tile_wd, tile_ht = write_shape[0], write_shape[1]
+    chunk_layout["write_chunk"]["shape_soft_constraint"] = write_shape
+    read_shape = chunk_layout["read_chunk"].pop("shape")
+    read_wd, read_ht = read_shape[0], read_shape[1]
+    chunk_layout["read_chunk"]["shape_soft_constraint"] = read_shape
+    out_schema["chunk_layout"] = chunk_layout
+    out_schema["domain"] = dsp_schema["domain"]
+    Xmin, Ymin = dsp_data.domain.inclusive_min[:2]
+    Xmax, Ymax = dsp_data.domain.exclusive_max[:2]
+    if pad_to_tile_size:
+        Xmin = int(np.floor(Xmin / read_wd)) * read_wd
+        Ymin = int(np.floor(Ymin / read_ht)) * read_ht
+        Xmax = int(np.ceil(Xmax / read_wd)) * read_wd
+        Ymax = int(np.ceil(Ymax / read_ht)) * read_ht
+        out_schema['domain']['exclusive_max'][:2] = [Xmax, Ymax]
+        out_schema['domain']['inclusive_min'][:2] = [Xmin, Ymin]
+    if use_jpeg_compression:
+        out_schema["codec"] = {"driver": "neuroglancer_precomputed", "encoding": 'jpeg', "jpeg_quality": 95}
+        if (read_ht < tile_ht) or (read_wd < tile_wd):
+            out_schema["codec"].update({"shard_data_encoding": 'raw'})
+    else:
+        out_schema["codec"] = {"driver": "neuroglancer_precomputed", "encoding": 'raw'}
+        if (read_ht < tile_ht) or (read_wd < tile_wd):
+            out_schema["codec"].update({"shard_data_encoding": 'gzip'})
+    out_spec["schema"] = out_schema
+    if (flag_prefix is None):
+        zind_rendered = []
+    else:
+        zind_rendered = set()
+        flag_list = storage.list_folder_content(flag_prefix+'*')
+        for flgfile in flag_list:
+            with storage.File(flgfile, 'r') as f:
+                zidrnd = json.load(f)
+                zind_rendered = zind_rendered.union(zidrnd)
+        zind_rendered = sorted(list(zind_rendered))
+    out_spec.update({"open": True, "create": True, "delete_existing": False})
+    out_writer = dal.TensorStoreWriter.from_json_spec(out_spec)
+    out_spec = out_writer.spec
+    Nx, Ny, Nz = out_writer.grid_shape
+    Z0, Z1 = out_writer.write_grids[2], out_writer.write_grids[5]
+    if z_range is not None:
+        z_ptp = Z1.max() - Z0.min()
+        z_min = round(min(z_range) * z_ptp + Z0.min())
+        z_max = round(max(z_range) * z_ptp + Z0.min())
+        if full_chunk_only:
+            idx0 = np.searchsorted(Z0, z_min, side='left')
+            idx1 = np.searchsorted(Z1, z_max, side='right') - 1
+        else:
+            idx0 = np.searchsorted(Z0, z_min, side='right') - 1
+            idx1 = np.searchsorted(Z1, z_max, side='left')
+        zind_to_render0 = np.unique(np.arange(idx0, idx1+1).clip(0, Nz-1))
+        if zind_to_render0.size == 0:
+            z_range = []
+        else:
+            z_range = [(Z0[idx0] - Z0.min())/z_ptp, (Z1[idx1] - Z0.min())/ z_ptp]
+    else:
+        zind_to_render0 = np.arange(Nz)
+    zind_to_render = [int(z) for z in zind_to_render0 if (z not in zind_rendered)]
+    if len(zind_to_render) == 0:
+        return err_raised, out_writer.spec, z_range
+    if flag_prefix is not None:
+        flag_file = flag_prefix + f'{Z0[zind_to_render0[0]]}_{Z1[zind_to_render0[-1]]}.json'
+        storage.makedirs(os.path.dirname(flag_file))
+    else:
+        flag_file = None
+    chunk_shape = out_writer.write_chunk_shape
+    chunk_mb = np.prod(chunk_shape) * np.prod(downsample_factors)/ (1024**2)
+    if cache_capacity is not None:
+        cache_capacity_per_worker = cache_capacity / num_workers
+        chunk_per_job = max(1, cache_capacity_per_worker / chunk_mb)
+        if cache_size is not None:
+            chunk_per_job = min(cache_size, chunk_per_job)
+        max_tasks_per_child = 1
+    else:
+        cache_capacity_per_worker = None
+        chunk_per_job = min(20, max(1, round(Nx*Ny*len(zind_to_render)/num_workers)))
+        if cache_size is not None:
+            chunk_per_job = min(cache_size, chunk_per_job)
+        max_tasks_per_child = None
+    z_step = max(1, int(np.floor(chunk_per_job * num_workers / (Nx * Ny))))
+    zind_batches = [zind_to_render[k:(k+z_step)] for k in range(0, len(zind_to_render), z_step)]
+    mid_x, mid_y = out_writer.morton_xy_grid()
+    mask_flag = None
+    if (mask_file is not None) and storage.file_exists(mask_file):
+        mask = common.imread(mask_file)
+        mask = cv2.resize(mask, (Nx, Ny), interpolation=cv2.INTER_AREA)
+        mask = cv2.dilate(mask, np.ones((3,3), dtype=np.uint8)) > 0
+        mask_flag = mask[mid_y, mid_x]
+    for id_zs in zind_batches:
+        id_x0 = np.tile(mid_x, len(id_zs))
+        id_y0 = np.tile(mid_y, len(id_zs))
+        id_z0 = np.repeat(id_zs, mid_x.size)
+        if checkpoint_prefix is not None:
+            filter_indx = []
+            for zz in id_zs:
+                checkpoint_file = checkpoint_prefix + str(zz) + '.h5'
+                if storage.file_exists(checkpoint_file):
+                    with H5File(checkpoint_file, 'r') as f:
+                        flg = f[str(zz)][()]
+                else:
+                    flg = np.ones(mid_x.size, dtype=bool)
+                if mask_flag is not None:
+                    flg = flg & mask_flag
+                filter_indx.append(flg)
+            filter_indx = np.concatenate(filter_indx, axis=None)
+            id_x0 = id_x0[filter_indx]
+            id_y0 = id_y0[filter_indx]
+            id_z0 = id_z0[filter_indx]
+        else:
+            filter_indx = np.ones(id_x0.size, dtype=bool)
+        num_chunks = id_x0.size
+        N_batch = max(1, round(num_chunks / chunk_per_job))
+        bindx = np.unique(np.linspace(0, num_chunks, N_batch+1, endpoint=True).astype(np.uint32))
+        tasks = []
+        task_lut = {}
+        task_id = 0
+        for bidx0, bidx1 in zip(bindx[:-1], bindx[1:]):
+            task_lut[task_id] = slice(bidx0, bidx1)
+            bkwargs = {
+                "ind_x": id_x0[bidx0:bidx1],
+                "ind_y": id_y0[bidx0:bidx1],
+                "ind_z": id_z0[bidx0:bidx1],
+                "src_spec": dsp_spec,
+                "out_spec": out_spec,
+                "task_id": task_id,
+                "cache_capacity": cache_capacity_per_worker
+            }
+            tasks.append(bkwargs)
+            task_id += 1
+        flag_cut = np.ones(num_chunks, dtype=bool)
+        t_check = time.time()
+        zind_added = []
+        res_cnt = 0
+        for res in submit_to_workers(_write_ts_block_from_indices, kwargs=tasks, num_workers=num_workers, max_tasks_per_child=max_tasks_per_child):
+            task_id, flg_b, errmsg = res
+            res_cnt += 1
+            bidx = task_lut[task_id]
+            flag_cut[bidx] = flg_b
+            if len(errmsg) > 0:
+                err_raised = True
+                logger.error(errmsg)
+            if (checkpoint_prefix is not None) and ((time.time() - t_check) > CHECKPOINT_TIME_INTERVAL) and (res_cnt>=num_workers):
+                storage.makedirs(os.path.dirname(checkpoint_prefix))
+                res_cnt = 0
+                t_check = time.time()
+                flag_all = np.zeros_like(filter_indx)
+                flag_all[filter_indx] = flag_cut
+                flag_all = flag_all.reshape(len(id_zs), -1)
+                storage.makedirs(os.path.dirname(checkpoint_prefix))
+                newly_finished = False
+                for zz, flg_z in zip(id_zs, flag_all):
+                    if np.all(flg_z) or (zz in zind_added):
+                        continue
+                    elif np.any(flg_z):
+                        checkpoint_file = checkpoint_prefix + str(zz) + '.h5'
+                        with H5File(checkpoint_file, 'w') as f:
+                            f.create_dataset(str(zz), data=flg_z, compression="gzip")
+                    else:
+                        if zz not in zind_added:
+                            newly_finished = True
+                            zind_added.append(zz)
+                if (flag_file is not None) and newly_finished:
+                    zind_rendered = sorted(list(set(zind_added).union(zind_rendered)))
+                    zind_rendered = [int(zz) for zz in zind_rendered]
+                    with storage.File(flag_file, 'w') as f:
+                        json.dump(zind_rendered, f)
+        if flag_file is not None:
+            newly_finished = False
+            flag_all = np.zeros_like(filter_indx)
+            flag_all[filter_indx] = flag_cut
+            flag_all = flag_all.reshape(len(id_zs), -1)
+            newly_finished = False
+            for zz, flg_z in zip(id_zs, flag_all):
+                if np.any(flg_z):
+                    err_raised = True
+                else:
+                    if zz not in zind_added:
+                        newly_finished = True
+                        zind_added.append(zz)
+            if newly_finished:
+                zind_rendered = sorted(list(set(zind_added).union(zind_rendered)))
+                zind_rendered = [int(zz) for zz in zind_rendered]
+                with storage.File(flag_file, 'w') as f:
+                    json.dump(zind_rendered, f)
+        if (checkpoint_prefix is not None) and (not err_raised):
+             for zz in id_zs:
+                checkpoint_file = checkpoint_prefix + str(zz) + '.h5'
+                storage.remove_file(checkpoint_file)
+    return err_raised, out_writer.spec, z_range

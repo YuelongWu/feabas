@@ -34,6 +34,8 @@ def GCP_get_blob(url):
 def parse_file_driver(filename):
     if filename.startswith('gs://'):
         driver = 'gs'
+    elif filename.startswith('s3://'):
+        driver = 's3'
     else:
         if filename.startswith('file://'):
             filename = filename[7:]
@@ -51,6 +53,8 @@ def load_yaml(filename):
 
 
 def list_folder_content(pathname, recursive=False):
+    if pathname is None:
+        return []
     driver, pathname = parse_file_driver(pathname)
     if driver == 'file':
         flist = glob.glob(pathname, recursive=recursive)
@@ -69,13 +73,27 @@ def list_folder_content(pathname, recursive=False):
     return flist
 
 
-def file_exists(filename):
-    driver, filename = parse_file_driver(filename)
-    if driver == 'gs':
-        blob = GCP_get_blob(filename)
-        return blob.exists()
+def file_exists(filename, use_cache=False):
+    if filename is None:
+        return False
+    if use_cache:
+        dir_name, b_name = os.path.split(filename)
+        bname_no_ext = os.path.splitext(b_name)[0]
+        b_name = b_name.replace(bname_no_ext, '*')
+        prefix = join_paths(dir_name, b_name)
+        file_list = _cached_folder_contents(prefix)
+        return (filename in file_list)
     else:
-        return os.path.isfile(filename)
+        driver, filename = parse_file_driver(filename)
+        if driver == 'gs':
+            blob = GCP_get_blob(filename)
+            return blob.exists()
+        else:
+            return os.path.isfile(filename)
+
+@lru_cache(maxsize=5)
+def _cached_folder_contents(pathname):
+    return set(list_folder_content(pathname))
 
 def dir_exists(dirname):
     driver, dirname = parse_file_driver(dirname)
@@ -88,12 +106,39 @@ def dir_exists(dirname):
 
 
 def join_paths(*args):
+    if any([s is None for s in args]):
+        return None
     parent_dir = args[0]
     if parent_dir.startswith('gs://'):
         pth = '/'.join(args)
     else:
         pth = os.path.join(*args)
     return pth
+
+
+def expand_dir(pth):
+    driver, pth = parse_file_driver(pth)
+    if driver == 'file':
+        pth = os.path.abspath(os.path.expanduser(os.path.expandvars(pth)))
+    return pth
+
+
+def makedirs(filename, exist_ok=True):
+    driver, filename = parse_file_driver(filename)
+    if driver == 'file':
+        os.makedirs(filename, exist_ok=exist_ok)
+
+
+def remove_file(filename):
+    if not file_exists(filename):
+        return False
+    driver, filename = parse_file_driver(filename)
+    if driver == 'gs':
+        blob = GCP_get_blob(filename)
+        blob.delete()
+    else:
+        os.remove(filename)
+    return True
 
 
 def h5file_class():

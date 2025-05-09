@@ -4,11 +4,11 @@ import cv2
 import numpy as np
 import shapely.geometry as shpgeo
 from shapely.ops import unary_union, linemerge, polygonize
-from shapely import wkb, get_coordinates
+from shapely import wkb, get_coordinates, minimum_rotated_rectangle
 
 from feabas import dal, common, material
 import feabas.constant as const
-from feabas.config import DEFAULT_RESOLUTION
+from feabas.config import data_resolution
 from feabas.storage import h5file_class
 
 H5File = h5file_class()
@@ -468,6 +468,13 @@ def generate_equilat_grid_mask(mask, side_len, anchor_point=None, buffer=None):
     """
     if buffer is None:
         buffer = side_len
+    if isinstance(mask, (tuple, list, np.ndarray)):
+        mask_np = np.array(mask)
+        if mask_np.size == 4: #bbox
+            xmin, ymin, xmax, ymax = mask_np.ravel()
+            mask = shpgeo.box(xmin, ymin, xmax, ymax)
+        else:
+            mask = shpgeo.Polygon(mask_np.reshape(-1, 2))
     if hasattr(mask, 'geoms'):
         # if multiple geometries, filter out ones with 0 areas
         to_keep = []
@@ -486,6 +493,23 @@ def generate_equilat_grid_mask(mask, side_len, anchor_point=None, buffer=None):
     else:
         return np.array((pts.x, pts.y))
     
+
+def find_rotation_for_minimum_rectangle(poly, rounding=0):
+    bbox = minimum_rotated_rectangle(poly)
+    corner_xy = np.array(bbox.boundary.coords)
+    corner_dxy = np.diff(corner_xy, axis=0)
+    sides = np.sum(corner_dxy**2, axis=-1) ** 0.5
+    if sides[0] > sides[1]:
+        side_vec = corner_dxy[0]
+    else:
+        side_vec = corner_dxy[1]
+    theta = np.arctan2(side_vec[1], side_vec[0])
+    if rounding > 0:
+        delta = rounding * np.pi / 180
+        theta = np.round(theta / delta) * delta
+    if np.abs(theta) > np.pi/2:
+        theta = np.pi + theta
+    return theta
 
 
 class Geometry:
@@ -508,7 +532,7 @@ class Geometry:
         self._roi = roi
         self._default_region = None
         self._regions = regions
-        self._resolution = kwargs.get('resolution', DEFAULT_RESOLUTION)
+        self._resolution = kwargs.get('resolution', data_resolution())
         self._zorder = kwargs.get('zorder', list(self._regions.keys()))
         self._committed = False
         self._epsilon = kwargs.get('epsilon', const.EPSILON0) # small value used for buffer
@@ -532,7 +556,7 @@ class Geometry:
             scale(float): if image_loader is not a MosaicLoader, use this to
                 define scaling factor.
         """
-        resolution = kwargs.get('resolution', DEFAULT_RESOLUTION)
+        resolution = kwargs.get('resolution', data_resolution())
         oor_label = kwargs.get('oor_label', None)
         roi_erosion = kwargs.get('roi_erosion', 0.5)
         dilate = kwargs.get('dilate', 0.1)
@@ -625,7 +649,7 @@ class Geometry:
 
 
     def add_regions_from_image(self, image, material_table=None, region_names=None, **kwargs):
-        resolution = kwargs.get('resolution', DEFAULT_RESOLUTION)
+        resolution = kwargs.get('resolution', data_resolution())
         dilate = kwargs.get('dilate', 0.1)
         scale = kwargs.get('scale', 1.0)
         mode = kwargs.get('mode', 'u')
@@ -666,7 +690,7 @@ class Geometry:
 
 
     def modify_roi_from_image(self, image, roi_label=0, **kwargs):
-        resolution = kwargs.get('resolution', DEFAULT_RESOLUTION)
+        resolution = kwargs.get('resolution', data_resolution())
         roi_erosion = kwargs.get('roi_erosion', 0)
         scale = kwargs.get('scale', 1.0)
         mode = kwargs.get('mode', 'r')
@@ -1185,18 +1209,9 @@ class Geometry:
 
     @staticmethod
     def region_names_from_material_dict(material_dict):
-        if isinstance(material_dict, str):
-            if '.json' in material_dict:
-                MT = material.MaterialTable.from_json(material_dict, stream=False)
-            else:
-                MT = material.MaterialTable.from_json(material_dict, stream=True)
-            material_dict = MT.label_table
-        elif isinstance(material_dict, material.MaterialTable):
-            material_dict = material_dict.label_table
-        elif isinstance(material_dict, dict):
-            pass
-        else:
-            raise TypeError('Invalid material dictionary type.')
+        if not isinstance(material_dict, dict):
+            mt = material.MaterialTable.from_pickleable(material_dict)
+            material_dict = mt.label_table
         region_names = OrderedDict()
         for label, mat in material_dict.items():
             if isinstance(mat, material.Material):

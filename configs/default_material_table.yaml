@@ -1,0 +1,58 @@
+# This is the default configuration file defining the material properties
+# of the finite element meshes. If the user provide their own material_table.yaml
+# in their working directory configs folder, then that file will be parsed
+# first, then whatever additional material (identified by its name) defined
+# here would be append to that, unless there is a confliction in mask_label, 
+# in which case the material in this file with the conflicting labels will
+# be dropped.
+default:    # material name | 'default' should describe the most common elastic material.
+    enable_mesh: true   # whether to create mesh for this material
+    area_constraint: 1  # define the relative mesh size. Larger number means coarser mesh, unless it's 0 (coarsest possible)
+    render: true    # whether to render this material
+    render_weight: 1.0  # define the priority of rendering when the output pixel is covered by meshes of different material. Larger number means higher priority
+    type: MATERIAL_MODEL_ENG    # no need to worry about this
+    stiffness_multiplier: 1.0   # smaller number for softer material
+    poisson_ratio: 0.0
+    mask_label: 0   # the grayscale value associated with this material in the mask images
+    stiffness_func_factory: null    # this is to model nonlinear material. it should be a function that generates a function. The generated function takes in the area stretch factor of a triangle in a mesh, and caculate the stiffness multiplier to that triangle.
+    stiffness_func_params: {}   # additional kwargs to pass into stiffness_func_factory
+
+exclude:    # 'exclude' define regions that will not be meshed (outside of ROI or holes)
+    enable_mesh: false
+    render: false
+    mask_label: 255
+
+
+split:  # 'split' the code will still generate meshes for this one, but break it with a thin gap in the middle before mesh relaxation
+    enable_mesh: true
+    area_constraint: 0
+    render: true
+    render_weight: 1.0e-6
+    stiffness_multiplier: 1.0e-2
+    mask_label: 200
+    stiffness_func_factory: null
+    stiffness_func_params: {}
+
+
+soft:   # soft material
+    enable_mesh: true
+    area_constraint: 0
+    render: true
+    render_weight: 1.0e-6
+    stiffness_multiplier: 1.0e-6
+    mask_label: 100
+    stiffness_func_factory: null
+    stiffness_func_params: {}
+
+
+wrinkle:    # material that free to expand but hard to compress (e.g. wrinkles or folds)
+    enable_mesh: true
+    area_constraint: 0
+    render: true
+    render_weight: 1.0e-3
+    stiffness_multiplier: 0.4
+    mask_label: 50
+    stiffness_func_factory: feabas.material.asymmetrical_elasticity
+    stiffness_func_params:
+      strain: [0.0, 0.75, 1.0, 1.01]
+      stiffness: [1.5, 1.0, 0.5, 0.0]
