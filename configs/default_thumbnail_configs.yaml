@@ -4,9 +4,10 @@ downsample:
     num_workers: 10
     parallel_within_section: true   # whether to parallel among tiles within a section, or among sections
     # max_mip: 5
-    format: jpg                 # for image tile output, the extension of the low resolution image tiles
+    format: jpg                 # for image tile output (only for mipmaps, not thumbnails), the extension of the low resolution image tiles.
     thumbnail_highpass: true    # whether to use high-pass filter to enhance contrast when generating thumbnail.
     highpass_inter_mip_lvl: 4   # the intermediate mip level to apply high-pass filter on if the feature is turned on
+    thumbnail_format: png       # image format of the thumbnails
 
 
 alignment:

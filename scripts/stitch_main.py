@@ -33,7 +33,7 @@ def match_main(coord_list, out_dir, **kwargs):
     logger= logging.get_logger(logger_info[0])
     for coordname in coord_list:
         t0 = time.time()
-        fname = os.path.basename(coordname).replace('.txt', '')
+        fname = os.path.basename(coordname).replace('.txt', '').repace('.tsv', '')
         outname = storage.join_paths(out_dir, fname + '.h5')
         if storage.file_exists(outname, use_cache=True):
             continue
@@ -265,6 +265,8 @@ if __name__ == '__main__':
         optmization_main(match_list, mesh_dir, **stitch_configs)
     else:
         coord_list = sorted(storage.list_folder_content(storage.join_paths(coord_dir, '*.txt')))
+        if len(coord_list) == 0:
+            coord_list = sorted(storage.list_folder_content(storage.join_paths(coord_dir, '*.tsv')))
         if len(args.filter) > 0:
             coord_list = [s for s in coord_list if args.filter in os.path.basename(s)]
         coord_list = coord_list[indx]

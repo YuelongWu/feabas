@@ -67,7 +67,7 @@ def generate_thumbnails(src_dir, out_dir, seclist=None, **kwargs):
     args_list = []
     kwargs_list = []
     for sname in secnames:
-        outname = storage.join_paths(out_dir, sname + '.png')
+        outname = storage.join_paths(out_dir, sname + '.' + thumbnail_format)
         if seclist is None:
             if storage.file_exists(outname, use_cache=True):
                 continue
@@ -103,7 +103,7 @@ def generate_thumbnails_tensorstore(src_dir, out_dir, seclist=None, **kwargs):
     kwargs_list = []
     for meta_name in meta_list:
         sname = os.path.basename(meta_name).replace('.json', '')
-        outname = storage.join_paths(out_dir, sname + '.png')
+        outname = storage.join_paths(out_dir, sname + '.' + thumbnail_format)
         if seclist is None:
             if storage.file_exists(outname, use_cache=True):
                 continue
@@ -212,10 +212,10 @@ def align_thumbnail_pairs(pairnames, image_dir, out_dir, **kwargs):
                 minfo0 = prepared_cache[sname0]
             else:
                 img0 = common.imread(storage.join_paths(image_dir, sname0_ext))
-                if (region_mask_dir is not None) and storage.file_exists(storage.join_paths(region_mask_dir, sname0_ext)):
-                    mask0 = common.imread(storage.join_paths(region_mask_dir, sname0_ext))
-                elif (material_mask_dir is not None) and storage.file_exists(storage.join_paths(material_mask_dir, sname0_ext)):
-                    mask_t = common.imread(storage.join_paths(material_mask_dir, sname0_ext))
+                if (region_mask_dir is not None) and storage.file_exists(storage.join_paths(region_mask_dir, sname0+'.png')):
+                    mask0 = common.imread(storage.join_paths(region_mask_dir, sname0+'.png'))
+                elif (material_mask_dir is not None) and storage.file_exists(storage.join_paths(material_mask_dir, sname0+'.png')):
+                    mask_t = common.imread(storage.join_paths(material_mask_dir, sname0+'.png'))
                     mask_t = np.isin(mask_t, region_labels).astype(np.uint8)
                     _, mask0 = cv2.connectedComponents(mask_t, connectivity=4, ltype=cv2.CV_16U)
                 else:
@@ -232,10 +232,10 @@ def align_thumbnail_pairs(pairnames, image_dir, out_dir, **kwargs):
                 minfo1 = prepared_cache[sname1]
             else:
                 img1 = common.imread(storage.join_paths(image_dir, sname1_ext))
-                if (region_mask_dir is not None) and storage.file_exists(storage.join_paths(region_mask_dir, sname1_ext)):
-                    mask1 = common.imread(storage.join_paths(region_mask_dir, sname1_ext))
-                elif (material_mask_dir is not None) and storage.file_exists(storage.join_paths(material_mask_dir, sname1_ext)):
-                    mask_t = common.imread(storage.join_paths(material_mask_dir, sname1_ext))
+                if (region_mask_dir is not None) and storage.file_exists(storage.join_paths(region_mask_dir, sname1+'.png')):
+                    mask1 = common.imread(storage.join_paths(region_mask_dir, sname1+'.png'))
+                elif (material_mask_dir is not None) and storage.file_exists(storage.join_paths(material_mask_dir, sname1+'.png')):
+                    mask_t = common.imread(storage.join_paths(material_mask_dir, sname1+'.png'))
                     mask_t = np.isin(mask_t, region_labels).astype(np.uint8)
                     _, mask1 = cv2.connectedComponents(mask_t, connectivity=4, ltype=cv2.CV_16U)
                 else:
@@ -317,23 +317,24 @@ def normalize_transforms(tlist, angle=0.0, offset=(0,0), **kwargs):
     return bbox_out
 
 
-def render_one_thumbnail(tform_name, thumbnail_dir, out_dir, **kwargs):
+def render_one_aligned_thumbnail(tform_name, thumbnail_dir, out_dir, **kwargs):
     import cv2
     from feabas.mesh import Mesh
     from feabas.renderer import MeshRenderer
     from feabas import common
     from feabas.dal import StreamLoader
     src_resolution = kwargs.get('src_resolution', None)
+    thumbnail_configs = config.thumbnail_configs()
     if src_resolution is None:
-        thumbnail_configs = config.thumbnail_configs()
         thumbnail_mip_lvl = thumbnail_configs.get('thumbnail_mip_level', 6)
         src_resolution = config.montage_resolution() * (2 ** thumbnail_mip_lvl)
+    thumbnail_format = thumbnail_configs.get('downsample',{}).get('thumbnail_format', 'png')
     out_resolution = kwargs.get('out_resolution', src_resolution)
     bbox = kwargs.get('bbox', None)
     logger_info = kwargs.get('logger', None)
     logger = logging.get_logger(logger_info)
     t0 = time.time()
-    secname = os.path.basename(tform_name).replace('.h5', '.png')
+    secname = os.path.basename(tform_name).replace('.h5', '.'+thumbnail_format)
     thumbnail_name = storage.join_paths(thumbnail_dir, secname)
     outname = storage.join_paths(out_dir, secname)
     if storage.file_exists(outname):
@@ -374,6 +375,7 @@ if __name__ == '__main__':
     thumbnail_configs = config.thumbnail_configs()
     thumbnail_mip_lvl = thumbnail_configs.get('thumbnail_mip_level', 6)
     thumbnail_resolution = config.thumbnail_resolution()
+    thumbnail_format = thumbnail_configs.get('downsample',{}).get('thumbnail_format', 'png')
     if args.mode.lower().startswith('d'):
         thumbnail_configs = thumbnail_configs['downsample']
         mode = 'downsample'
@@ -493,7 +495,7 @@ if __name__ == '__main__':
         logger.info('finished.')
         logging.terminate_logger(*logger_info)
     else:
-        imglist = sorted(storage.list_folder_content(storage.join_paths(img_dir, '*.png')))
+        imglist = sorted(storage.list_folder_content(storage.join_paths(img_dir, '*.'+thumbnail_format)))
         imglist = common.rearrange_section_order(imglist, section_order_file)[0]
         bname_list = [os.path.basename(s) for s in imglist]
         secname_list = [os.path.splitext(s)[0] for s in bname_list]
@@ -522,7 +524,7 @@ if __name__ == '__main__':
                     s = s.replace('.h5', '').replace(match_name_delimiter, '\t')
                     snames = s.split('\t')
                     sname0, sname1 = snames[0], snames[1]
-                    pairnames.append((sname0 + '.png', sname1 + '.png'))
+                    pairnames.append((sname0 + '.'+thumbnail_format, sname1 + '.'+thumbnail_format))
                     outname = storage.join_paths(match_dir, sname0 + match_name_delimiter + sname1 + '.h5')
                     if storage.file_exists(outname, use_cache=True):
                         processed.append(True)
@@ -577,7 +579,7 @@ if __name__ == '__main__':
             for sname in secname_list:
                 tform_name = storage.join_paths(tform_dir, sname+'.h5')
                 mask_name = storage.join_paths(mat_mask_dir, sname+'.png')
-                img_name = storage.join_paths(img_dir, sname+'.png')
+                img_name = storage.join_paths(img_dir, sname+'.'+thumbnail_format)
                 if storage.file_exists(tform_name, use_cache=True):
                     continue  
                 if storage.file_exists(mask_name, use_cache=True):
@@ -621,7 +623,7 @@ if __name__ == '__main__':
                 tform_list0 = sorted(storage.list_folder_content(storage.join_paths(tform_dir, '*.h5')))
                 tform_list = []
                 for tname in tform_list0:
-                    secname = os.path.basename(tname).replace('.h5', '.png')
+                    secname = os.path.basename(tname).replace('.h5', '.'+thumbnail_format)
                     outname = storage.join_paths(render_dir, secname)
                     if not storage.file_exists(outname, use_cache=True):
                         tform_list.append(tname)
@@ -634,7 +636,7 @@ if __name__ == '__main__':
                     canvas_bbox = {f'mip{target_mip}': [int(s) for s in bbox_render]}
                     with storage.File(canvas_file, 'w') as f:
                         json.dump(canvas_bbox, f)
-                rfunc = partial(render_one_thumbnail, thumbnail_dir=img_dir, out_dir=render_dir, src_resolution=thumbnail_resolution,
+                rfunc = partial(render_one_aligned_thumbnail, thumbnail_dir=img_dir, out_dir=render_dir, src_resolution=thumbnail_resolution,
                                 out_resolution=render_resolution, bbox=bbox_render, logger=logger_info[0])
                 for _ in submit_to_workers(rfunc, args=[(s,) for s in tform_list], num_workers=num_workers):
                     pass
