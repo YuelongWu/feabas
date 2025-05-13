@@ -33,7 +33,7 @@ def match_main(coord_list, out_dir, **kwargs):
     logger= logging.get_logger(logger_info[0])
     for coordname in coord_list:
         t0 = time.time()
-        fname = os.path.basename(coordname).replace('.txt', '').repace('.tsv', '')
+        fname = os.path.basename(coordname).replace('.txt', '').replace('.tsv', '')
         outname = storage.join_paths(out_dir, fname + '.h5')
         if storage.file_exists(outname, use_cache=True):
             continue
