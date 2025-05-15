@@ -8,6 +8,7 @@ import numpy as np
 from scipy import sparse
 from scipy.ndimage import gaussian_filter1d
 import scipy.sparse.csgraph as csgraph
+from skimage.morphology import convex_hull_image
 
 from feabas import storage
 from feabas.config import TS_RETRY, TS_TIMEOUT, DEFAULT_DEFORM_BUDGET
@@ -95,6 +96,48 @@ def inverse_image(img, dtype=np.uint8):
         return -img
     else:
         raise TypeError(f'{dtype} not invertable.')
+
+
+def estimate_mask(img, background_colors=None, smoothen_window=0.1, mask_erode=1):
+    """
+    if mask is not provided, guess the mask based on the image
+    """
+    if len(img.shape) > 2:
+        img = img.reshape(img.shape[0], img.shape[1], -1)
+        img = np.mean(img, axis=-1, keepdims=False)
+    if background_colors is None:
+        kh = np.ones((3,1), dtype=np.uint8)
+        img_d = cv2.dilate(img, kh, borderType=cv2.BORDER_REPLICATE)
+        img_e = cv2.erode(img, kh, borderType=cv2.BORDER_REPLICATE)
+        mask_h = img_d == img_e
+        kv = np.ones((1,3), dtype=np.uint8)
+        img_d = cv2.dilate(img, kv, borderType=cv2.BORDER_REPLICATE)
+        img_e = cv2.erode(img, kv, borderType=cv2.BORDER_REPLICATE)
+        mask_v = img_d == img_e
+        mask_b = mask_h | mask_v
+        if not np.any(mask_b, axis=None):
+            return np.ones_like(img, dtype=bool)
+        bck_colors = img[mask_b]
+        uu, cc = np.unique(bck_colors, return_counts=True)
+        background_colors = uu[np.argmax(cc)]
+    mask = ~np.isin(img, background_colors)
+    if smoothen_window > 0:
+        ht, wd = mask.shape
+        if smoothen_window < 1:
+            smoothen_window = max(ht * smoothen_window, wd * smoothen_window)
+        Ny = np.ceil(ht / smoothen_window)
+        Nx = np.ceil(wd / smoothen_window)
+        Xs = np.unique(np.round(np.linspace(0, wd, num=int(Nx+1), endpoint=True))).astype(np.int32)
+        Ys = np.unique(np.round(np.linspace(0, ht, num=int(Ny+1), endpoint=True))).astype(np.int32)
+        for x0, x1 in zip(Xs[:-1], Xs[1:]):
+            for y0, y1 in zip(Ys[:-1], Ys[1:]):
+                blk = mask[y0:y1, x0:x1]
+                if (not np.all(blk, axis=None)) and np.any(blk, axis=None):
+                    mask[y0:y1, x0:x1] = convex_hull_image(blk)
+    if mask_erode > 0:
+        r = int(2*mask_erode) + 1
+        mask = cv2.erode(mask.astype(np.uint8), np.ones((r, r), dtype=np.uint8)) > 0
+    return mask
 
 
 def z_order(indices, base=2):

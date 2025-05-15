@@ -214,12 +214,13 @@ def align_thumbnail_pairs(pairnames, image_dir, out_dir, **kwargs):
                 img0 = common.imread(storage.join_paths(image_dir, sname0_ext))
                 if (region_mask_dir is not None) and storage.file_exists(storage.join_paths(region_mask_dir, sname0+'.png')):
                     mask0 = common.imread(storage.join_paths(region_mask_dir, sname0+'.png'))
-                elif (material_mask_dir is not None) and storage.file_exists(storage.join_paths(material_mask_dir, sname0+'.png')):
-                    mask_t = common.imread(storage.join_paths(material_mask_dir, sname0+'.png'))
-                    mask_t = np.isin(mask_t, region_labels).astype(np.uint8)
-                    _, mask0 = cv2.connectedComponents(mask_t, connectivity=4, ltype=cv2.CV_16U)
                 else:
-                    mask0 = None
+                    if (material_mask_dir is not None) and storage.file_exists(storage.join_paths(material_mask_dir, sname0+'.png')):
+                        mask_t = common.imread(storage.join_paths(material_mask_dir, sname0+'.png'))
+                        mask_t = np.isin(mask_t, region_labels).astype(np.uint8)
+                    else:
+                        mask_t = common.estimate_mask(img0)
+                    _, mask0 = cv2.connectedComponents(mask_t, connectivity=4, ltype=cv2.CV_16U)
                 if hasattr(mask0, 'shape') and ((mask0.shape[0] != img0.shape[0]) or (mask0.shape[1] != img0.shape[1])):
                     ht0 = min(mask0.shape[0], img0.shape[0])
                     wd0 = min(mask0.shape[1], img0.shape[1])
@@ -234,12 +235,13 @@ def align_thumbnail_pairs(pairnames, image_dir, out_dir, **kwargs):
                 img1 = common.imread(storage.join_paths(image_dir, sname1_ext))
                 if (region_mask_dir is not None) and storage.file_exists(storage.join_paths(region_mask_dir, sname1+'.png')):
                     mask1 = common.imread(storage.join_paths(region_mask_dir, sname1+'.png'))
-                elif (material_mask_dir is not None) and storage.file_exists(storage.join_paths(material_mask_dir, sname1+'.png')):
-                    mask_t = common.imread(storage.join_paths(material_mask_dir, sname1+'.png'))
-                    mask_t = np.isin(mask_t, region_labels).astype(np.uint8)
-                    _, mask1 = cv2.connectedComponents(mask_t, connectivity=4, ltype=cv2.CV_16U)
                 else:
-                    mask1 = None
+                    if (material_mask_dir is not None) and storage.file_exists(storage.join_paths(material_mask_dir, sname1+'.png')):
+                        mask_t = common.imread(storage.join_paths(material_mask_dir, sname1+'.png'))
+                        mask_t = np.isin(mask_t, region_labels).astype(np.uint8)  
+                    else:
+                        mask_t = common.estimate_mask(img1)
+                    _, mask1 = cv2.connectedComponents(mask_t, connectivity=4, ltype=cv2.CV_16U)
                 if hasattr(mask1, 'shape') and ((mask1.shape[0] != img1.shape[0]) or (mask1.shape[1] != img1.shape[1])):
                     ht1 = min(mask1.shape[0], img1.shape[0])
                     wd1 = min(mask1.shape[1], img1.shape[1])
