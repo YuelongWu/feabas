@@ -1212,7 +1212,7 @@ class Aligner():
         worker_settings = slide_window.setdefault('worker_settings', worker_settings)
         slide_window.setdefault('ensure_continuous', False)
         changed_chunks, _ = self.resolve_chunk_version_differences(remove_file=True)
-        if (self._chunk_map_file is not None) and ((len(changed_chunks) > 0) or (self._previous_chunk_map is None)):
+        if (self._chunk_map_file is not None) and ((len(changed_chunks) > 0) or (self._previous_chunk_map is None) or (set(self._previous_chunk_map)!=set(self.chunk_map))):
             storage.makedirs(os.path.dirname(self._chunk_map_file))
             chunk_map_out = {ky:self.chunk_map[ky] for ky in self.chunk_names}
             with storage.File(self._chunk_map_file, 'w') as f:
@@ -1271,7 +1271,7 @@ class Aligner():
                     flip_flag = flip_flag + [True] * len(mtchnames_flip)
                     mtchnames = mtchnames + mtchnames_flip
             outname = storage.join_paths(self._meta_match_dir, self.chunk_names[cid0] + self._match_name_delimiter + self.chunk_names[cid1] + '.h5')
-            if (cid0 not in updated_chunks) and (cid1 not in updated_chunks) and storage.file_exists(outname):
+            if (cid0 not in updated_chunks) and (cid1 not in updated_chunks) and (not chunk_lock_flags[cid0]) and (not chunk_lock_flags[cid1]) and storage.file_exists(outname):
                 continue
             secnames = set(snm for mnm in mtchnames for snm in mnm.split(self._match_name_delimiter))
             mesh_list = self.mesh_locations(secnames=secnames)
@@ -1288,7 +1288,8 @@ class Aligner():
                 outname = storage.join_paths(self._meta_tform_dir, chnkname+'.h5')
             else:
                 outname = storage.join_paths(self._meta_mesh_dir, chnkname + '.h5')
-            if storage.file_exists(outname) and (cid not in updated_chunks):
+            if storage.file_exists(outname) and (cid not in updated_chunks) and (not chunk_lock_flags[cid]):
+                # in case the target folder got changed by e.g. normalization, make sure locked chunk got updated.
                 continue
             secnames = self.chunk_map[chnkname]
             mesh_list = self.mesh_locations(secnames=secnames)
