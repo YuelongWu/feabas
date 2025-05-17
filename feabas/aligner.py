@@ -1468,7 +1468,7 @@ class Aligner():
             outname = storage.join_paths(odir, snm +'.h5')
             if not storage.file_exists(outname, use_cache=True):
                 srcname = storage.join_paths(srcdir, snm+'.h5')
-                m0 = Mesh.from_h5(srcname)
+                m0 = Mesh.from_h5(srcname, locked=False)
                 m0 = transform_mesh(m0, Mc, gears=(const.MESH_GEAR_MOVING, const.MESH_GEAR_MOVING))
                 m0.anneal(gear=(const.MESH_GEAR_MOVING, const.MESH_GEAR_FIXED), mode=const.ANNEAL_COPY_EXACT)
                 m0.save_to_h5(outname, save_material=True)
