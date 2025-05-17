@@ -235,7 +235,7 @@ def render_one_section(h5name, z_prefix='', **kwargs):
         stitch_dir = storage.join_paths(root_dir, 'stitch')
         loader_dir = storage.join_paths(stitch_dir, 'ts_specs', secname + '.json')
         loader = VolumeRenderer._get_loader(loader_dir, mip=mip_level, **loader_config)
-    M = Mesh.from_h5(h5name)
+    M = Mesh.from_h5(h5name, locked=False)
     M.change_resolution(resolution)
     if offset is not None:
         M.apply_translation(offset * config.montage_resolution()/resolution, gear=const.MESH_GEAR_MOVING)
