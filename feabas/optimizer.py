@@ -1834,6 +1834,7 @@ def solve(A, b, solver, x0=None, tol=1e-7, atol=None, maxiter=None, M=None, **kw
     edc = kwargs.get('extra_dof_constraint', None)
     check_converge = kwargs.get('check_converge', config.OPT_CHECK_CONVERGENCE)
     tolerated_perturbation = kwargs.get('tolerated_perturbation', None) # if one round of optimization yields no larger benefit compared to recover from such perturbation, then do early stop.
+    allow_direct_solve = kwargs.pop('allow_direct_solve', False)
     if tolerated_perturbation is not None:
         theta = np.random.uniform(low=0.0, high=2*np.pi, size=round((b.size + 0.1)/2))
         sin_t = np.sin(theta)
@@ -1871,7 +1872,7 @@ def solve(A, b, solver, x0=None, tol=1e-7, atol=None, maxiter=None, M=None, **kw
         x = x0
     tol0 = tol
     directly_solved = False
-    if b.shape[0] < DIRECT_SOLVER_SWITCH:
+    if allow_direct_solve and (b.shape[0] < DIRECT_SOLVER_SWITCH):
         try:
             F = sparse.linalg.factorized(A.tocsc())
             x = F(b)
