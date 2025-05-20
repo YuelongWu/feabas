@@ -179,10 +179,11 @@ class Material:
         area_stretch = kwargs.get('area_stretch', None)
         check_flip = kwargs.get('check_flip', None)
         continue_on_flip = kwargs.get('continue_on_flip', False)
+        multiplier = self._stiffness_multiplier
         B, areas = Ms
         flipped = None
         if (self._stiffness_multiplier == 0) or (B is None):
-            return None, None, flipped
+            return None, None, flipped, multiplier
         trinum = B.shape[0]
         if uv is None:
             uv = np.zeros((trinum, 6, 1), dtype=DTYPE, order='C')
@@ -204,7 +205,7 @@ class Material:
                 if check_flip:
                     flipped = np.any(J <= 0, axis=None)
                     if (not continue_on_flip) and flipped:
-                        return None, None, flipped
+                        return None, None, flipped, multiplier
             Bn = np.array([[1,0,0,0],[0,0,0,1],[0,1,1,0]], dtype=DTYPE) @ B
             D = np.eye(3, dtype=DTYPE)
             D[[0,1],[1,0]] = self._poisson_ratio
@@ -223,7 +224,7 @@ class Material:
                 if check_flip:
                     flipped = np.any(J <= 0, axis=None)
                     if (not continue_on_flip) and flipped:
-                        return None, None, flipped
+                        return None, None, flipped, multiplier
             FtT = np.swapaxes(Ft,1,2)
             Et = 0.5*(FtT@Ft - np.eye(2, dtype=DTYPE))
             E = np.array([[1,0,0,0],[0,0,0,1],[0,1,1,0]], dtype=DTYPE) @ Et.reshape(-1, 4, 1)
@@ -256,7 +257,7 @@ class Material:
             if check_flip:
                 flipped = np.any(J <= 0, axis=None)
                 if (not continue_on_flip) and flipped:
-                    return None, None, flipped
+                    return None, None, flipped, multiplier
             U = np.array([[0,0,0,1],[0,0,-1,0],[0,-1,0,0],[1,0,0,0]],dtype=DTYPE)
             F = Ft.reshape(-1,4,1)
             Fu = U @ F
@@ -269,13 +270,8 @@ class Material:
         else:
             raise NotImplementedError
         if self._stiffness_func is not None:
-            modifier = self._stiffness_func(J)
-            K = K * modifier.reshape(-1,1,1)
-            P = P * modifier.reshape(-1,1,1)
-        if self._stiffness_multiplier != 1:
-            K = self._stiffness_multiplier * K
-            P = self._stiffness_multiplier * P
-        return K, P, flipped
+            multiplier = multiplier * self._stiffness_func(J).reshape(-1,1,1)
+        return K, P, flipped, multiplier
 
 
     def element_stiffness_matrices_from_vertices(self, tripts, uv=None, check_flip=None):

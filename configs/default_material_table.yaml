@@ -55,4 +55,4 @@ wrinkle:    # material that free to expand but hard to compress (e.g. wrinkles o
     stiffness_func_factory: feabas.material.asymmetrical_elasticity
     stiffness_func_params:
       strain: [0.0, 0.75, 1.0, 1.01]
-      stiffness: [1.5, 1.0, 0.5, 0.0]
+      stiffness: [1.5, 1.0, 0.5, 1.0e-7]

@@ -2656,6 +2656,7 @@ class Mesh:
         indices = []
         F0 = []
         F1 = []
+        MTPLR = []
         tri_areas = None
         for mid, vals in shape_matrices.items():
             mat = material_table[mid]
@@ -2677,18 +2678,19 @@ class Mesh:
                 area_stretch = area_stretch / baseline_ratio
             else:
                 area_stretch = None
-            K, P, flp = mat.element_stiffness_matrices_from_shape_matrices(Ms, uv=uv, area_stretch=area_stretch, **kwargs)
+            K, P, flp, modifier = mat.element_stiffness_matrices_from_shape_matrices(Ms, uv=uv, area_stretch=area_stretch, **kwargs)
             if flp:
                 flipped = True
                 if not continue_on_flip:
-                    return None, None, None, flipped
+                    return None, None, None, flipped, None
             if K is None:
                 continue
-            mm = multiplier[indx].reshape(-1,1,1)
+            mm = multiplier[indx].reshape(-1,1,1) * modifier
+            MTPLR.append(mm)
             indices.append(indx)
-            F0.append(P * mm)
-            F1.append(K * mm)
-        return F1, indices, F0, flipped
+            F0.append(P)
+            F1.append(K)
+        return F1, indices, F0, flipped, MTPLR
 
 
     @config_cache('TBD')
@@ -2705,7 +2707,7 @@ class Mesh:
                 detected.
         """
         continue_on_flip = kwargs.get('continue_on_flip', False)
-        F1, indices, F0, flipped = self.element_stiffness_matrices(gear=gear, inner_cache=inner_cache, cache=inner_cache, **kwargs)
+        F1, indices, F0, flipped, MTPLR = self.element_stiffness_matrices(gear=gear, inner_cache=inner_cache, cache=inner_cache, **kwargs)
         if flipped and (not continue_on_flip):
             return None, None
         stf_sz = 2 * self.num_vertices
@@ -2713,18 +2715,63 @@ class Mesh:
         T[:,1::2] += 1
         STIFF_M = sparse.csr_matrix((stf_sz, stf_sz), dtype=np.float32)
         STRESS_v = np.zeros(stf_sz, dtype=np.float32)
-        for f1, tidx, f0 in zip(F1, indices, F0):
+        for f1, tidx, f0, mm in zip(F1, indices, F0, MTPLR):
             idx_1d = T[tidx]
             idx_1 = np.tile(idx_1d.reshape(-1,1,6), (1,6,1))
             idx_2 = np.swapaxes(idx_1, 1, 2)
             idx_1 = idx_1.ravel()
             idx_2 = idx_2.ravel()
-            V = f1.ravel()
+            V = (f1 * mm) .ravel()
             M = sparse.csr_matrix((V, (idx_1, idx_2)),shape=(stf_sz, stf_sz))
             STIFF_M = STIFF_M + M
-            np.add.at(STRESS_v, idx_1d.ravel(), f0.ravel())
+            np.add.at(STRESS_v, idx_1d.ravel(), (f0 * mm).ravel())
         return STIFF_M, STRESS_v
 
+
+    def stiffness_matrix_local_normalized(self, gear=(const.MESH_GEAR_FIXED, const.MESH_GEAR_MOVING), inner_cache=None, tri_mask=None, **kwargs):
+        continue_on_flip = kwargs.get('continue_on_flip', False)
+        minimum_multipler = kwargs.pop('minimum_multipler', 1.0e-8)
+        kwargs.pop('cache', False)
+        F1, indices, F0, flipped, MTPLR = self.element_stiffness_matrices(gear=gear, inner_cache=inner_cache, cache=inner_cache, **kwargs)
+        if flipped and (not continue_on_flip):
+            return None, None
+        tidx0 = np.arange(self.num_triangles)
+        if tri_mask is not None:
+            tidx0 = tidx0[tri_mask]
+        F1_ft, ind_ft, F0_ft, MTPLR_ft= [], [], [], []
+        for f1, tidx, f0, mm in zip(F1, indices, F0, MTPLR):
+            idx = np.isin(tidx, tidx0)
+            if np.any(idx):
+                F1_ft.append(f1[idx])
+                ind_ft.append(tidx[idx])
+                F0_ft.append(f0[idx])
+                MTPLR_ft.append(mm[idx])
+        if len(F1_ft) == 0:
+            return None, None
+        mtplr_all = np.concatenate(MTPLR_ft, axis=None)
+        mx_mtplr = np.max(mtplr_all)
+        if mx_mtplr == 0:
+            MTPLR_ft = [np.ones_like(s) for s in MTPLR_ft]
+        else:
+            MTPLR_ft = [(s / mx_mtplr).clip(minimum_multipler, None) for s in MTPLR_ft]
+        stf_sz = 2 * self.num_vertices
+        T = np.repeat(self.triangles * 2, 2, axis=-1)
+        T[:,1::2] += 1
+        STIFF_M = sparse.csr_matrix((stf_sz, stf_sz), dtype=np.float32)
+        STRESS_v = np.zeros(stf_sz, dtype=np.float32)
+        for f1, tidx, f0, mm in zip(F1_ft, ind_ft, F0_ft, MTPLR_ft):
+            idx_1d = T[tidx]
+            idx_1 = np.tile(idx_1d.reshape(-1,1,6), (1,6,1))
+            idx_2 = np.swapaxes(idx_1, 1, 2)
+            idx_1 = idx_1.ravel()
+            idx_2 = idx_2.ravel()
+            V = (f1 * mm) .ravel()
+            M = sparse.csr_matrix((V, (idx_1, idx_2)),shape=(stf_sz, stf_sz))
+            STIFF_M = STIFF_M + M
+            np.add.at(STRESS_v, idx_1d.ravel(), (f0 * mm).ravel())
+        return STIFF_M, STRESS_v
+
+        
 
   ## ------------------------- utility functions --------------------------- ##
     def nearest_vertices(self, xy, gear=const.MESH_GEAR_MOVING, offset=True):

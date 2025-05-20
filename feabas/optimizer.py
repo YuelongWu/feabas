@@ -1,7 +1,6 @@
 from collections import defaultdict
 import gc
 import numpy as np
-import os
 import scipy
 from scipy import sparse
 import time
@@ -10,6 +9,7 @@ from feabas import config, spatial, common, caching, storage
 import feabas.constant as const
 from feabas.mesh import Mesh
 
+DIRECT_SOLVER_SWITCH = 1000 # size of matrix to use direct solver instead of iterative
 
 class Link:
     """
@@ -675,7 +675,7 @@ class SLM:
             svds = m.triangle_tform_svd(gear=gear)
             defm = Mesh.svds_to_deform(svds)
             tmask = defm > max(deform_thresh, np.quantile(defm, 0.5))
-            if not np.any(defm):
+            if not np.any(tmask):
                 continue
             tid = m.triangles[tmask]
             vid = np.unique(tid)
@@ -1349,13 +1349,15 @@ class SLM:
         tol = kwargs.pop('tol', 1e-7)
         atol = kwargs.pop('atol', 0)
         maxiter = SLM.expand_to_list(kwargs.pop('maxiter', None), max_newtonstep)
-        step_tol = SLM.expand_to_list(kwargs.pop('step_tol', tol), max_newtonstep)
+        tol_stp = (max(tol, 1e-5) / tol) ** (1/(max_newtonstep-1))
+        step_tol = SLM.expand_to_list(kwargs.pop('step_tol', tol), max_newtonstep, kfunc=(lambda p: p*tol_stp))
         step_atol = SLM.expand_to_list(kwargs.pop('step_atol', atol), max_newtonstep)
         stiffness_lambda = SLM.expand_to_list(kwargs.pop('stiffness_lambda', self._stiffness_lambda), max_newtonstep)
         crosslink_lambda = SLM.expand_to_list(kwargs.pop('crosslink_lambda', self._crosslink_lambda), max_newtonstep)
-        residue_mode = SLM.expand_to_list(kwargs.pop('residue_mode', None), max_newtonstep)
-        residue_len = SLM.expand_to_list(kwargs.pop('residue_len', 0), max_newtonstep)
+        residue_mode = SLM.expand_to_list(kwargs.pop('residue_mode', None), max_newtonstep, kfunc=(lambda _: None))
+        residue_len = SLM.expand_to_list(kwargs.pop('residue_len', 0), max_newtonstep, kfunc=(lambda p: p*2))
         anneal_mode = SLM.expand_to_list(kwargs.pop('anneal_mode', None), max_newtonstep)
+        check_converge = SLM.expand_to_list(kwargs.pop('check_converge', config.OPT_CHECK_CONVERGENCE), max_newtonstep, kfunc=(lambda _: False))
         inner_cache = kwargs.pop('inner_cache', self._shared_cache)
         cont_on_flip = kwargs.pop('continue_on_flip', False)
         crosslink_shrink = kwargs.pop('crosslink_shrink', 0.25)
@@ -1389,7 +1391,8 @@ class SLM:
         elif atol is None:
             tol0 = cost0 * tol
         else:
-            tol0 = min(cost0 * tol, atol)
+            tol0 = max(cost0 * tol, atol)
+        step_atol = [max(s, tol0) for s in step_atol]
         ke = 0 # newton step counter
         kshrk = 0 # crosslink_shrink counter
         cshrink = 1
@@ -1401,7 +1404,7 @@ class SLM:
                 crosslink_lambda=crosslink_lambda[ke]*cshrink,
                 inner_cache=inner_cache, continue_on_flip=cont_on_flip,
                 batch_num_matches=batch_num_matches,
-                auto_clear=False, **kwargs)
+                auto_clear=False, check_converge=check_converge[ke], **kwargs)
             if (step_cost[0] is None) or (step_cost[0] < step_cost[1]):
                 break
             if anneal_mode[ke] is not None:
@@ -1430,9 +1433,9 @@ class SLM:
             if start_gear != target_gear:
                 self.anneal(gear=(target_gear, start_gear), mode=const.ANNEAL_COPY_EXACT)
             cost = min(cost, self.cost(stiffness_lambda[-1], crosslink_lambda[-1]))
-            if (tol0 is not None) and (cost < tol0):
-                break
             ke += 1
+            if (tol0 is not None) and (cost < tol0):
+                ke = max(ke, max_newtonstep-1)
             if ke >= len(stiffness_lambda):
                 break
         return cost0, cost
@@ -1740,11 +1743,19 @@ class SLM:
 
 
     @staticmethod
-    def expand_to_list(elem, list_len):
-        if (not hasattr(elem, '__len__')) or isinstance(elem, str):
-            return [elem] * list_len
+    def expand_to_list(elem, list_len, kfunc=None):
+        if (not hasattr(elem, '__len__')) or isinstance(elem, str) or (len(elem) == 0):
+            out_lst =  [elem]
         else:
-            return elem
+            out_lst = list(elem)[::-1]
+        while len(out_lst) < list_len:
+            last_elem = out_lst[-1]
+            if kfunc is not None:
+                out_lst.append(kfunc(last_elem))
+            else:
+                out_lst.append(last_elem)
+        return out_lst[::-1]
+
 
 
 class EarlyStopFlag(Exception):
@@ -1858,56 +1869,74 @@ def solve(A, b, solver, x0=None, tol=1e-7, atol=None, maxiter=None, M=None, **kw
         x = np.zeros_like(b)
     else:
         x = x0
-    while True:
-        # not sure how minres compute rtol... so need a loop to ensure target is met.
-        cb = SLM_Callback(A, b, timeout=timeout_t, early_stop_thresh=early_stop_thresh, chances=chances, eval_step=eval_step, atol=atol)
-        callback = cb.callback
-        kwargs_solver.update({'maxiter': maxiter_t, 'callback': callback})
-        if scipy.__version__ >= '1.12.0':
-            kwargs_solver['rtol'] = tol
-        else:
-            kwargs_solver['tol'] = tol
-        if tolerated_perturbation is not None:
-            previous_energy = 0.5 * A.dot(x).dot(x) - b.dot(x)
+    tol0 = tol
+    directly_solved = False
+    if b.shape[0] < DIRECT_SOLVER_SWITCH:
         try:
-            if solver == 'bicgstab':
-                x, _ = sparse.linalg.bicgstab(A, b, **kwargs_solver)
-            elif solver == 'minres':
-                x, _ = sparse.linalg.minres(A, b, **kwargs_solver)
+            F = sparse.linalg.factorized(A.tocsc())
+            x = F(b)
+            if not np.any(np.isnan(x)):
+                directly_solved = True
+        except Exception:
+            pass
+    if not directly_solved:
+        while True:
+            # not sure how minres compute rtol... so need a loop to ensure target is met.
+            cb = SLM_Callback(A, b, timeout=timeout_t, early_stop_thresh=early_stop_thresh, chances=chances, eval_step=eval_step, atol=atol)
+            callback = cb.callback
+            if not check_converge:
+                maxiter_irl = maxiter_t
             else:
-                raise ValueError
-            cost0 = np.linalg.norm(A.dot(x) - b)
-            if cost0 > cb.min_cost:
+                if maxiter_t is None:
+                    maxiter_irl = 100
+                else:
+                    maxiter_irl = min(maxiter_t, 100)
+            kwargs_solver.update({'maxiter': maxiter_irl, 'callback': callback})
+            if scipy.__version__ >= '1.12.0':
+                kwargs_solver['rtol'] = tol
+            else:
+                kwargs_solver['tol'] = tol
+            if tolerated_perturbation is not None:
+                previous_energy = 0.5 * A.dot(x).dot(x) - b.dot(x)
+            try:
+                if solver == 'bicgstab':
+                    x, _ = sparse.linalg.bicgstab(A, b, **kwargs_solver)
+                elif solver == 'minres':
+                    x, _ = sparse.linalg.minres(A, b, **kwargs_solver)
+                else:
+                    raise ValueError
+                cost0 = np.linalg.norm(A.dot(x) - b)
+                if cost0 > cb.min_cost:
+                    x = cb.solution
+                cost = min(cost0, cb.min_cost)
+            except EarlyStopFlag:
                 x = cb.solution
-            cost = min(cost0, cb.min_cost)
-        except EarlyStopFlag:
-            x = cb.solution
-            cost = cb.min_cost
-        except KeyboardInterrupt:
-            x = cb.solution
-            break
-        if (cost <= atol) or (not check_converge):
-            break
-        if tolerated_perturbation is not None:
-            x_abs = np.abs(x)
-            mask_pert = x_abs >= np.mean(x_abs)
-            x_pert = x + tolerated_perturbation * mask_pert
-            current_energy = 0.5 * A.dot(x).dot(x) - b.dot(x)
-            pert_energy = 0.5 * A.dot(x_pert).dot(x_pert) - b.dot(x_pert)
-            if (previous_energy - current_energy) < (pert_energy - current_energy):
+                cost = cb.min_cost
+            except KeyboardInterrupt:
+                x = cb.solution
                 break
-        if cb._exit_code != 0:
-            break
-        if timeout_t is not None:
-            timeout_t -= cb._time_elapse
-            if timeout_t <= 0:
+            if (cost <= atol) or (not check_converge):
                 break
-        if maxiter_t is not None:
-            maxiter_t -= cb._count
-            if maxiter_t <= 0:
+            if tolerated_perturbation is not None:
+                x_abs = np.abs(x)
+                mask_pert = x_abs >= np.mean(x_abs)
+                x_pert = x + tolerated_perturbation * mask_pert
+                current_energy = 0.5 * A.dot(x).dot(x) - b.dot(x)
+                pert_energy = 0.5 * A.dot(x_pert).dot(x_pert) - b.dot(x_pert)
+                if (previous_energy - current_energy) < (pert_energy - current_energy):
+                    break
+            if cb._exit_code != 0:
                 break
-        tol *= tol * atol / cost
-        kwargs_solver.update({'x0': x})
+            if timeout_t is not None:
+                timeout_t -= cb._time_elapse
+                if timeout_t <= 0:
+                    break
+            if maxiter_t is not None:
+                maxiter_t -= cb._count
+                if maxiter_t <= 0:
+                    break
+            tol = max(tol0, 0.1 * atol / cost)
+            kwargs_solver.update({'x0': x})
     if edc is not None:
         x0 = x
         x = np.zeros_like(b, shape=edc.shape)
@@ -1946,7 +1975,7 @@ def transform_mesh(mesh_unlocked, mesh_locked, **kwargs):
 def relax_mesh(M, free_vertices=None, free_triangles=None, **kwargs):
     solver = kwargs.get('solver', 'minres')
     gear = kwargs.get('gear', (const.MESH_GEAR_FIXED, const.MESH_GEAR_MOVING))
-    maxiter = kwargs.get('maxiter', None)
+    maxiter = kwargs.get('maxiter', 1000)
     tol = kwargs.get('tol', 1e-7)
     atol = kwargs.get('atol', 0.0)
     callback_settings = kwargs.get('callback_settings', {}).copy()
@@ -1964,13 +1993,16 @@ def relax_mesh(M, free_vertices=None, free_triangles=None, **kwargs):
     vmask[vindx] = True
     if not np.any(vmask):
         return modified
+    tmask = np.any(vmask[M.triangles], axis=-1)
     vmask_pad = np.repeat(vmask, 2)
     fixed_vertices = M.vertices(gear=gear[0])
     fixed_offset = M.offset(gear=gear[0])
     M.anneal(gear=(const.MESH_GEAR_INITIAL, gear[0]), mode=const.ANNEAL_COPY_EXACT)
     M.anneal(gear=gear[::-1],  mode=const.ANNEAL_CONNECTED_RIGID)
     M._vertices_changed(gear=gear[0])
-    stiff_M, stress_v = M.stiffness_matrix(gear=gear, continue_on_flip=True, cache=False)
+    stiff_M, stress_v = M.stiffness_matrix_local_normalized(gear=gear, continue_on_flip=True, cache=False, tri_mask=tmask)
+    if stiff_M is None:
+        return modified
     A = stiff_M[vmask_pad][:,vmask_pad]
     b = -stress_v[vmask_pad]
     A_diag = A.diagonal()
