@@ -1976,10 +1976,11 @@ def transform_mesh(mesh_unlocked, mesh_locked, **kwargs):
 def relax_mesh(M, free_vertices=None, free_triangles=None, **kwargs):
     solver = kwargs.get('solver', 'minres')
     gear = kwargs.get('gear', (const.MESH_GEAR_FIXED, const.MESH_GEAR_MOVING))
-    maxiter = kwargs.get('maxiter', 1000)
+    maxiter = kwargs.get('maxiter', None)
     tol = kwargs.get('tol', 1e-7)
     atol = kwargs.get('atol', 0.0)
     callback_settings = kwargs.get('callback_settings', {}).copy()
+    tolerated_perturbation = kwargs.get('tolerated_perturbation', 0.25 * (config.data_resolution() / M.resolution))
     modified = False
     locked = M.locked
     M.locked = False
@@ -2011,7 +2012,7 @@ def relax_mesh(M, free_vertices=None, free_triangles=None, **kwargs):
         cond = sparse.diags(1/(A_diag.clip(min(1.0, A_diag.max()/1000),None))) # Jacobi precondition
     else:
         cond = None
-    dd = solve(A, b, solver, tol=tol, maxiter=maxiter, atol=atol, M=cond, **callback_settings)
+    dd = solve(A, b, solver, tol=tol, maxiter=maxiter, atol=atol, M=cond, tolerated_perturbation=tolerated_perturbation, **callback_settings)
     cost = (np.linalg.norm(b), np.linalg.norm(A.dot(dd) - b))
     if (cost[1] < cost[0]) and np.any(dd != 0):
         modified = True
