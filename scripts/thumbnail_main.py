@@ -629,18 +629,19 @@ if __name__ == '__main__':
                     outname = storage.join_paths(render_dir, secname)
                     if not storage.file_exists(outname, use_cache=True):
                         tform_list.append(tname)
-                if storage.file_exists(canvas_file):
-                    bbox_render = common.get_canvas_bbox(canvas_file, target_mip=target_mip)
-                else:
-                    angle = render_configs.get('rotation_angle', None)
-                    offset = render_configs.get('bbox_offset', [0,0])
-                    bbox_render = normalize_transforms(tform_list, angle=angle, offset=offset, num_workers=num_workers, resolution=render_resolution)
-                    canvas_bbox = {f'mip{target_mip}': [int(s) for s in bbox_render]}
-                    with storage.File(canvas_file, 'w') as f:
-                        json.dump(canvas_bbox, f)
-                rfunc = partial(render_one_aligned_thumbnail, thumbnail_dir=img_dir, out_dir=render_dir, src_resolution=thumbnail_resolution,
-                                out_resolution=render_resolution, bbox=bbox_render, logger=logger_info[0])
-                for _ in submit_to_workers(rfunc, args=[(s,) for s in tform_list], num_workers=num_workers):
-                    pass
+                if len(tform_list) > 0:
+                    if storage.file_exists(canvas_file):
+                        bbox_render = common.get_canvas_bbox(canvas_file, target_mip=target_mip)
+                    else:
+                        angle = render_configs.get('rotation_angle', None)
+                        offset = render_configs.get('bbox_offset', [0,0])
+                        bbox_render = normalize_transforms(tform_list, angle=angle, offset=offset, num_workers=num_workers, resolution=render_resolution)
+                        canvas_bbox = {f'mip{target_mip}': [int(s) for s in bbox_render]}
+                        with storage.File(canvas_file, 'w') as f:
+                            json.dump(canvas_bbox, f)
+                    rfunc = partial(render_one_aligned_thumbnail, thumbnail_dir=img_dir, out_dir=render_dir, src_resolution=thumbnail_resolution,
+                                    out_resolution=render_resolution, bbox=bbox_render, logger=logger_info[0])
+                    for _ in submit_to_workers(rfunc, args=[(s,) for s in tform_list], num_workers=num_workers):
+                        pass
         logger.info('finished.')
         logging.terminate_logger(*logger_info)
