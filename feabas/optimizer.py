@@ -672,8 +672,17 @@ class SLM:
         for m in self.meshes:
             if m.locked:
                 continue
-            svds = m.triangle_tform_svd(gear=gear)
-            defm = Mesh.svds_to_deform(svds)
+            v0 = m.vertices(gear=gear[0])
+            v1 = m.vertices(gear=gear[-1])
+            T = m.triangles
+            Troll = np.roll(T, 1, axis=-1)
+            d0 = np.sum((v0[T] - v0[Troll]) ** 2, axis=-1)
+            d1 = np.sum((v1[T] - v1[Troll]) ** 2, axis=-1)
+            sd = np.exp(np.max(np.abs(0.5*np.log(d1/d0)), axis=-1)).reshape(-1,1)
+            area0 = common.signed_area(v0, T)
+            area1 = common.signed_area(v1, T)
+            sa = np.reshape(area1/area0, (-1,1))
+            defm = np.maximum(Mesh.svds_to_deform(sa), Mesh.svds_to_deform(sd))
             tmask = defm > max(deform_thresh, np.quantile(defm, 0.5))
             if not np.any(tmask):
                 continue
