@@ -732,8 +732,6 @@ class SLM:
                 computation (and stiffness if nonlinear).
             inner_cache: the cache to store intermediate attributes like shape
                 matrices. Use default if set to None.
-            check_flip(bool): check if any triangles are flipped.
-            continue_on_flip: whether to exit when a flipped triangle is detected.
         """
         if (self._stiffness_matrix is None) or force_update:
             STIFF_M = []
@@ -1124,8 +1122,6 @@ class SLM:
             stiffness_lambda: stiffness term multiplier.
             crosslink_lambda: crosslink term multiplier.
             inner_cache: the cache to store intermediate attributes.
-            continue_on_flip(bool): whether to continue with flipped triangles
-                detected.
             batch_num_matches: the accumulated number of matches to scan before
                 constructing the incremental sparse matrices. Larger number
                 needs more RAM but faster
@@ -1149,7 +1145,6 @@ class SLM:
         crosslink_lambda = kwargs.get('crosslink_lambda', self._crosslink_lambda)
         deform_target = kwargs.get('deform_target', None)
         inner_cache = kwargs.get('inner_cache', self._shared_cache)
-        cont_on_flip = kwargs.get('continue_on_flip', False)
         batch_num_matches = kwargs.get('batch_num_matches', None)
         groupings = kwargs.get('groupings', None)
         auto_clear = kwargs.get('auto_clear', True)
@@ -1157,7 +1152,6 @@ class SLM:
         remove_material_dof = kwargs.get('remove_material_dof', None)
         tolerated_perturbation = kwargs.get('tolerated_perturbation', None)
         check_converge = kwargs.pop('check_converge', config.OPT_CHECK_CONVERGENCE)
-        check_flip = not cont_on_flip
         lock_flags = self.lock_flags
         check_deform = (deform_target is not None) and (deform_target > 0)
         if tolerated_perturbation is not None:
@@ -1165,10 +1159,7 @@ class SLM:
         if np.all(lock_flags):
             return 0, 0 # all locked, nothing to optimize
         stiff_m, stress_v = self.stiffness_matrix(gear=(shape_gear,start_gear),
-            inner_cache=inner_cache, check_flip=check_flip,
-            continue_on_flip=cont_on_flip)
-        if stiff_m is None:
-            return None, None # flipped triangles
+            inner_cache=inner_cache)
         Cs_lft, Cs_rht = self.crosslink_terms(start_gear=start_gear,
             target_gear=targt_gear, batch_num_matches=batch_num_matches)
         if isinstance(callback_settings, bool):
@@ -1343,8 +1334,6 @@ class SLM:
             stiffness_lambda: stiffness term multipliers for each Newton step.
             crosslink_lambda: crosslink term multiplier for each Newton step.
             inner_cache: the cache to store intermediate attributes.
-            continue_on_flip(bool): whether to continue with flipped triangles
-                detected.
             crosslink_shrink: in the presence of flipped triangles,
                 the decay applied to the crosslink term so that it takes smaller
                 step.
@@ -1368,7 +1357,6 @@ class SLM:
         anneal_mode = SLM.expand_to_list(kwargs.pop('anneal_mode', None), max_newtonstep)
         check_converge = SLM.expand_to_list(kwargs.pop('check_converge', config.OPT_CHECK_CONVERGENCE), max_newtonstep, kfunc=(lambda _: False))
         inner_cache = kwargs.pop('inner_cache', self._shared_cache)
-        cont_on_flip = kwargs.pop('continue_on_flip', False)
         crosslink_shrink = kwargs.pop('crosslink_shrink', 0.25)
         shrink_trial = kwargs.pop('shrink_trial', 3)
         batch_num_matches = kwargs.pop('batch_num_matches', None)
@@ -1378,16 +1366,11 @@ class SLM:
         for k, rl in enumerate(residue_len):
             if rl < 0:
                 residue_len[k] = abs(rl) * aspect_ratio
-        if cont_on_flip:
-            target_gear = kwargs.pop('target_gear', const.MESH_GEAR_MOVING)
-        else:
-            target_gear = kwargs.pop('target_gear', const.MESH_GEAR_STAGING)
-        # initialize cost and check flipped triangles
-        check_flip = not cont_on_flip
+        target_gear = kwargs.pop('target_gear', const.MESH_GEAR_MOVING)
+        # initialize cost
         stiff_m, _ = self.stiffness_matrix(gear=(shape_gear,start_gear),
             force_update=True, to_cache=True,
-            inner_cache=inner_cache, check_flip=check_flip,
-            continue_on_flip=cont_on_flip)
+            inner_cache=inner_cache)
         if stiff_m is None:
             return None, None
         _, _ = self.crosslink_terms(force_update=True, to_cache=True,
@@ -1411,7 +1394,7 @@ class SLM:
                 shape_gear=shape_gear, start_gear=start_gear, target_gear=target_gear,
                 stiffness_lambda=stiffness_lambda[ke],
                 crosslink_lambda=crosslink_lambda[ke]*cshrink,
-                inner_cache=inner_cache, continue_on_flip=cont_on_flip,
+                inner_cache=inner_cache,
                 batch_num_matches=batch_num_matches,
                 auto_clear=False, check_converge=check_converge[ke], **kwargs)
             if (step_cost[0] is None) or (step_cost[0] < step_cost[1]):
@@ -1420,8 +1403,7 @@ class SLM:
                 self.anneal(gear=(target_gear, shape_gear), mode=anneal_mode[ke])
             stiff_m, _ = self.stiffness_matrix(gear=(shape_gear,target_gear),
                 force_update=True, to_cache=True,
-                inner_cache=inner_cache, check_flip=check_flip,
-                continue_on_flip=cont_on_flip)
+                inner_cache=inner_cache)
             if stiff_m is None:
                 cshrink *= crosslink_shrink
                 kshrk += 1
@@ -1956,7 +1938,6 @@ def solve(A, b, solver, x0=None, tol=1e-7, atol=None, maxiter=None, M=None, **kw
 
 def transform_mesh(mesh_unlocked, mesh_locked, **kwargs):
     err_thresh = kwargs.pop('err_thresh', None)
-    kwargs.setdefault('continue_on_flip', True)
     uid_mov = mesh_unlocked.uid
     locked_mov = mesh_unlocked.locked
     mesh_locked = mesh_locked.copy(override_dict={'locked': True, 'uid': 0})
@@ -2011,7 +1992,7 @@ def relax_mesh(M, free_vertices=None, free_triangles=None, **kwargs):
     M.anneal(gear=(const.MESH_GEAR_INITIAL, gear[0]), mode=const.ANNEAL_COPY_EXACT)
     M.anneal(gear=gear[::-1],  mode=const.ANNEAL_CONNECTED_RIGID)
     M._vertices_changed(gear=gear[0])
-    stiff_M, stress_v = M.stiffness_matrix_local_normalized(gear=gear, continue_on_flip=True, cache=False, tri_mask=tmask)
+    stiff_M, stress_v = M.stiffness_matrix_local_normalized(gear=gear, cache=False, tri_mask=tmask)
     if stiff_M is None:
         return modified
     A = stiff_M[vmask_pad][:,vmask_pad]

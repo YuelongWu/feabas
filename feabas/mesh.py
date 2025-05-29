@@ -2636,22 +2636,17 @@ class Mesh:
                 computation (and stiffness if nonlinear).
             inner_cache: the cache to store intermediate attributes like shape
                 matrices. Use default if set to None.
-            check_flip(bool): check if any triangles are flipped.
-            continue_on_flip(bool): whether to continue with flipped triangles
-                detected.
         Return:
             F1 (list): element_stiffness(Nx6x6), computed at the current displacement.
             indices (list): the triangle indices (N,) for each element.
             F0 (list): stress(Nx6x1) used in Newton-Raphson iterations.
             flipped (bool): whether flipped triangles exist at current displacement.
         """
-        continue_on_flip = kwargs.get('continue_on_flip', False)
         v0 = self.vertices(gear=gear[0])
         v1 = self.vertices(gear=gear[-1])
         dxy = v1 - v0
         shape_matrices = self.stiffness_shape_matrices(gear=gear[0], cache=inner_cache)
         material_table = self._material_table.id_table
-        flipped = False
         multiplier = self.stiffness_multiplier
         indices = []
         F0 = []
@@ -2678,11 +2673,7 @@ class Mesh:
                 area_stretch = area_stretch / baseline_ratio
             else:
                 area_stretch = None
-            K, P, flp, modifier = mat.element_stiffness_matrices_from_shape_matrices(Ms, uv=uv, area_stretch=area_stretch, **kwargs)
-            if flp:
-                flipped = True
-                if not continue_on_flip:
-                    return None, None, None, flipped, None
+            K, P, modifier = mat.element_stiffness_matrices_from_shape_matrices(Ms, uv=uv, area_stretch=area_stretch, **kwargs)
             if K is None:
                 continue
             mm = multiplier[indx].reshape(-1,1,1) * modifier
@@ -2690,7 +2681,7 @@ class Mesh:
             indices.append(indx)
             F0.append(P)
             F1.append(K)
-        return F1, indices, F0, flipped, MTPLR
+        return F1, indices, F0, MTPLR
 
 
     @config_cache('TBD')
@@ -2702,14 +2693,8 @@ class Mesh:
                 computation (and stiffness if nonlinear).
             inner_cache: the cache to store intermediate attributes like shape
                 matrices. Use default if set to None.
-            check_flip(bool): check if any triangles are flipped.
-            continue_on_flip(bool): whether to continue with flipped triangles
-                detected.
         """
-        continue_on_flip = kwargs.get('continue_on_flip', False)
-        F1, indices, F0, flipped, MTPLR = self.element_stiffness_matrices(gear=gear, inner_cache=inner_cache, cache=inner_cache, **kwargs)
-        if flipped and (not continue_on_flip):
-            return None, None
+        F1, indices, F0, MTPLR = self.element_stiffness_matrices(gear=gear, inner_cache=inner_cache, cache=inner_cache, **kwargs)
         stf_sz = 2 * self.num_vertices
         T = np.repeat(self.triangles * 2, 2, axis=-1)
         T[:,1::2] += 1
@@ -2729,12 +2714,9 @@ class Mesh:
 
 
     def stiffness_matrix_local_normalized(self, gear=(const.MESH_GEAR_FIXED, const.MESH_GEAR_MOVING), inner_cache=None, tri_mask=None, **kwargs):
-        continue_on_flip = kwargs.get('continue_on_flip', False)
         minimum_multipler = kwargs.pop('minimum_multipler', 1.0e-8)
         kwargs.pop('cache', False)
-        F1, indices, F0, flipped, MTPLR = self.element_stiffness_matrices(gear=gear, inner_cache=inner_cache, cache=inner_cache, **kwargs)
-        if flipped and (not continue_on_flip):
-            return None, None
+        F1, indices, F0, MTPLR = self.element_stiffness_matrices(gear=gear, inner_cache=inner_cache, cache=inner_cache, **kwargs)
         tidx0 = np.arange(self.num_triangles)
         if tri_mask is not None:
             tidx0 = tidx0[tri_mask]

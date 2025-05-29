@@ -48,7 +48,7 @@ class Material:
         self.area_constraint = kwargs.get('area_constraint', 1.0)
         self.render = kwargs.get('render', True)
         self.render_weight = kwargs.get('render_weight', 1.0)
-        mat_type = kwargs.get('type', const.MATERIAL_MODEL_ENG)
+        mat_type = const.MATERIAL_MODEL_ENG
         if isinstance(mat_type, str):
             mat_type = const.MATERIAL_MODEL_LIST.index(mat_type.upper())
         self._type = mat_type
@@ -163,9 +163,6 @@ class Material:
                 shape_matrix_from_vertices. B(Nx4x6), area(Nx1x1).
             uv(Nx6): xy displacement. Each element follows the order
                 u1, v1, u2, v2, u3, v3.
-            check_flip(bool): check if any triangles are flipped.
-            continue_on_flip(bool): whether to continue with flipped triangles
-                detected.
             area_stretch: explicitly provide the area strech factor to be used
                 in nonlinear material stiffness caculation. Otherwise inferred
                 from uv and shape matrices.
@@ -177,35 +174,23 @@ class Material:
             flipped(bool): if any triangle is flipped.
         """
         area_stretch = kwargs.get('area_stretch', None)
-        check_flip = kwargs.get('check_flip', None)
-        continue_on_flip = kwargs.get('continue_on_flip', False)
         multiplier = self._stiffness_multiplier
         B, areas = Ms
-        flipped = None
         if (self._stiffness_multiplier == 0) or (B is None):
-            return None, None, flipped, multiplier
+            return None, None, multiplier
         trinum = B.shape[0]
         if uv is None:
             uv = np.zeros((trinum, 6, 1), dtype=DTYPE, order='C')
         else:
             uv = uv.astype(DTYPE).reshape(-1, 6, 1)
-        if check_flip is None:
-            if self._type == const.MATERIAL_MODEL_ENG:
-                check_flip = False
-            else:
-                check_flip = True
         if self._type == const.MATERIAL_MODEL_ENG:
             # Engineering strain & stress
-            if (self._stiffness_func is not None) or check_flip:
+            if (self._stiffness_func is not None):
                 if area_stretch is not None:
                     J = area_stretch.reshape(-1,1,1)
                 else:
                     Ft = (B @ uv).reshape(-1,2,2) + np.eye(2, dtype=DTYPE)
                     J = np.linalg.det(Ft).reshape(-1,1,1)
-                if check_flip:
-                    flipped = np.any(J <= 0, axis=None)
-                    if (not continue_on_flip) and flipped:
-                        return None, None, flipped, multiplier
             Bn = np.array([[1,0,0,0],[0,0,0,1],[0,1,1,0]], dtype=DTYPE) @ B
             D = np.eye(3, dtype=DTYPE)
             D[[0,1],[1,0]] = self._poisson_ratio
@@ -216,15 +201,11 @@ class Material:
         elif self._type == const.MATERIAL_MODEL_SVK:
             # St. Venant-Kirchhoff
             Ft = (B @ uv).reshape(-1,2,2) + np.eye(2, dtype=DTYPE)
-            if (self._stiffness_func is not None) or check_flip:
+            if (self._stiffness_func is not None):
                 if area_stretch is not None:
                     J = area_stretch.reshape(-1,1,1)
                 else:
                     J = np.linalg.det(Ft).reshape(-1,1,1)
-                if check_flip:
-                    flipped = np.any(J <= 0, axis=None)
-                    if (not continue_on_flip) and flipped:
-                        return None, None, flipped, multiplier
             FtT = np.swapaxes(Ft,1,2)
             Et = 0.5*(FtT@Ft - np.eye(2, dtype=DTYPE))
             E = np.array([[1,0,0,0],[0,0,0,1],[0,1,1,0]], dtype=DTYPE) @ Et.reshape(-1, 4, 1)
@@ -254,10 +235,6 @@ class Material:
             # Neo-Hookean
             Ft = (B @ uv).reshape(-1,2,2) + np.eye(2, dtype=DTYPE)
             J = np.linalg.det(Ft).reshape(-1,1,1)
-            if check_flip:
-                flipped = np.any(J <= 0, axis=None)
-                if (not continue_on_flip) and flipped:
-                    return None, None, flipped, multiplier
             U = np.array([[0,0,0,1],[0,0,-1,0],[0,-1,0,0],[1,0,0,0]],dtype=DTYPE)
             F = Ft.reshape(-1,4,1)
             Fu = U @ F
@@ -271,16 +248,16 @@ class Material:
             raise NotImplementedError
         if self._stiffness_func is not None:
             multiplier = multiplier * self._stiffness_func(J).reshape(-1,1,1)
-        return K, P, flipped, multiplier
+        return K, P, multiplier
 
 
-    def element_stiffness_matrices_from_vertices(self, tripts, uv=None, check_flip=None):
+    def element_stiffness_matrices_from_vertices(self, tripts, uv=None):
         """
         combination of method self.shape_matrix_from_vertices and method
         self.element_stiffness_matrices_from_shape_matrices
         """
         Ms = self.shape_matrix_from_vertices(tripts)
-        return self.element_stiffness_matrices_from_shape_matrices(Ms, uv=uv, check_flip=check_flip)
+        return self.element_stiffness_matrices_from_shape_matrices(Ms, uv=uv)
 
 
     @property
