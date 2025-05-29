@@ -63,8 +63,6 @@ def optimize_one_section(matchname, outname, **kwargs):
     minweight = kwargs.get('minweight', None)
     logger_info = kwargs.get('logger', None)
     logger = logging.get_logger(logger_info)
-    group_elastic_settings.setdefault('continue_on_flip', True)
-    elastic_settings.setdefault('continue_on_flip', True)
     bname = os.path.basename(matchname).replace('.h5', '')
     t0 = time.time()
     stitcher = Stitcher.from_h5(matchname, load_matches=True, load_meshes=False)

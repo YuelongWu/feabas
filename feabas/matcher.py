@@ -304,7 +304,6 @@ def section_matcher(mesh0, mesh1, image_loader0, image_loader1, **kwargs):
     spacings = kwargs.pop('spacings', [100])
     kwargs.setdefault('sigma', 2.5)
     kwargs.setdefault('batch_size', 100)
-    kwargs.setdefault('continue_on_flip', True)
     kwargs.setdefault('distributor', 'cartesian_region')
     kwargs.setdefault('link_weight_decay', 0.0)
     stiffness_multiplier_threshold = kwargs.get('stiffness_multiplier_threshold', 0.1)
@@ -428,7 +427,6 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
     refine_mode = kwargs.get('refine_mode', 2)
     do_subpixel = kwargs.pop('subpixel', None)
     max_spacing_skip = kwargs.get('max_spacing_skip', 0)
-    continue_on_flip = kwargs.get('continue_on_flip', True)
     callback_settings = kwargs.get('callback_settings', {'early_stop_thresh': 0.1, 'chances':10, 'eval_step': 5})
     render_weight_threshold = kwargs.get('render_weight_threshold', 0)
     stiffness_lambda = kwargs.pop('stiffness_lambda', 1)
@@ -456,7 +454,6 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
     spacings = np.array(spacings, copy=False)
     kwargs_opt = {
         "batch_num_matches": np.inf,
-        "continue_on_flip": continue_on_flip,
         "callback_settings": callback_settings,
         "tolerated_perturbation": 0.5,
         "check_converge": True

@@ -1495,7 +1495,7 @@ class Aligner():
             dv = dv - np.mean(dv, axis=0, keepdims=True)
             if np.any(dv != 0, axis=None):
                 v0 = v0 - np.mean(v0, axis=0, keepdims=True)
-                stiff_m, _ = m0.stiffness_matrix(gear=(const.MESH_GEAR_FIXED, const.MESH_GEAR_MOVING), continue_on_flip=True)
+                stiff_m, _ = m0.stiffness_matrix(gear=(const.MESH_GEAR_FIXED, const.MESH_GEAR_MOVING))
                 df = (stiff_m.dot(dv.ravel()).dot(dv.ravel()) / (stiff_m.dot(v0.ravel()).dot(v0.ravel()))) ** 0.5
                 deformations[os.path.basename(meshname)] = df
             reg = m0.shapely_regions(gear=const.MESH_GEAR_MOVING, offsetting=True)
