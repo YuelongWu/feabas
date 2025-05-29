@@ -10,7 +10,6 @@ default:    # material name | 'default' should describe the most common elastic 
     area_constraint: 1  # define the relative mesh size. Larger number means coarser mesh, unless it's 0 (coarsest possible)
     render: true    # whether to render this material
     render_weight: 1.0  # define the priority of rendering when the output pixel is covered by meshes of different material. Larger number means higher priority
-    type: MATERIAL_MODEL_ENG    # no need to worry about this
     stiffness_multiplier: 1.0   # smaller number for softer material
     poisson_ratio: 0.0
     mask_label: 0   # the grayscale value associated with this material in the mask images
