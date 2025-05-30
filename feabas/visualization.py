@@ -124,6 +124,33 @@ def plot_montage(M, bbox_only=False):
         plot_geometries(outlines, color=color)
 
 
+def plot_link(link, gear=const.MESH_GEAR_MOVING, minimum_residue=0, num_matches=None, show=False):
+    """
+    visualize feabas.optimizer.Link object
+    """
+    m0, m1 = link.meshes
+    xy0 = link.xy0(gear=gear, use_mask=False)
+    xy1 = link.xy1(gear=gear, use_mask=True)
+    d = np.sum((xy0 - xy1)**2, axis=-1)**0.5
+    idx_s = np.argsort(d)[::-1]
+    xy0, xy1, d = xy0[idx_s], xy1[idx_s], d[idx_s]
+    num_mtch0 = d.size
+    if minimum_residue > 0:
+        idx = d > minimum_residue
+        xy0, xy1 = xy0[idx], xy1[idx]
+    if num_matches is not None:
+        if num_matches < 1:
+            num_matches = max(1, int(num_mtch0 * num_matches))
+        xy0, xy1 = xy0[:num_matches], xy1[:num_matches]
+    plot_mesh(m0, gear=gear, colors='r')
+    plot_mesh(m1, gear=gear, colors='b')
+    plt.plot([xy0[:,0],xy1[:,0]], [xy0[:,1],xy1[:,1]], 'k:')
+    plt.plot(xy0[:,0], xy0[:,1], 'm*')
+    plt.plot(xy1[:,0], xy1[:,1], 'c*')
+    if show:
+        plt.show()
+
+
 @dynamic_typing_decorator
 def plot_points(pts, **kwargs):
     color = kwargs.get('color', '#ff0000')

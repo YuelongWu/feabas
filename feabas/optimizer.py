@@ -1357,8 +1357,6 @@ class SLM:
         anneal_mode = SLM.expand_to_list(kwargs.pop('anneal_mode', None), max_newtonstep)
         check_converge = SLM.expand_to_list(kwargs.pop('check_converge', config.OPT_CHECK_CONVERGENCE), max_newtonstep, kfunc=(lambda _: False))
         inner_cache = kwargs.pop('inner_cache', self._shared_cache)
-        crosslink_shrink = kwargs.pop('crosslink_shrink', 0.25)
-        shrink_trial = kwargs.pop('shrink_trial', 3)
         batch_num_matches = kwargs.pop('batch_num_matches', None)
         shape_gear = const.MESH_GEAR_FIXED
         start_gear = const.MESH_GEAR_MOVING
@@ -1386,14 +1384,12 @@ class SLM:
             tol0 = max(cost0 * tol, atol)
         step_atol = [max(s, tol0) for s in step_atol]
         ke = 0 # newton step counter
-        kshrk = 0 # crosslink_shrink counter
-        cshrink = 1
         while ke < max_newtonstep:
             step_cost = self.optimize_linear(maxiter=maxiter[ke],
                 tol=step_tol[ke], atol=step_atol[ke],
                 shape_gear=shape_gear, start_gear=start_gear, target_gear=target_gear,
                 stiffness_lambda=stiffness_lambda[ke],
-                crosslink_lambda=crosslink_lambda[ke]*cshrink,
+                crosslink_lambda=crosslink_lambda[ke],
                 inner_cache=inner_cache,
                 batch_num_matches=batch_num_matches,
                 auto_clear=False, check_converge=check_converge[ke], **kwargs)
@@ -1404,13 +1400,6 @@ class SLM:
             stiff_m, _ = self.stiffness_matrix(gear=(shape_gear,target_gear),
                 force_update=True, to_cache=True,
                 inner_cache=inner_cache)
-            if stiff_m is None:
-                cshrink *= crosslink_shrink
-                kshrk += 1
-                if kshrk > shrink_trial:
-                    break
-                continue
-            kshrk = 0
             if residue_mode[ke] is not None:
                 if residue_len[ke] > 0:
                     if residue_mode[ke] == 'huber':
