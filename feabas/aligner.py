@@ -187,6 +187,7 @@ class Stack:
         mesh_cache_size, link_cache_size (int): maximum size of the caches.
         match_name_delimiter: delimiter to split match name into two section names.
     """
+    DUPLICATED_SUFIX = '__DUPDUMMY'
   ## --------------------------- initialization ---------------------------- ##
     def __init__(self, section_list=None, match_list=None, **kwargs):
         self._mesh_dir = kwargs.get('mesh_dir', None)
@@ -344,8 +345,12 @@ class Stack:
             self._mesh_cache.move_to_end(secname, last=True)
             return self._mesh_cache[secname]
         else:
+            if Stack.DUPLICATED_SUFIX in secname:
+                secname_t = secname.replace(Stack.DUPLICATED_SUFIX, '')
+            else:
+                secname_t = secname
             for fdir in self._mesh_dir_list[::-1]:
-                meshpath = storage.join_paths(fdir, secname+'.h5')
+                meshpath = storage.join_paths(fdir, secname_t+'.h5')
                 if (meshpath is not None) and storage.file_exists(meshpath):
                     uid = self.secname_to_id(secname)
                     locked = self.lock_flags[secname]
@@ -389,6 +394,8 @@ class Stack:
     def save_mesh_for_one_section(self, secname, Ms=None):
         saved = False
         flag = None
+        if Stack.DUPLICATED_SUFIX in secname:
+            return saved
         if isinstance(self._specified_out_dirs, str):
             out_dir = self._specified_out_dirs
         elif isinstance(self._specified_out_dirs, dict) and (secname in self._specified_out_dirs):
@@ -439,7 +446,11 @@ class Stack:
         if self._match_dir is None:
             raise RuntimeError('match_dir not defined.')
         else:
-            matchpath = storage.join_paths(self._match_dir, matchname+'.h5')
+            if Stack.DUPLICATED_SUFIX in matchname:
+                matchname_t = matchname.replace(Stack.DUPLICATED_SUFIX, '')
+            else:
+                matchname_t = matchname
+            matchpath = storage.join_paths(self._match_dir, matchname_t+'.h5')
             if not storage.file_exists(matchpath):
                 raise RuntimeError(f'{matchpath} not found.')
             mtch = read_matches_from_h5(matchpath, target_resolution=self._resolution)
@@ -812,6 +823,26 @@ class Stack:
         return [s for flg, s in zip(combined_flag, self.section_list) if flg]
 
 
+    def duplicate_sections(self, secnames, copy_matches=True):
+        secnames = [s for s in secnames if s in self.section_list]
+        secnames_new = [(s + Stack.DUPLICATED_SUFIX) for s in secnames]
+        secname_mapper = {s0:s1 for s0, s1 in zip(secnames, secnames_new)}
+        if len(secnames_new) > 0:
+            self.update_section_list(list(self.section_list)+secnames_new)
+        new_matches = []
+        if copy_matches:
+            match_list = self.match_list
+            for mtchname in match_list:
+                snm0, snm1 = self.matchname_to_secnames(mtchname)
+                if (snm0 in secname_mapper) or (snm1 in secname_mapper):
+                    mtchname_new = secname_mapper.get(snm0, snm0) + self._match_name_delimiter + secname_mapper.get(snm1, snm1)
+                    new_matches.append(mtchname_new)
+            if len(new_matches) > 0:
+                match_list = list(match_list) + new_matches
+                self.update_match_list(match_list)
+        return secnames_new, new_matches
+
+
     @property
     def mesh_versions(self):
         if (not hasattr(self, '_mesh_versions')) or (self._mesh_versions is None):
@@ -824,6 +855,9 @@ class Stack:
             self._mesh_versions = defaultdict(int)
             for tnames in version_list:
                 self._mesh_versions.update(tnames)
+            for secname in self.section_list:
+                if Stack.DUPLICATED_SUFIX in secname:
+                    self._mesh_versions[secname] = self._mesh_versions[secname.replace(Stack.DUPLICATED_SUFIX, '')]
         return self._mesh_versions
 
 
@@ -1081,7 +1115,7 @@ class Aligner():
             else:
                 dis_thresh = self._junction_width
             self._in_junction = edt < dis_thresh
-            juction_indx = np.flatnonzero( self._in_junction)
+            juction_indx = np.flatnonzero(self._in_junction)
             self._junctional_sections = set(self.section_list[s] for s in juction_indx)
         return self._junctional_sections
 
@@ -1092,12 +1126,34 @@ class Aligner():
         return self._in_junction
 
 
+    def find_junction_neighbors(self):
+        section_chunk_id = self.section_chunk_id
+        neighbor_mapper = np.full_like(section_chunk_id, np.nan, dtype=np.float32)
+        indx_t = np.flatnonzero(np.diff(section_chunk_id) != 0)
+        neighbor_mapper[indx_t+1] = section_chunk_id[indx_t]
+        neighbor_mapper[indx_t] = -section_chunk_id[indx_t+1]
+        indx_s = distance_transform_cdt(np.isnan(neighbor_mapper), return_distances=False, return_indices=True)[0]
+        neighbor_mapper = neighbor_mapper[indx_s]
+        junc_idx = np.flatnonzero(self.junctional_sections_array)
+        nb_idx = neighbor_mapper[junc_idx]
+        out_dict = {}
+        for cid in np.unique(np.abs(nb_idx)):
+            cknm = self.chunk_names[int(cid)]
+            idx_t0 = junc_idx[nb_idx==-cid]
+            idx_t1 = junc_idx[nb_idx==cid]
+            secnames0 = [self.section_list[s] for s in idx_t0]
+            secnames1 = [self.section_list[s] for s in idx_t1]
+            out_dict.update({cknm: (secnames0, secnames1)})
+        return out_dict
+
+
     def run(self, **kwargs0):
         num_workers = kwargs0.get('num_workers', 1)
         stiffness = kwargs0.pop('stiffness', None)
         chunked_to_depth = kwargs0.pop('chunked_to_depth', 0)
         residue_file = kwargs0.pop('residue_file', None)
         deform_target = kwargs0.pop('deform_target', None)
+        pad_junctional = kwargs0.pop('pad_junctional', True)
         kwargs = {
             'slide_window': {
                 'num_workers': num_workers,
@@ -1106,7 +1162,8 @@ class Aligner():
                     'deform_target': deform_target,
                     'tolerated_perturbation': 0.25,
                 }
-            }
+            },
+            'pad_junctional': pad_junctional
         }
         config.merge_config(kwargs, kwargs0)
         worker_settings = kwargs.get('worker_settings', {})
@@ -1212,6 +1269,7 @@ class Aligner():
         worker_settings = slide_window.setdefault('worker_settings', worker_settings)
         slide_window.setdefault('ensure_continuous', False)
         changed_chunks, _ = self.resolve_chunk_version_differences(remove_file=True)
+        pad_junctional = kwargs.get('pad_junctional', True)
         if (self._chunk_map_file is not None) and ((len(changed_chunks) > 0) or (self._previous_chunk_map is None) or (set(self._previous_chunk_map)!=set(self.chunk_map))):
             storage.makedirs(os.path.dirname(self._chunk_map_file))
             chunk_map_out = {ky:self.chunk_map[ky] for ky in self.chunk_names}
@@ -1222,11 +1280,28 @@ class Aligner():
         stack_config['lock_flags'] = lock_flags # set the lock array so that muted matches are not filtered out during initialization
         stack = self.initialize_stack(include_chunk_dir=True, **stack_config)
         stack._specified_out_dirs = self._chunk_dir
-        muted_match_list = stack.assign_section_to_chunks(self.chunk_map)
+        chunk_map = self.chunk_map
+        if pad_junctional:
+            stack.duplicate_sections(self.junctional_sections)
+            chunk_map = self.chunk_map.copy()
+            junc_dict = self.find_junction_neighbors()
+            for chknm, secnms in junc_dict.items():
+                if chknm not in chunk_map:
+                    continue
+                secnm0, secnm1 = secnms
+                secnm0 = [s + Stack.DUPLICATED_SUFIX for s in secnm0]
+                secnm1 = [s + Stack.DUPLICATED_SUFIX for s in secnm1]
+                secnm_new = secnm0 + list(chunk_map[chknm]) + secnm1
+                chunk_map[chknm] = secnm_new      
+        muted_match_list = stack.assign_section_to_chunks(chunk_map)
         storage.makedirs(self._chunk_dir)
         section_locked_for_chunk = mesh_versions_array > Aligner.UNALIGNED
         stack.update_lock_flags({s:l for s, l in zip(self.section_list, section_locked_for_chunk)})
         updated_sections, residues = stack.optimize_slide_window(**slide_window)
+        if pad_junctional:
+            muted_match_list = [s for s in muted_match_list if (Stack.DUPLICATED_SUFIX not in s)]
+            updated_sections = [s for s in updated_sections if (Stack.DUPLICATED_SUFIX not in s)]
+            residues = {s:v for s,v in residues.items() if (Stack.DUPLICATED_SUFIX not in s)}
         section_name2id_lut = {s:k for k, s in enumerate(self.section_list)}
         section_chunk_id = self.section_chunk_id
         if len(updated_sections) > 0:
