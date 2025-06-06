@@ -1,6 +1,7 @@
 from collections import defaultdict, OrderedDict
 from functools import partial
 import hashlib
+import itertools
 import json
 import numpy as np
 import os
@@ -715,7 +716,7 @@ class Stack:
                     mesh_strains[lnk.uids[1]].append(lnk.strain)
                 for m_uid, stns in mesh_strains.items():
                     mesh_strains[m_uid] = max(np.median(stns), 1e-3)
-                avg_deform = np.mean([s for s in mesh_strains.values()])
+                avg_deform = min(config.DEFAULT_DEFORM_BUDGET, 3*np.mean([s for s in mesh_strains.values()]))
                 if mesh_soft_power > 0:
                     for m in optm.meshes:
                         m.soft_factor = min(2, (avg_deform / mesh_strains.get(m.uid, avg_deform)) ** mesh_soft_power) # make mesh with high matching distortion softer
@@ -737,7 +738,7 @@ class Stack:
             dxy = np.concatenate([lnk.dxy(gear=1) for lnk in lnks], axis=0)
             dis = np.sum(dxy ** 2, axis=1)**0.5
             residue[matchname] = (dis.max(), dis.mean())
-        logger.info(f'{optm.meshes[0].name} -> {optm.meshes[-1].name}: cost {cost} | {time.time()-t0} sec')
+        logger.info(f'{optm.meshes[0].name.replace(Stack.DUPLICATED_SUFIX,'')} -> {optm.meshes[-1].name.replace(Stack.DUPLICATED_SUFIX,'')}: cost {cost} | {time.time()-t0} sec')
         return residue
 
 
@@ -828,15 +829,22 @@ class Stack:
         secnames_new = [(s + Stack.DUPLICATED_SUFIX) for s in secnames]
         secname_mapper = {s0:s1 for s0, s1 in zip(secnames, secnames_new)}
         if len(secnames_new) > 0:
-            self.update_section_list(list(self.section_list)+secnames_new)
+            new_section_list = []
+            for secname in self.section_list:
+                new_section_list.append(secname)
+                if secname in secname_mapper:
+                    new_section_list.append(secname_mapper[secname])
+            self.update_section_list(new_section_list)
         new_matches = []
         if copy_matches:
             match_list = self.match_list
             for mtchname in match_list:
                 snm0, snm1 = self.matchname_to_secnames(mtchname)
-                if (snm0 in secname_mapper) or (snm1 in secname_mapper):
-                    mtchname_new = secname_mapper.get(snm0, snm0) + self._match_name_delimiter + secname_mapper.get(snm1, snm1)
-                    new_matches.append(mtchname_new)
+                snm0_new = set([snm0, secname_mapper.get(snm0, snm0)])
+                snm1_new = set([snm1, secname_mapper.get(snm1, snm1)])
+                mtch_new = [self._match_name_delimiter.join((s0,s1)) for s0, s1 in itertools.product(snm0_new, snm1_new)]
+                mtch_new = [s for s in mtch_new if s != mtchname]
+                new_matches.extend(mtch_new)
             if len(new_matches) > 0:
                 match_list = list(match_list) + new_matches
                 self.update_match_list(match_list)
@@ -1130,15 +1138,15 @@ class Aligner():
         section_chunk_id = self.section_chunk_id
         neighbor_mapper = np.full_like(section_chunk_id, np.nan, dtype=np.float32)
         indx_t = np.flatnonzero(np.diff(section_chunk_id) != 0)
-        neighbor_mapper[indx_t+1] = section_chunk_id[indx_t]
-        neighbor_mapper[indx_t] = -section_chunk_id[indx_t+1]
+        neighbor_mapper[indx_t+1] = section_chunk_id[indx_t] + 1
+        neighbor_mapper[indx_t] = -(section_chunk_id[indx_t+1] + 1)
         indx_s = distance_transform_cdt(np.isnan(neighbor_mapper), return_distances=False, return_indices=True)[0]
         neighbor_mapper = neighbor_mapper[indx_s]
         junc_idx = np.flatnonzero(self.junctional_sections_array)
         nb_idx = neighbor_mapper[junc_idx]
         out_dict = {}
         for cid in np.unique(np.abs(nb_idx)):
-            cknm = self.chunk_names[int(cid)]
+            cknm = self.chunk_names[int(cid-1)]
             idx_t0 = junc_idx[nb_idx==-cid]
             idx_t1 = junc_idx[nb_idx==cid]
             secnames0 = [self.section_list[s] for s in idx_t0]
@@ -1295,8 +1303,12 @@ class Aligner():
                 chunk_map[chknm] = secnm_new      
         muted_match_list = stack.assign_section_to_chunks(chunk_map)
         storage.makedirs(self._chunk_dir)
-        section_locked_for_chunk = mesh_versions_array > Aligner.UNALIGNED
-        stack.update_lock_flags({s:l for s, l in zip(self.section_list, section_locked_for_chunk)})
+        section_locked_for_chunk = np.flatnonzero(mesh_versions_array > Aligner.UNALIGNED)
+        lock_flag_to_update = {self.section_list[s]:True for s in section_locked_for_chunk}
+        if pad_junctional:
+            lock_flag_dup = {(s+Stack.DUPLICATED_SUFIX):True for s in lock_flag_to_update if s in self.junctional_sections}
+            lock_flag_to_update.update(lock_flag_dup)
+        stack.update_lock_flags(lock_flag_to_update)
         updated_sections, residues = stack.optimize_slide_window(**slide_window)
         if pad_junctional:
             muted_match_list = [s for s in muted_match_list if (Stack.DUPLICATED_SUFIX not in s)]
