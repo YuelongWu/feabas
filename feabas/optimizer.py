@@ -3,6 +3,7 @@ import gc
 import numpy as np
 import scipy
 from scipy import sparse
+from scipy.spatial import KDTree
 import time
 
 from feabas import config, spatial, common, caching, storage
@@ -19,6 +20,7 @@ class Link:
         name = kwargs.get('name',  None)
         self.strain = kwargs.get('strain', config.DEFAULT_DEFORM_BUDGET)
         self._sample_err = kwargs.get('sample_err', None)
+        self._spacing = kwargs.get('spacing', None)
         if self._sample_err is None:
             A0 = mesh0.triangle_areas(gear=const.MESH_GEAR_INITIAL)[tid0]
             A1 = mesh1.triangle_areas(gear=const.MESH_GEAR_INITIAL)[tid1]
@@ -102,6 +104,7 @@ class Link:
         self._residue_weight = np.concatenate((self._residue_weight, other._residue_weight), axis=0)
         self._sample_err = np.concatenate((self.sample_err, other.sample_err), axis=0)
         self._mask = None
+        self._initial_kd_tree = None
 
 
     def equation_contrib(self, index_offsets, **kwargs):
@@ -297,6 +300,44 @@ class Link:
             return self._weight * self._residue_weight
 
 
+    def spatial_autocorrelation(self, gear=(const.MESH_GEAR_MOVING, const.MESH_GEAR_MOVING), sigma=None):
+        if sigma is None:
+            sigma = 2 * self.spacing
+        xy0 = self.xy0(gear=const.MESH_GEAR_INITIAL, use_mask=False)
+        Npt = xy0.shape[0]
+        dxy = self.dxy(gear=gear, use_mask=False)
+        dx0, dy0 = dxy[:,0], dxy[:,1]
+        wt = self.weight(use_mask=False)
+        pairs = self.initial_kd_tree.query_pairs(2.5*sigma, output_type='ndarray')
+        dis_wt = np.exp(-np.sum((xy0[pairs[:,0]] - xy0[pairs[:,1]])**2, axis=-1) / sigma**2)
+        mtx = sparse.csr_matrix((dis_wt, (pairs[:,0], pairs[:,1])), shape=(Npt, Npt))
+        mtx = mtx + mtx.T
+        wt_v = mtx.dot(wt)
+        dx_v = mtx.dot(dxy[:,0] * wt)
+        dy_v = mtx.dot(dxy[:,1] * wt)
+        idx = wt_v > 0
+        if np.sum(idx) < 4:
+            return None
+        dx_v = dx_v[idx] / wt_v[idx]
+        dy_v = dy_v[idx] / wt_v[idx]
+        dx0 = dx0[idx]
+        dy0 = dy0[idx]
+        wt = wt[idx]
+        if np.sum(wt) == 0:
+            return None
+        dx_v = dx_v - np.average(dx_v, weights=wt)
+        dy_v = dy_v - np.average(dy_v, weights=wt)
+        dx0 = dx0 - np.average(dx0, weights=wt)
+        dy0 = dy0 - np.average(dy0, weights=wt)
+        r_x = np.average(dx_v * dx0, weights=wt)
+        r_y = np.average(dy_v * dy0, weights=wt)
+        if r_x != 0:
+            r_x = r_x / (np.average(dx_v**2, weights=wt)*np.average(dx0**2, weights=wt))**0.5
+        if r_y != 0:
+            r_y = r_y / (np.average(dy_v**2, weights=wt)*np.average(dy0**2, weights=wt))**0.5
+        return max(r_x, r_y)
+
+
     @property
     def default_name(self):
         return '_'.join(str(s) for s in self.uids)
@@ -345,6 +386,26 @@ class Link:
             if se.size == 1:
                 se = np.full(num_mtch, se)
             return se
+
+
+    @property
+    def initial_kd_tree(self):
+        if (not hasattr(self, '_initial_kd_tree')) or (self._initial_kd_tree) is None:
+            xy0 = self.xy0(gear=const.MESH_GEAR_INITIAL, use_mask=False)
+            self._initial_kd_tree = KDTree(xy0)
+        return self._initial_kd_tree
+
+
+    @property
+    def spacing(self):
+        if self._spacing is None:
+            xy0 = self.xy0(gear=const.MESH_GEAR_INITIAL, use_mask=False)
+            m = Mesh.from_PSLG(xy0, segments=None, mesh_size=0)
+            edg = m.edges()
+            edg_len = np.sum(np.diff(xy0[edg], axis=-2)**2, axis=-1)**0.5
+            self._spacing = np.median(edg_len, axis=None)
+        return self._spacing
+
 
 
 class MeshList:
