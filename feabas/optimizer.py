@@ -113,16 +113,10 @@ class Link:
             return None, None, None, None, 0
         start_gear = kwargs.get('start_gear', const.MESH_GEAR_MOVING)
         targt_gear = kwargs.get('target_gear', const.MESH_GEAR_MOVING)
-        shape_gear = kwargs.get('shape_gear', const.MESH_GEAR_FIXED)
         num_matches = self.num_matches
         gears = [targt_gear if m.locked else start_gear for m in self.meshes]
         m_rht = self.dxy(gear=gears, use_mask=True)
         wt  = self.weight(use_mask=True)
-        if shape_gear != start_gear:
-            dxy_energy = self.dxy(gear=[targt_gear if m.locked else shape_gear for m in self.meshes], use_mask=True)
-        else:
-            dxy_energy = m_rht
-        energy = np.sum(np.sum(dxy_energy ** 2, axis=-1) * wt)
         L_b = []  # barycentric coordinate matrices
         L_indx = [] # indices in the assembled system matrix
         if not self.meshes[0].locked:
@@ -151,7 +145,16 @@ class Link:
         # right-hand side
         indx_rht = np.concatenate((indx.ravel(), indx.ravel()+1))
         V_rht = np.concatenate((rht_x.ravel(), rht_y.ravel()))
-        return V_lft, (indx0_lft, indx1_lft), V_rht, indx_rht, energy
+        return V_lft, (indx0_lft, indx1_lft), V_rht, indx_rht
+
+
+    def crosslink_energy(self, **kwargs):
+        targt_gear = kwargs.get('target_gear', const.MESH_GEAR_MOVING)
+        shape_gear = kwargs.get('shape_gear', const.MESH_GEAR_FIXED)
+        wt  = self.weight(use_mask=True)
+        dxy_energy = self.dxy(gear=[targt_gear if m.locked else shape_gear for m in self.meshes], use_mask=True)
+        energy = np.sum(np.sum(dxy_energy ** 2, axis=-1) * wt)
+        return energy
 
 
     def adjust_weight_from_residue(self, gear=(const.MESH_GEAR_MOVING, const.MESH_GEAR_MOVING)):
@@ -303,6 +306,8 @@ class Link:
     def spatial_autocorrelation(self, gear=(const.MESH_GEAR_MOVING, const.MESH_GEAR_MOVING), sigma=None):
         if sigma is None:
             sigma = 2 * self.spacing
+            if sigma == 0:
+                return None
         xy0 = self.xy0(gear=const.MESH_GEAR_INITIAL, use_mask=False)
         Npt = xy0.shape[0]
         dxy = self.dxy(gear=gear, use_mask=False)
@@ -325,17 +330,11 @@ class Link:
         wt = wt[idx]
         if np.sum(wt) == 0:
             return None
-        dx_v = dx_v - np.average(dx_v, weights=wt)
-        dy_v = dy_v - np.average(dy_v, weights=wt)
-        dx0 = dx0 - np.average(dx0, weights=wt)
-        dy0 = dy0 - np.average(dy0, weights=wt)
-        r_x = np.average(dx_v * dx0, weights=wt)
-        r_y = np.average(dy_v * dy0, weights=wt)
-        if r_x != 0:
-            r_x = r_x / (np.average(dx_v**2, weights=wt)*np.average(dx0**2, weights=wt))**0.5
-        if r_y != 0:
-            r_y = r_y / (np.average(dy_v**2, weights=wt)*np.average(dy0**2, weights=wt))**0.5
-        return max(r_x, r_y)
+        d0 = dx0**2 + dy0**2
+        dv = dx_v**2 + dy_v**2
+        dd = (dx0-dx_v)**2 + (dy0-dy_v)**2
+        r = np.average(1 - dd/(d0 + dv), weights=wt)
+        return r
 
 
     @property
@@ -400,6 +399,8 @@ class Link:
     def spacing(self):
         if self._spacing is None:
             xy0 = self.xy0(gear=const.MESH_GEAR_INITIAL, use_mask=False)
+            if xy0.shape[0] < 2:
+                self._spacing = 0
             m = Mesh.from_PSLG(xy0, segments=None, mesh_size=0)
             edg = m.edges()
             edg_len = np.sum(np.diff(xy0[edg], axis=-2)**2, axis=-1)**0.5
@@ -848,10 +849,10 @@ class SLM:
             num_match = 0
             for lnk in self.links:
                 indx_offst = [index_offsets_mapper[uid] for uid in lnk.uids]
-                v_lft, indices_lft, v_rht, indx_rht, energy = lnk.equation_contrib(indx_offst, **kwargs)
+                v_lft, indices_lft, v_rht, indx_rht = lnk.equation_contrib(indx_offst, **kwargs)
                 if v_lft is None:
                     continue
-                self._crosslink_energy += energy
+                self._crosslink_energy += lnk.crosslink_energy(**kwargs)
                 V_lft_a.append(v_lft)
                 I_lft0_a.append(indices_lft[0])
                 I_lft1_a.append(indices_lft[1])
