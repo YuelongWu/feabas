@@ -305,7 +305,7 @@ class Link:
 
     def spatial_autocorrelation(self, gear=(const.MESH_GEAR_MOVING, const.MESH_GEAR_MOVING), sigma=None):
         if sigma is None:
-            sigma = 2 * self.spacing
+            sigma = 3 * self.spacing
             if sigma == 0:
                 return None
         xy0 = self.xy0(gear=const.MESH_GEAR_INITIAL, use_mask=False)
@@ -1500,6 +1500,22 @@ class SLM:
             Cs_lft, _ = self._crosslink_terms
             nm_stiff = sparse.linalg.norm(stiff_m)
             nm_cl = sparse.linalg.norm(Cs_lft)
+            stiffness_lambda = abs(ratio * nm_cl / nm_stiff)
+            crosslink_lambda = 1.0
+        return stiffness_lambda, crosslink_lambda
+
+
+    def relative_lambda_trace(self, stiffness_lambda, crosslink_lambda):
+        if (stiffness_lambda < 0) or (crosslink_lambda < 0):
+            if (self._stiffness_matrix is None) or (self._crosslink_terms is None):
+                raise RuntimeError('System equation not initialized')
+            ratio = abs(stiffness_lambda / crosslink_lambda)
+            stiff_m, _ = self._stiffness_matrix
+            Cs_lft, _ = self._crosslink_terms
+            diag_stiff = stiff_m.diagonal()
+            diag_cl = Cs_lft.diagonal()
+            nm_stiff = np.sum(diag_stiff[diag_cl != 0])
+            nm_cl = Cs_lft.trace()
             stiffness_lambda = abs(ratio * nm_cl / nm_stiff)
             crosslink_lambda = 1.0
         return stiffness_lambda, crosslink_lambda
