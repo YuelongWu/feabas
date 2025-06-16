@@ -1818,7 +1818,7 @@ class Mesh:
                     Lt = [s.buffer(-self._epsilon, single_sided=True, join_style=2) for s in Lt]
                 Lt = unary_union(Lt)
                 for pp in Ps:
-                    if Lt.intersection(pp).area > 0:
+                    if Lt.intersection(pp).area > 0.1 * self._epsilon * pp.boundary.length:
                         polygons.append(pp)   
         return unary_union(polygons)
 

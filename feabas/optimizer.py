@@ -743,7 +743,7 @@ class SLM:
             m.anneal(gear=gear, mode=mode)
 
 
-    def relax_higly_deformed(self, gear=(const.MESH_GEAR_FIXED, const.MESH_GEAR_MOVING), deform_cutoff=config.MAXIMUM_DEFORM_ALLOWED):
+    def relax_higly_deformed(self, gear=(const.MESH_GEAR_FIXED, const.MESH_GEAR_MOVING), deform_cutoff=config.MAXIMUM_DEFORM_ALLOWED, iqr=0):
         modified = 0
         deform_thresh = 1 - 1 / (abs(deform_cutoff) + 1)
         for m in self.meshes:
@@ -752,7 +752,14 @@ class SLM:
             sd = m.triangle_edge_deform(gear=gear).reshape(-1,1)
             sa = m.triangle_area_deform(gear=gear).reshape(-1,1)
             defm = np.maximum(Mesh.svds_to_deform(sa), Mesh.svds_to_deform(sd))
-            tmask = defm > max(deform_thresh, np.quantile(defm, 0.5))
+            thresh_t = max(deform_thresh, np.quantile(defm, 0.5))
+            if iqr > 0:
+                m0 = m.effective_stiffness_multiplier()
+                idx_m = m0 >= 0.5* np.median(m0)
+                qq = np.quantile(defm[idx_m], (0.5, 0.25, 0.75))
+                thresh_iqr = qq[0] + iqr * np.ptp(qq)
+                thresh_t = min(thresh_t, thresh_iqr)
+            tmask = defm >= thresh_t
             if not np.any(tmask):
                 continue
             tid = m.triangles[tmask]
