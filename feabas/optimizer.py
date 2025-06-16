@@ -44,6 +44,7 @@ class Link:
         self._weight_func = None
         self._mask = None
         self._disabled = False
+        self._dis_smooth_matrix = {0: None}
 
 
     @classmethod
@@ -105,6 +106,7 @@ class Link:
         self._sample_err = np.concatenate((self.sample_err, other.sample_err), axis=0)
         self._mask = None
         self._initial_kd_tree = None
+        self._dis_smooth_matrix = {0: None}
 
 
     def equation_contrib(self, index_offsets, **kwargs):
@@ -303,37 +305,50 @@ class Link:
             return self._weight * self._residue_weight
 
 
-    def spatial_autocorrelation(self, gear=(const.MESH_GEAR_MOVING, const.MESH_GEAR_MOVING), sigma=None):
+    def smooth_matrix(self, sigma=None):
         if sigma is None:
             sigma = 3 * self.spacing
-            if sigma == 0:
-                return None
-        xy0 = self.xy0(gear=const.MESH_GEAR_INITIAL, use_mask=False)
-        Npt = xy0.shape[0]
+        if sigma not in self._dis_smooth_matrix:
+            xy0 = self.xy0(gear=const.MESH_GEAR_INITIAL, use_mask=False)
+            Npt = xy0.shape[0]
+            pairs = self.initial_kd_tree.query_pairs(2.5*sigma, output_type='ndarray')
+            dis_wt = np.exp(-np.sum((xy0[pairs[:,0]] - xy0[pairs[:,1]])**2, axis=-1) / sigma**2)
+            mtx = sparse.csr_matrix((dis_wt, (pairs[:,0], pairs[:,1])), shape=(Npt, Npt))
+            mtx = mtx + mtx.T
+            self._dis_smooth_matrix[sigma] = mtx
+        return self._dis_smooth_matrix[sigma]
+
+
+    def dxy_smoothen(self, gear=(const.MESH_GEAR_MOVING, const.MESH_GEAR_MOVING), sigma=None):
         dxy = self.dxy(gear=gear, use_mask=False)
         dx0, dy0 = dxy[:,0], dxy[:,1]
         wt = self.weight(use_mask=False)
-        pairs = self.initial_kd_tree.query_pairs(2.5*sigma, output_type='ndarray')
-        dis_wt = np.exp(-np.sum((xy0[pairs[:,0]] - xy0[pairs[:,1]])**2, axis=-1) / sigma**2)
-        mtx = sparse.csr_matrix((dis_wt, (pairs[:,0], pairs[:,1])), shape=(Npt, Npt))
-        mtx = mtx + mtx.T
-        wt_v = mtx.dot(wt)
-        dx_v = mtx.dot(dxy[:,0] * wt)
-        dy_v = mtx.dot(dxy[:,1] * wt)
-        idx = wt_v > 0
-        if np.sum(idx) < 4:
-            return None
-        dx_v = dx_v[idx] / wt_v[idx]
-        dy_v = dy_v[idx] / wt_v[idx]
-        dx0 = dx0[idx]
-        dy0 = dy0[idx]
-        wt = wt[idx]
-        if np.sum(wt) == 0:
-            return None
-        d0 = dx0**2 + dy0**2
-        dv = dx_v**2 + dy_v**2
-        dd = (dx0-dx_v)**2 + (dy0-dy_v)**2
-        r = np.average(1 - dd/(d0 + dv), weights=wt)
+        mtx = self.smooth_matrix(sigma=sigma)
+        if mtx is None:
+            dxy_sm = np.zeros_like(dxy)
+        else:
+            wt_v = mtx.dot(wt)
+            dx_v = mtx.dot(dx0 * wt)
+            dy_v = mtx.dot(dy0 * wt)
+            dxy_sm = np.full_like(dxy, np.nan)
+            idx = wt_v > 0
+            dxy_sm[idx, 0] = dx_v[idx] / wt_v[idx]
+            dxy_sm[idx, 1] = dy_v[idx] / wt_v[idx]
+        return dxy_sm
+
+
+    def spatial_autocorrelation(self, gear=(const.MESH_GEAR_MOVING, const.MESH_GEAR_MOVING), sigma=None):
+        mtx = self.smooth_matrix(sigma=sigma)
+        if mtx is None:
+            return 0
+        dxy = self.dxy(gear=gear, use_mask=False)
+        dxy_sm = self.dxy_smoothen(gear=gear, sigma=sigma)
+        wt = self.weight(use_mask=False)
+        rr = np.sum((dxy - dxy_sm)**2, axis=-1) / (np.sum(dxy**2, axis=-1) + np.sum(dxy_sm**2, axis=-1))
+        idx = ~np.isnan(rr)
+        if not np.any(idx):
+            return 0
+        r = 1 - np.average(rr[idx], weights=wt[idx])
         return r
 
 
@@ -734,16 +749,8 @@ class SLM:
         for m in self.meshes:
             if m.locked:
                 continue
-            v0 = m.vertices(gear=gear[0])
-            v1 = m.vertices(gear=gear[-1])
-            T = m.triangles
-            Troll = np.roll(T, 1, axis=-1)
-            d0 = np.sum((v0[T] - v0[Troll]) ** 2, axis=-1)
-            d1 = np.sum((v1[T] - v1[Troll]) ** 2, axis=-1)
-            sd = np.exp(np.max(np.abs(0.5*np.log(d1/d0)), axis=-1)).reshape(-1,1)
-            area0 = common.signed_area(v0, T)
-            area1 = common.signed_area(v1, T)
-            sa = np.reshape(area1/area0, (-1,1))
+            sd = m.triangle_edge_deform(gear=gear).reshape(-1,1)
+            sa = m.triangle_area_deform(gear=gear).reshape(-1,1)
             defm = np.maximum(Mesh.svds_to_deform(sa), Mesh.svds_to_deform(sd))
             tmask = defm > max(deform_thresh, np.quantile(defm, 0.5))
             if not np.any(tmask):
@@ -1331,7 +1338,7 @@ class SLM:
                     edc = (T_m @ edc) > 0
             else:
                 groupings = None
-        stiffness_lambda, crosslink_lambda = self.relative_lambda_virtual_potential(stiffness_lambda, crosslink_lambda)
+        stiffness_lambda, crosslink_lambda = self.relative_lambda_trace(stiffness_lambda, crosslink_lambda)
         if check_deform:
             stiffness_lambda_df = 0.5 * 0.25 * self._crosslink_energy * crosslink_lambda / (self._elastic_energy * np.mean(deform_target)**2)
             stiffness_lambda = min(stiffness_lambda, stiffness_lambda_df)

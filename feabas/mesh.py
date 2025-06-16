@@ -1846,6 +1846,27 @@ class Mesh:
         return m0, A, m1
 
 
+    def triangle_edge_deform(self, gear=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING), tri_mask=None):
+        v0 = self.vertices(gear=gear[0])
+        v1 = self.vertices(gear=gear[-1])
+        T = self.triangles
+        if tri_mask is not None:
+            T = T[tri_mask]
+        Troll = np.roll(T, 1, axis=-1)
+        d0 = np.sum((v0[T] - v0[Troll]) ** 2, axis=-1)
+        d1 = np.sum((v1[T] - v1[Troll]) ** 2, axis=-1)
+        return np.exp(np.max(np.abs(0.5*np.log(d1/d0)), axis=-1))
+
+
+    def triangle_area_deform(self, gear=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING), tri_mask=None):
+        v0 = self.vertices(gear=gear[0])
+        v1 = self.vertices(gear=gear[-1])
+        T = self.triangles
+        area0 = common.signed_area(v0, T)
+        area1 = common.signed_area(v1, T)
+        return area1 / area0
+
+
     @config_cache('TBD')
     def triangle_tform_svd(self, gear=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING), tri_mask=None):
         """
