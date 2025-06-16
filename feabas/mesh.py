@@ -1522,6 +1522,31 @@ class Mesh:
             return self._stiffness_multiplier
 
 
+    @config_cache('TBD')
+    def effective_stiffness_multiplier(self, gear=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING)):
+        multiplier = self.stiffness_multiplier
+        material_table = self._material_table.id_table
+        material_ids = self._material_ids
+        modifier = np.ones_like(multiplier)
+        J = None
+        for mid in np.unique(material_ids):
+            idx_m = material_ids == mid
+            mat = material_table[mid]
+            m0 = mat._stiffness_multiplier
+            if mat._stiffness_func is not None:
+                if J is None:
+                    J = self.triangle_area_deform(gear=gear)
+                    linear_triangle_mask = self.linear_triangle_mask
+                    if np.any(linear_triangle_mask):
+                        baseline_ratio = np.median(J[linear_triangle_mask])
+                    else:
+                        baseline_ratio = np.median(J)
+                    J = J / baseline_ratio
+                m0 = m0 * mat._stiffness_func(J[idx_m])
+            modifier[idx_m] = m0
+        return multiplier * modifier
+
+
     @property
     def resolution(self):
         return self._resolution
@@ -1846,6 +1871,7 @@ class Mesh:
         return m0, A, m1
 
 
+    @config_cache('TBD')
     def triangle_edge_deform(self, gear=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING), tri_mask=None):
         v0 = self.vertices(gear=gear[0])
         v1 = self.vertices(gear=gear[-1])
@@ -1858,6 +1884,7 @@ class Mesh:
         return np.exp(np.max(np.abs(0.5*np.log(d1/d0)), axis=-1))
 
 
+    @config_cache('TBD')
     def triangle_area_deform(self, gear=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING), tri_mask=None):
         v0 = self.vertices(gear=gear[0])
         v1 = self.vertices(gear=gear[-1])
