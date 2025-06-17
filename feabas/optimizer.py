@@ -752,14 +752,15 @@ class SLM:
             sd = m.triangle_edge_deform(gear=gear).reshape(-1,1)
             sa = m.triangle_area_deform(gear=gear).reshape(-1,1)
             defm = np.maximum(Mesh.svds_to_deform(sa), Mesh.svds_to_deform(sd))
-            thresh_t = max(deform_thresh, np.quantile(defm, 0.5))
-            if iqr > 0:
-                m0 = m.effective_stiffness_multiplier()
-                idx_m = m0 >= 0.5* np.median(m0)
-                qq = np.quantile(defm[idx_m], (0.5, 0.25, 0.75))
-                thresh_iqr = qq[0] + iqr * np.ptp(qq)
+            m0 = m.effective_stiffness_multiplier()
+            idx_m = m0 >= 0.5* np.median(m0)
+            defm = defm - np.median(defm[idx_m])
+            thresh_t = max(deform_thresh, 0)
+            if iqr > 0:    
+                qq = np.quantile(defm[idx_m], (0.25, 0.75))
+                thresh_iqr = np.max(qq) + iqr * np.ptp(qq)
                 thresh_t = min(thresh_t, thresh_iqr)
-            tmask = defm >= thresh_t
+            tmask = defm > max(thresh_t, 1.0e-3)
             if not np.any(tmask):
                 continue
             tid = m.triangles[tmask]
@@ -1431,6 +1432,7 @@ class SLM:
         residue_mode = SLM.expand_to_list(kwargs.pop('residue_mode', None), max_newtonstep, kfunc=(lambda _: None))
         residue_len = SLM.expand_to_list(kwargs.pop('residue_len', 0), max_newtonstep, kfunc=(lambda p: p*2))
         anneal_mode = SLM.expand_to_list(kwargs.pop('anneal_mode', None), max_newtonstep)
+        deform_outlier_constant = SLM.expand_to_list(kwargs.pop('deform_outlier_constant', 0), max_newtonstep)
         check_converge = SLM.expand_to_list(kwargs.pop('check_converge', config.OPT_CHECK_CONVERGENCE), max_newtonstep, kfunc=(lambda _: False))
         inner_cache = kwargs.pop('inner_cache', self._shared_cache)
         batch_num_matches = kwargs.pop('batch_num_matches', None)
@@ -1471,8 +1473,17 @@ class SLM:
                 auto_clear=False, check_converge=check_converge[ke], **kwargs)
             if (step_cost[0] is None) or (step_cost[0] < step_cost[1]):
                 break
+            this_session_annealed = False
             if anneal_mode[ke] is not None:
-                self.anneal(gear=(target_gear, shape_gear), mode=anneal_mode[ke])
+                if deform_outlier_constant[ke] > 0:
+                    self.relax_higly_deformed(gear=(shape_gear, const.MESH_GEAR_STAGING), iqr=deform_outlier_constant[ke])
+                self.anneal(gear=(const.MESH_GEAR_STAGING, shape_gear), mode=anneal_mode[ke])
+                for m in self.meshes:
+                    if m.locked:
+                        continue
+                    m.staging_vertices = None
+                    m.set_offset(0*m.offset(gear=const.MESH_GEAR_STAGING), gear=const.MESH_GEAR_STAGING)
+                this_session_annealed = True
             stiff_m, _ = self.stiffness_matrix(gear=(shape_gear,target_gear),
                 force_update=True, to_cache=True,
                 inner_cache=inner_cache)
@@ -1482,7 +1493,7 @@ class SLM:
                         self.set_link_residue_huber(residue_len[ke])
                     else:
                         self.set_link_residue_threshold(residue_len[ke])
-                self.adjust_link_weight_by_residue(gear=(target_gear, target_gear), relax_first=True)
+                self.adjust_link_weight_by_residue(gear=(target_gear, target_gear), relax_first=(not this_session_annealed))
             _, _ = self.crosslink_terms(force_update=True, to_cache=True,
                 start_gear=target_gear, target_gear=target_gear,
                 batch_num_matches=batch_num_matches)
@@ -1498,7 +1509,11 @@ class SLM:
 
 
     def optimize_elastic(self, **kwargs):
-        if self.is_linear:
+        online_anneal = kwargs.get('online_anneal', False)
+        if online_anneal:
+            kwargs.setdefault('anneal_mode', const.ANNEAL_COPY_EXACT)
+            kwargs.setdefault('deform_outlier_constant', 1.5)
+        if (self.is_linear) and not online_anneal:
             return self.optimize_linear(**kwargs)
         else:
             return self.optimize_Newton_Raphson(**kwargs)
@@ -1520,6 +1535,7 @@ class SLM:
 
 
     def relative_lambda_trace(self, stiffness_lambda, crosslink_lambda):
+        # adjust normal based on the traces; equivalent to forces introduced by random displacement
         if (stiffness_lambda < 0) or (crosslink_lambda < 0):
             if (self._stiffness_matrix is None) or (self._crosslink_terms is None):
                 raise RuntimeError('System equation not initialized')
