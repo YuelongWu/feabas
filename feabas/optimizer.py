@@ -18,7 +18,7 @@ class Link:
     """
     def __init__(self, mesh0, mesh1, tid0, tid1, B0, B1, weight=None, **kwargs):
         name = kwargs.get('name',  None)
-        self.strain = kwargs.get('strain', config.DEFAULT_DEFORM_BUDGET)
+        self.strain = kwargs.get('strain', config.DEFAULT_AVG_DEFORM)
         self._sample_err = kwargs.get('sample_err', None)
         self._spacing = kwargs.get('spacing', None)
         if self._sample_err is None:
@@ -813,7 +813,6 @@ class SLM:
         if (self._stiffness_matrix is None) or force_update:
             STIFF_M = []
             STRESS_v = []
-            self._elastic_energy = 0
             for m in self.meshes:
                 if m.locked:
                     continue
@@ -825,7 +824,6 @@ class SLM:
                 v = m.vertices(gear=gear[0])
                 v = v - v.mean(axis=0, keepdims=True)
                 v = v.ravel()
-                self._elastic_energy += (stiff * m.soft_factor).dot(v).dot(v)
             stiffness_matrix = sparse.block_diag(STIFF_M, format='csr')
             stress_vector = np.concatenate(STRESS_v, axis=None)
             if to_cache:
@@ -859,7 +857,6 @@ class SLM:
             V_lft_a = []
             I_lft0_a = []
             I_lft1_a = []
-            self._crosslink_energy = 0
             index_offsets_mapper = self.index_offsets
             num_match = 0
             for lnk in self.links:
@@ -867,7 +864,6 @@ class SLM:
                 v_lft, indices_lft, v_rht, indx_rht = lnk.equation_contrib(indx_offst, **kwargs)
                 if v_lft is None:
                     continue
-                self._crosslink_energy += lnk.crosslink_energy(**kwargs)
                 V_lft_a.append(v_lft)
                 I_lft0_a.append(indices_lft[0])
                 I_lft1_a.append(indices_lft[1])
@@ -1220,7 +1216,6 @@ class SLM:
         start_gear = kwargs.get('start_gear', targt_gear)
         stiffness_lambda = kwargs.get('stiffness_lambda', self._stiffness_lambda)
         crosslink_lambda = kwargs.get('crosslink_lambda', self._crosslink_lambda)
-        deform_target = kwargs.get('deform_target', None)
         inner_cache = kwargs.get('inner_cache', self._shared_cache)
         batch_num_matches = kwargs.get('batch_num_matches', None)
         groupings = kwargs.get('groupings', None)
@@ -1230,7 +1225,6 @@ class SLM:
         tolerated_perturbation = kwargs.get('tolerated_perturbation', None)
         check_converge = kwargs.pop('check_converge', config.OPT_CHECK_CONVERGENCE)
         lock_flags = self.lock_flags
-        check_deform = (deform_target is not None) and (deform_target > 0)
         if tolerated_perturbation is not None:
             tolerated_perturbation = tolerated_perturbation * config.data_resolution() / self.working_resolution
         if np.all(lock_flags):
@@ -1306,7 +1300,6 @@ class SLM:
                         s[:3] = False
                     edc.append(s)
                 edc = np.concatenate(edc, axis=None)
-        E_s = self._elastic_energy
         if groupings is not None:
             group_u, indx, group_nm, g_cnt = np.unique(groupings, return_index=True, return_inverse=True, return_counts=True)
             if group_u.size < groupings.size:
@@ -1315,7 +1308,6 @@ class SLM:
                 lock_flags = grouped_lock_flags[group_nm]
                 if np.all(lock_flags):
                     return 0, 0
-                grp_fmindx = indx[~grouped_lock_flags]
                 vnum = [self.meshes[s].num_vertices * 2 for s in indx]
                 vnum = vnum * (~grouped_lock_flags)
                 vnum_accum = np.cumsum(vnum)
@@ -1347,33 +1339,15 @@ class SLM:
             else:
                 groupings = None
         stiffness_lambda, crosslink_lambda = self.relative_lambda_trace(stiffness_lambda, crosslink_lambda)
-        if check_deform:
-            stiffness_lambda_df = 0.5 * 0.25 * self._crosslink_energy * crosslink_lambda / (self._elastic_energy * np.mean(deform_target)**2)
-            stiffness_lambda = min(stiffness_lambda, stiffness_lambda_df)
-            if groupings is not None:
-                xy0 = [self.meshes[idx_m].vertices(gear=shape_gear) for idx_m in grp_fmindx]
-                xy0 = np.concatenate(xy0, axis=0)
-                xy0 = xy0 - np.mean(xy0, axis=0, keepdims=True)
-                E_s = stiff_m.dot(xy0.ravel()).dot(xy0.ravel())
-        while True:
-            A = stiffness_lambda * stiff_m + crosslink_lambda * Cs_lft
-            A = 0.5*(A + A.transpose())
-            b = crosslink_lambda * Cs_rht - stiffness_lambda * stress_v
-            A_diag = A.diagonal()
-            if A_diag.max() > 0:
-                M = sparse.diags(1/(A_diag.clip(min(1.0, A_diag.max()/1000),None))) # Jacobi precondition
-            else:
-                M = None
-            if not check_deform:
-                dd = solve(A, b, solver, tol=tol, maxiter=maxiter, check_converge=check_converge, atol=atol, M=M, extra_dof_constraint=edc, tolerated_perturbation=tolerated_perturbation, **callback_settings)
-                break
-            dd = solve(A, b, solver, tol=tol, maxiter=maxiter, check_converge=False, atol=atol, M=M, extra_dof_constraint=edc, tolerated_perturbation=tolerated_perturbation, **callback_settings)
-            deform_act = (stiff_m.dot(dd).dot(dd) / E_s) ** 0.5
-            if deform_act > np.max(deform_target):
-                stiffness_lambda = stiffness_lambda * max(2.0, (deform_act/np.mean(deform_target))**2)
-            else:
-                dd = solve(A, b, solver, x0=dd, tol=tol, maxiter=maxiter, check_converge=check_converge, atol=atol, M=M, extra_dof_constraint=edc, tolerated_perturbation=tolerated_perturbation, **callback_settings)
-                break
+        A = stiffness_lambda * stiff_m + crosslink_lambda * Cs_lft
+        A = 0.5*(A + A.transpose())
+        b = crosslink_lambda * Cs_rht - stiffness_lambda * stress_v
+        A_diag = A.diagonal()
+        if A_diag.max() > 0:
+            M = sparse.diags(1/(A_diag.clip(min(1.0, A_diag.max()/1000),None))) # Jacobi precondition
+        else:
+            M = None
+        dd = solve(A, b, solver, tol=tol, maxiter=maxiter, check_converge=check_converge, atol=atol, M=M, extra_dof_constraint=edc, tolerated_perturbation=tolerated_perturbation, **callback_settings)
         cost = (np.linalg.norm(b), np.linalg.norm(A.dot(dd) - b))
         if cost[1] < cost[0]:
             index_offsets = self.index_offsets
@@ -1542,22 +1516,14 @@ class SLM:
             ratio = abs(stiffness_lambda / crosslink_lambda)
             stiff_m, _ = self._stiffness_matrix
             Cs_lft, _ = self._crosslink_terms
-            diag_stiff = stiff_m.diagonal()
-            diag_cl = Cs_lft.diagonal()
-            nm_stiff = np.sum(diag_stiff[diag_cl != 0])
             nm_cl = Cs_lft.trace()
-            stiffness_lambda = abs(ratio * nm_cl / nm_stiff)
-            crosslink_lambda = 1.0
-        return stiffness_lambda, crosslink_lambda
-
-
-    def relative_lambda_virtual_potential(self, stiffness_lambda, crosslink_lambda):
-        # adjust normal based on the potential energy changes
-        if (stiffness_lambda < 0) or (crosslink_lambda < 0): 
-            if (self._stiffness_matrix is None) or (self._crosslink_terms is None):
-                raise RuntimeError('System equation not initialized')
-            ratio = abs(stiffness_lambda / crosslink_lambda)
-            stiffness_lambda = self._crosslink_energy * ratio / (self._elastic_energy * (2 * config.DEFAULT_DEFORM_BUDGET)**2)
+            if nm_cl == 0:
+                stiffness_lambda = 0
+            else:
+                diag_stiff = stiff_m.diagonal()
+                diag_cl = Cs_lft.diagonal()
+                nm_stiff = np.sum(diag_stiff[diag_cl != 0])
+                stiffness_lambda = abs(ratio * nm_cl / nm_stiff)
             crosslink_lambda = 1.0
         return stiffness_lambda, crosslink_lambda
 

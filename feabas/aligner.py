@@ -36,7 +36,7 @@ def read_matches_from_h5(match_name, target_resolution=None):
             if isinstance(strain, np.ndarray):
                 strain = strain.item()
         else:
-            strain = config.DEFAULT_DEFORM_BUDGET
+            strain = config.DEFAULT_AVG_DEFORM
     if target_resolution is not None:
         scale = resolution / target_resolution
         xy0 = scale_coordinates(xy0, scale)
@@ -707,21 +707,18 @@ class Stack:
             if target_gear != const.MESH_GEAR_FIXED:
                 optm.anneal(gear=(target_gear, const.MESH_GEAR_FIXED), mode=const.ANNEAL_CONNECTED_RIGID)
         if optimize_elastic:
-            stiffness_lambda = elastic_params.get('stiffness_lambda', None)
-            mesh_soft_power = elastic_params.get('mesh_soft_power', 1.5)
-            if (stiffness_lambda is None) or (mesh_soft_power > 0): # determine overall mesh stiffness based on matching strains
+            mesh_soft_power = elastic_params.get('mesh_soft_power', 0)
+            if mesh_soft_power > 0: # determine overall mesh stiffness based on matching strains
                 mesh_strains = defaultdict(list)
                 for lnk in optm.links:
                     mesh_strains[lnk.uids[0]].append(lnk.strain)
                     mesh_strains[lnk.uids[1]].append(lnk.strain)
                 for m_uid, stns in mesh_strains.items():
                     mesh_strains[m_uid] = max(np.median(stns), 1e-3)
-                avg_deform = min(config.DEFAULT_DEFORM_BUDGET, 3*np.mean([s for s in mesh_strains.values()]))
+                avg_deform = min(config.DEFAULT_AVG_DEFORM, 3*np.mean([s for s in mesh_strains.values()]))
                 if mesh_soft_power > 0:
                     for m in optm.meshes:
                         m.soft_factor = min(2, (avg_deform / mesh_strains.get(m.uid, avg_deform)) ** mesh_soft_power) # make mesh with high matching distortion softer
-                if stiffness_lambda is None:
-                    elastic_params['stiffness_lambda'] = 0.5 * (config.DEFAULT_DEFORM_BUDGET / avg_deform) ** 2
             if 'callback_settings' in elastic_params:
                 elastic_params['callback_settings'].setdefault('early_stop_thresh', config.montage_resolution() / self._resolution)
             cost = optm.optimize_elastic(target_gear=target_gear, **elastic_params)
@@ -1157,17 +1154,15 @@ class Aligner():
 
     def run(self, **kwargs0):
         num_workers = kwargs0.get('num_workers', 1)
-        stiffness = kwargs0.pop('stiffness', None)
+        stiffness = kwargs0.pop('stiffness', 1.0)
         chunked_to_depth = kwargs0.pop('chunked_to_depth', 0)
         residue_file = kwargs0.pop('residue_file', None)
-        deform_target = kwargs0.pop('deform_target', None)
         pad_junctional = kwargs0.pop('pad_junctional', True)
         kwargs = {
             'slide_window': {
                 'num_workers': num_workers,
                 'elastic_params':{
                     'stiffness_lambda': stiffness,
-                    'deform_target': deform_target,
                     'tolerated_perturbation': 0.25,
                 }
             },
@@ -1190,11 +1185,8 @@ class Aligner():
             residues.update(res0)
             Aligner.write_residue_file(res0, residue_file)
             if np.any(self.mesh_versions_array != Aligner.ALIGNED):
-                res0, def0 = self.align_within_chunks(**kwargs)
+                res0 = self.align_within_chunks(**kwargs)
                 residues.update(res0)
-                if (len(def0) > 0) and (stiffness is not None):
-                    deform_target = np.array(list(def0.values()))
-                    kwargs0['deform_target'] = np.median(deform_target) / 2
                 Aligner.write_residue_file(res0, residue_file)
                 meta_aligner_settings = {
                     "mesh_dir": self._meta_mesh_dir,
@@ -1382,10 +1374,9 @@ class Aligner():
             mesh_list = self.mesh_locations(secnames=secnames)
             m_init_dict = {'resolution': resolution, 'name': chnkname, 'uid':cid, 'locked': chunk_lock_flags[cid]}
             args_list.append([mesh_list, outname, m_init_dict])
-        deformations = {}
-        for df in submit_to_workers(Aligner._merge_chunked_meshes, args=args_list, num_workers=num_workers, **worker_settings):
-            deformations.update(df)
-        return residues, deformations
+        for _ in submit_to_workers(Aligner._merge_chunked_meshes, args=args_list, num_workers=num_workers, **worker_settings):
+            pass
+        return residues
 
 
     def predeform_sections_by_chunk(self, **kwargs):
@@ -1570,21 +1561,11 @@ class Aligner():
         regions = []
         region_areas = 0
         num_tri = 0
-        deformations = {}
         for meshname in mesh_list.values():
             if meshname is None:
                 continue
             m0 = Mesh.from_h5(meshname)
             m0.change_resolution(resolution)
-            v0 = m0.vertices(gear=const.MESH_GEAR_FIXED)
-            v1 = m0.vertices(gear=const.MESH_GEAR_MOVING)
-            dv = v1 - v0
-            dv = dv - np.mean(dv, axis=0, keepdims=True)
-            if np.any(dv != 0, axis=None):
-                v0 = v0 - np.mean(v0, axis=0, keepdims=True)
-                stiff_m, _ = m0.stiffness_matrix(gear=(const.MESH_GEAR_FIXED, const.MESH_GEAR_MOVING))
-                df = (stiff_m.dot(dv.ravel()).dot(dv.ravel()) / (stiff_m.dot(v0.ravel()).dot(v0.ravel()))) ** 0.5
-                deformations[os.path.basename(meshname)] = df
             reg = m0.shapely_regions(gear=const.MESH_GEAR_MOVING, offsetting=True)
             region_areas += reg.area
             num_tri += m0.num_triangles
@@ -1594,7 +1575,6 @@ class Aligner():
             mesh_size = 2 * (region_areas / num_tri) ** 0.5
             M = Mesh.from_polygon_equilateral(union_region, mesh_size=mesh_size, **m_init_dict)
             M.save_to_h5(outname, save_material=True)
-        return deformations
 
 
     @staticmethod

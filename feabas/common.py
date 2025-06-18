@@ -11,9 +11,9 @@ import scipy.sparse.csgraph as csgraph
 from skimage.morphology import convex_hull_image
 
 from feabas import storage
-from feabas.config import TS_RETRY, TS_TIMEOUT, DEFAULT_DEFORM_BUDGET
+from feabas.config import TS_RETRY, TS_TIMEOUT, DEFAULT_AVG_DEFORM
 
-Match = namedtuple('Match', ('xy0', 'xy1', 'weight', 'strain'), defaults=(DEFAULT_DEFORM_BUDGET,))
+Match = namedtuple('Match', ('xy0', 'xy1', 'weight', 'strain'), defaults=(DEFAULT_AVG_DEFORM,))
 
 
 def imread(path, **kwargs):

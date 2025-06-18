@@ -212,9 +212,9 @@ if __name__ == '__main__':
     stitch_configs = config.stitch_configs()
     if args.mode.lower().startswith('r'):
         stitch_configs = stitch_configs['rendering']
-        stitch_configs.pop('out_dir', '')
         mode = 'rendering'
         image_outdir = config.stitch_render_dir()
+        stitch_configs.pop('out_dir', '')
         driver = stitch_configs.get('driver', 'image')
         if driver == 'image':
             image_outdir = storage.join_paths(image_outdir, 'mip0')

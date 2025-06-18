@@ -26,7 +26,7 @@ def _merge_matches(fname0, fname1, outname, clearance=0, weight=1):
         if 'strain' in f.keys():
            STRNS.append((f['strain'][()], np.sum(weight_a)))
     if len(STRNS) == 0:
-        strain = config.DEFAULT_DEFORM_BUDGET
+        strain = config.DEFAULT_AVG_DEFORM
     else:
         ST = np.array([s[0] for s in STRNS]).ravel()
         WT = np.array([s[1] for s in STRNS]).ravel()

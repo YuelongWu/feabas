@@ -29,7 +29,7 @@ TS_TIMEOUT = general_settings().get('tensorstore_timeout', None)
 TS_RETRY = 2
 CHECKPOINT_TIME_INTERVAL = 300 # is seconds
 OPT_CHECK_CONVERGENCE = True
-DEFAULT_DEFORM_BUDGET = 0.125
+DEFAULT_AVG_DEFORM = 0.05
 MAXIMUM_DEFORM_ALLOWED = 0.35
 MATCH_SOFTFACTOR_DOMINANCE = 200 # during matching, assume one mesh is much more rigid than the other so the system will not collapse
 

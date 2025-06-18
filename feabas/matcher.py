@@ -7,7 +7,7 @@ from scipy.fftpack import next_fast_len
 import shapely.geometry as shpgeo
 from shapely.ops import unary_union
 
-from feabas.config import DEFAULT_DEFORM_BUDGET, data_resolution, section_thickness
+from feabas.config import DEFAULT_AVG_DEFORM, data_resolution, section_thickness
 from feabas.concurrent import submit_to_workers
 from feabas.mesh import Mesh
 from feabas.renderer import MeshRenderer
@@ -346,7 +346,7 @@ def section_matcher(mesh0, mesh1, image_loader0, image_loader1, **kwargs):
                     xy1.append(xy0_t)
                 weight.append(wt_t)
         if len(xy0) == 0:
-            return None, None, 0, DEFAULT_DEFORM_BUDGET
+            return None, None, 0, DEFAULT_AVG_DEFORM
         xy0 = np.concatenate(xy0, axis=0)
         xy1 = np.concatenate(xy1, axis=0)
         weight = np.concatenate(weight, axis=0)
@@ -461,7 +461,7 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
     linear_system = mesh0.is_linear and mesh1.is_linear
     one_locked = mesh0.locked or mesh1.locked
     min_block_size_multiplier = 4
-    strain = DEFAULT_DEFORM_BUDGET
+    strain = DEFAULT_AVG_DEFORM
     invalid_output = (None, None, 0, strain)
     if np.any(spacings < 1):
         bbox0 = mesh0.bbox(gear=const.MESH_GEAR_MOVING)

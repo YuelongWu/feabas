@@ -22,7 +22,7 @@ from feabas.optimizer import SLM
 from feabas import common, caching, storage, logging
 from feabas.spatial import scale_coordinates
 import feabas.constant as const
-from feabas.config import SECTION_THICKNESS, data_resolution, CHECKPOINT_TIME_INTERVAL, DEFAULT_DEFORM_BUDGET
+from feabas.config import SECTION_THICKNESS, data_resolution, CHECKPOINT_TIME_INTERVAL, DEFAULT_AVG_DEFORM
 
 H5File = storage.h5file_class()
 TOLERATED_PERTURBATION = 0.1
