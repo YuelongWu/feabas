@@ -112,7 +112,7 @@ class Link:
     def equation_contrib(self, index_offsets, **kwargs):
         """computing the contribution needed to add to the FEM assembled matrix."""
         if (not self.relevant) or (self.num_matches == 0) or ((index_offsets[0] < 0) and (index_offsets[1] < 0)):
-            return None, None, None, None, 0
+            return None, None, None, None
         start_gear = kwargs.get('start_gear', const.MESH_GEAR_MOVING)
         targt_gear = kwargs.get('target_gear', const.MESH_GEAR_MOVING)
         num_matches = self.num_matches
