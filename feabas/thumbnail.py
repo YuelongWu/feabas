@@ -541,6 +541,7 @@ def align_two_thumbnails(img0, img1, outname, mask0=None, mask1=None, **kwargs):
         feature_matchname = None
     if (feature_matchname is not None) and (storage.file_exists(feature_matchname)):
         mtch0 = read_matches_from_h5(feature_matchname, target_resolution=resolution)
+        txy = None
     else:
         pmcc_scale = np.full(2, block_match_settings.get('scale', 1.0))
         if match_mode.lower().startswith('f'):
