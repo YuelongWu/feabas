@@ -144,13 +144,14 @@ def global_translation_matcher(img0, img1, **kwargs):
         img1 = common.masked_dog_filter(img1, sigma, mask=mask1)
     img0_t = np.expand_dims(img0, 0)
     img1_t = np.expand_dims(img1, 0)
+    imgshp0 = img0.shape[-2:]
+    imgshp1 = img1.shape[-2:]
+    imgwd0, imght0, imgwd1, imght1 = imgshp0[1], imgshp0[0], imgshp1[1], imgshp1[0]
     tx, ty, conf = xcorr_fft(img0_t, img1_t, conf_mode=conf_mode, pad=True)
     tx, ty, conf = tx.item(), ty.item(), conf.item()
     if conf > conf_thresh:
-        return tx, ty, conf
+        return tx + (imgwd1 - imgwd0) / 2, ty + (imght1 - imght0) / 2, conf
     # divide the image for another shot (avoid local artifacts)
-    imgshp0 = img0.shape[-2:]
-    imgshp1 = img1.shape[-2:]
     imgshp = np.minimum(imgshp0, imgshp1)
     # find the division that results in most moderate aspect ratio
     if hasattr(divide_factor, '__len__'):
@@ -169,18 +170,44 @@ def global_translation_matcher(img0, img1, **kwargs):
             if rr < ratio:
                 ratio = rr
                 divide_N = (int(r0), int(divide_factor/r0))
-    xmin0, ymin0, xmax0, ymax0 = common.divide_bbox((0, 0, imgshp0[1], imgshp0[0]), min_num_blocks=divide_N)
-    xmin1, ymin1, xmax1, ymax1 = common.divide_bbox((0, 0, imgshp1[1], imgshp1[0]), min_num_blocks=divide_N)
+    xmin0, ymin0, xmax0, ymax0 = common.divide_bbox((0, 0, imgwd0, imght0), min_num_blocks=divide_N)
+    xmin1, ymin1, xmax1, ymax1 = common.divide_bbox((0, 0, imgwd1, imght1), min_num_blocks=divide_N)
     stack0 = []
     stack1 = []
+    offset_x = []
+    offset_y = []
     for k in range(xmin0.size):
-        stack0.append(img0[ymin0[k]:ymax0[k], xmin0[k]:xmax0[k]])
-        stack1.append(img1[ymin1[k]:ymax1[k], xmin1[k]:xmax1[k]])
+        xmx0, xmn0, xmx1, xmn1 = xmax0[k], xmin0[k], xmax1[k], xmin1[k]
+        ymx0, ymn0, ymx1, ymn1 = ymax0[k], ymin0[k], ymax1[k], ymin1[k]
+        wd_b = max(xmx0-xmn0, xmx1-xmn1)
+        ht_b = max(ymx0-ymn0, ymx1-ymn1)
+        pad_x0 = int(np.ceil((wd_b-(xmx0-xmn0))/2))
+        pad_y0 = int(np.ceil((ht_b-(ymx0-ymn0))/2))
+        ypt0 = np.array((ymn0-pad_y0, ymx0+pad_y0))
+        xpt0 = np.array((xmn0-pad_x0, xmx0+pad_x0))
+        ypt0 = (ypt0 - min(ypt0[0], 0) - max(ypt0[1]-imght0, 0)).clip(0, imght0)
+        xpt0 = (xpt0 - min(xpt0[0], 0) - max(xpt0[1]-imgwd0, 0)).clip(0, imgwd0)
+        img0b = img0[ypt0[0]:ypt0[1], xpt0[0]:xpt0[1]]
+        if np.ptp(img0b) == 0:
+            continue
+        pad_x1 = int(np.ceil((wd_b-(xmx1-xmn1))/2))
+        pad_y1 = int(np.ceil((ht_b-(ymx1-ymn1))/2))
+        ypt1 = np.array((ymn1-pad_y1, ymx1+pad_y1))
+        xpt1 = np.array((xmn1-pad_x1, xmx1+pad_x1))
+        ypt1 = (ypt1 - min(ypt1[0], 0) - max(ypt1[1]-imght1, 0)).clip(0, imght1)
+        xpt1 = (xpt1 - min(xpt1[0], 0) - max(xpt1[1]-imgwd1, 0)).clip(0, imgwd1)
+        img1b = img1[ypt1[0]:ypt1[1], xpt1[0]:xpt1[1]]
+        if np.ptp(img1b) == 0:
+            continue
+        stack0.append(img0b)
+        stack1.append(img1b)
+        offset_x.append((np.ptp(xpt1) - np.ptp(xpt0))/2 + xpt1[0] - xpt0[0])
+        offset_y.append((np.ptp(ypt1) - np.ptp(ypt0))/2 + ypt1[0] - ypt0[0])
     btx, bty, bconf = xcorr_fft(np.stack(stack0, axis=0), np.stack(stack1, axis=0), conf_mode=conf_mode, pad=True)
-    btx = btx + (xmin1 + xmax1 - xmin0 - xmax0 + imgshp0[1] - imgshp1[1])/2
-    bty = bty + (ymin1 + ymax1 - ymin0 - ymax0 + imgshp0[0] - imgshp1[0])/2
+    btx = btx + np.array(offset_x)
+    bty = bty + np.array(offset_y)
     k_best = np.argmax(bconf)
-    if bconf[k_best] <= conf:
+    if bconf[k_best] >= conf:
         tx = btx[k_best]
         ty = bty[k_best]
         conf = bconf[k_best]

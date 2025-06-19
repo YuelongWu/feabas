@@ -14,7 +14,7 @@ from feabas.mesh import Mesh
 from feabas.optimizer import SLM
 import feabas.constant as const
 from feabas.dal import StreamLoader
-from feabas.matcher import section_matcher
+from feabas.matcher import section_matcher, global_translation_matcher
 from feabas.aligner import read_matches_from_h5
 
 H5File = storage.h5file_class()
@@ -250,7 +250,7 @@ class KeyPointMatches:
             return np.ones(self.num_points, dtype=np.int16)
         else:
             return self._class_id0
-        
+
     @property
     def class_id1(self):
         if self._class_id1 is None:
@@ -327,7 +327,7 @@ def prepare_image(img, mask=None, **kwargs):
         kps = extract_LRadon_feature(img, kps, **extract_settings)
         out[scale]['kps'] = kps
     return out
-            
+
 
 
 def match_two_thumbnails_LRadon(img0, img1, mask0=None, mask1=None, **kwargs):
@@ -487,12 +487,15 @@ def match_two_thumbnails_LRadon(img0, img1, mask0=None, mask1=None, **kwargs):
 def match_two_thumbnails_pmcc(img0, img1, mask0=None, mask1=None, **kwargs):
     sigma = kwargs.pop('sigma', 3)
     scale = kwargs.get('scale', 1.0)
+    txy = kwargs.pop('txy', None)
     info0 = prepare_image(img0, mask=mask0, compute_keypoints=False, **kwargs)[scale]
     mesh0 = info0['mesh'].copy()
     info1 = prepare_image(img1, mask=mask1, compute_keypoints=False, **kwargs)[scale]
     mesh1 = info1['mesh'].copy()
     mesh0.uid = 0.0
     mesh1.uid = 1.0
+    if txy is not None:
+        mesh0.apply_translation((txy[0], txy[-1]), const.MESH_GEAR_FIXED)
     if not 'dog_image' in info0:
         info0['dog_image'] = common.masked_dog_filter(info0['image'], sigma=sigma, mask=info0['mask'])
     if not 'dog_image' in info1:
@@ -522,6 +525,7 @@ def _scale_matches(match, scale):
 def align_two_thumbnails(img0, img1, outname, mask0=None, mask1=None, **kwargs):
     if storage.file_exists(outname):
         return
+    match_mode = kwargs.pop('match_mode', 'feature')
     resolution = kwargs.get('resolution', config.thumbnail_resolution())
     feature_match_settings = kwargs.get('feature_matching', {}).copy()
     block_match_settings = kwargs.get('block_matching', {}).copy()
@@ -538,23 +542,49 @@ def align_two_thumbnails(img0, img1, outname, mask0=None, mask1=None, **kwargs):
     if (feature_matchname is not None) and (storage.file_exists(feature_matchname)):
         mtch0 = read_matches_from_h5(feature_matchname, target_resolution=resolution)
     else:
-        mtch0 = match_two_thumbnails_LRadon(img0, img1, mask0=mask0, mask1=mask1,
-                                            **feature_match_settings)
-        if mtch0 is None:     
-            logger.warning(f'{bname}: fail to find matches.')
-            return 0
-        if save_feature_match:
-            xy0, xy1, weight, _ = mtch0
-            storage.makedirs(feature_match_dir)
-            with H5File(feature_matchname, 'w') as f:
-                f.create_dataset('xy0', data=xy0, compression="gzip")
-                f.create_dataset('xy1', data=xy1, compression="gzip")
-                f.create_dataset('weight', data=weight, compression="gzip")
-                f.create_dataset('resolution', data=resolution)
-    pmcc_scale = np.full(2, block_match_settings.get('scale', 1.0))
-    mtch0 = _scale_matches(mtch0, pmcc_scale)
+        pmcc_scale = np.full(2, block_match_settings.get('scale', 1.0))
+        if match_mode.lower().startswith('f'):
+            mtch0 = match_two_thumbnails_LRadon(img0, img1, mask0=mask0, mask1=mask1,
+                                                **feature_match_settings)
+            if mtch0 is None:
+                logger.warning(f'{bname}: fail to find matches.')
+                return 0
+            if save_feature_match:
+                xy0, xy1, weight, _ = mtch0
+                storage.makedirs(feature_match_dir)
+                with H5File(feature_matchname, 'w') as f:
+                    f.create_dataset('xy0', data=xy0, compression="gzip")
+                    f.create_dataset('xy1', data=xy1, compression="gzip")
+                    f.create_dataset('weight', data=weight, compression="gzip")
+                    f.create_dataset('resolution', data=resolution)
+            txy = None
+            mtch0 = _scale_matches(mtch0, pmcc_scale)
+        else:
+            sigma = block_match_settings.get('sigma', 2.5)
+            conf_thresh = block_match_settings.get('conf_thresh', 2.5)
+            if isinstance(img0, dict):
+                img0t = img0['image']
+                mask0t = img0['mask']
+            else:
+                img0t = img0
+                mask0t = mask0
+            if isinstance(img1, dict):
+                img1t = img1['image']
+                mask1t = img1['mask']
+            else:
+                img1t = img1
+                mask1t = mask1
+            tx, ty, conf = global_translation_matcher(img0t, img1t, mask0=mask0t, mask1=mask1t,
+                                                        sigma=sigma, conf_thresh=conf_thresh)
+            if conf < conf_thresh:
+                logger.warning(f'{bname}: fail to find matches.')
+                return 0
+            txy = (tx * pmcc_scale[-1], ty * pmcc_scale[-1])
+            mtch0 = None
     mtch1 = match_two_thumbnails_pmcc(img0, img1, mask0=mask0, mask1=mask1,
-                                      initial_matches=mtch0, **block_match_settings)
+                                    initial_matches=mtch0, txy = txy,
+                                    **block_match_settings)
+
     if mtch1 is None:
         logger.warning(f'{bname}: fail to find matches.')
         return 0
