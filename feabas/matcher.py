@@ -583,8 +583,8 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
                     batched_bboxes_union0.append(common.bbox_union(bboxes0[bidx0:bidx1]))
                     batched_bboxes_union1.append(common.bbox_union(bboxes1[bidx0:bidx1]))
                 target_func = partial(bboxes_mesh_renderer_matcher, pad=pad, subpixel=subpixel, **kwargs)
-                submeshes0 = mesh0.submeshes_from_bboxes(batched_bboxes_union0)
-                submeshes1 = mesh1.submeshes_from_bboxes(batched_bboxes_union1)
+                submeshes0 = mesh0.submeshes_from_bboxes(batched_bboxes_union0, save_material=False)
+                submeshes1 = mesh1.submeshes_from_bboxes(batched_bboxes_union1, save_material=False)
                 xy0 = []
                 xy1 = []
                 conf = []
