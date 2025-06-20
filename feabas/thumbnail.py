@@ -575,8 +575,11 @@ def align_two_thumbnails(img0, img1, outname, mask0=None, mask1=None, **kwargs):
             else:
                 img1t = img1
                 mask1t = mask1
-            tx, ty, conf = global_translation_matcher(img0t, img1t, mask0=mask0t, mask1=mask1t,
-                                                        sigma=sigma, conf_thresh=conf_thresh)
+            for divide_factor in (6, 10, 20):
+                tx, ty, conf = global_translation_matcher(img0t, img1t, mask0=mask0t, mask1=mask1t,
+                                                            sigma=sigma, conf_thresh=conf_thresh, divide_factor=divide_factor)
+                if conf >= conf_thresh:
+                    break
             if conf < conf_thresh:
                 logger.warning(f'{bname}: fail to find matches.')
                 return 0

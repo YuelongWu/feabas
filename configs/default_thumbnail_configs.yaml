@@ -16,6 +16,7 @@ alignment:
     cache_size: 3           # the number of sections whose feature keypoints should be cached
     save_feature_match: false   # whether to save the feature matching results to disk
     match_name_delimiter: __to__    # so that the match file follows the patern sec0{delimieter}sec2.h5
+    match_mode: feature     # feature (general) or template (block-face)
     feature_matching:
         affine_only: true        # whehter to only find an affine model for each connected parts, or approximate a nonlinear one with a series of affines found by RANSAC
         scale: 1.0              # scale at which the thumbnail are matched
@@ -58,6 +59,7 @@ alignment:
             chunked_to_depth: 0  # if 0, use slide window directly. Otherwise, group sections into chunks, first align witin chunks, then treat each chunk as "meta-sections" and align those. depth>1 means meta-sections will also aligned in chunks until 'depth' recursion
             default_chunk_size: 16  # the default size of chunks when chunk_map json file is not provided
             junction_width: 0.2 # number of sections to be re-relaxed in the end at the junctions between chunks. If fraction, it's related to the chunk size.
+            pad_junctional: true # whether to add boarder sections from neighbor chunks to smoothen alignment within chunks
         slide_window:
             start_loc: M    # starting location of the optimization. L: left, R: right, M: start from middle and move in both directions
             window_size: 64 # the width of the sliding window
