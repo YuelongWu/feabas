@@ -149,8 +149,10 @@ def global_translation_matcher(img0, img1, **kwargs):
     imgwd0, imght0, imgwd1, imght1 = imgshp0[1], imgshp0[0], imgshp1[1], imgshp1[0]
     tx, ty, conf = xcorr_fft(img0_t, img1_t, conf_mode=conf_mode, pad=True)
     tx, ty, conf = tx.item(), ty.item(), conf.item()
+    tx = tx + (imgwd1 - imgwd0) / 2
+    ty = ty + (imght1 - imght0) / 2
     if conf > conf_thresh:
-        return tx + (imgwd1 - imgwd0) / 2, ty + (imght1 - imght0) / 2, conf
+        return tx, ty, conf
     # divide the image for another shot (avoid local artifacts)
     imgshp = np.minimum(imgshp0, imgshp1)
     # find the division that results in most moderate aspect ratio
@@ -203,6 +205,8 @@ def global_translation_matcher(img0, img1, **kwargs):
         stack1.append(img1b)
         offset_x.append((np.ptp(xpt1) - np.ptp(xpt0))/2 + xpt1[0] - xpt0[0])
         offset_y.append((np.ptp(ypt1) - np.ptp(ypt0))/2 + ypt1[0] - ypt0[0])
+    if len(stack0) == 0:
+        return tx, ty, conf
     btx, bty, bconf = xcorr_fft(np.stack(stack0, axis=0), np.stack(stack1, axis=0), conf_mode=conf_mode, pad=True)
     btx = btx + np.array(offset_x)
     bty = bty + np.array(offset_y)

@@ -246,8 +246,9 @@ def render_one_section(h5name, z_prefix='', **kwargs):
     bboxes = []
     for fname in fnames:
         bboxes.append(rendered[fname])
-    out_loader = dal.StaticImageLoader(fnames, bboxes=bboxes, resolution=resolution)
-    out_loader.to_coordinate_file(meta_name)
+    if len(fnames) > 0:
+        out_loader = dal.StaticImageLoader(fnames, bboxes=bboxes, resolution=resolution)
+        out_loader.to_coordinate_file(meta_name)
     logger.info(f'{secname}: {len(rendered)} tiles | {time.time()-t0} secs.')
     return len(rendered)
 
@@ -260,7 +261,7 @@ def render_main(tform_list, z_prefix=None):
     cache_size = align_config.get('loader_config', {}).get('cache_size', None)
     if (cache_size is not None) and (num_workers > 1):
         align_config['loader_config']['cache_size'] = cache_size // num_workers
-    if storage.file_exists(canvas_file):
+    if isinstance(canvas_file, dict) or storage.file_exists(canvas_file):
         canvas_bbox = common.get_canvas_bbox(canvas_file, target_mip=0)
         offset = -np.array(canvas_bbox[:2])
         logger.info(f'use offset {offset}')
@@ -542,8 +543,14 @@ if __name__ == '__main__':
             if step > 1:
                 dr = zr1 - zr0
                 rr = 1/step
-                zr0 = zr0 + (stt_idx % step) * dr * rr
-                zr1 = zr1 - dr + (stt_idx % step + 1) * dr * rr
+                zr0t = zr0 + (stt_idx % step) * dr * rr
+                zr1t = zr1 - dr + (stt_idx % step + 1) * dr * rr
+                zr0_grid = (Z0 - Z0.min())/Z_ptp
+                zr1_grid = (Z1 - Z0.min())/Z_ptp
+                idx0_t = np.argmin(np.abs(zr0_grid - zr0t))
+                idx1_t = np.argmin(np.abs(zr1_grid - zr1t))
+                zr0 = max(zr0, zr0_grid[idx0_t])
+                zr1 = min(zr1, zr1_grid[idx1_t])
             z_range = [zr0, zr1]
             align_config['z_range'] = z_range
         downsample_z = align_config.pop('downsample_z', 'auto')

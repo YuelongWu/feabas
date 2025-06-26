@@ -502,6 +502,7 @@ def match_two_thumbnails_pmcc(img0, img1, mask0=None, mask1=None, **kwargs):
         info1['dog_image'] = common.masked_dog_filter(info1['image'], sigma=sigma, mask=info1['mask'])
     loader0 = StreamLoader(info0['dog_image'], resolution=mesh0.resolution)
     loader1 = StreamLoader(info1['dog_image'], resolution=mesh1.resolution)
+    kwargs.setdefault('allow_dwell', 1)
     xy0, xy1, weight, strain = section_matcher(mesh0, mesh1, loader0, loader1, **kwargs)
     if xy0 is None:
         return None

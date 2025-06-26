@@ -927,7 +927,7 @@ class VolumeRenderer:
             if bbox_b.size == 0:
                 continue
             mindx = midx_hits[idx0:idx1]
-            b_flag = {z: check_points[z][mindx] for z in z_to_render}
+            b_flag = {z: check_points[z][mindx] for z in z_to_render if (z in check_points)}
             bkw = { 'task_id': task_id,
                     'loaders': loaders,
                     'meshes': {},

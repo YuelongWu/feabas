@@ -219,8 +219,8 @@ class Stack:
         lock_flags = kwargs.get('lock_flags', None)
         mesh_cache = kwargs.get('mesh_cache', {})
         link_cache = kwargs.get('link_cache', {})
-        mip_level = kwargs.get('mip_level', 0)
-        self._resolution = config.montage_resolution() * (2 ** mip_level)
+        self._mip_level = kwargs.get('mip_level', 0)
+        self._resolution = config.montage_resolution() * (2 ** self._mip_level)
         self._mesh_cache = OrderedDict()
         self._mesh_cache.update(mesh_cache)
         self._link_cache = OrderedDict()
@@ -290,7 +290,7 @@ class Stack:
             init_dict['specified_out_dirs'] = {s:p for s,p in self._specified_out_dirs.items() if s in section_list_set}
         elif isinstance(self._specified_out_dirs, str):
             init_dict['specified_out_dirs'] = self._specified_out_dirs
-        init_dict['resolution'] = self._resolution
+        init_dict['mip_level'] = self._mip_level
         init_dict['mesh_cache_size'] = self._mesh_cache_size
         init_dict['link_cache_size'] = self._link_cache_size
         if include_cache:
@@ -1119,7 +1119,7 @@ class Aligner():
                 dis_thresh = cnts[invindx] * self._junction_width
             else:
                 dis_thresh = self._junction_width
-            self._in_junction = edt < dis_thresh
+            self._in_junction = edt <= dis_thresh
             juction_indx = np.flatnonzero(self._in_junction)
             self._junctional_sections = set(self.section_list[s] for s in juction_indx)
         return self._junctional_sections
@@ -1278,7 +1278,7 @@ class Aligner():
         mesh_versions_array = self.mesh_versions_array
         lock_flags = mesh_versions_array == Aligner.ALIGNED
         stack_config['lock_flags'] = lock_flags # set the lock array so that muted matches are not filtered out during initialization
-        stack = self.initialize_stack(include_chunk_dir=True, **stack_config)
+        stack = self.initialize_stack(intermediate_dirs=self._chunk_dir, **stack_config)
         stack._specified_out_dirs = self._chunk_dir
         chunk_map = self.chunk_map
         if pad_junctional:
