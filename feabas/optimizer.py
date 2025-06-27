@@ -749,25 +749,7 @@ class SLM:
         for m in self.meshes:
             if m.locked:
                 continue
-            sd = m.triangle_edge_deform(gear=gear).reshape(-1,1)
-            sa = m.triangle_area_deform(gear=gear).reshape(-1,1)
-            defm = np.maximum(Mesh.svds_to_deform(sa), Mesh.svds_to_deform(sd))
-            m0 = m.effective_stiffness_multiplier()
-            idx_m = m0 >= 0.5* np.median(m0)
-            defm = defm - np.median(defm[idx_m])
-            thresh_t = max(deform_thresh, 0)
-            if iqr > 0:    
-                qq = np.quantile(defm[idx_m], (0.25, 0.75))
-                thresh_iqr = np.max(qq) + iqr * np.ptp(qq)
-                thresh_t = min(thresh_t, thresh_iqr)
-            tmask = defm > max(thresh_t, 1.0e-3)
-            if not np.any(tmask):
-                continue
-            tid = m.triangles[tmask]
-            vid = np.unique(tid)
-            vmask = np.isin(m.triangles, vid)
-            tmask = np.all(vmask, axis=-1)
-            md = relax_mesh(m, free_triangles=tmask, gear=gear)
+            md = relax_mesh_most_deformed(m, gear=gear, deform_cutoff=deform_cutoff, iqr=iqr)
             modified = modified + md
         return modified
 
@@ -2074,4 +2056,40 @@ def relax_mesh(M, free_vertices=None, free_triangles=None, **kwargs):
         M.set_vertices(fixed_vertices, gear=gear[0])
         M.set_offset(fixed_offset, gear=gear[0])
     M.locked = locked
+    return modified
+
+
+def relax_mesh_most_deformed(M, gear=(const.MESH_GEAR_FIXED, const.MESH_GEAR_MOVING), deform_cutoff=config.MAXIMUM_DEFORM_ALLOWED, iqr=0):
+    modified = False
+    sa = M.triangle_area_deform(gear=gear).reshape(-1,1)
+    if deform_cutoff < 0: # check flip only
+        tmask = Mesh.svds_to_deform(sa) >= 1
+        if not np.any(tmask):
+            return modified
+        tid = M.triangles[tmask]
+        vid = np.unique(tid)
+        modified = relax_mesh(M, free_vertices=vid, gear=gear)
+    else:
+        deform_thresh = 1 - 1 / (abs(deform_cutoff) + 1)
+        sd = M.triangle_edge_deform(gear=gear).reshape(-1,1)
+        defm = np.maximum(Mesh.svds_to_deform(sa), Mesh.svds_to_deform(sd))
+        m0 = M.effective_stiffness_multiplier()
+        idx_m = m0 >= 0.5* np.median(m0)
+        defm = defm - np.median(defm[idx_m])
+        thresh_t = max(deform_thresh, 0)
+        if iqr > 0:    
+            qq = np.quantile(defm[idx_m], (0.25, 0.75))
+            thresh_iqr = np.max(qq) + iqr * np.ptp(qq)
+            thresh_t = min(thresh_t, thresh_iqr)
+        tmask = defm > max(thresh_t, 1.0e-3)
+        if not np.any(tmask):
+            return modified
+        tid = M.triangles[tmask]
+        vid = np.unique(tid)
+        vmask = np.isin(M.triangles, vid)
+        if deform_cutoff < 0:
+            tmask = np.any(vmask, axis=-1)
+        else:
+            tmask = np.all(vmask, axis=-1)
+        modified = relax_mesh(M, free_triangles=tmask, gear=gear)
     return modified

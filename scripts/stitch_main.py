@@ -102,6 +102,7 @@ def optimize_one_section(matchname, outname, **kwargs):
     if elastic_settings.get('maxiter', 0) != 0:
         cost = stitcher.optimize_elastic(target_gear=feabas.MESH_GEAR_MOVING, **elastic_settings)
     rot, _ = stitcher.normalize_coordinates(**normalize_setting)
+    Ninvld = stitcher.correct_invalid_meshes()
     N_conn = stitcher.connect_isolated_subsystem(**disconnected_settings)
     if N_conn > 1:
         rot_1, _ = stitcher.normalize_coordinates(**normalize_setting)
@@ -122,6 +123,8 @@ def optimize_one_section(matchname, outname, **kwargs):
                   + f'| finished {time.time() - t0} sec ')
     # if abs(rot) > 1.5:
     #     logger.warning(f'{bname}: rotation detected in final transform, potential mesh relaxation issues.')
+    if Ninvld > 0:
+        logger.warning(f'\t{bname}: corrected invalid {Ninvld} meshes.')
     if ncomp1 > 1:
         logger.warning(f'\t{bname}: {ncomp} disconnected groups found, among which {ncomp1} have more than one tiles.')
     logger.info(finish_str)

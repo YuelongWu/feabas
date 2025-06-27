@@ -18,11 +18,11 @@ from feabas.concurrent import submit_to_workers
 from feabas.dal import StaticImageLoader, TensorStoreWriter
 from feabas.matcher import stitching_matcher
 from feabas.mesh import Mesh
-from feabas.optimizer import SLM
+from feabas.optimizer import SLM, relax_mesh_most_deformed
 from feabas import common, caching, storage, logging
 from feabas.spatial import scale_coordinates
 import feabas.constant as const
-from feabas.config import SECTION_THICKNESS, data_resolution, CHECKPOINT_TIME_INTERVAL, DEFAULT_AVG_DEFORM
+from feabas.config import SECTION_THICKNESS, data_resolution, CHECKPOINT_TIME_INTERVAL, MAXIMUM_DEFORM_ALLOWED
 
 H5File = storage.h5file_class()
 TOLERATED_PERTURBATION = 0.1
@@ -912,6 +912,29 @@ class Stitcher:
                 cost1 = self._optimizer.optimize_elastic(groupings=groupings, **kwargs)
                 cost = (cost[0], cost1[-1])
         return cost
+
+
+    def correct_invalid_meshes(self, **kwargs):
+        gear = kwargs.get('gear', (const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING))
+        modified = 0
+        if self._optimizer is None:
+            return modified
+        for m in self._optimizer.meshes:
+            mesh_is_valid = m.is_valid(gear=gear[-1])
+            if mesh_is_valid:
+                continue
+            modified += 1
+            relax_mesh_most_deformed(m, gear=gear, deform_cutoff=-1)
+            deform_cutoff = MAXIMUM_DEFORM_ALLOWED
+            trial_cnt = 0
+            while not m.is_valid(gear=gear[-1]):
+                if trial_cnt > 10:
+                    raise RuntimeError(f'{self.imgrootdir}: faile to correct invalid mesh')
+                relax_mesh_most_deformed(m, gear=gear, deform_cutoff=deform_cutoff)
+                deform_cutoff = deform_cutoff / 2
+                trial_cnt += 1
+        return modified 
+
 
 
     def connect_isolated_subsystem(self, **kwargs):

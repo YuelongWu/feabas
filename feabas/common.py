@@ -6,7 +6,7 @@ import os
 
 import numpy as np
 from scipy import sparse
-from scipy.ndimage import gaussian_filter1d
+from scipy.ndimage import gaussian_filter1d, convolve, uniform_filter
 import scipy.sparse.csgraph as csgraph
 from skimage.morphology import convex_hull_image
 
@@ -138,6 +138,21 @@ def estimate_mask(img, background_colors=None, smoothen_window=0.1, mask_erode=1
         r = int(2*mask_erode) + 1
         mask = cv2.erode(mask.astype(np.uint8), np.ones((r, r), dtype=np.uint8)) > 0
     return mask
+
+
+def saliency_mask(img, sigma=5, shift=1, filter_size=21):
+    img = img.astype(np.float32)
+    imgf = img - uniform_filter(img, size=sigma*2+1, mode='nearest')
+    kernel = np.ones((shift*2+1, shift*2+1))
+    kernel[shift, shift] = 0
+    kernel = kernel / np.sum(kernel, axis=None)
+    imgf_nb = convolve(imgf, kernel, mode='constant', cval=0.0)
+    imgf_nb = np.roll(imgf, shift, axis=0)
+    autox = uniform_filter(imgf * imgf_nb, size=filter_size,  mode='constant', cval=0.0)
+    var0 = uniform_filter(imgf **2 , size=filter_size,  mode='constant', cval=0.0)
+    idx = autox > 0
+    autox[idx] = autox[idx] / var0[idx]
+    return autox
 
 
 def z_order(indices, base=2):
