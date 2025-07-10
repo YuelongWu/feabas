@@ -6,7 +6,7 @@ import os
 
 import numpy as np
 from scipy import sparse
-from scipy.ndimage import gaussian_filter1d, convolve, uniform_filter
+from scipy.ndimage import gaussian_filter1d, convolve, uniform_filter, median_filter, distance_transform_edt
 import scipy.sparse.csgraph as csgraph
 from skimage.morphology import convex_hull_image
 
@@ -140,18 +140,24 @@ def estimate_mask(img, background_colors=None, smoothen_window=0.1, mask_erode=1
     return mask
 
 
-def saliency_mask(img, sigma=5, shift=1, filter_size=21):
+def saliency_mask(img, sigma=7, shift=1, filter_size=31):
     img = img.astype(np.float32)
     imgf = img - uniform_filter(img, size=sigma*2+1, mode='nearest')
-    kernel = np.ones((shift*2+1, shift*2+1))
+    imgg = cv2.dilate(img, np.ones((sigma*2+1,sigma*2+1))) - cv2.erode(img, np.ones((sigma*2+1,sigma*2+1)))
+    var_f = uniform_filter(imgg, size=sigma*3+1,  mode='constant', cval=0.0).clip(np.mean(imgg[imgg>0]), None)
+    mask = 512 * ((img==255) | (img==0))
+    maskf = uniform_filter(mask, size=sigma*2+1, mode='nearest')
+    imgf = (np.abs(imgf) - maskf).clip(0, None) * np.sign(imgf)
+    imgf = imgf / var_f**4
+    kernel = np.ones((shift*3+1, shift*3+1))
     kernel[shift, shift] = 0
+    kernel = distance_transform_edt(kernel)
     kernel = kernel / np.sum(kernel, axis=None)
     imgf_nb = convolve(imgf, kernel, mode='constant', cval=0.0)
-    imgf_nb = np.roll(imgf, shift, axis=0)
     autox = uniform_filter(imgf * imgf_nb, size=filter_size,  mode='constant', cval=0.0)
-    var0 = uniform_filter(imgf **2 , size=filter_size,  mode='constant', cval=0.0)
-    idx = autox > 0
-    autox[idx] = autox[idx] / var0[idx]
+    var0 = uniform_filter(imgf **2 , size=filter_size,  mode='constant', cval=0.0).clip(np.std(imgf)**2, None)
+    var1 = uniform_filter(imgf_nb **2 , size=filter_size,  mode='constant', cval=0.0).clip(np.std(imgf_nb)**2, None)
+    autox = autox / (var0 * var1)**0.5
     return autox
 
 
