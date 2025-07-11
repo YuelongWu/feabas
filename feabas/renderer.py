@@ -474,6 +474,7 @@ class MeshRenderer:
     def crop(self, bbox, **kwargs):
         image_loader = kwargs.get('image_loader', self._image_loader)
         log_sigma = kwargs.get('log_sigma', 0) # apply laplacian of gaussian filter if > 0
+        mask_range = kwargs.get('mask_range',  None)
         if image_loader is None:
             raise RuntimeError('Image loader not defined.')
         x_field, y_field, mask = self.crop_field(bbox, **kwargs)
@@ -488,6 +489,12 @@ class MeshRenderer:
         if (log_sigma > 0) and (imgt is not None):
             if len(imgt.shape) > 2:
                 imgt = np.moveaxis(imgt, -1, 0)
+            if mask_range is not None:
+                mask_range = np.atleast_1d(mask_range)
+                mask_t = (imgt >= mask_range[0]) & (imgt <= mask_range[-1])
+                if len(mask_t.shape) > len(mask.shape):
+                    mask_t = np.all(mask_t, axis=0)
+                mask = mask & mask_t
             imgt = common.masked_dog_filter(imgt, log_sigma, mask=mask)
             if len(imgt.shape) > 2:
                 imgt = np.moveaxis(imgt, 0, -1)

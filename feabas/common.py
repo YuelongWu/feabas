@@ -161,6 +161,33 @@ def saliency_mask(img, sigma=7, shift=1, filter_size=31):
     return autox
 
 
+def jitter_image_grayscale(img, context=3):
+    img = np.array(img, copy=False)
+    if not np.issubdtype(img.dtype, np.integer):
+        return img
+    if np.ptp(img) == 0:
+        return img
+    imgf = img.astype(np.float32)
+    img_sm = uniform_filter(imgf, size=context, mode='mirror')
+    img_delta = img_sm - imgf
+    indx_pos = img_delta > 0
+    indx_neg = img_delta < 0
+    Nbins = img.max()+1
+    if np.any(indx_pos):
+        max_diff = np.zeros(Nbins, dtype=np.float32)
+        np.maximum.at(max_diff, img[indx_pos], img_delta[indx_pos])
+        mult_pos = max_diff[img]
+        img_delta[indx_pos] = img_delta[indx_pos] / mult_pos[indx_pos]
+    if np.any(indx_neg):
+        min_diff = np.zeros(Nbins, dtype=np.float32)
+        np.minimum.at(min_diff, img[indx_neg], img_delta[indx_neg])
+        mult_neg = min_diff[img]
+        img_delta[indx_neg] = img_delta[indx_neg] / np.abs(mult_neg[indx_neg])
+    img_delta = img_delta * 0.499
+    return imgf + img_delta
+    
+
+
 def z_order(indices, base=2):
     """
     generating z-order from multi-dimensional indices.

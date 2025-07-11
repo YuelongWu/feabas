@@ -727,6 +727,7 @@ def bboxes_mesh_renderer_matcher(mesh0, mesh1, image_loader0, image_loader1, bbo
     pad = kwargs.get('pad', True)
     subpixel = kwargs.get('subpixel', False)
     render_weight_threshold = kwargs.get('render_weight_threshold', 0)
+    mask_range = kwargs.get('mask_range', None)
     if isinstance(mesh0, dict):
         mesh0 = Mesh(**mesh0)
     elif isinstance(mesh0, str):
@@ -775,10 +776,10 @@ def bboxes_mesh_renderer_matcher(mesh0, mesh1, image_loader0, image_loader1, bbo
         xy_ctr1 = []
         wt_ratio = []
         for bbox0, bbox1 in zip(block_indices0, block_indices1):
-            img0 = render0.crop(bbox0, mode=render_mode, log_sigma=sigma, remap_interp=cv2.INTER_LINEAR)
+            img0 = render0.crop(bbox0, mode=render_mode, log_sigma=sigma, remap_interp=cv2.INTER_LINEAR, mask_range=mask_range)
             if img0 is None:
                 continue
-            img1 = render1.crop(bbox1, mode=render_mode, log_sigma=sigma, remap_interp=cv2.INTER_LINEAR)
+            img1 = render1.crop(bbox1, mode=render_mode, log_sigma=sigma, remap_interp=cv2.INTER_LINEAR, mask_range=mask_range)
             if img1 is None:
                 continue
             stack0.append(img0)
