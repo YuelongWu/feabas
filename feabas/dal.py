@@ -9,6 +9,7 @@ import re
 import cv2
 import numpy as np
 from rtree import index
+from scipy.interpolate import interp1d
 import tensorstore as ts
 
 from feabas import common, caching
@@ -132,6 +133,9 @@ class AbstractImageLoader(ABC):
             _tile_divider_block caching. If neither is set, cache
             the entile image with _tile_divider_blank.
         resolution(float): resolution of the images. default to 4nm
+        tf_lut(dict|str): intensity transfer function (by 1d linear
+            interpolation) for each image. format
+            {filename_substr: ([src_grayscales], [targt_grayscales])} 
     """
     def __init__(self, **kwargs):
         self._dtype = kwargs.get('dtype', None)
@@ -153,6 +157,7 @@ class AbstractImageLoader(ABC):
         self.update_preprocess_function(preprocess_factory, **preprocess_parames)
         self.resolution = kwargs.get('resolution', DEFAULT_RESOLUTION)
         self._read_counter = 0
+        self._tf_lut = kwargs.get('tf_lut', {})
 
 
     def clear_cache(self, instant_gc=False):
@@ -308,6 +313,7 @@ class AbstractImageLoader(ABC):
                 out['number_of_channels'] = self._number_of_channels
             out['fillval'] = self._default_fillval
             out['apply_CLAHE'] = self._apply_CLAHE
+            out['tf_lut'] = self._tf_lut
             if hasattr(self, '_clahe_clip_limit'):
                 out['CLAHE_cliplimit'] = self._clahe_clip_limit
             out['inverse'] = self._inverse
@@ -375,6 +381,8 @@ class AbstractImageLoader(ABC):
             settings['cache_border_margin'] = json_obj['cache_border_margin']
         elif 'cache_block_size' in json_obj:
             settings['cache_block_size'] = json_obj['cache_block_size']
+        if 'tf_lut' in json_obj:
+            settings['tf_lut'] = json_obj['tf_lut']
         return settings, json_obj
 
 
@@ -399,6 +407,16 @@ class AbstractImageLoader(ABC):
         if (number_of_channels == 1):
             while (len(img.shape) > 2):
                 img = img.mean(axis=-1).astype(dtype)
+        if len(self.tf_lut) > 0:
+            mbname = os.path.basename(imgpath)
+            if mbname in self.tf_lut:
+                tf = self.tf[mbname]
+                img = tf(img).astype(dtype)
+            else:
+                for nm, tf in self.tf_lut.items():
+                    if nm in os.path.basename(imgpath):
+                        img = tf(img).astype(dtype)
+                        break
         if apply_CLAHE:
             if (len(img.shape) > 2) and (img.shape[-1] == 3):
                 img = cv2.cvtColor(img, cv2.COLOR_RGB2Lab)
@@ -456,6 +474,22 @@ class AbstractImageLoader(ABC):
     @property
     def default_fillval(self):
         return self._default_fillval
+
+
+    @property
+    def tf_lut(self):
+        if (not hasattr(self, '_tf_lut_cache')) or (self._tf_lut_cache is None):
+            self._tf_lut_cache = {}
+            tf_lut_dict, _ = common.parse_json_file(self._tf_lut)
+            if tf_lut_dict is not None:
+                for nm, gspairs in tf_lut_dict.items():
+                    src_gs, tgt_gs = gspairs
+                    src_gs = np.array(src_gs).ravel()
+                    tgt_gs = np.array(tgt_gs).ravel()
+                    fillval = (np.min(tgt_gs), np.max(tgt_gs))
+                    tf0 = interp1d(src_gs, tgt_gs, kind='linear', bounds_error=False, fill_value=fillval)
+                    self._tf_lut_cache[nm] = tf0
+        return self._tf_lut_cache
 
 
 

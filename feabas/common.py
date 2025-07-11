@@ -770,21 +770,18 @@ def parse_json_file(filename, stream=None):
     if filename is None:
         json_dict =  None
     file_read = False
-    if stream is None:
-        if isinstance(filename, str):
-            try:
-                json_dict = json.loads(filename)
-            except ValueError:
-                if storage.file_exists(filename):
-                    with storage.File(filename, 'r') as f:
-                        json_dict = json.load(f)
-                    file_read = True
-                else:
-                    json_dict = None
-        elif isinstance(filename, dict):
-            json_dict = filename
-        else:
-            raise TypeError
+    if isinstance(filename, dict):
+        json_dict = filename
+    elif stream is None:
+        try:
+            json_dict = json.loads(filename)
+        except ValueError:
+            if storage.file_exists(filename):
+                with storage.File(filename, 'r') as f:
+                    json_dict = json.load(f)
+                file_read = True
+            else:
+                json_dict = None
     elif stream:
         json_dict = json.loads(filename)
     else:

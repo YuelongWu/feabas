@@ -150,12 +150,15 @@ def optmization_main(match_list, out_dir, **kwargs):
 
 def render_one_section(tform_name, out_prefix, meta_name=None, **kwargs):
     mask_dir = kwargs.pop('mask_dir', None)
+    tfname = kwargs.pop('tfname', None)
     num_workers = kwargs.get('num_workers', 1)
     loader_settings = kwargs.get('loader_settings', {})
     if loader_settings.get('cache_size', None) is not None:
         loader_settings = loader_settings.copy()
         loader_settings['cache_size'] = loader_settings['cache_size'] // num_workers
     renderer = MontageRenderer.from_h5(tform_name, loader_settings=loader_settings)
+    if tfname is not None:
+        renderer.add_transfer_functions(tfname)
     mask_out = storage.join_paths(mask_dir, os.path.basename(tform_name).replace('.h5','.png'))
     num_chunks = renderer.render_one_section(out_prefix, meta_name=meta_name, mask_out=mask_out, **kwargs)
     return num_chunks
@@ -165,6 +168,7 @@ def render_main(tform_list, out_dir, **kwargs):
     logger_info = logging.initialize_main_logger(logger_name='stitch_rendering', mp=False)
     logger = logger_info[0]
     driver = kwargs.get('driver', 'image')
+    histeq_dir = kwargs.pop('histeq_dir', None)
     use_tensorstore = driver != 'image'
     if use_tensorstore:
         meta_dir = kwargs['meta_dir']
@@ -172,6 +176,9 @@ def render_main(tform_list, out_dir, **kwargs):
     for tname in tform_list:
         t0 = time.time()
         sec_name = os.path.basename(tname).replace('.h5', '')
+        tfname = storage.join_paths(histeq_dir, sec_name+'.json')
+        if not storage.file_exists(tfname):
+            tfname = None
         try:
             sec_outdir = storage.join_paths(out_dir, sec_name)
             if use_tensorstore:
@@ -186,7 +193,7 @@ def render_main(tform_list, out_dir, **kwargs):
             else:
                 storage.makedirs(sec_outdir)
                 out_prefix = storage.join_paths(sec_outdir, sec_name)
-            num_rendered = render_one_section(tname, out_prefix, meta_name=meta_name, **kwargs)
+            num_rendered = render_one_section(tname, out_prefix, meta_name=meta_name, tfname=tfname, **kwargs)
             logger.info(f'{sec_name}: {num_rendered} tiles | {(time.time()-t0)/60} min')
         except TimeoutError:
             logger.error(f'{sec_name}: Tensorstore timed out.')
@@ -239,6 +246,7 @@ if __name__ == '__main__':
     coord_dir = storage.join_paths(stitch_dir, 'stitch_coord')
     match_dir = storage.join_paths(stitch_dir, 'match_h5')
     mesh_dir = storage.join_paths(stitch_dir, 'tform')
+    histeq_dir = storage.join_paths(stitch_dir, 'hist_tf')
     render_meta_dir = storage.join_paths(stitch_dir, 'ts_specs')
     render_mask_dir = storage.join_paths(render_meta_dir, 'masks')
     stt_idx, stp_idx, step = args.start, args.stop, args.step
@@ -254,7 +262,7 @@ if __name__ == '__main__':
         if args.reverse:
             tform_list = tform_list[::-1]
         stitch_configs.setdefault('meta_dir', render_meta_dir)
-        render_main(tform_list, image_outdir, mask_dir=render_mask_dir, **stitch_configs)
+        render_main(tform_list, image_outdir, mask_dir=render_mask_dir, histeq_dir=histeq_dir, **stitch_configs)
     elif mode == 'optimization':
         match_list = sorted(storage.list_folder_content(storage.join_paths(match_dir, '*.h5')))
         if len(args.filter) > 0:

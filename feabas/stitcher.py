@@ -1245,6 +1245,13 @@ class MontageRenderer:
             gc.collect()
 
 
+    def add_transfer_functions(self, tf_json):
+        if self._image_loader is not None:
+            self._image_loader.clear_cache(instant_gc=False)
+            self._image_loader = None
+        self._loader_settings.update({'tf_lut': tf_json})
+
+
     def CLAHE_off(self):
         self.image_loader.CLAHE_off()
 
