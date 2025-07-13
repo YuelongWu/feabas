@@ -769,33 +769,20 @@ def bboxes_mesh_renderer_matcher(mesh0, mesh1, image_loader0, image_loader1, bbo
     xy0 = []
     xy1 = []
     conf = []
-    for block_indices0, block_indices1 in zip(batched_block_indices0, batched_block_indices1):
-        stack0 = []
-        stack1 = []
-        xy_ctr0 = []
-        xy_ctr1 = []
-        wt_ratio = []
-        for bbox0, bbox1 in zip(block_indices0, block_indices1):
-            img0 = render0.crop(bbox0, mode=render_mode, log_sigma=sigma, remap_interp=cv2.INTER_LINEAR, mask_range=mask_range)
-            if img0 is None:
-                continue
-            img1 = render1.crop(bbox1, mode=render_mode, log_sigma=sigma, remap_interp=cv2.INTER_LINEAR, mask_range=mask_range)
-            if img1 is None:
-                continue
-            stack0.append(img0)
-            stack1.append(img1)
-            xy_ctr0.append(((bbox0[0]+bbox0[2]-1)/2, (bbox0[1]+bbox0[3]-1)/2))
-            xy_ctr1.append(((bbox1[0]+bbox1[2]-1)/2, (bbox1[1]+bbox1[3]-1)/2))
-            wd0, ht0 = bbox0[2] - bbox0[0], bbox0[3] - bbox0[1]
-            wd1, ht1 = bbox1[2] - bbox1[0], bbox1[3] - bbox1[1]
-            wt_ratio.append((wd0 / (wd0 + wd1), ht0 / (ht0 + ht1)))
-        if (len(stack0) == 0) or (len(stack1) == 0):
+    for bboxes0_b, bboxes1_b in zip(batched_block_indices0, batched_block_indices1):
+        stack0 = render0.crop_multiple(bboxes0_b, mode=render_mode, log_sigma=sigma, remap_interp=cv2.INTER_LINEAR, mask_range=mask_range)
+        if stack0 is None:
             continue
-        dx, dy, conf_b = xcorr_fft(np.stack(stack0, axis=0), np.stack(stack1, axis=0),
-            conf_mode=conf_mode, pad=pad, subpixel=subpixel)
-        xy_ctr0 = np.array(xy_ctr0)
-        xy_ctr1 = np.array(xy_ctr1)
-        wt_ratio = np.array(wt_ratio)
+        stack1 = render1.crop_multiple(bboxes1_b, mode=render_mode, log_sigma=sigma, remap_interp=cv2.INTER_LINEAR, mask_range=mask_range)
+        if stack1 is None:
+            continue
+        xy_ctr0 = common.bbox_centers(bboxes0_b)
+        xy_ctr1 = common.bbox_centers(bboxes1_b)
+        bsz0 = common.bbox_sizes(bboxes0_b)
+        bsz1 = common.bbox_sizes(bboxes1_b)
+        wt_ratio = bsz0 / (bsz0 + bsz1)
+        wt_ratio = wt_ratio[:,::-1]
+        dx, dy, conf_b = xcorr_fft(stack0, stack1, conf_mode=conf_mode, pad=pad, subpixel=subpixel)
         dxy = np.stack((dx, dy), axis=-1)
         xy0_b = xy_ctr0 - dxy * wt_ratio
         xy1_b = xy_ctr1 + dxy * (1-wt_ratio)

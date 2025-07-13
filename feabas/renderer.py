@@ -492,8 +492,6 @@ class MeshRenderer:
             if mask_range is not None:
                 mask_range = np.atleast_1d(mask_range)
                 mask_t = (imgt >= mask_range[0]) & (imgt <= mask_range[-1])
-                if len(mask_t.shape) > len(mask.shape):
-                    mask_t = np.all(mask_t, axis=0)
                 mask = mask & mask_t
             imgt = common.masked_dog_filter(imgt, log_sigma, mask=mask)
             if len(imgt.shape) > 2:
@@ -503,6 +501,55 @@ class MeshRenderer:
             kk = 2
             weight = (np.arctan((weight - 0.5)*2*kk*np.pi) + np.arctan(kk*np.pi)) / (2*np.arctan(kk*np.pi))
             imgt = (imgt * weight).astype(dtp)
+        return imgt
+
+
+    def crop_multiple(self, bboxes, **kwargs):
+        # similar to crop but reduces number of IO calls
+        image_loader = kwargs.get('image_loader', self._image_loader)
+        log_sigma = kwargs.get('log_sigma', 0) # apply laplacian of gaussian filter if > 0
+        mask_range = kwargs.get('mask_range',  None)
+        if image_loader is None:
+            raise RuntimeError('Image loader not defined.')
+        x_field_list = []
+        y_field_list = []
+        mask_list = []
+        for bbox in bboxes:
+            x_f, y_f, msk = self.crop_field(bbox, **kwargs)
+            x_field_list.append(x_f)
+            y_field_list.append(y_f)
+            mask_list.append(msk)
+        Nbox = len(x_field_list)
+        x_field = np.concatenate(x_field_list, axis=0)
+        y_field = np.concatenate(y_field_list, axis=0)
+        mask = np.concatenate(mask_list, axis=0)   
+        if self._geodesic_mask:
+            weight = mask
+            mask = weight > 0
+        if image_loader.resolution != self.resolution:
+            scale = self.resolution / image_loader.resolution
+            x_field = spatial.scale_coordinates(x_field, scale)
+            y_field = spatial.scale_coordinates(y_field, scale)
+        imgt = common.render_by_subregions(x_field, y_field, mask, image_loader, **kwargs)
+        if imgt is None:
+            return imgt
+        imgt = imgt.reshape((Nbox,-1, *imgt.shape[1:]))
+        mask = mask.reshape((Nbox, -1, *mask.shape[1:]))
+        if log_sigma > 0:
+            if len(imgt.shape) > 3:
+                imgt = np.moveaxis(imgt, -1, 0)
+            if mask_range is not None:
+                mask_range = np.atleast_1d(mask_range)
+                mask_t = (imgt >= mask_range[0]) & (imgt <= mask_range[-1])
+                mask = mask & mask_t
+            imgt = common.masked_dog_filter(imgt, log_sigma, mask=mask)
+            if len(imgt.shape) > 3:
+                imgt = np.moveaxis(imgt, 0, -1)
+        if self._geodesic_mask:
+            dtp = imgt.dtype
+            kk = 2
+            weight = (np.arctan((weight - 0.5)*2*kk*np.pi) + np.arctan(kk*np.pi)) / (2*np.arctan(kk*np.pi))
+            imgt = (imgt * (weight.reshape(mask))).astype(dtp)
         return imgt
 
 
