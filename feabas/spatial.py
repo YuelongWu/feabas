@@ -148,11 +148,16 @@ def countours_to_polygon(contours, hierarchy, offset, scale, upsample):
     if len(polygons_staging) == 0:
         return None     # no region found
     hierarchy = hierarchy.reshape(-1, 4)
+    combined_holes = defaultdict(list)
     for indx, hole in holes.items():
         parent_indx = hierarchy[indx][3]
         if parent_indx not in polygons_staging:
             raise RuntimeError('found an orphan hole...') # should never happen
-        polygons_staging[parent_indx] = polygons_staging[parent_indx].difference(hole)
+        combined_holes[parent_indx].append(hole)
+    for indx in polygons_staging:
+        if indx in combined_holes:
+            hole = unary_union(combined_holes[indx])
+            polygons_staging[indx] = polygons_staging[indx].difference(hole)
     return unary_union([s.buffer(0) for s in polygons_staging.values()]).buffer(buffer_r, join_style=JOIN_STYLE)
 
 
@@ -1119,6 +1124,8 @@ class Geometry:
             roi = self._roi.simplify(roi_tol*scale, preserve_topology=True)
             if inplace:
                 self._roi = roi
+        else:
+            roi = self._roi
         epsilon1 = const.EPSILON0 * scale
         if epsilon1 < self._epsilon:
             self._epsilon = epsilon1

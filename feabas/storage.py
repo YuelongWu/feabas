@@ -111,6 +111,7 @@ def join_paths(*args):
     parent_dir = args[0]
     if parent_dir.startswith('gs://'):
         pth = '/'.join(args)
+        pth = pth.replace('//','/').replace('gs:/','gs://')
     else:
         pth = os.path.join(*args)
     return pth

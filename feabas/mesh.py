@@ -2925,6 +2925,8 @@ def mesh_from_mask(mask, **kwargs):
     if isinstance(simplify_tol, dict):
         region_tols = defaultdict(lambda: 0.1)
         region_tols.update(simplify_tol)
+    elif simplify_tol == 0:
+        region_tols = 0
     else:
         region_tols = defaultdict(lambda: simplify_tol)
     G = spatial.Geometry.from_image_mosaic(mask, material_table=material_table, resolution=resolution)

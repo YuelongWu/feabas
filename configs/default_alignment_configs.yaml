@@ -1,6 +1,7 @@
 meshing:
     num_workers: 15
     mesh_size: 600  # spacings between mesh grids in pixel at mip0
+    min_mesh_angle: 20
     simplify_tol: 2 # when approximate regions defined by mask images to polygon, the tolerance of distance error
     mask_dir: null  # the folder contains the material masks. if set to null, default to working_directory/align/material_masks. If mask not exist in this folder, use the one in the thumbnail folder
     mask_mip_level: 4 # the resolution of the masks in mask_dir folder
