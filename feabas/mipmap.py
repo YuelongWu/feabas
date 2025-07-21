@@ -208,7 +208,7 @@ def create_thumbnail(src_dir, outname=None, downsample=4, highpass=True, **kwarg
 def generate_target_tensorstore_scale(metafile, mip=None, **kwargs):
     max_tile_per_job = kwargs.pop('max_tile_per_job', 16)
     use_jpeg_compression = kwargs.pop('format', None) in ('jpg', 'jpeg')
-    kwargs['use_jpeg_compression'] = use_jpeg_compression
+    kwargs['jpeg_compression'] = use_jpeg_compression
     kwargs['cache_size'] = max_tile_per_job
     kwargs['downsample_z'] = 1
     write_to_file = False
@@ -436,7 +436,7 @@ def mip_one_level_tensorstore_3d(src_spec, mipup=1, **kwargs):
     full_chunk_only = kwargs.get('full_chunk_only', z_range is not None)
     downsample_method = kwargs.get("downsample_method", "mean")
     kvstore_out = kwargs.get('kvstore_out', None)
-    use_jpeg_compression = kwargs.get('use_jpeg_compression', True)
+    use_jpeg_compression = kwargs.get('jpeg_compression', True)
     pad_to_tile_size = kwargs.get('pad_to_tile_size', use_jpeg_compression)
     mask_file = kwargs.get('mask_file', None)
     cache_capacity = kwargs.get('cache_capacity', None)

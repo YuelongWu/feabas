@@ -1007,6 +1007,7 @@ class StreamLoader(AbstractImageLoader):
         self.update_preprocess_function(None)
         self.x0 = kwargs.get('x0', 0)
         self.y0 = kwargs.get('y0', 0)
+        self._tf_lut = {}
 
 
     @classmethod
@@ -1145,7 +1146,7 @@ class TensorStoreLoader(AbstractImageLoader):
             self.dataset = dataset
             self._spec = self.dataset.spec(minimal_spec=True).to_json()
         self.resolution = self.dataset.schema.dimension_units[0].multiplier
-        self._z = kwargs.get('z', 0)
+        self._z = kwargs.get('z', self.bounds_3d[2])
 
 
     @classmethod

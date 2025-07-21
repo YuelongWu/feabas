@@ -307,6 +307,7 @@ def parse_args(args=None):
     parser.add_argument("--reverse",  action='store_true')
     parser.add_argument("--slurm_config", metavar="slurm_config", type=str, 
                         help="path to the jobqueue.yaml config file to distribute optimization workloads via SLURM")
+    parser.add_argument("--filter", metavar="filter", type=str)
     return parser.parse_args(args)
 
 
@@ -415,6 +416,12 @@ if __name__ == '__main__':
         full_run = True
     else:
         full_run = False
+    if args.filter is not None:
+        tensorstore_render_dir = storage.join_paths(tensorstore_render_dir, args.filter)
+        ts_flag_dir = storage.join_paths(ts_flag_dir, args.filter)
+        ts_spec_file = ts_spec_file.replace('.json', '_'+args.filter+'.json')
+        ts_mip_flagdir = storage.join_paths(ts_mip_flagdir, args.filter)
+
     indx = slice(stt_idx, stp_idx, step)
     storage.makedirs(mesh_dir)
     if (mode == 'meshing') or (mode == 'matching'):
@@ -474,7 +481,7 @@ if __name__ == '__main__':
         align_config.pop('out_dir', None)
         canvas_bbox = align_config.get('canvas_bbox', None)
         if canvas_bbox is None:
-            if storage.file_exists(canvas_file):
+            if isinstance(canvas_file, dict) or storage.file_exists(canvas_file):
                 canvas_bbox = common.get_canvas_bbox(canvas_file, target_mip=mip_level)
                 logger.info(f'use canvas bounding box {canvas_bbox}')
         elif (canvas_bbox is not None) and (mip_level != 0):
@@ -486,7 +493,11 @@ if __name__ == '__main__':
         elif driver == 'n5':
             tensorstore_render_dir = tensorstore_render_dir + 's0/'
         tform_list = sorted(storage.list_folder_content(storage.join_paths(tform_dir, '*.h5')))
+        if args.filter is not None:
+            tform_list = [s for s in tform_list if args.filter in os.path.basename(s)]
         tform_list, z_indx = common.rearrange_section_order(tform_list, section_order_file)
+        if (args.filter is not None) and len(tform_list) > 0:
+            z_indx = z_indx - np.min(z_indx)
         stitch_dir = storage.join_paths(root_dir, 'stitch')
         loader_dir = storage.join_paths(stitch_dir, 'ts_specs')
         loader_list = [storage.join_paths(loader_dir, os.path.basename(s).replace('.h5', '.json')) for s in tform_list]

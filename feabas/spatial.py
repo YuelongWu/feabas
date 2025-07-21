@@ -814,8 +814,7 @@ class Geometry:
         return IOUs
 
 
-
-    def simplify(self, region_tol=1.5, roi_tol=1.5, inplace=True, scale=1.0, method=const.SPATIAL_SIMPLIFY_GROUP, area_thresh=0):
+    def simplify(self, region_tol=1.5, roi_tol=1.5, inplace=True, scale=1.0, method=const.SPATIAL_SIMPLIFY_GEOM_COLLECTION, area_thresh=0):
         """
         simplify regions and roi so they have fewer line segments.
         Kwargs:
@@ -842,8 +841,11 @@ class Geometry:
         elif method == const.SPATIAL_SIMPLIFY_REGION:
             G = self.simplify_by_regions(region_tols, roi_tol=roi_tol,
                 inplace=inplace, scale=scale, area_thresh=area_thresh)
-        else:
+        elif method == const.SPATIAL_SIMPLIFY_GROUP:
             G = self.simplify_by_segment_groups(region_tols, roi_tol=roi_tol,
+                inplace=inplace, scale=scale, area_thresh=area_thresh)
+        else:
+            G = self.simplify_by_geometry_collection(region_tols, roi_tol=roi_tol,
                 inplace=inplace, scale=scale, area_thresh=area_thresh)
         return G
 
@@ -1129,14 +1131,84 @@ class Geometry:
         epsilon1 = const.EPSILON0 * scale
         if epsilon1 < self._epsilon:
             self._epsilon = epsilon1
-        regions_new = {}
+        if inplace:
+            regions_new = self._regions
+        else:
+            regions_new = {}
         for key, pp in self._regions.items():
             if (region_tols[key] > 0) and (pp is not None):
                 pp_updated = pp.simplify(region_tols[key]*scale, preserve_topology=True)
-                if inplace:
-                    self._regions[key] = pp_updated
-                else:
-                    regions_new[key] = pp_updated
+                regions_new[key] = pp_updated
+        regions_new, _ = clean_up_small_regions(regions_new, roi=roi, area_thresh=area_thresh, buffer=self._epsilon)
+        if inplace:
+            return self
+        else:
+            return Geometry(roi=roi, regions=regions_new,
+                resolution=self._resolution, zorder=self._zorder)
+
+
+    def simplify_by_geometry_collection(self, region_tols, roi_tol=1.5,inplace=True, **kwargs):
+        """
+        simplify regions with shapely built-in `simplify` method of GeometryCollection.
+        should only use one (smallest) region_tols.
+        """
+        scale = kwargs.get('scale', 1.0)
+        area_thresh = kwargs.get('area_thresh', 0)
+        if roi_tol > 0:
+            roi = self._roi.simplify(roi_tol*scale, preserve_topology=True)
+            if inplace:
+                self._roi = roi
+        else:
+            roi = self._roi
+        epsilon1 = const.EPSILON0 * scale
+        if epsilon1 < self._epsilon:
+            self._epsilon = epsilon1
+        tols = [region_tols[lbl] for lbl in self._regions]
+        tol = min(tols) * scale
+        covered = shpgeo.Polygon()
+        # expand the regions a bit for tolerance
+        region_expanded = []
+        for lbl in self._zorder[::-1]:
+            if lbl not in self._regions:
+                continue
+            pp = self._regions[lbl]
+            if pp.area <= area_thresh:
+                continue
+            overlap = pp.intersection(covered)
+            if overlap.area > 0:
+                pp_add = overlap.buffer(tol*0.75, join_style=JOIN_STYLE)
+                pp_add = pp_add.intersection(covered.buffer(-self._epsilon, join_style=JOIN_STYLE))
+                pp = pp.union(pp_add)
+            region_expanded.append(pp)
+            covered = covered.union(pp)
+        G = shpgeo.GeometryCollection(region_expanded)
+        G = G.simplify(tolerance=tol, preserve_topology=True)
+        simplified_regions = list(G.geoms)
+        simplified_regions = sorted(simplified_regions, key=lambda g: -g.area)
+        if inplace:
+            regions_new = self._regions
+        else:
+            regions_new = {}
+        included_labels = set()
+        for pp in simplified_regions:
+            ovlp = 0
+            lbl_t = None
+            for lbl in self._regions:
+                if lbl in included_labels:
+                    continue
+                rr = self._regions[lbl]
+                ovlp_area = (rr.intersection(pp)).area
+                union_area = (rr.union(pp)).area
+                iou_rt = ovlp_area / union_area
+                if iou_rt > 0.75:
+                    regions_new[lbl] = pp
+                    included_labels.add(lbl)
+                    break
+                if iou_rt > ovlp:
+                    ovlp = iou_rt
+                    lbl_t = lbl
+            else:
+                regions_new[lbl_t] = pp
         regions_new, _ = clean_up_small_regions(regions_new, roi=roi, area_thresh=area_thresh, buffer=self._epsilon)
         if inplace:
             return self

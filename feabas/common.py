@@ -6,7 +6,7 @@ import os
 
 import numpy as np
 from scipy import sparse
-from scipy.ndimage import gaussian_filter1d, convolve, uniform_filter, median_filter, distance_transform_edt
+from scipy.ndimage import gaussian_filter1d, convolve, uniform_filter, distance_transform_edt
 import scipy.sparse.csgraph as csgraph
 from skimage.morphology import convex_hull_image
 
@@ -210,6 +210,44 @@ def z_order(indices, base=2):
     return np.argsort(z_order_score, kind='stable')
 
 
+def remap(image, map_x, map_y, **kwargs):
+    SHRT_MAX = 32767
+    map_x = map_x.astype(np.float32, copy=False)
+    map_y = map_y.astype(np.float32, copy=False)
+    imgshp = image.shape
+    mpshp = map_x.shape
+    if (len(mpshp) == 2) and (max(mpshp) < SHRT_MAX):
+        return cv2.remap(image, map_x, map_y, **kwargs)
+    sz_t = map_x.size
+    num_channels = int(image.size / (imgshp[0]*imgshp[1]))
+    if num_channels == 1:
+        out_sz = mpshp
+    else:
+        out_sz = (*mpshp, num_channels)
+    if sz_t > SHRT_MAX ** 2:
+        raise RuntimeError('remap: map size too large.')
+    for sz0 in range(max(1,int(sz_t/SHRT_MAX)), int(sz_t**0.5)+1):
+        if (sz_t % sz0 == 0) and (sz_t/sz0) < SHRT_MAX:
+            sz1 = int(sz_t/sz0)
+            map_x = map_x.reshape(sz0, sz1)
+            map_y = map_y.reshape(sz0, sz1)
+            imgt = cv2.remap(image, map_x, map_y, **kwargs)
+            return imgt.reshape(out_sz)
+    else:
+        sz0 = int(sz_t**0.5)
+        sz1 = int(np.ceil(sz_t/sz0))
+        map_x_pad = np.zeros_like(map_x, shape=sz0*sz1)
+        map_y_pad = np.zeros_like(map_y, shape=sz0*sz1)
+        map_x_pad[:sz_t] = map_x.ravel()
+        map_y_pad[:sz_t] = map_y.ravel()
+        map_x_pad = map_x_pad.reshape(sz0, sz1)
+        map_y_pad = map_y_pad.reshape(sz0, sz1)
+        imgt = cv2.remap(image, map_x_pad, map_y_pad, **kwargs)
+        imgt = imgt.reshape(-1, num_channels)
+        imgt = imgt[:sz_t,:]
+        return imgt.reshape(out_sz)
+
+
 def render_by_subregions(map_x, map_y, mask, img_loader, fileid=None,  **kwargs):
     """
     break the render job to small regions in case the target source image is
@@ -284,7 +322,7 @@ def render_by_subregions(map_x, map_y, mask, img_loader, fileid=None,  **kwargs)
         if cover_ratio > 0.25:
             map_xt = map_x - xmin
             map_yt = map_y - ymin
-            imgtt = cv2.remap(img0, map_xt.astype(np.float32), map_yt.astype(np.float32),
+            imgtt = remap(img0, map_xt.astype(np.float32), map_yt.astype(np.float32),
                 interpolation=rintp, borderMode=cv2.BORDER_CONSTANT, borderValue=fillval)
             if multichannel:
                 mskt3 = np.stack((mskt, )*num_channel, axis=-1)
@@ -295,19 +333,11 @@ def render_by_subregions(map_x, map_y, mask, img_loader, fileid=None,  **kwargs)
         else:
             map_xt = map_x[mskt] - xmin
             map_yt = map_y[mskt] - ymin
-            N_pad = int(np.ceil((map_xt.size)**0.5))
-            map_xt_pad = np.pad(map_xt, (0, N_pad**2 - map_xt.size)).reshape(N_pad, N_pad)
-            map_yt_pad = np.pad(map_yt, (0, N_pad**2 - map_yt.size)).reshape(N_pad, N_pad)
-            imgt_pad = cv2.remap(img0, map_xt_pad.astype(np.float32), map_yt_pad.astype(np.float32),
-                interpolation=rintp, borderMode=cv2.BORDER_CONSTANT, borderValue=fillval)
+            imgtt = remap(img0, map_xt, map_yt, interpolation=rintp, borderMode=cv2.BORDER_CONSTANT, borderValue=fillval)
             if multichannel:
-                imgtt = imgt_pad.reshape(-1, num_channel)
-                imgtt = imgtt[:(map_xt.size), :]
                 mskt3 = np.stack((mskt, )*imgtt.shape[-1], axis=-1)
                 imgt[mskt3] = imgtt.ravel()
             else:
-                imgtt = imgt_pad.ravel()
-                imgtt = imgtt[:(map_xt.size)]
                 imgt[mskt] = imgtt.ravel()
         to_render = to_render & (~mskt)
         if seed_indices.size > 0:

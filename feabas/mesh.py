@@ -545,21 +545,18 @@ class Mesh:
         """
         init_dict = {}
         init_dict['vertices'] = self._vertices[const.MESH_GEAR_INITIAL]
-        if (const.MESH_GEAR_FIXED in vertex_flags) and (self._vertices[const.MESH_GEAR_FIXED] is not self._vertices[const.MESH_GEAR_INITIAL]):
-            init_dict['fixed_vertices'] = self._vertices[const.MESH_GEAR_FIXED]
-        init_dict['triangles'] = self.triangles
-        if (const.MESH_GEAR_MOVING in vertex_flags) and (self._vertices[const.MESH_GEAR_MOVING] is not None):
-            init_dict['moving_vertices'] = self._vertices[const.MESH_GEAR_MOVING]
-        if (const.MESH_GEAR_STAGING in vertex_flags) and (self._vertices[const.MESH_GEAR_STAGING] is not None):
-            init_dict['staging_vertices'] = self._vertices[const.MESH_GEAR_STAGING]
         if np.any(self._offsets[const.MESH_GEAR_INITIAL]):
             init_dict['initial_offset'] = self._offsets[const.MESH_GEAR_INITIAL]
-        if (const.MESH_GEAR_FIXED in vertex_flags) and np.any(self._offsets[const.MESH_GEAR_FIXED]):
-            init_dict['fixed_offset'] = self._offsets[const.MESH_GEAR_FIXED]
-        if (const.MESH_GEAR_MOVING in vertex_flags) and np.any(self._offsets[const.MESH_GEAR_MOVING]):
-            init_dict['moving_offset'] = self._offsets[const.MESH_GEAR_MOVING]
-        if (const.MESH_GEAR_STAGING in vertex_flags) and np.any(self._offsets[const.MESH_GEAR_STAGING]):
-            init_dict['staging_offset'] = self._offsets[const.MESH_GEAR_STAGING]
+        inited_gears = self.actual_initialized_gears
+        saved_gears = {const.MESH_GEAR_INITIAL}
+        for gear in vertex_flags:
+            actual_gear = inited_gears[gear]
+            if actual_gear not in saved_gears:
+                gear_name = gear_constant_to_str(gear).lower()
+                init_dict[gear_name+'_vertices'] = self.vertices(gear=gear)
+                init_dict[gear_name+'_offset'] = self.offset(gear=gear)
+                saved_gears.add(actual_gear)
+        init_dict['triangles'] = self.triangles
         if self._stiffness_multiplier is not None:
             init_dict['stiffness_multiplier'] = self._stiffness_multiplier
         if save_material:
@@ -1194,6 +1191,21 @@ class Mesh:
         return (self._vertices[gear]) is not None
 
 
+    @property
+    def actual_initialized_gears(self):
+        inited_gears = {const.MESH_GEAR_INITIAL: const.MESH_GEAR_INITIAL}
+        previous_gear = const.MESH_GEAR_INITIAL
+        for gear in const.MESH_GEARS:
+            if (not self.vertices_initialized(gear=gear)):
+                inited_gears[gear] = previous_gear
+            elif (self.vertices(gear=gear) is self.vertices(gear=previous_gear)) and np.all(self.offset(gear=gear) == self.offset(gear=previous_gear)):
+                inited_gears[gear] = previous_gear
+            else:
+                inited_gears[gear] = gear
+                previous_gear = gear
+        return inited_gears
+
+
     def offset(self, gear=None):
         if gear is None:
             gear = self._current_gear
@@ -1805,8 +1817,12 @@ class Mesh:
         for chains in grouped_chains:
             if (seg_valid) or (len(chains) < 2):
                 P0 = shpgeo.Polygon(vertices[chains[0]]).buffer(0)
+                holes = []
                 for hole in chains[1:]:
-                    P0 = P0.difference(shpgeo.Polygon(vertices[hole]).buffer(0))
+                    holes.append(shpgeo.Polygon(vertices[hole]))
+                if len(holes) > 0:
+                    holes = unary_union(holes)
+                    P0 = P0.difference(holes).buffer(0)
                 polygons.append(P0)
             else:
                 Ls = [shpgeo.LinearRing(vertices[s]) for s in chains]
@@ -2080,8 +2096,8 @@ class Mesh:
         return tid_out
 
 
-    def cart2bary(self, xy, gear, tid=None, **kwargs):
-        """Cartesian to Barycentric coordinates"""
+    def cart2bary_legacy(self, xy, gear, tid=None, **kwargs):
+        """Cartesian to Barycentric coordinates (2x slower)"""
         if tid is None:
             tid = self.tri_finder(xy, gear=gear, **kwargs)
         vertices = self.vertices(gear=gear)
@@ -2095,6 +2111,36 @@ class Mesh:
         B = np.linalg.solve(np.swapaxes(tri_pt_pad, -2, -1), xy_pad)
         B[tid==-1] = np.nan
         return tid, B
+
+
+    def cart2bary(self, xy, gear, tid=None, **kwargs):
+        """Cartesian to Barycentric coordinates"""
+        if tid is None:
+            tid = self.tri_finder(xy, gear=gear, **kwargs)
+        indx = (tid >= 0)
+        if not np.any(indx):
+            return tid, np.full((tid.size, 3), np.nan, dtype=np.float32)
+        xy = xy[indx, :] - self.offset(gear=gear)
+        vertices = self.vertices(gear=gear)
+        tri_pt = vertices[np.atleast_2d(self.triangles[tid[indx],:])]
+        v0 = xy - tri_pt[:,0,:]
+        v1 = xy - tri_pt[:,1,:]
+        v2 = xy - tri_pt[:,2,:]
+        a0 = np.cross(v1,v2)
+        a1 = np.cross(v2,v0)
+        a2 = np.cross(v0,v1)
+        ac = a0 + a1 + a2
+        b0 = a0 / ac
+        b1 = a1 / ac
+        b2 = a2 / ac
+        if np.all(indx):
+            B = B = np.stack((b0, b1, b2), axis=-1)
+        else:
+            B = np.full_like(b0, np.nan, shape=(tid.size, 3))
+            B[indx,:] = np.stack((b0, b1, b2), axis=-1)
+        return tid, B
+
+
 
 
     def bary2cart(self, tid, B, gear, offsetting=True):

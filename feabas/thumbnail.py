@@ -675,14 +675,14 @@ def extract_LRadon_feature(img, kps, offset=None, **kwargs):
         xx = (x1.reshape(-1,1) + dx).astype(np.float32)
         yy = (y1.reshape(-1,1) + np.zeros_like(dx)).astype(np.float32)
         if xx.shape[0] < max_batchsz:
-            des_t = cv2.remap(img_rf, xx, yy, interpolation=cv2.INTER_LINEAR,
+            des_t = common.remap(img_rf, xx, yy, interpolation=cv2.INTER_LINEAR,
                              borderMode=cv2.BORDER_CONSTANT, borderValue=0)
         else:
             des_t_list = []
             for stt_idx in np.arange(0, xx.shape[0], max_batchsz):
                 xx_b = xx[stt_idx:(stt_idx+max_batchsz)]
                 yy_b = yy[stt_idx:(stt_idx+max_batchsz)]
-                des_t_b = cv2.remap(img_rf, xx_b, yy_b, interpolation=cv2.INTER_LINEAR,
+                des_t_b = common.remap(img_rf, xx_b, yy_b, interpolation=cv2.INTER_LINEAR,
                                    borderMode=cv2.BORDER_CONSTANT, borderValue=0)
                 des_t_list.append(des_t_b)
             des_t = np.concatenate(des_t_list, axis=0)
