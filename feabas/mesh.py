@@ -1739,21 +1739,31 @@ class Mesh:
         """
         sgmnts, tids = self.segments_w_triangle_ids(tri_mask=tri_mask)
         N_conn, T_conn = self.connected_triangles(tri_mask=tri_mask)
-        chains = common.chain_segment_rings(sgmnts, directed=True, conn_lable=T_conn[tids])
-        vertices = self.initial_vertices
-        grouped_chains = [[] for _ in range(N_conn)]
-        if Mesh._masked_all(tri_mask):
-            T = self.triangles
+        chains, seg_loc = common.chain_segment_rings(sgmnts, directed=True, conn_label=T_conn[tids])
+        if len(chains) == 1:
+            grouped_chains = [chains]
         else:
-            T = self.triangles[tri_mask]
-        for chain in chains:
-            tidx = np.sum((T == chain[0]) + (T == chain[1]), axis=-1) > 1
-            cidx = np.max(T_conn[tidx])
-            lr = shpgeo.LinearRing(vertices[chain])
-            if lr.is_ccw:
-                grouped_chains[cidx].insert(0, chain)
-            else:
-                grouped_chains[cidx].append(chain)
+            vertices = self.initial_vertices
+            x0 = vertices[:,0]
+            y0 = vertices[:,1]
+            chain_lbls = T_conn[tids[seg_loc]]
+            _, indx_inv, cnt = np.unique(chain_lbls, return_inverse=True, return_counts=True)
+            lbl_cnts = cnt[indx_inv]
+            grouped_chains = [[] for _ in range(N_conn)]
+            outer_found = set()
+            for chain, cidx, cnt in zip(chains, chain_lbls, lbl_cnts):
+                if cnt <= 1:
+                    grouped_chains[cidx].append(chain)
+                elif cidx in outer_found:
+                    grouped_chains[cidx].append(chain)
+                else:
+                    chain_shft = np.roll(chain, 1)
+                    signed_area = np.mean(x0[chain] * y0[chain_shft] - x0[chain_shft] * y0[chain])
+                    if signed_area < 0:
+                        grouped_chains[cidx].insert(0, chain)
+                        outer_found.add(cidx)
+                    else:
+                        grouped_chains[cidx].append(chain)
         return grouped_chains
 
 
@@ -1812,31 +1822,24 @@ class Mesh:
             vertices = self.vertices_w_offset(gear=gear)
         else:
             vertices = self.vertices(gear=gear)
-        polygons = []
-        seg_valid = self.check_segment_collision(gear=gear, tri_mask=tri_mask)
-        for chains in grouped_chains:
-            if (seg_valid) or (len(chains) < 2):
-                P0 = shpgeo.Polygon(vertices[chains[0]]).buffer(0)
-                holes = []
-                for hole in chains[1:]:
-                    holes.append(shpgeo.Polygon(vertices[hole]))
-                if len(holes) > 0:
-                    holes = unary_union(holes)
-                    P0 = P0.difference(holes).buffer(0)
-                polygons.append(P0)
-            else:
-                Ls = [shpgeo.LinearRing(vertices[s]) for s in chains]
-                Ps = list(polygonize(unary_union(Ls)))
-                if shapely.__version__ >= '2.0.0':
-                    Lt = [s.buffer(self._epsilon, join_style=2, single_sided=True) for s in Ls]
-                else:
-                    Lt = [s.parallel_offset(self._epsilon, 'left', join_style=2) for s in Ls]
-                    Lt = [s.buffer(-self._epsilon, single_sided=True, join_style=2) for s in Lt]
+        polygons, grouped_chains = spatial.segment_rings_to_polygons(vertices, grouped_chains)
+        seg_valid = self.check_segment_collision(gear=gear, tri_mask=tri_mask, segment_chains=grouped_chains, polygons=polygons)
+        if seg_valid:
+            polygons = polygons.buffer(0)
+        else:
+            pps0 = shapely.get_parts(polygons)
+            child_polygons = [p for p in pps0 if p.is_valid]
+            invalid_grouped_chains = [c for c, p in zip(grouped_chains, pps0) if (not p.is_valid)]
+            if len(invalid_grouped_chains) > 0:
+                invalid_chains = [c for cc in invalid_grouped_chains for c in cc]
+                Ls = shapely.node(spatial.index_chain_to_linearrings(vertices, invalid_chains))
+                Lt = shapely.buffer(Ls, self._epsilon, join_style=2, single_sided=True)
                 Lt = unary_union(Lt)
-                for pp in Ps:
-                    if Lt.intersection(pp).area > 0.1 * self._epsilon * pp.boundary.length:
-                        polygons.append(pp)   
-        return unary_union(polygons)
+                pps = shapely.get_parts(shapely.polygonize(Ls))
+                interior_flags = shapely.relate_pattern(Lt, pps, 'T********')
+                child_polygons = child_polygons + [p for flg, p in zip(interior_flags, pps) if flg]
+            polygons = unary_union(child_polygons)
+        return polygons
 
 
     def shape_compactness(self, gear=None, stiffness_threshold=0.9):
@@ -2426,39 +2429,39 @@ class Mesh:
         return index.Index(self._triangles_rtree_generator(gear=gear, tri_mask=tri_mask))
 
 
-    def check_segment_collision(self, gear=None, tri_mask=None):
+    def check_segment_collision(self, gear=None, tri_mask=None, segment_chains=None, polygons=None):
         """check if segments have collisions among themselves."""
+        valid = True
         if gear is None:
             gear = self._current_gear
         vertices = self.vertices(gear=gear)
-        SRs = self._grouped_segment_chains(tri_mask=tri_mask)
-        covered = None
-        valid = True
-        for sr in SRs:
-            outL = vertices[sr[0]]
-            if len(sr) > 1:
-                holes = [vertices[s] for s in sr[1:]]
-            else:
-                holes = None
-            p = shpgeo.Polygon(outL, holes=holes)
-            if not p.is_valid:
-                valid = False
-                break
-            if holes is not None:
-                out_ccw = shpgeo.LinearRing(outL).is_ccw
-                for h in holes:
-                    if shpgeo.LinearRing(h).is_ccw == out_ccw:
+        if segment_chains is None:
+            SRs = self._grouped_segment_chains(tri_mask=tri_mask)
+        else:
+            SRs = segment_chains
+        if polygons is None:
+            Ps, _ = spatial.segment_rings_to_polygons(vertices, SRs)
+        else:
+            Ps = polygons
+        if not Ps.is_valid:
+            valid = False
+        else:
+            x0 = vertices[:,0]
+            y0 = vertices[:,1]
+            for sr in SRs:
+                if len(sr) < 2:
+                    continue
+                idx0 = sr[0]
+                idx0_shft = np.roll(idx0, 1)
+                signed_area0 = np.sign(np.mean(x0[idx0] * y0[idx0_shft] - x0[idx0_shft] * y0[idx0]))
+                for idx1 in sr[1:]:
+                    idx1_shft = np.roll(idx1, 1)
+                    signed_area1 = np.sign(np.mean(x0[idx1] * y0[idx1_shft] - x0[idx1_shft] * y0[idx1]))
+                    if signed_area0 * signed_area1 > 0:
                         valid = False
                         break
                 if not valid:
                     break
-            if covered is None:
-                covered = p
-            elif p.intersects(covered):
-                valid = False
-                break
-            else:
-                covered = covered.union(p)
         return valid
 
 

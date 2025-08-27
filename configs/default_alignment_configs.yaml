@@ -102,6 +102,6 @@ tensorstore_downsample:
     z_range: null
     cache_capacity: 20000    # use to control pool restart, in MiB
     downsample_z: auto      # a list of the same length to mip_levels, or "auto" to maintain isotropy when possible
-    keep_chunk_layout: True # if use the same chunk shape as the high-res volume, or shrink it
+    keep_chunk_layout: true # if use the same chunk shape as the high-res volume, or shrink it
     out_dir: null    # if set to null, place to the same directory as the full-res images
-    jpeg_compression: True  # whether to use jpeg encoding
+    jpeg_compression: true  # whether to use jpeg encoding

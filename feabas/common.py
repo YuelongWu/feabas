@@ -185,7 +185,7 @@ def jitter_image_grayscale(img, context=3):
         img_delta[indx_neg] = img_delta[indx_neg] / np.abs(mult_neg[indx_neg])
     img_delta = img_delta * 0.499
     return imgf + img_delta
-    
+
 
 
 def z_order(indices, base=2):
@@ -575,7 +575,7 @@ def crop_image_from_bbox(img, bbox_img, bbox_out, **kwargs):
         return imgout
 
 
-def chain_segment_rings(segments, directed=True, conn_lable=None) -> list:
+def chain_segment_rings(segments, directed=True, conn_label=None) -> list:
     """
     Given id pairs of line segment points, assemble them into (closed) chains.
     Args:
@@ -584,58 +584,86 @@ def chain_segment_rings(segments, directed=True, conn_lable=None) -> list:
             intersection).
         directed (bool): whether the segments provided are directed. Default to
             True.
-        conn_label (np.ndarray): preset groupings of the segments. If set to
-            None, use the connected components from vertex adjacency.
     """
-    inv_map, seg_n = np.unique(segments, return_inverse=True)
-    seg_n = seg_n.reshape(segments.shape)
-    if not directed:
-        seg_n = np.sort(seg_n, axis=-1)
-    Nseg = seg_n.shape[0]
-    Npts = inv_map.size
-    chains = []
-    if conn_lable is None:
-        A = sparse.csr_matrix((np.ones(Nseg), (seg_n[:,0], seg_n[:,1])), shape=(Npts, Npts))
-        N_conn, V_conn = csgraph.connected_components(A, directed=directed, return_labels=True)
+    seg_u, seg_cnt = np.unique(segments[:,0], return_counts=True)
+    seg_u = seg_u[seg_cnt > 1]
+    if (seg_u.size > 0) and (conn_label is not None) and (np.ptp(conn_label) > 0):
+        segments_t = segments + 0.5*(conn_label.reshape(-1,1)/(np.max(conn_label)+1))
+        seg_u, seg_cnt = np.unique(segments_t[:,0], return_counts=True)
+        seg_u = np.floor(seg_u[seg_cnt > 1])
     else:
-        u_lbl, S_conn = np.unique(conn_lable,  return_inverse=True)
-        N_conn = u_lbl.size
-        A = sparse.csc_matrix((S_conn+1, (seg_n[:,0], seg_n[:,1])), shape=(Npts, Npts))
-    for n in range(N_conn):
-        if conn_lable is None:
-            vtx_mask = V_conn == n
-            An = A[vtx_mask][:, vtx_mask]
-        else:
-            An0 = A == (n+1)
-            An0.eliminate_zeros()
-            vtx_mask = np.zeros(Npts, dtype=bool)
-            sidx = np.unique(seg_n[S_conn == n], axis=None)
-            vtx_mask[sidx] = True
-            An = An0[vtx_mask][:, vtx_mask]
-        vtx_idx = np.nonzero(vtx_mask)[0]
-        while An.max() > 0:
-            idx0, idx1 = np.unravel_index(np.argmax(An), An.shape)
-            An[idx0, idx1] = 0
-            An.eliminate_zeros()
-            dis, pred = csgraph.shortest_path(An, directed=directed, return_predecessors=True, indices=idx1)
-            if dis[idx0] < 0:
-                raise ValueError('segment rings not closed.')
-            seq = [idx0]
-            crnt_node = idx0
-            while True:
-                crnt_node = pred[crnt_node]
-                if crnt_node >= 0:
-                    seq.insert(0, crnt_node)
-                else:
-                    break
-            chain_idx = vtx_idx[seq]
-            chains.append(inv_map[chain_idx])
-            covered_edges = np.stack((seq[:-1], seq[1:]), axis=-1)
-            if not directed:
-                covered_edges = np.sort(covered_edges, axis=-1)
-            R = sparse.csr_matrix((np.ones(len(seq)-1), (covered_edges[:,0], covered_edges[:,1])), shape=An.shape)
-            An = An - R
-    return chains
+        segments_t = segments
+    sidx0 = np.argsort(segments_t[:,0])
+    sidx1 = np.argsort(segments_t[:,1])
+    if np.any(segments[sidx0,0] != segments[sidx1,1]):
+        raise ValueError('segment rings not closed')
+    Nseg = segments.shape[0]
+    A = sparse.lil_matrix((Nseg, Nseg))
+    A[sidx1, sidx0] = 1
+    n_conn, seg_conn = csgraph.connected_components(A, directed=directed, return_labels=True)
+    _, conn_loc = np.unique(seg_conn, return_index=True)
+    idx_sel = np.zeros(Nseg, dtype=bool)
+    idx_sel[conn_loc] = True
+    idx_sel = idx_sel[sidx0]
+    nidx0 = sidx0[idx_sel]
+    nidx1 = sidx1[idx_sel]
+    A[nidx1, nidx0] = 0
+    if not directed:
+        A[nidx0, nidx1] = 0
+    if n_conn > 1:
+        A[nidx1[:-1], nidx0[1:]] = 1
+    idx0 = nidx0[0]
+    seq = csgraph.depth_first_order(A.tocsr(), idx0, directed=directed, return_predecessors=False)
+    sorted_segments = segments[seq, 0]
+    segments_label = seg_conn[seq]
+    indx_t = np.flatnonzero(np.diff(segments_label)!=0) + 1
+    chains = np.split(sorted_segments, indx_t)
+    seg_locs = np.split(seq, indx_t)
+    seg_loc = np.array([s[0] for s in seg_locs])
+    if seg_u.size > 0:
+        potential_mpass = np.isin(sorted_segments, seg_u)
+        clabel = np.zeros_like(segments_label)
+        clabel[indx_t] = 1
+        clabel = np.cumsum(clabel)
+        mpbool = np.zeros_like(potential_mpass, shape=len(chains))
+        np.maximum.at(mpbool, clabel, potential_mpass)
+        mpidx = np.flatnonzero(mpbool)
+        split_idx = []
+        split_chains = []
+        split_loc = []
+        for k in mpidx:
+            cc = chains[k]
+            seq_split, loc_t = split_self_interset_ring(cc)
+            if seq_split is not None:
+                split_idx.append(k)
+                split_chains.append(seq_split)
+                split_loc.append(seg_locs[k][loc_t])
+        if len(split_idx) > 0:
+            chains = [c for k, c in enumerate(chains) if (k not in split_idx)]
+            chains.extend(split_chains)
+            seg_loc[split_idx] = -1
+            seg_loc = np.concatenate((seg_loc[seg_loc>=0], *split_loc), axis=None)
+    return chains, seg_loc
+
+
+def split_self_interset_ring(seq):
+    su, cnt = np.unique(seq, return_counts=True)
+    if np.max(cnt) <= 1:
+        return None, None
+    mu = su[cnt > 1]
+    seq_m = np.tile(seq.reshape(-1,1), (1,mu.size))
+    seq_k = seq_m == mu.ravel()
+    seq_k = np.cumsum(seq_k, axis=0)
+    seq_k = seq_k % seq_k[-1,:]
+    _, seq_lbs = np.unique(seq_k, axis=0, return_inverse=True)
+    seq_split = []
+    seq_loc = []
+    for lb in range(seq_lbs.max()+1):
+        idx = seq_lbs == lb
+        seq_split.append(seq[idx])
+        seq_loc.append(np.flatnonzero(idx)[0])
+    return seq_split, seq_loc
+
 
 
 def signed_area(vertices, triangles) -> np.ndarray:

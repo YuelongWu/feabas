@@ -4,7 +4,7 @@ import cv2
 import numpy as np
 import shapely.geometry as shpgeo
 from shapely.ops import unary_union, linemerge, polygonize
-from shapely import wkb, get_coordinates, minimum_rotated_rectangle
+from shapely import wkb, get_coordinates, minimum_rotated_rectangle, linearrings
 
 from feabas import dal, common, material
 import feabas.constant as const
@@ -239,6 +239,28 @@ def images_to_polygons(imgs, labels, offset=(0, 0), scale=1.0, upsample=2):
                 polygons[name] = p_lbl
     return polygons, extent
 
+
+def index_chain_to_linearrings(vertices, chains):
+    chn = np.concatenate(chains, axis=None)
+    indx = np.repeat(np.arange(len(chains)), [len(s) for s in chains])
+    lrs = linearrings(vertices[chn], indices=indx)
+    return list(lrs)
+
+
+def segment_rings_to_polygons(vertices, chains):
+    pps = []
+    ccs = []
+    for chain in chains:
+        if len(chain) == 0:
+            continue
+        p0 = vertices[chain[0]]
+        holes = []
+        for c in chain[1:]:
+            holes.append(vertices[c])
+        pps.append((p0, holes))
+        ccs.append(chain)
+    polygons = shpgeo.MultiPolygon(pps)
+    return polygons, ccs
 
 
 def get_polygon_representative_point(poly):
