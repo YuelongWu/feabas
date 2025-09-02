@@ -8,6 +8,7 @@ downsample:
     thumbnail_highpass: true    # whether to use high-pass filter to enhance contrast when generating thumbnail.
     highpass_inter_mip_lvl: 4   # the intermediate mip level to apply high-pass filter on if the feature is turned on
     thumbnail_format: png       # image format of the thumbnails
+    mask_erode: 2
 
 
 alignment:

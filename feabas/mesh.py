@@ -1966,8 +1966,8 @@ class Mesh:
         segs = np.concatenate(segs, axis=0)
         seg_tids = np.concatenate(seg_tids, axis=None)
         vertices = self.vertices(gear=gear)
-        lines = [shpgeo.LineString(vertices[s]) for s in segs]
-        seg_tree = shapely.STRtree(lines)
+        lines = shpgeo.MultiLineString(list(vertices[segs]))
+        seg_tree = shapely.STRtree(shapely.get_parts(lines))
         tri_info = {'region_tree': region_tree, 'matplotlib_tri': mattri_list,
             'triangle_index': tindex_list, 'vertex_index': vindex_list,
             'segment_tree': seg_tree, 'segment_tid': seg_tids}

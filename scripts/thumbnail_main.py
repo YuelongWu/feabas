@@ -221,7 +221,7 @@ def align_thumbnail_pairs(pairnames, image_dir, out_dir, **kwargs):
                         mask_t = common.imread(storage.join_paths(material_mask_dir, sname0+'.png'))
                         mask_t = np.isin(mask_t, region_labels).astype(np.uint8)
                     else:
-                        mask_t = common.estimate_mask(img0)
+                        mask_t = common.estimate_mask(img0).astype(np.uint8)
                     _, mask0 = cv2.connectedComponents(mask_t, connectivity=4, ltype=cv2.CV_16U)
                 if hasattr(mask0, 'shape') and ((mask0.shape[0] != img0.shape[0]) or (mask0.shape[1] != img0.shape[1])):
                     ht0 = min(mask0.shape[0], img0.shape[0])
@@ -242,7 +242,7 @@ def align_thumbnail_pairs(pairnames, image_dir, out_dir, **kwargs):
                         mask_t = common.imread(storage.join_paths(material_mask_dir, sname1+'.png'))
                         mask_t = np.isin(mask_t, region_labels).astype(np.uint8)  
                     else:
-                        mask_t = common.estimate_mask(img1)
+                        mask_t = common.estimate_mask(img1).astype(np.uint8)
                     _, mask1 = cv2.connectedComponents(mask_t, connectivity=4, ltype=cv2.CV_16U)
                 if hasattr(mask1, 'shape') and ((mask1.shape[0] != img1.shape[0]) or (mask1.shape[1] != img1.shape[1])):
                     ht1 = min(mask1.shape[0], img1.shape[0])
