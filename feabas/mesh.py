@@ -1835,7 +1835,7 @@ class Mesh:
                 Ls = shapely.node(spatial.index_chain_to_linearrings(vertices, invalid_chains))
                 Lt = shapely.buffer(Ls, self._epsilon, join_style=2, single_sided=True)
                 Lt = unary_union(Lt)
-                pps = shapely.get_parts(shapely.polygonize(Ls))
+                pps = shapely.buffer(shapely.get_parts(shapely.polygonize(Ls)),0)
                 interior_flags = shapely.relate_pattern(Lt, pps, 'T********')
                 child_polygons = child_polygons + [p for flg, p in zip(interior_flags, pps) if flg]
             polygons = unary_union(child_polygons)
