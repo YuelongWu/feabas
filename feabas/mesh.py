@@ -623,6 +623,47 @@ class Mesh:
 
     def submeshes_from_bboxes(self, bboxes, gear=const.MESH_GEAR_MOVING, save_material=True, append_name=False, **kwargs):
         """
+        get submeshes based on bounding boxes.
+        """
+        tree, _ = self.triangles_STRtree(gear=gear)
+        bboxes = np.array(bboxes, copy=True).astype(np.float64)
+        bboxes[..., 0::2] -= self.offset(gear=gear).ravel()[0]
+        bboxes[..., 1::2] -= self.offset(gear=gear).ravel()[1]
+        boxes_shp = np.atleast_1d(shapely.box(bboxes[:,0], bboxes[:,1], bboxes[:,2], bboxes[:,3]))
+        indx_b, indx_t = tree.query(boxes_shp, predicate='intersects')
+        submeshes = []
+        for k in range(boxes_shp.size):
+            idx = np.unique(indx_t[indx_b == k])
+            if idx.size == 0:
+                submeshes.append(None)
+            else:
+                submeshes.append(self.submesh(idx, save_material=save_material, append_name=append_name, **kwargs))
+        return submeshes
+
+
+    def submeshes_from_regions(self, regions, gear=const.MESH_GEAR_MOVING, save_material=True, append_name=False, **kwargs):
+        """
+        get submeshes that intersects with given regions.
+        """
+        buffer = kwargs.pop('buffer', 0)
+        tree, _ = self.triangles_STRtree(gear=gear)
+        regions = shapely.transform(regions, lambda x: x - self.offset(gear=gear))
+        regions = np.atleast_1d(regions)
+        if buffer != 0:
+            regions = shapely.buffer(regions, buffer)
+        indx_b, indx_t = tree.query(regions, predicate='intersects')
+        submeshes = []
+        for k in range(regions.size):
+            idx = np.unique(indx_t[indx_b == k])
+            if idx.size == 0:
+                submeshes.append(None)
+            else:
+                submeshes.append(self.submesh(idx, save_material=save_material, append_name=append_name, **kwargs))
+        return submeshes
+
+
+    def submeshes_from_bboxes_legacy(self, bboxes, gear=const.MESH_GEAR_MOVING, save_material=True, append_name=False, **kwargs):
+        """
         generate multiple submeshes at the same time to save triangles_rtree overhead.
         """
         tree = self.triangles_rtree(gear=gear)
@@ -1835,7 +1876,7 @@ class Mesh:
                 Ls = shapely.node(spatial.index_chain_to_linearrings(vertices, invalid_chains))
                 Lt = shapely.buffer(Ls, self._epsilon, join_style=2, single_sided=True)
                 Lt = unary_union(Lt)
-                pps = shapely.buffer(shapely.get_parts(shapely.polygonize(Ls)),0)
+                pps = shapely.buffer(shapely.get_parts(shapely.polygonize(Ls)), 0)
                 interior_flags = shapely.relate_pattern(Lt, pps, 'T********')
                 child_polygons = child_polygons + [p for flg, p in zip(interior_flags, pps) if flg]
             polygons = unary_union(child_polygons)
@@ -2429,6 +2470,25 @@ class Mesh:
         return index.Index(self._triangles_rtree_generator(gear=gear, tri_mask=tri_mask))
 
 
+    @config_cache('TBD')
+    def triangles_STRtree(self, gear=None, tri_mask=None):
+        if gear is None:
+            gear = self._current_gear
+        if Mesh._masked_all(tri_mask):
+            tids = np.arange(self.num_triangles)
+        elif tri_mask.dtype == bool:
+            tids = np.flatnonzero(tri_mask)
+        else:
+            tids = np.sort(tri_mask)
+        T = self.triangles[tids].reshape(-1,3)
+        vertices = self.vertices(gear=gear)
+        vtri = vertices[T]
+        pps = shapely.polygons(list(vtri))
+        shapely.prepare(pps)
+        tree = shapely.STRtree(pps)
+        return tree, tids
+
+
     def check_segment_collision(self, gear=None, tri_mask=None, segment_chains=None, polygons=None):
         """check if segments have collisions among themselves."""
         valid = True
@@ -2465,7 +2525,85 @@ class Mesh:
         return valid
 
 
-    def locate_segment_collision(self, gear=None, tri_mask=None, check_flipped=True):
+    def locate_segment_collision(self, gear=None, tri_mask=None, check_first=True):
+        """
+        find the segments that collide. Return a list of collided segments and
+        their (local) triangle ids.
+        """
+        collided_segs = np.empty_like(self.triangles, shape=(0,2))
+        p_cover = None
+        if (not check_first) or (not self.check_segment_collision(gear=gear, tri_mask=tri_mask)):
+            if gear is None:
+                gear = self._current_gear
+            vertices = self.vertices(gear=gear)
+            segments, _ = self.segments_w_triangle_ids(tri_mask=tri_mask)
+            lines = shapely.get_parts(shpgeo.MultiLineString(list(vertices[segments])))
+            G = self.shapely_regions(gear=gear, tri_mask=tri_mask, offsetting=False)
+            flags = shapely.relate_pattern(G, lines, 'T********')
+            if np.any(flags):
+                collided_segs = segments[flags]
+                Ls = shapely.node(unary_union(lines[flags]))
+                Ps = shapely.polygonize(shapely.get_parts(Ls))
+                p_cover = unary_union(Ps)
+        return collided_segs, p_cover
+
+
+    def locate_flipped_triangles(self, gear=None, tri_mask=None):
+        flipped_indx = np.empty_like(self.triangles, shape=0)
+        p_cover = None
+        if gear is None:
+            gear = self._current_gear
+        vertices0 = self.initial_vertices
+        if Mesh._masked_all(tri_mask):
+            T = self.triangles
+        else:
+            T = self.triangles[tri_mask]
+        vertices = self.vertices(gear=gear)
+        A0 = common.signed_area(vertices0, T)
+        A1 = common.signed_area(vertices, T)
+        flipped_sel = (A0 * A1) <= 0
+        if np.any(flipped_sel):
+            flipped_indx = np.flatnonzero(flipped_sel)
+            flipped_T = T[flipped_sel]
+            vtri = vertices[flipped_T]
+            pps = shapely.polygons(list(vtri))
+            p_cover = unary_union(pps)
+        return flipped_indx, p_cover
+
+
+    def find_triangle_overlaps(self, gear=None, tri_mask=None, check_first=True):
+        collisions = np.empty((0,2), dtype=self.triangles.dtype)
+        if gear is None:
+            gear = self._current_gear
+        if (not check_first) or (not self.is_valid(gear=gear, tri_mask=tri_mask)):
+            p_cover = shpgeo.Polygon()
+            flip_tids, pp = self.locate_flipped_triangles(gear=gear, tri_mask=tri_mask)
+            if flip_tids.size > 0:
+                p_cover = p_cover.union(pp)
+            collided_segs, pp = self.locate_segment_collision(gear=gear, tri_mask=tri_mask, check_first=(flip_tids.size>0))
+            if collided_segs.size > 0:
+                p_cover = p_cover.union(pp)
+            if not p_cover.is_empty:
+                collisions_list = []
+                str_tree, _ = self.triangles_STRtree(gear=gear, tri_mask=tri_mask)
+                ggs0 = str_tree.geometries
+                tid_p, tid_tr = str_tree.query(shapely.get_parts(p_cover), predicate='intersects')
+                for id_p in np.unique(tid_p):
+                    id_tr = tid_tr[tid_p == id_p]
+                    ggs = ggs0[id_tr]
+                    for k in range(len(ggs)-1):
+                        flags_t = shapely.relate_pattern(ggs[k], ggs[(k+1):], 'T********')
+                        if np.any(flags_t):
+                            id1 = id_tr[(k+1):][flags_t]
+                            id0 = np.full_like(id1, id_tr[k])
+                            collisions_list.append(np.stack((id0, id1), axis=-1))
+                collisions = np.concatenate(collisions_list, axis=0)
+                collisions = np.sort(collisions, axis=-1)
+                collisions = np.unique(collisions, axis=-1)
+        return collisions
+
+
+    def locate_segment_collision_legacy(self, gear=None, tri_mask=None, check_flipped=True):
         """
         find the segments that collide. Return a list of collided segments and
         their (local) triangle ids.
@@ -2515,9 +2653,9 @@ class Mesh:
             # check if exist flipped triangles where all three points on segments
             Tseg_flag = np.sum(np.isin(self.triangles, segments), axis=-1) == 3
             if Mesh._masked_all(tri_mask):
-                _, T = self.locate_flipped_triangles(gear=gear, tri_mask=Tseg_flag, return_triangles=True)
+                _, T = self.locate_flipped_triangles_legacy(gear=gear, tri_mask=Tseg_flag, return_triangles=True)
             else:
-                _, T = self.locate_flipped_triangles(gear=gear, tri_mask=(Tseg_flag & tri_mask), return_triangles=True)
+                _, T = self.locate_flipped_triangles_legacy(gear=gear, tri_mask=(Tseg_flag & tri_mask), return_triangles=True)
             if T.size > 0:
                 S_flp = Mesh.triangle2edge(T, directional=True)
                 for segwid in rest_of_segments:
@@ -2528,7 +2666,7 @@ class Mesh:
         return segs, tids
 
 
-    def locate_flipped_triangles(self, gear=None, tri_mask=None, return_triangles=False):
+    def locate_flipped_triangles_legacy(self, gear=None, tri_mask=None, return_triangles=False):
         if gear is None:
             gear = self._current_gear
         vertices0 = self.initial_vertices
@@ -2546,19 +2684,19 @@ class Mesh:
             return np.nonzero(flipped_sel)[0]
 
 
-    def find_triangle_overlaps(self, gear=None, tri_mask=None):
+    def find_triangle_overlaps_legacy(self, gear=None, tri_mask=None):
         if gear is None:
             gear = self._current_gear
         if self.is_valid(gear=gear, tri_mask=tri_mask):
             return np.empty((0,2), dtype=self.triangles.dtype)
-        collided_segs, _ = self.locate_segment_collision(gear=gear, tri_mask=tri_mask, check_flipped=False)
+        collided_segs, _ = self.locate_segment_collision_legacy(gear=gear, tri_mask=tri_mask, check_flipped=False)
         if collided_segs.size > 0:
             seg_lines = self.vertices(gear=gear)[collided_segs]
             P_segs = list(polygonize(unary_union(shpgeo.MultiLineString([s for s in seg_lines]))))
             seg_bboxes = np.array([p.bounds for p in P_segs]).reshape(-1, 4)
         else:
             seg_bboxes = np.empty((0,4))
-        flip_tids = self.locate_flipped_triangles(gear=gear, tri_mask=tri_mask)
+        flip_tids = self.locate_flipped_triangles_legacy(gear=gear, tri_mask=tri_mask)
         if flip_tids.size > 0:
             flip_tids_g = Mesh.masked_index_to_global_index(tri_mask, flip_tids)
             flip_bboxes = self.triangle_bboxes(gear=gear, tri_mask=flip_tids_g)
