@@ -25,8 +25,6 @@ class Material:
         render(bool): whether to render.
         render_weight(float): when mesh collides, materials with larger render
             weight have higher priority when render.
-        type(int): material type. Possible options include 0::engineering,
-            1::St.Venant-Kirchhoff, 2::Neo-Hookean.
         stiffness_multiplier(float): constant multiplied to the stiffness
             function.
         stiffness_func_factory(str)/stiffness_func_params(dict): function
@@ -48,10 +46,6 @@ class Material:
         self.area_constraint = kwargs.get('area_constraint', 1.0)
         self.render = kwargs.get('render', True)
         self.render_weight = kwargs.get('render_weight', 1.0)
-        mat_type = const.MATERIAL_MODEL_ENG
-        if isinstance(mat_type, str):
-            mat_type = const.MATERIAL_MODEL_LIST.index(mat_type.upper())
-        self._type = mat_type
         self._stiffness_multiplier = kwargs.get('stiffness_multiplier', 1.0)
         self._poisson_ratio = kwargs.get('poisson_ratio', 0.0)
         self.mask_label = kwargs.get('mask_label', None)
@@ -89,7 +83,6 @@ class Material:
             'area_constraint': self.area_constraint,
             'render': self.render,
             'render_weight': self.render_weight,
-            'type': const.MATERIAL_MODEL_LIST[self._type],
             'stiffness_multiplier': self._stiffness_multiplier,
             'poisson_ratio': self._poisson_ratio,
             'uid': self.uid
@@ -183,69 +176,19 @@ class Material:
             uv = np.zeros((trinum, 6, 1), dtype=DTYPE, order='C')
         else:
             uv = uv.astype(DTYPE).reshape(-1, 6, 1)
-        if self._type == const.MATERIAL_MODEL_ENG:
-            # Engineering strain & stress
-            if (self._stiffness_func is not None):
-                if area_stretch is not None:
-                    J = area_stretch.reshape(-1,1,1)
-                else:
-                    Ft = (B @ uv).reshape(-1,2,2) + np.eye(2, dtype=DTYPE)
-                    J = np.linalg.det(Ft).reshape(-1,1,1)
-            Bn = np.array([[1,0,0,0],[0,0,0,1],[0,1,1,0]], dtype=DTYPE) @ B
-            D = np.eye(3, dtype=DTYPE)
-            D[[0,1],[1,0]] = self._poisson_ratio
-            D[-1,-1] = (1 - self._poisson_ratio) / 2
-            K = np.swapaxes(Bn, 1, 2) @ D @ Bn
-            K = areas * K
-            P = K @ uv
-        elif self._type == const.MATERIAL_MODEL_SVK:
-            # St. Venant-Kirchhoff
-            Ft = (B @ uv).reshape(-1,2,2) + np.eye(2, dtype=DTYPE)
-            if (self._stiffness_func is not None):
-                if area_stretch is not None:
-                    J = area_stretch.reshape(-1,1,1)
-                else:
-                    J = np.linalg.det(Ft).reshape(-1,1,1)
-            FtT = np.swapaxes(Ft,1,2)
-            Et = 0.5*(FtT@Ft - np.eye(2, dtype=DTYPE))
-            E = np.array([[1,0,0,0],[0,0,0,1],[0,1,1,0]], dtype=DTYPE) @ Et.reshape(-1, 4, 1)
-            Bc = np.array([[1,0,1,0],[0,1,0,1]], dtype=DTYPE) @ B
-            Fc = np.tile(FtT, (1,1,3))
-            Bn_top = Bc * Fc
-            Bn_bot = np.sum(Bc * Fc[:,::-1,:], axis=1, keepdims=True)
-            Bn = np.concatenate((Bn_top, Bn_bot), axis=1) # Nx3x6
-            D = np.eye(3, dtype=DTYPE)
-            D[[0,1],[1,0]] = self._poisson_ratio
-            D[-1,-1] = (1 - self._poisson_ratio) / 2
-            S = D @ E # Nx3x1
-            Sg  = np.zeros((trinum,4,4), dtype=DTYPE)
-            Sg[:,0,0] = S[:,0,0]
-            Sg[:,2,2] = S[:,0,0]
-            Sg[:,1,1] = S[:,1,0]
-            Sg[:,3,3] = S[:,1,0]
-            Sg[:,0,1] = S[:,2,0]
-            Sg[:,1,0] = S[:,2,0]
-            Sg[:,2,3] = S[:,2,0]
-            Sg[:,3,2] = S[:,2,0]
-            P = np.swapaxes(Bn, 1, 2) @ S
-            K = np.swapaxes(Bn, 1, 2) @ D @ Bn + np.swapaxes(B, 1, 2) @ Sg @ B
-            P = areas * P
-            K = areas * K
-        elif self._type == const.MATERIAL_MODEL_NHK:
-            # Neo-Hookean
-            Ft = (B @ uv).reshape(-1,2,2) + np.eye(2, dtype=DTYPE)
-            J = np.linalg.det(Ft).reshape(-1,1,1)
-            U = np.array([[0,0,0,1],[0,0,-1,0],[0,-1,0,0],[1,0,0,0]],dtype=DTYPE)
-            F = Ft.reshape(-1,4,1)
-            Fu = U @ F
-            P = np.swapaxes(B, 1, 2) @ (np.eye(4, dtype=DTYPE) - U/J) @ F
-            K = np.swapaxes(B, 1, 2) @ (np.eye(4, dtype=DTYPE) - U/J + (Fu@np.swapaxes(Fu,1,2))/(J**2)) @ B
-            P = 0.5 * areas * P
-            K = 0.5 * areas * K
+        if (self._stiffness_func is not None):
             if area_stretch is not None:
                 J = area_stretch.reshape(-1,1,1)
-        else:
-            raise NotImplementedError
+            else:
+                Ft = (B @ uv).reshape(-1,2,2) + np.eye(2, dtype=DTYPE)
+                J = np.linalg.det(Ft).reshape(-1,1,1)
+        Bn = np.array([[1,0,0,0],[0,0,0,1],[0,1,1,0]], dtype=DTYPE) @ B
+        D = np.eye(3, dtype=DTYPE)
+        D[[0,1],[1,0]] = self._poisson_ratio
+        D[-1,-1] = (1 - self._poisson_ratio) / 2
+        K = np.swapaxes(Bn, 1, 2) @ D @ Bn
+        K = areas * K
+        P = K @ uv
         if self._stiffness_func is not None:
             multiplier = multiplier * self._stiffness_func(J).reshape(-1,1,1)
         return K, P, multiplier
@@ -267,7 +210,7 @@ class Material:
 
     @property
     def is_linear(self):
-        return (self._type == const.MATERIAL_MODEL_ENG) and (self._stiffness_func is None)
+        return self._stiffness_func is None
 
 
 
@@ -285,7 +228,6 @@ MATERIAL_DEFAULT = {
     "name": 'default',
     "enable_mesh": True,
     "area_constraint": 1,
-    "type": const.MATERIAL_MODEL_ENG,
     "stiffness_multiplier": 1.0,
     "poisson_ratio": 0.0,
     "uid": 0,
