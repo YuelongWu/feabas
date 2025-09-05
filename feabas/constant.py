@@ -30,6 +30,12 @@ ANNEAL_CONNECTED_RIGID = 2
 ANNEAL_CONNECTED_AFFINE = 3
 ANNEAL_COPY_EXACT = 4
 
+# material model type
+MATERIAL_MODEL_ENG = 0    # Engineering strain & stress
+MATERIAL_MODEL_SVK = 1    # St. Venant-Kirchhoff model
+MATERIAL_MODEL_NHK = 2    # Neo-Hookean model
+MATERIAL_MODEL_LIST =('MATERIAL_MODEL_ENG', 'MATERIAL_MODEL_SVK', 'MATERIAL_MODEL_NHK')
+
 FFT_CONF_NONE = 0       # confidence values set to constant 1
 FFT_CONF_STD = 1        # confidence value derived from the standard deviation
 FFT_CONF_MIRROR = 2     # confidence value derived from the convolution
