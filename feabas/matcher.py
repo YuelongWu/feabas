@@ -581,14 +581,16 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
                 batched_bboxes1 = []
                 batched_bboxes_union0 = []
                 batched_bboxes_union1 = []
+                bbox_regions0 = shpgeo.box(bboxes0[:,0], bboxes0[:,1], bboxes0[:,2], bboxes0[:,3])
+                bbox_regions1 = shpgeo.box(bboxes1[:,0], bboxes1[:,1], bboxes1[:,2], bboxes1[:,3])
                 for bidx0, bidx1 in zip(batch_indices[:-1], batch_indices[1:]):
                     batched_bboxes0.append(bboxes0[bidx0:bidx1])
                     batched_bboxes1.append(bboxes1[bidx0:bidx1])
-                    batched_bboxes_union0.append(common.bbox_union(bboxes0[bidx0:bidx1]))
-                    batched_bboxes_union1.append(common.bbox_union(bboxes1[bidx0:bidx1]))
+                    batched_bboxes_union0.append(unary_union(bbox_regions0[bidx0:bidx1]))
+                    batched_bboxes_union1.append(unary_union(bbox_regions1[bidx0:bidx1]))
                 target_func = partial(bboxes_mesh_renderer_matcher, pad=pad, subpixel=subpixel, **kwargs)
-                submeshes0 = mesh0.submeshes_from_bboxes(batched_bboxes_union0, save_material=False)
-                submeshes1 = mesh1.submeshes_from_bboxes(batched_bboxes_union1, save_material=False)
+                submeshes0 = mesh0.submeshes_from_regions(batched_bboxes_union0, save_material=False)
+                submeshes1 = mesh1.submeshes_from_regions(batched_bboxes_union1, save_material=False)
                 xy0 = []
                 xy1 = []
                 conf = []

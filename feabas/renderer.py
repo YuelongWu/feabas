@@ -748,6 +748,7 @@ def render_whole_mesh(mesh, image_loader, prefix, **kwargs):
             max_tasks_per_child = max(1, round(max_tile_per_job/num_tile_per_job))
         else:
             max_tasks_per_child = None
+        bbox_regions = shpgeo.box(bboxes[:,0], bboxes[:,1], bboxes[:,2], bboxes[:,3])
         N_jobs = max(1, round(num_tiles / num_tile_per_job))
         indices = np.round(np.linspace(0, num_tiles, num=N_jobs+1, endpoint=True))
         indices = np.unique(indices).astype(np.uint32)
@@ -759,12 +760,12 @@ def render_whole_mesh(mesh, image_loader, prefix, **kwargs):
             idx0, idx1 = int(idx0), int(idx1)
             bbox_t = bboxes[idx0:idx1]
             bboxes_list.append(bbox_t)
-            bbox_unions.append(common.bbox_enlarge(common.bbox_union(bbox_t), tile_size[0]//2))
+            bbox_unions.append(unary_union(bbox_regions[idx0:idx1]))
             if driver == 'image':
                 filenames_list.append(filenames[idx0:idx1])
             else:
                 bboxes_out_list.append(bboxes_out[idx0:idx1])
-        submeshes = mesh.submeshes_from_bboxes(bbox_unions, save_material=True)
+        submeshes = mesh.submeshes_from_regions(bbox_unions, save_material=True, buffer=tile_size[0]//2)
         args_list = []
         for k in range(len(submeshes)):
             msh = submeshes[k]
@@ -972,6 +973,7 @@ class VolumeRenderer:
         indices_chunk = np.searchsorted(hit_counts_acc, indices_tile, side='left')
         indices_chunk = np.unique(indices_chunk).astype(np.uint64)
         out_ts = self.ts_spec
+        bbox_regions = shpgeo.box(bboxes[:,0], bboxes[:,1], bboxes[:,2], bboxes[:,3])
         bboxes_unions = []
         b_dilate = np.max(self.writer.write_chunk_shape[:2]) // 2
         task_id = 0
@@ -993,9 +995,9 @@ class VolumeRenderer:
                     'flags': b_flag}
             task_id = task_id + 1
             render_seriers.append(bkw)
-            bboxes_unions.append(common.bbox_enlarge(common.bbox_union(bbox_b), b_dilate))
+            bboxes_unions.append(unary_union(bbox_regions[idx0:idx1]))
         for z, mesh in full_meshes.items():
-            submeshes = mesh.submeshes_from_bboxes(bboxes_unions, save_material=True)
+            submeshes = mesh.submeshes_from_regions(bboxes_unions, save_material=True, buffer=b_dilate)
             for msh, bkw in zip(submeshes, render_seriers):
                 if msh is None:
                     bkw['meshes'][z] = None
