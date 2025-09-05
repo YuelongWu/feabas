@@ -749,7 +749,7 @@ class SLM:
         for m in self.meshes:
             if m.locked:
                 continue
-            md = relax_mesh_most_deformed(m, gear=gear, deform_cutoff=deform_cutoff, iqr=iqr)
+            md = relax_mesh_most_deformed(m, gear=gear, deform_cutoff=deform_thresh, iqr=iqr)
             modified = modified + md
         return modified
 
