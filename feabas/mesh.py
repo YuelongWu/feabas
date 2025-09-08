@@ -2857,7 +2857,7 @@ class Mesh:
             indx = np.nonzero(material_ids == mid)[0]
             tripts = v[self.triangles[indx]]
             B, area = mat.shape_matrix_from_vertices(tripts)
-            shape_matrices[mid] = (indx, (B, area))
+            shape_matrices[mid] = (indx, [B, area])
         return shape_matrices
 
 

@@ -174,7 +174,7 @@ class Material:
         """
         area_stretch = kwargs.get('area_stretch', None)
         multiplier = self._stiffness_multiplier
-        B, areas = Ms
+        B, areas = Ms[:2]
         if (self._stiffness_multiplier == 0) or (B is None):
             return None, None, multiplier
         trinum = B.shape[0]
@@ -190,12 +190,16 @@ class Material:
                 else:
                     Ft = (B @ uv).reshape(-1,2,2) + np.eye(2, dtype=DTYPE)
                     J = np.linalg.det(Ft).reshape(-1,1,1)
-            Bn = np.array([[1,0,0,0],[0,0,0,1],[0,1,1,0]], dtype=DTYPE) @ B
-            D = np.eye(3, dtype=DTYPE)
-            D[[0,1],[1,0]] = self._poisson_ratio
-            D[-1,-1] = (1 - self._poisson_ratio) / 2
-            K = np.swapaxes(Bn, 1, 2) @ D @ Bn
-            K = areas * K
+            if len(Ms) > 2:
+                K = Ms[2]
+            else:
+                Bn = np.array([[1,0,0,0],[0,0,0,1],[0,1,1,0]], dtype=DTYPE) @ B
+                D = np.eye(3, dtype=DTYPE)
+                D[[0,1],[1,0]] = self._poisson_ratio
+                D[-1,-1] = (1 - self._poisson_ratio) / 2
+                K = np.swapaxes(Bn, 1, 2) @ D @ Bn
+                K = areas * K
+                Ms.append(K)
             P = K @ uv
         elif self._type == const.MATERIAL_MODEL_SVK:
             # St. Venant-Kirchhoff
