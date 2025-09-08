@@ -138,20 +138,19 @@ class Material:
         """
         # stiffness matrix: [u1, v1, u2, v2, u3, v3]
         tripts = tripts.reshape(-1, 3, 2)
+        tripts_shft0 = np.roll(tripts, -1, axis=-2)
+        tripts_shft1 = np.roll(tripts, 1, axis=-2)
+        tri_vec = tripts_shft0 - tripts_shft1
         trinum = tripts.shape[0]
-        tripts_m = tripts.mean(axis=1, keepdims=True)
-        tripts = (tripts - tripts_m).astype(DTYPE)
-        tripts_pad = np.pad(tripts, ((0,0),(0,0),(0,1)), mode='constant', constant_values=1.0)
-        J = np.linalg.inv(tripts_pad)[:,:2,:]
+        areas = np.absolute(np.cross(tri_vec[:,0,:], tri_vec[:,1,:])).reshape(-1,1,1)
+        tri_vec = tri_vec / areas
         B = np.zeros((trinum, 4, 6), dtype=DTYPE)
-        B[:,0,0::2] = J[:,0,:]
-        B[:,1,0::2] = J[:,1,:]
-        B[:,2,1::2] = J[:,0,:]
-        B[:,3,1::2] = J[:,1,:]
-        # caculate areas
-        v0 = (tripts[:,1,:] - tripts[:,0,:])/100
-        v1 = (tripts[:,2,:] - tripts[:,1,:])/100
-        areas = np.absolute(np.cross(v0, v1)).reshape(-1,1,1)
+        t0 = tri_vec[:, :, 1]
+        t1 = -tri_vec[:, :, 0]
+        B[:,0,0::2] = t0
+        B[:,1,0::2] = t1
+        B[:,2,1::2] = t0
+        B[:,3,1::2] = t1
         return B, areas
 
 
