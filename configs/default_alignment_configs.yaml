@@ -45,7 +45,6 @@ optimization:
         elastic_params:
             tol: 1.0e-7 # convergence tolerance for the solver
             atol: 0.001
-            batch_num_matches: null # larger numberneeds more RAM but faster. default to (total # of matches)/10
             callback_settings:
                 timeout: null   # maximum time (in second) allowed for each round of optimization. After the timeout, select the best solution so far
                 early_stop_thresh: null # if after each step, the maximum movement of the mesh points is smaller than this, consider it a insiginificant update
