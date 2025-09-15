@@ -26,7 +26,7 @@ class MeshRenderer:
     def __init__(self, interpolators, **kwargs):
         self._interpolators = interpolators
         n_region = len(self._interpolators)
-        self._offset = np.array(kwargs.get('offset', np.zeros((1,2))), copy=False).reshape(1,2)
+        self._offset = common.numpy_array(kwargs.get('offset', np.zeros((1,2))), copy=False).reshape(1,2)
         self._region_tree = kwargs.get('region_tree', None)
         self._weight_params = kwargs.get('weight_params', const.MESH_TRIFINDER_WHATEVER)
         self.weight_generator = kwargs.get('weight_generator', [None for _ in range(n_region)])
@@ -152,7 +152,7 @@ class MeshRenderer:
         Return:
             rid (N ndarray): the region ids
         """
-        xy0 = np.array(xy, copy=False).reshape(-1,2)
+        xy0 = common.numpy_array(xy, copy=False).reshape(-1,2)
         if offsetting:
             xy0 = xy0 - self._offset
         if len(self._interpolators) == 1:
@@ -258,7 +258,7 @@ class MeshRenderer:
         out_resolution = kwargs.get('out_resolution', None)
         offsetting = kwargs.get('offsetting', True)
         invalid_output = (None, None, None)
-        bbox0 = np.array(bbox, copy=False).reshape(4)
+        bbox0 = common.numpy_array(bbox, copy=False).reshape(4)
         if offsetting:
             bbox0 = bbox0 - np.tile(self._offset.ravel(), 2)
         bcntr = ((bbox0[0] + bbox0[2] - 1)/2, (bbox0[1] + bbox0[3] - 1)/2)
@@ -345,7 +345,7 @@ class MeshRenderer:
 
 
     def local_affine_tform(self, pt, offsetting=True, svd_clip=None):
-        pt0 = np.array(pt, copy=False).ravel()
+        pt0 = common.numpy_array(pt, copy=False).ravel()
         if offsetting:
             pt0 = pt0 - self._offset.ravel()
         region_id = self.region_finder_for_points(pt0, offsetting=False).item()

@@ -162,7 +162,7 @@ def saliency_mask(img, sigma=7, shift=1, filter_size=31):
 
 
 def jitter_image_grayscale(img, context=3):
-    img = np.array(img, copy=False)
+    img = numpy_array(img, copy=False)
     if not np.issubdtype(img.dtype, np.integer):
         return img
     if np.ptp(img) == 0:
@@ -362,7 +362,7 @@ def masked_dog_filter(img, sigma, mask=None, signed=True):
     img1f = gaussian_filter1d(gaussian_filter1d(img, sigma1, axis=-1, mode='nearest'), sigma1, axis=-2, mode='nearest')
     imgf = img0f - img1f
     if (mask is not None) and (not np.all(mask, axis=None)):
-        mask_img = img.ptp() * (mask == 0)
+        mask_img = np.ptp(img) * (mask == 0)
         mask0f = gaussian_filter1d(gaussian_filter1d(mask_img, sigma0, axis=-1, mode='nearest'), sigma0, axis=-2, mode='nearest')
         mask1f = gaussian_filter1d(gaussian_filter1d(mask_img, sigma1, axis=-1, mode='nearest'), sigma1, axis=-2, mode='nearest')
         maskf = np.maximum(mask0f, mask1f)
@@ -682,13 +682,13 @@ def expand_image(img, target_size, slices, fillval=0):
 
 
 def bbox_centers(bboxes):
-    bboxes = np.array(bboxes, copy=False)
+    bboxes = numpy_array(bboxes, copy=False)
     cntr = 0.5 * bboxes @ np.array([[1,0],[0,1],[1,0],[0,1]]) - 0.5
     return cntr
 
 
 def bbox_sizes(bboxes):
-    bboxes = np.array(bboxes, copy=False)
+    bboxes = numpy_array(bboxes, copy=False)
     szs = bboxes @ np.array([[0,-1],[-1,0],[0,1],[1,0]])
     return szs.clip(0, None)
 
@@ -702,7 +702,7 @@ def bbox_intersections(bboxes0, bboxes1):
 
 
 def bbox_union(bboxes):
-    bboxes = np.array(bboxes, copy=False)
+    bboxes = numpy_array(bboxes, copy=False)
     bboxes = bboxes.reshape(-1, 4)
     xy_min = bboxes[:,:2].min(axis=0)
     xy_max = bboxes[:,-2:].max(axis=0)
@@ -710,7 +710,7 @@ def bbox_union(bboxes):
 
 
 def bbox_enlarge(bboxes, margin=0):
-    return np.array(bboxes, copy=False) + np.array([-margin, -margin, margin, margin])
+    return numpy_array(bboxes, copy=False) + np.array([-margin, -margin, margin, margin])
 
 
 def parse_coordinate_files(filename, **kwargs):
@@ -877,4 +877,14 @@ def parse_json_file(filename, stream=None):
         else:
             json_dict = None
     return json_dict, file_read
+
+
+def numpy_array(obj, copy=False):
+    if np.__version__ < '2':
+        return np.array(obj, copy=copy)
+    else:
+        if copy:
+            return np.array(obj, copy=True)
+        else:
+            return np.array(obj, copy=None)
 

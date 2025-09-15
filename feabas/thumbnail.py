@@ -709,7 +709,7 @@ def match_LRadon_feature(kps0, kps1, D=None, exclude_class=None, **kwargs):
     conf_thresh = kwargs.get('conf_thresh', 0.5)
     to_exclude_class = (exclude_class is not None) and (len(exclude_class) > 0)
     if to_exclude_class:
-        exclude_class = np.array(exclude_class, copy=False).reshape(-1,2)
+        exclude_class = common.numpy_array(exclude_class, copy=False).reshape(-1,2)
     if kps0.num_points > kps1.num_points:
         kps0, kps1 = kps1, kps0
         if D is not None:

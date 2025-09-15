@@ -246,7 +246,7 @@ def stitching_matcher(img0, img1, **kwargs):
             Nsp = max(1, round(np.log(smx/smn)/np.log(4)))
             spacings = np.exp(np.linspace(np.log(smn), np.log(smx), num=Nsp, endpoint=True))
     else:
-        spacings = np.array(spacings, copy=False)
+        spacings = common.numpy_array(spacings, copy=False)
     if coarse_downsample != 1:
         img0_g = cv2.resize(img0, None, fx=coarse_downsample, fy=coarse_downsample, interpolation=cv2.INTER_AREA)
         img1_g = cv2.resize(img1, None, fx=coarse_downsample, fy=coarse_downsample, interpolation=cv2.INTER_AREA)
@@ -482,7 +482,7 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
         else:
             refine_mode = 2
     # if any spacing value smaller than 1, means they are relative to longer side
-    spacings = np.array(spacings, copy=False)
+    spacings = common.numpy_array(spacings, copy=False)
     kwargs_opt = {
         "callback_settings": callback_settings,
         "tolerated_perturbation": 0.5,

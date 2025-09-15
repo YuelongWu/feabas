@@ -19,7 +19,7 @@ from feabas.spatial import scale_coordinates
 from feabas.matcher import section_matcher
 from feabas.optimizer import SLM
 import feabas.constant as const
-from feabas.common import str_to_numpy_ascii, Match, rearrange_section_order, parse_json_file
+from feabas.common import str_to_numpy_ascii, Match, rearrange_section_order, parse_json_file, numpy_array
 
 H5File = storage.h5file_class()
 
@@ -756,7 +756,7 @@ class Stack:
 
     @property
     def locked_array(self):
-        return np.array([self.lock_flags[s] for s in self.section_list], copy=False)
+        return numpy_array([self.lock_flags[s] for s in self.section_list], copy=False)
 
 
   ## -------------------------------- queries ------------------------------ ##

@@ -258,21 +258,21 @@ class Stitcher:
         sizes.
         """
         if groupings is not None:
-            groupings = np.array(groupings, copy=False)
+            groupings = common.numpy_array(groupings, copy=False)
             assert len(groupings) == len(self.imgrelpaths)
             tile_ht = self.tile_sizes[:,0]
             tile_wd = self.tile_sizes[:,1]
             grp_u, cnt = np.unique(groupings, return_counts=True)
             grp_u = grp_u[cnt > 1]
-            if tile_ht.ptp() > 0:
+            if np.ptp(tile_ht) > 0:
                 for g in grp_u:
                     idx = groupings == g
-                    if tile_ht[idx].ptp() > 0:
+                    if np.ptp(tile_ht[idx]) > 0:
                         raise RuntimeError(f'tile size in group {g} not consistent')
-            if tile_wd.ptp() > 0:
+            if np.ptp(tile_wd) > 0:
                 for g in grp_u:
                     idx = groupings == g
-                    if tile_ht[idx].ptp() > 0:
+                    if np.ptp(tile_ht[idx]) > 0:
                         raise RuntimeError(f'tile size in group {g} not consistent')
         self._groupings = groupings
 
@@ -590,7 +590,7 @@ class Stitcher:
         else:
             # determine the mesh size based on the deformation during mathcing.
             err_contant = 5
-            mesh_sizes = np.array(mesh_sizes, copy=False)
+            mesh_sizes = common.numpy_array(mesh_sizes, copy=False)
             mx_meshsz = np.max(mesh_sizes)
             lower_strain = 0.5 * err_contant / mx_meshsz
             strain_list = list(self.match_strains.items())
@@ -1016,7 +1016,7 @@ class Stitcher:
             for m in self.meshes:
                 R = m.estimate_affine(gear=gear, svd_clip=(1,1))
                 rotations.append(np.arctan2(R[0,1], R[0,0]))
-            rotations = np.array(rotations, copy=False)
+            rotations = common.numpy_array(rotations, copy=False)
             L_ss, N_ss = self._optimizer.connected_subsystems
             theta = {}
             for lbl in range(N_ss):

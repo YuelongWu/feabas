@@ -75,7 +75,7 @@ def scale_coordinates(coordinates, scale):
     scale coordinates, at the same time align the center of the top-left corner
     pixel to (0, 0).
     """
-    coordinates = np.array(coordinates, copy=False)
+    coordinates = common.numpy_array(coordinates, copy=False)
     if np.all(scale == 1):
         return coordinates
     else:
@@ -191,7 +191,7 @@ def images_to_polygons(imgs, labels, offset=(0, 0), scale=1.0, upsample=2):
             tile = imgs.crop(bbox, return_empty=False)
             if tile is None:
                 continue
-            xy0 = np.array(bbox[:2], copy=False) + np.array(offset)
+            xy0 = common.numpy_array(bbox[:2], copy=False) + np.array(offset)
             for name, lbl in labels.items():
                 if lbl is None:
                     continue

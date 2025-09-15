@@ -112,7 +112,7 @@ def config_cache(gear):
                 cache = self._default_cache[cgear]
             masked_operation = False
             if ('tri_mask' in kwargs) and (kwargs['tri_mask'] is not None):
-                tri_mask = np.array(kwargs['tri_mask'], copy=False)
+                tri_mask = common.numpy_array(kwargs['tri_mask'], copy=False)
                 if tri_mask.dtype == bool:
                     if not np.all(tri_mask):
                         masked_operation = True
@@ -125,7 +125,7 @@ def config_cache(gear):
                         if not np.all(tri_mask0):
                             masked_operation = True
             if (not masked_operation) and (kwargs.get('vtx_mask', None) is not None):
-                vtx_mask = np.array(vtx_mask, copy=False)
+                vtx_mask = common.numpy_array(vtx_mask, copy=False)
                 if vtx_mask.dtype == bool:
                     if not np.all(vtx_mask):
                         masked_operation = True
@@ -455,7 +455,7 @@ class Mesh:
         xmin, ymin, xmax, ymax = bbox
         ht = ymax - ymin
         wd = xmax - xmin
-        if np.array(bd_width, copy=False).size > 1:
+        if common.numpy_array(bd_width, copy=False).size > 1:
             bd_width_x = bd_width[0]
             bd_width_y = bd_width[1]
         else:
@@ -626,7 +626,7 @@ class Mesh:
         get submeshes based on bounding boxes.
         """
         tree, _ = self.triangles_STRtree(gear=gear)
-        bboxes = np.array(bboxes, copy=True).astype(np.float64)
+        bboxes = common.numpy_array(bboxes, copy=True).astype(np.float64)
         bboxes[..., 0::2] -= self.offset(gear=gear).ravel()[0]
         bboxes[..., 1::2] -= self.offset(gear=gear).ravel()[1]
         boxes_shp = np.atleast_1d(shapely.box(bboxes[:,0], bboxes[:,1], bboxes[:,2], bboxes[:,3]))
@@ -667,7 +667,7 @@ class Mesh:
         generate multiple submeshes at the same time to save triangles_rtree overhead.
         """
         tree = self.triangles_rtree(gear=gear)
-        bboxes = np.array(bboxes, copy=True).astype(np.float64)
+        bboxes = common.numpy_array(bboxes, copy=True).astype(np.float64)
         bboxes[..., 0::2] -= self.offset(gear=gear).ravel()[0]
         bboxes[..., 1::2] -= self.offset(gear=gear).ravel()[1]
         submeshes = []
@@ -2241,7 +2241,7 @@ class Mesh:
 
 
     def apply_translation(self, dxy, gear, vtx_mask=None):
-        dxy = np.array(dxy, copy=False).reshape(1,2)
+        dxy = common.numpy_array(dxy, copy=False).reshape(1,2)
         if self.locked:
             return
         if not np.any(dxy, axis=None):
@@ -2262,7 +2262,7 @@ class Mesh:
         if gear[0] == gear[-1]:
             self.apply_translation(dxy, gear[0], vtx_mask=vtx_mask)
             return
-        dxy = np.array(dxy, copy=False).reshape(1,2)
+        dxy = common.numpy_array(dxy, copy=False).reshape(1,2)
         v0 = self.vertices(gear=gear[0])
         offset0 = self.offset(gear=gear[0])
         if Mesh._masked_all(vtx_mask):

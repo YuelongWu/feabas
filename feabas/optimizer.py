@@ -1057,7 +1057,7 @@ class SLM:
         if np.any(Tx!=0, axis=None) or np.any(Ty!=0, axis=None):
             for idx, tx, ty in zip(active_index, Tx, Ty):
                 self.meshes[idx].set_translation((tx, ty), gear=(start_gear,targt_gear))
-        return (cost0, cost1)
+        return (float(cost0), float(cost1))
 
 
     def optimize_translation_w_filtering(self, **kwargs):
@@ -1411,7 +1411,7 @@ class SLM:
         else:
             M = None
         dd = solve(A, b, solver, tol=tol, maxiter=maxiter, check_converge=check_converge, atol=atol, M=M, extra_dof_constraint=edc, tolerated_perturbation=tolerated_perturbation, **callback_settings)
-        cost = (np.linalg.norm(b), np.linalg.norm(A.dot(dd) - b))
+        cost = (float(np.linalg.norm(b)), float(np.linalg.norm(A.dot(dd) - b)))
         if cost[1] < cost[0]:
             index_offsets = self.index_offsets
             for k, m in enumerate(self.meshes):
@@ -1592,7 +1592,7 @@ class SLM:
             return None
         stiffness_lambda, crosslink_lambda = self.relative_lambda_trace(stiffness_lambda, crosslink_lambda)
         Cs_rht, Cs_rht = self._crosslink_terms
-        return np.linalg.norm(crosslink_lambda * Cs_rht - stiffness_lambda * stress_v)
+        return float(np.linalg.norm(crosslink_lambda * Cs_rht - stiffness_lambda * stress_v))
 
 
     def flag_outcasts(self):
