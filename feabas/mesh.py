@@ -2847,7 +2847,197 @@ class Mesh:
 
   ## ------------------------- stiffness matrices -------------------------- ##
     @config_cache('TBD')
-    def stiffness_shape_matrices(self, gear=const.MESH_GEAR_FIXED):
+    def stiffness_shape_matrix_engineering(self, gear=const.MESH_GEAR_FIXED):
+        material_table = self._material_table.id_table
+        material_ids = self._material_ids
+        v = self.vertices(gear=gear)
+        T0 = self.triangles
+        num_dof = self.num_vertices * 2
+        shape_matrices = {}
+        for mid in np.unique(material_ids):
+            mat = material_table[mid]
+            if mat._type != const.MATERIAL_MODEL_ENG:
+                continue
+            indx = np.flatnonzero(material_ids == mid)
+            T = T0[indx]
+            tripts = v[T]
+            N = mat.sparse_engineering_shape_matrix(tripts, T, num_dof)
+            shape_matrices[mid] = (indx, N)
+        return shape_matrices
+
+
+    @config_cache('TBD')
+    def linear_stiffness_matrix(self, gear=const.MESH_GEAR_FIXED, inner_cache=None):
+        shape_matrices = self.stiffness_shape_matrix_engineering(gear=gear, cache=inner_cache)
+        S = None
+        if len(shape_matrices) == 0:
+            return S
+        material_table = self._material_table.id_table
+        multiplier = self.stiffness_multiplier
+        for mid, vals in shape_matrices.items():
+            mat = material_table[mid]
+            if not mat.is_linear:
+                continue
+            indx, N = vals
+            mm = multiplier[indx]
+            Sm = mat.engineering_stiffness_matrix_from_shape(N, multiplier=mm)
+            if Sm is not None:
+                if S is None:
+                    S = Sm
+                else:
+                    S = Sm + S
+        return S
+
+
+    @config_cache('TBD')
+    def nonlinear_engineering_stiffness_matrix(self, gear=(const.MESH_GEAR_FIXED, const.MESH_GEAR_MOVING), inner_cache=None):
+        v0 = self.vertices(gear=const.MESH_GEAR_INITIAL)
+        v1 = self.vertices(gear=gear[-1])
+        shape_matrices = self.stiffness_shape_matrix_engineering(gear=gear[0], cache=inner_cache)
+        S = None
+        if len(shape_matrices) == 0:
+            return S
+        material_table = self._material_table.id_table
+        multiplier = self.stiffness_multiplier
+        tri_areas = None
+        for mid, vals in shape_matrices.items():
+            mat = material_table[mid]
+            if mat.is_linear:
+                continue
+            indx, N = vals
+            if tri_areas is None:
+                area0 = common.signed_area(v0, self.triangles)
+                area1 = common.signed_area(v1, self.triangles)
+                linear_triangle_mask = self.linear_triangle_mask
+                if np.any(linear_triangle_mask):
+                    baseline_ratio = np.sum(np.abs(area1[linear_triangle_mask])) / np.sum(np.abs(area0[linear_triangle_mask]))                        
+                else:
+                    baseline_ratio = np.sum(np.abs(area1)) / np.sum(np.abs(area0))
+                tri_areas = (area0, area1)
+            area0, area1 = tri_areas
+            area_stretch = area1[indx] / area0[indx]
+            area_stretch = area_stretch / baseline_ratio
+            mm = multiplier[indx]
+            Sm = mat.engineering_stiffness_matrix_from_shape(N, area_stretch=area_stretch, multiplier=mm)
+            if Sm is not None:
+                if S is None:
+                    S = Sm
+                else:
+                    S = Sm + S
+        return S
+
+
+    @config_cache('TBD')
+    def nonengineering_element_stiffness_shape_matrices(self, gear=const.MESH_GEAR_FIXED):
+        material_table = self._material_table.id_table
+        material_ids = self._material_ids
+        v = self.vertices(gear=gear)
+        shape_matrices = {}
+        for mid in np.unique(material_ids):
+            mat = material_table[mid]
+            if mat._type == const.MATERIAL_MODEL_ENG:
+                continue
+            indx = np.nonzero(material_ids == mid)[0]
+            tripts = v[self.triangles[indx]]
+            B, area = mat.shape_matrix_from_vertices(tripts)
+            shape_matrices[mid] = (indx, [B, area])
+        return shape_matrices
+
+
+    @config_cache('TBD')
+    def nonengineering_stiffness_matrix(self, gear=(const.MESH_GEAR_FIXED, const.MESH_GEAR_MOVING), inner_cache=None):
+        """
+        compute the stiffness matrix and the current stress of non-engineering elements.
+        Kwargs:
+            gear(tuple): first item used for shape matrices, second gear for stress
+                computation (and stiffness if nonlinear).
+            inner_cache: the cache to store intermediate attributes like shape
+                matrices. Use default if set to None.
+        """
+        num_dof = self.num_vertices * 2
+        STIFF_M = None
+        STRESS_v = np.zeros(num_dof, dtype=np.float32)
+        shape_matrices = self.nonengineering_element_stiffness_shape_matrices(gear=gear[0], cache=inner_cache)
+        if len(shape_matrices) == 0:
+            return STIFF_M, STRESS_v
+        material_table = self._material_table.id_table
+        multiplier = self.stiffness_multiplier
+        tri_areas = None
+        T = np.repeat(self.triangles * 2, 2, axis=-1)
+        T[:,1::2] += 1
+        v0 = self.vertices(gear=gear[0])
+        v1 = self.vertices(gear=gear[-1])
+        dxy = v1 - v0
+        material_table = self._material_table.id_table
+        multiplier = self.stiffness_multiplier
+        tri_areas = None
+        for mid, vals in shape_matrices.items():
+            mat = material_table[mid]
+            indx, Ms = vals
+            uv = dxy[self.triangles[indx]].reshape(-1, 6)
+            if mat._stiffness_func is not None:
+                if tri_areas is None:
+                    v_ini = self.vertices(gear=const.MESH_GEAR_INITIAL)
+                    area0 = common.signed_area(v_ini, self.triangles)
+                    area1 = common.signed_area(v1, self.triangles)
+                    linear_triangle_mask = self.linear_triangle_mask
+                    if np.any(linear_triangle_mask):
+                        baseline_ratio = np.sum(np.abs(area1[linear_triangle_mask])) / np.sum(np.abs(area0[linear_triangle_mask]))                        
+                    else:
+                        baseline_ratio = np.sum(np.abs(area1)) / np.sum(np.abs(area0))
+                    tri_areas = (area0, area1)
+                area0, area1 = tri_areas
+                area_stretch = area1[indx] / area0[indx]
+                area_stretch = area_stretch / baseline_ratio
+            else:
+                area_stretch = None
+            K, P, modifier = mat.element_stiffness_matrices_from_shape_matrices(Ms, uv=uv, area_stretch=area_stretch)
+            if K is None:
+                continue
+            mm = multiplier[indx].reshape(-1,1,1) * modifier
+            idx_1d = T[indx]
+            idx_1 = np.tile(idx_1d.reshape(-1,1,6), (1,6,1))
+            idx_2 = np.swapaxes(idx_1, 1, 2)
+            idx_1 = idx_1.ravel()
+            idx_2 = idx_2.ravel()
+            V = (K * mm) .ravel()
+            M = sparse.csr_matrix((V, (idx_1, idx_2)),shape=(num_dof, num_dof))
+            if STIFF_M is None:
+                STIFF_M = M
+            else:
+                STIFF_M = STIFF_M + M
+            np.add.at(STRESS_v, idx_1d.ravel(), (P * mm).ravel())
+        return STIFF_M, STRESS_v
+
+
+    @config_cache('TBD')
+    def stiffness_matrix(self, gear=(const.MESH_GEAR_FIXED, const.MESH_GEAR_MOVING), inner_cache=None):
+        STIFF_M = self.linear_stiffness_matrix(gear=gear[0], inner_cache=inner_cache, cache=inner_cache)
+        NL = self.nonlinear_engineering_stiffness_matrix(gear=gear, inner_cache=inner_cache, cache=inner_cache)
+        if NL is not None:
+            if STIFF_M is None:
+                STIFF_M = NL
+            else:
+                STIFF_M = STIFF_M + NL
+        if STIFF_M is not None:
+            v0 = self.vertices(gear=gear[0])
+            v1 = self.vertices(gear=gear[-1])
+            dxy = v1 - v0
+            STRESS_v = STIFF_M.dot(dxy.ravel()).astype(np.float32)
+        else:
+            STRESS_v = np.zeros(2 * self.num_vertices, dtype=np.float32)
+        M, V = self.nonengineering_stiffness_matrix(gear=gear, inner_cache=inner_cache, cache=inner_cache)
+        if M is not None:
+            if STIFF_M is None:
+                STIFF_M = M
+            else:
+                STIFF_M = STIFF_M + M
+            STRESS_v = STRESS_v + V
+        return STIFF_M, STRESS_v
+
+
+    @config_cache('TBD')
+    def element_stiffness_shape_matrices_legacy(self, gear=const.MESH_GEAR_FIXED):
         material_table = self._material_table.id_table
         material_ids = self._material_ids
         v = self.vertices(gear=gear)
@@ -2862,7 +3052,7 @@ class Mesh:
 
 
     @config_cache('TBD')
-    def element_stiffness_matrices(self, gear=(const.MESH_GEAR_FIXED, const.MESH_GEAR_MOVING), inner_cache=None, **kwargs):
+    def element_stiffness_matrices_legacy(self, gear=(const.MESH_GEAR_FIXED, const.MESH_GEAR_MOVING), inner_cache=None, **kwargs):
         """
         compute the stiffness matrices for each element. Each element follow the order
             [u1, v1, u2, v2, u3, v3]
@@ -2880,7 +3070,7 @@ class Mesh:
         v0 = self.vertices(gear=gear[0])
         v1 = self.vertices(gear=gear[-1])
         dxy = v1 - v0
-        shape_matrices = self.stiffness_shape_matrices(gear=gear[0], cache=inner_cache)
+        shape_matrices = self.element_stiffness_shape_matrices_legacy(gear=gear[0], cache=inner_cache)
         material_table = self._material_table.id_table
         multiplier = self.stiffness_multiplier
         indices = []
@@ -2904,7 +3094,7 @@ class Mesh:
                         baseline_ratio = np.sum(np.abs(area1)) / np.sum(np.abs(area0))
                     tri_areas = (area0, area1)
                 area0, area1 = tri_areas
-                area_stretch = np.sum(area1[indx]) / np.sum(area0[indx])
+                area_stretch = area1[indx] / area0[indx]
                 area_stretch = area_stretch / baseline_ratio
             else:
                 area_stretch = None
@@ -2920,7 +3110,7 @@ class Mesh:
 
 
     @config_cache('TBD')
-    def stiffness_matrix(self, gear=(const.MESH_GEAR_FIXED, const.MESH_GEAR_MOVING), inner_cache=None, **kwargs):
+    def stiffness_matrix_legacy(self, gear=(const.MESH_GEAR_FIXED, const.MESH_GEAR_MOVING), inner_cache=None, **kwargs):
         """
         compute the stiffness matrix and the current stress.
         Kwargs:
@@ -2929,7 +3119,7 @@ class Mesh:
             inner_cache: the cache to store intermediate attributes like shape
                 matrices. Use default if set to None.
         """
-        F1, indices, F0, MTPLR = self.element_stiffness_matrices(gear=gear, inner_cache=inner_cache, cache=inner_cache, **kwargs)
+        F1, indices, F0, MTPLR = self.element_stiffness_matrices_legacy(gear=gear, inner_cache=inner_cache, cache=inner_cache, **kwargs)
         stf_sz = 2 * self.num_vertices
         T = np.repeat(self.triangles * 2, 2, axis=-1)
         T[:,1::2] += 1
@@ -2948,10 +3138,10 @@ class Mesh:
         return STIFF_M, STRESS_v
 
 
-    def stiffness_matrix_local_normalized(self, gear=(const.MESH_GEAR_FIXED, const.MESH_GEAR_MOVING), inner_cache=None, tri_mask=None, **kwargs):
+    def stiffness_matrix_local_normalized_legacy(self, gear=(const.MESH_GEAR_FIXED, const.MESH_GEAR_MOVING), inner_cache=None, tri_mask=None, **kwargs):
         minimum_multipler = kwargs.pop('minimum_multipler', 1.0e-8)
         kwargs.pop('cache', False)
-        F1, indices, F0, MTPLR = self.element_stiffness_matrices(gear=gear, inner_cache=inner_cache, cache=inner_cache, **kwargs)
+        F1, indices, F0, MTPLR = self.element_stiffness_matrices_legacy(gear=gear, inner_cache=inner_cache, cache=inner_cache, **kwargs)
         tidx0 = np.arange(self.num_triangles)
         if tri_mask is not None:
             tidx0 = tidx0[tri_mask]
@@ -2988,7 +3178,6 @@ class Mesh:
             np.add.at(STRESS_v, idx_1d.ravel(), (f0 * mm).ravel())
         return STIFF_M, STRESS_v
 
-        
 
   ## ------------------------- utility functions --------------------------- ##
     def nearest_vertices(self, xy, gear=const.MESH_GEAR_MOVING, offset=True):

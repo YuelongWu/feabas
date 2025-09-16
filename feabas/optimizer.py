@@ -506,6 +506,7 @@ class SLM:
 
     def clear_cached_attr(self, instant_gc=False):
         self._mesh_uids = None
+        self._uid2mesh_lut = None
         self._link_uids = None
         self._link_names = []
         self._linkage_adjacency = None
@@ -537,6 +538,7 @@ class SLM:
         graph. Note that only changing vertices is not considered mesh change.
         """
         self._mesh_uids = None
+        self._uid2mesh_lut = None
         self._linkage_adjacency = None
         self._connected_subsystems = None
         self._stiffness_matrix = None
@@ -986,17 +988,21 @@ class SLM:
         tol = kwargs.get('tol', 1e-07)
         start_gear = kwargs.get('start_gear', const.MESH_GEAR_FIXED)
         targt_gear = kwargs.get('target_gear', const.MESH_GEAR_FIXED)
+        return_residue = kwargs.get('return_residue', True)
         locked_flag = self.lock_flags
         active_index = np.nonzero(~locked_flag)[0]
-        links = self.relevant_links
+        links = self.links
         num_links = len(links)
+        relevant_flags = np.zeros(num_links, dtype=np.float32)
+        cost = None
+        residue = None
         if num_links == 0:
-            return False
+            return cost, residue
         mesh_uids = self.mesh_uids[~locked_flag]
         num_meshes = mesh_uids.size
         mesh_uids_mapper = {uid: k for k, uid in enumerate(mesh_uids)}
         if num_meshes == 0:
-            return False
+            return cost, residue
         conn_lbl, _ = self.connected_subsystems
         conn_lbl_active = conn_lbl[~locked_flag]
         conn_lbl_locked = conn_lbl[locked_flag]
@@ -1006,7 +1012,9 @@ class SLM:
         bx = np.zeros(num_links + num_constraints)
         by = np.zeros(num_links + num_constraints)
         col_k = 0
-        for lnk in links:
+        for k, lnk in enumerate(links):
+            if not self.link_is_relevant(lnk):
+                continue
             wt = lnk.weight_sum ** 0.5
             if wt == 0:
                 continue
@@ -1021,12 +1029,13 @@ class SLM:
                 gears.append(start_gear)
             else:
                 gears.append(targt_gear)
-            dxy = np.nanmedian(lnk.dxy(gear=gears, use_mask=True), axis=0)
+            dxy = np.median(lnk.dxy(gear=gears, use_mask=True), axis=0)
             bx[col_k] = dxy[0] * wt
             by[col_k] = dxy[1] * wt
+            relevant_flags[k] = wt
             col_k += 1
         if col_k == 0:
-            return False
+            return cost, residue
         wt = (A.power(2).sum(axis=None) / A.getnnz(axis=None)) ** 0.5
         for lbl in uncontraint_labels:
             pos = np.nonzero(conn_lbl_active == lbl)[0][0]
@@ -1038,10 +1047,12 @@ class SLM:
         A = A.tocsr()
         Tx = sparse.linalg.lsqr(A, bx, atol=tol, btol=tol, iter_lim=maxiter)[0]
         Ty = sparse.linalg.lsqr(A, by, atol=tol, btol=tol, iter_lim=maxiter)[0]
+        residue_x = A.dot(Tx) - bx
+        residue_y = A.dot(Ty) - by
         cost0_x = np.linalg.norm(bx)
-        cost1_x = np.linalg.norm(A.dot(Tx) - bx)
+        cost1_x = np.linalg.norm(residue_x)
         cost0_y = np.linalg.norm(by)
-        cost1_y = np.linalg.norm(A.dot(Ty) - by)
+        cost1_y = np.linalg.norm(residue_y)
         cost0 = 0
         cost1 = 0
         if cost0_x <= cost1_x:
@@ -1057,7 +1068,15 @@ class SLM:
         if np.any(Tx!=0, axis=None) or np.any(Ty!=0, axis=None):
             for idx, tx, ty in zip(active_index, Tx, Ty):
                 self.meshes[idx].set_translation((tx, ty), gear=(start_gear,targt_gear))
-        return (float(cost0), float(cost1))
+            cost = (float(cost0), float(cost1))
+        if return_residue and (cost is not None):
+            idx_t = relevant_flags > 0
+            num_rel_links = np.sum(idx_t)
+            residue_x = residue_x[:num_rel_links]
+            residue_y = residue_y[:num_rel_links]
+            residue = np.zeros(num_links, dtype=np.float32)
+            residue[idx_t] = (residue_x ** 2 + residue_y ** 2) ** 0.5 / relevant_flags[idx_t]
+        return cost, residue
 
 
     def optimize_translation_w_filtering(self, **kwargs):
@@ -1080,36 +1099,27 @@ class SLM:
         target_gear = kwargs.get('target_gear', const.MESH_GEAR_FIXED)
         start_gear = kwargs.get('start_gear', target_gear)
         residue_threshold = kwargs.get('residue_threshold', None)
-        cost0 = self.optimize_translation_lsqr(maxiter=maxiter, tol=tol,
+        cost0, residue = self.optimize_translation_lsqr(maxiter=maxiter, tol=tol,
             start_gear=start_gear, target_gear=target_gear)
         num_disabled = 0
-        if (residue_threshold is not None) and (residue_threshold > 0):
+        if (residue_threshold is not None) and (residue_threshold > 0) and (cost0 is not None):
             while True:
-                lnks_w_large_dis = []
-                mxdis = 0
-                for k, lnk in enumerate(self.links):
-                    if not lnk.relevant:
-                        continue
-                    dxy = lnk.dxy(gear=(target_gear, target_gear), use_mask=True)
-                    dxy_m = np.median(dxy, axis=0)
-                    dis = np.sqrt(np.sum(dxy_m**2))
-                    mxdis = max(mxdis, dis)
-                    if dis > residue_threshold:
-                        lnks_w_large_dis.append((dis, lnk.uids, k))
+                idx_t = np.flatnonzero(residue > residue_threshold)
+                lnks_w_large_dis = [(residue[k], self.links[k].uids, k) for k in idx_t]
                 if not lnks_w_large_dis:
                     break
                 else:
                     lnks_w_large_dis.sort(reverse=True)
                     uid_record = set()
                     for lnk in lnks_w_large_dis:
-                        dis, lnk_uids, lnk_k = lnk
+                        _, lnk_uids, lnk_k = lnk
                         if uid_record.isdisjoint(lnk_uids):
                             self.links[lnk_k].disable()
                             num_disabled += 1
                         uid_record.update(lnk_uids)
-                    cost1 = self.optimize_translation_lsqr(maxiter=maxiter,
+                    cost1, residue = self.optimize_translation_lsqr(maxiter=maxiter,
                         tol=tol,start_gear=start_gear, target_gear=target_gear)
-                    if cost1[1] >= cost1[0]:
+                    if (cost1 is None) or (cost1[1] >= cost1[0]):
                         break
                     else:
                         cost0 = (cost0[0], min(cost1[1], cost0[1]))
@@ -1656,6 +1666,19 @@ class SLM:
         return self._mesh_uids
 
 
+    @property
+    def uid2mesh_lut(self):
+        if self._uid2mesh_lut is None:
+            mesh_lut = defaultdict(list)
+            for k, uid in enumerate(self.mesh_uids):
+                uid = float(uid)
+                mesh_lut[uid].append(k)
+                if np.floor(uid) != uid:
+                    mesh_lut[np.floor(uid)].append(k)
+            self._uid2mesh_lut = mesh_lut
+        return self._uid2mesh_lut
+
+
     def linkage_adjacency(self, directional=False):
         """
         Adjacency matrix for the meshes in the system, where meshes with links
@@ -1784,28 +1807,15 @@ class SLM:
         """
         if self.num_meshes == 0:
             return [], False
-        uid = float(uid)
-        mesh_uids = self.mesh_uids
-        dis = np.abs(mesh_uids - uid)
-        if np.min(dis) == 0:
-            # the exact mesh found
-            indx = np.nonzero(dis == 0)[0][0]
-            return [self.meshes[indx]], True
-        elif uid.is_integer():
-            # probing uid is a complete mesh, but the corresponding mesh inside
-            #   the system is subdivided already
-            indx = np.nonzero(dis < 0.5)[0]
+        uid2mesh_lut = self.uid2mesh_lut
+        if uid in uid2mesh_lut:
+            indx = uid2mesh_lut[uid]
+            return [self.meshes[s] for s in indx], len(indx) == 1
+        elif np.floor(uid) in uid2mesh_lut:
+            indx = uid2mesh_lut[np.floor(uid)]
             return [self.meshes[s] for s in indx], False
         else:
-            # probing uid is a submesh. only return if the mesh in the system is
-            #   a complete mesh or exact the same (as in the first condition)
-            uid_r = np.floor(uid)
-            dis_r = np.abs(mesh_uids - uid_r)
-            if np.min(dis_r) == 0:
-                indx = np.nonzero(dis_r == 0)[0][0]
-                return [self.meshes[indx]], False
-            else:
-                return [], False
+            return [], False
 
 
     @staticmethod

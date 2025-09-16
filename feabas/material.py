@@ -2,6 +2,7 @@ from collections import defaultdict, OrderedDict
 
 import json
 import numpy as np
+from scipy import sparse
 from scipy.interpolate import interp1d
 
 from feabas import common
@@ -48,7 +49,7 @@ class Material:
         self.area_constraint = kwargs.get('area_constraint', 1.0)
         self.render = kwargs.get('render', True)
         self.render_weight = kwargs.get('render_weight', 1.0)
-        mat_type = const.MATERIAL_MODEL_ENG
+        mat_type = kwargs.get('type', const.MATERIAL_MODEL_ENG)
         if isinstance(mat_type, str):
             mat_type = const.MATERIAL_MODEL_LIST.index(mat_type.upper())
         self._type = mat_type
@@ -125,6 +126,57 @@ class Material:
         self._stiffness_func_factory = stiffness_func_factory
         self._stiffness_func_params = stiffness_func_params
         self._stiffness_func = common.str_to_func(stiffness_func_factory, **stiffness_func_params)
+
+
+    def sparse_engineering_shape_matrix(self, tripts, T, num_dof):
+        """
+        generate shape matrices used used for engineering strain.
+        Args:
+            tripts(Nx3x2 np.ndarray): xy coordinates of the triangle vertices.
+            T(Nx3 np.ndarray): triangle vertice indices
+            num_dof: number of degree of freedom
+        Return:
+            shape_matrix(3N x Ndof np.ndarray): shape matrix.
+        """
+        # stiffness matrix: [u1, v1, u2, v2, u3, v3]
+        tripts = tripts.reshape(-1, 3, 2)
+        tripts_shft0 = np.roll(tripts, -1, axis=-2)
+        tripts_shft1 = np.roll(tripts, 1, axis=-2)
+        tri_vec = tripts_shft0 - tripts_shft1
+        trinum = tripts.shape[0]
+        areas = np.absolute(np.cross(tri_vec[:,0,:], tri_vec[:,1,:])).reshape(-1,1,1)
+        tri_vec = tri_vec / (areas ** 0.5)
+        ty = tri_vec[:, :, 1]
+        tx = -tri_vec[:, :, 0]
+        T = T.reshape(-1, 3)
+        indices = np.concatenate((2*T, 2*T+1, 2*T, 2*T+1), axis=-1)
+        data = np.concatenate((ty, tx, tx, ty), axis=-1)
+        indptr = np.cumsum(np.insert(np.tile([3,3,6], trinum), 0, 0))
+        N = sparse.csr_matrix((data.ravel(), indices.ravel(), indptr.ravel()), shape=(3*trinum,num_dof))
+        return N
+
+
+    def engineering_stiffness_matrix_from_shape(self, N, **kwargs):
+        area_stretch = kwargs.get('area_stretch', None)
+        multiplier = kwargs.get('multiplier', None)
+        N_element = int(N.shape[0] / 3)
+        if (self._stiffness_multiplier == 0) or (N_element == 0):
+            return None
+        if multiplier is None:
+            multiplier = np.full(N_element, self._stiffness_multiplier, dtype=np.float32)
+        else:
+            multiplier = multiplier * np.full(N_element, self._stiffness_multiplier, dtype=np.float32)
+        if (self._stiffness_func is not None) and (area_stretch is not None):
+            multiplier = multiplier * (self._stiffness_func(area_stretch).ravel())
+        D_diag = (multiplier.reshape(-1,1) * np.array([1,1,(1-self._poisson_ratio)/2])).ravel()
+        if self._poisson_ratio == 0:
+            D = sparse.diags(D_diag, dtype=np.float32)
+        else:
+            D_diag1 = (multiplier.reshape(-1,1) * np.array([self._poisson_ratio,0,0])).ravel()
+            D_diag1 = D_diag1[:-1]
+            D = sparse.diags([D_diag1, D_diag, D_diag1], [-1,0,1], dtype=np.float32)
+        S = N.T @ D @ N
+        return S
 
 
     def shape_matrix_from_vertices(self, tripts):
@@ -252,15 +304,6 @@ class Material:
         if self._stiffness_func is not None:
             multiplier = multiplier * self._stiffness_func(J).reshape(-1,1,1)
         return K, P, multiplier
-
-
-    def element_stiffness_matrices_from_vertices(self, tripts, uv=None):
-        """
-        combination of method self.shape_matrix_from_vertices and method
-        self.element_stiffness_matrices_from_shape_matrices
-        """
-        Ms = self.shape_matrix_from_vertices(tripts)
-        return self.element_stiffness_matrices_from_shape_matrices(Ms, uv=uv)
 
 
     @property
