@@ -3036,6 +3036,52 @@ class Mesh:
         return STIFF_M, STRESS_v
 
 
+    def stiffness_matrix_local_normalized(self, gear=(const.MESH_GEAR_FIXED, const.MESH_GEAR_MOVING), tri_mask=None, **kwargs):
+        inner_cache = kwargs.get('inner_cache', None)
+        max_stiffness_ratio = kwargs.get('max_stiffness_ratio', 1000)
+        shape_matrices = self.stiffness_shape_matrix_engineering(gear=gear[0], cache=inner_cache)
+        tidx0 = np.arange(self.num_triangles)
+        if tri_mask is not None:
+            tidx0 = tidx0[tri_mask]
+        SL = []
+        indices = []
+        for _, vals in shape_matrices.items():
+            indx, N = vals
+            idx_t = np.flatnonzero(np.isin(indx, tidx0, assume_unique=True))
+            if idx_t.size == 0:
+                continue
+            indices.append(indx[idx_t])
+            idx_sel = (idx_t.reshape(-1,1) * 3 + np.array([0,1,2])).ravel()
+            SL.append(N[idx_sel])
+        indices = np.concatenate(indices, axis=None)
+        if indices.size < tidx0.size:
+            idx_t = np.setdiff1d(tidx0, indices)
+            mat = material.Material(**material.MATERIAL_DEFAULT)
+            v = self.vertices(gear=gear[0])
+            T = self.triangles[idx_t]
+            num_dof = self.num_vertices * 2
+            N = mat.sparse_engineering_shape_matrix(v[T], T, num_dof)
+            indices = np.concatenate((indices, idx_t), axis=None)
+            SL.append(N)
+        if len(SL) == 0:
+            return None, None
+        SP = sparse.vstack(SL)
+        stiffness_multiplier = self.effective_stiffness_multiplier(gear=(const.MESH_GEAR_INITIAL,gear[-1]), cache=inner_cache)
+        mm = stiffness_multiplier[indices]
+        if max_stiffness_ratio is not None:
+            mn_stf = np.max(mm) / max_stiffness_ratio
+            if mn_stf == 0:
+                mn_stf = 1
+            mm = mm.clip(mn_stf, None)
+        D = sparse.diags((mm.reshape(-1,1) * np.array([1,1,0.5])).ravel(), dtype=np.float32)
+        STIFF_M = SP.T @ D @ SP
+        v0 = self.vertices(gear=gear[0])
+        v1 = self.vertices(gear=gear[-1])
+        dxy = v1 - v0
+        STRESS_v = STIFF_M.dot(dxy.ravel()).astype(np.float32)
+        return STIFF_M, STRESS_v
+
+
     @config_cache('TBD')
     def element_stiffness_shape_matrices_legacy(self, gear=const.MESH_GEAR_FIXED):
         material_table = self._material_table.id_table

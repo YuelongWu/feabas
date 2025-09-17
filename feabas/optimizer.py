@@ -2121,7 +2121,7 @@ def relax_mesh(M, free_vertices=None, free_triangles=None, **kwargs):
     M.anneal(gear=(const.MESH_GEAR_INITIAL, gear[0]), mode=const.ANNEAL_COPY_EXACT)
     M.anneal(gear=gear[::-1],  mode=const.ANNEAL_CONNECTED_RIGID)
     M._vertices_changed(gear=gear[0])
-    stiff_M, stress_v = M.stiffness_matrix_local_normalized(gear=gear, cache=False, tri_mask=tmask)
+    stiff_M, stress_v = M.stiffness_matrix_local_normalized(gear=gear, tri_mask=tmask)
     if stiff_M is None:
         return modified
     A = stiff_M[vmask_pad][:,vmask_pad]
