@@ -6,7 +6,6 @@ import h5py
 import inspect
 import matplotlib.tri
 import numpy as np
-import os
 from rtree import index
 from scipy.interpolate import interp1d
 from scipy import sparse
@@ -1174,6 +1173,7 @@ class Mesh:
                         self._material_table.add_material(m_name_new, mat_new)
                     stiffness_multiplier[tidx] = stiffness_multiplier[tidx] * modifier
                     self._material_ids[tidx] = uid_new
+            self._material_type_summary = None
             self._linearity = None
             self._linear_triangle_mask = None
             self.set_stiffness_multiplier(stiffness_multiplier)
@@ -1529,21 +1529,35 @@ class Mesh:
 
 
     @property
+    def material_type_summary(self):
+        if (not hasattr(self, '_material_type_summary')) or (self._material_type_summary is None):
+            material_table = self.material_table
+            mat_engineering_linear = False
+            mat_engineering_nonlinear = False
+            mat_nonengineering = False
+            for mid in np.unique(self.material_ids):
+                mat = material_table[mid]
+                if mat._type == const.MATERIAL_MODEL_ENG:
+                    if mat._stiffness_func is None:
+                        mat_engineering_linear = True
+                    else:
+                        mat_engineering_nonlinear = True
+                else:
+                    mat_nonengineering = True
+            self._material_type_summary = (mat_engineering_linear, mat_engineering_nonlinear, mat_nonengineering)
+        return self._material_type_summary
+
+
+    @property
     def named_material_table(self):
         return self._material_table.named_table
 
 
     @property
     def is_linear(self):
-        if not hasattr(self, '_linearity') or self._linearity is None:
-            material_table = self.material_table
-            linearity = True
-            for mid in np.unique(self.material_ids):
-                mat = material_table[mid]
-                if not mat.is_linear:
-                    linearity = False
-                    break
-            self._linearity = linearity
+        if (not hasattr(self, '_linearity')) or (self._linearity is None):
+            _, mat_engineering_nonlinear, mat_nonengineering = self.material_type_summary
+            self._linearity = (not mat_engineering_nonlinear) and (not mat_nonengineering)
         return self._linearity
 
 
@@ -3012,27 +3026,30 @@ class Mesh:
 
     @config_cache('TBD')
     def stiffness_matrix(self, gear=(const.MESH_GEAR_FIXED, const.MESH_GEAR_MOVING), inner_cache=None):
+        _, flag_nln, flag_ne = self.material_type_summary
         STIFF_M = self.linear_stiffness_matrix(gear=gear[0], inner_cache=inner_cache, cache=inner_cache)
-        NL = self.nonlinear_engineering_stiffness_matrix(gear=gear, inner_cache=inner_cache, cache=inner_cache)
-        if NL is not None:
-            if STIFF_M is None:
-                STIFF_M = NL
-            else:
-                STIFF_M = STIFF_M + NL
-        if STIFF_M is not None:
-            v0 = self.vertices(gear=gear[0])
-            v1 = self.vertices(gear=gear[-1])
+        if flag_nln:
+            NL = self.nonlinear_engineering_stiffness_matrix(gear=gear, inner_cache=inner_cache, cache=inner_cache)
+            if NL is not None:
+                if STIFF_M is None:
+                    STIFF_M = NL
+                else:
+                    STIFF_M = STIFF_M + NL
+        v0 = self.vertices(gear=gear[0])
+        v1 = self.vertices(gear=gear[-1])
+        if (STIFF_M is not None) and (v0 is not v1):
             dxy = v1 - v0
             STRESS_v = STIFF_M.dot(dxy.ravel()).astype(np.float32)
         else:
             STRESS_v = np.zeros(2 * self.num_vertices, dtype=np.float32)
-        M, V = self.nonengineering_stiffness_matrix(gear=gear, inner_cache=inner_cache, cache=inner_cache)
-        if M is not None:
-            if STIFF_M is None:
-                STIFF_M = M
-            else:
-                STIFF_M = STIFF_M + M
-            STRESS_v = STRESS_v + V
+        if flag_ne:
+            M, V = self.nonengineering_stiffness_matrix(gear=gear, inner_cache=inner_cache, cache=inner_cache)
+            if M is not None:
+                if STIFF_M is None:
+                    STIFF_M = M
+                else:
+                    STIFF_M = STIFF_M + M
+                STRESS_v = STRESS_v + V
         return STIFF_M, STRESS_v
 
 
