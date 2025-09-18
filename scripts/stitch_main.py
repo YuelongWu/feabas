@@ -64,8 +64,17 @@ def optimize_one_section(matchname, outname, **kwargs):
     logger_info = kwargs.get('logger', None)
     logger = logging.get_logger(logger_info)
     bname = os.path.basename(matchname).replace('.h5', '')
+    mesh_settings = mesh_settings.copy()
+    mesh_sizes = mesh_settings.pop('mesh_sizes', [100, 300])
     t0 = time.time()
     stitcher = Stitcher.from_h5(matchname, load_matches=True, load_meshes=False)
+    if stitcher.num_links == 0:
+        stitcher.initialize_meshes(mesh_sizes, **mesh_settings)
+        stitcher.initialize_optimizer()
+        stitcher.normalize_coordinates(**normalize_setting)
+        stitcher.save_to_h5(outname, save_matches=False, save_meshes=True)
+        logger.warning(f'\t{bname}: no matches found, use stage coordinates.')
+        return
     if minweight is not None:
         rejected = stitcher.filter_match_by_weight(minweight)
         if rejected > 0:
@@ -78,8 +87,6 @@ def optimize_one_section(matchname, outname, **kwargs):
     else:
         groupings = None
     stitcher.set_groupings(groupings)
-    mesh_settings = mesh_settings.copy()
-    mesh_sizes = mesh_settings.pop('mesh_sizes', [100, 300])
     stitcher.initialize_meshes(mesh_sizes, **mesh_settings)
     discrd = 0
     if msem:

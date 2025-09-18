@@ -306,6 +306,9 @@ class Stitcher:
             overlaps = self.overlaps
         else:
             overlaps = self.overlaps_without_matches
+        if overlaps.size == 0:
+            logger.warning('no expected overlap, skip matching..')
+            return 0, False
         num_overlaps = len(overlaps)
         if ((num_workers is not None) and (num_workers <= 1)) or (num_overlaps <= 1):
             new_matches, match_strains, err_raised = target_func(overlaps, self.imgrelpaths, self.init_bboxes)
@@ -362,15 +365,18 @@ class Stitcher:
             tree.insert(k, bbox, obj=None)
             if bool(hits):
                 overlaps.extend([(k, hit) for hit in hits])
-        overlaps = np.array(overlaps)
-        bboxes0 = self.init_bboxes[overlaps[:,0]]
-        bboxes1 = self.init_bboxes[overlaps[:,1]]
-        bbox_ov, _ = common.bbox_intersections(bboxes0, bboxes1)
-        ov_cntr = common.bbox_centers(bbox_ov)
-        average_step_size = self.average_tile_size[::-1] / 2
-        ov_indices = np.round((ov_cntr - ov_cntr.min(axis=0))/average_step_size)
-        z_order = common.z_order(ov_indices)
-        return overlaps[z_order]
+        if len(overlaps) == 0:
+            return np.empty((0,2), dtype=np.int32)
+        else:
+            overlaps = np.array(overlaps)
+            bboxes0 = self.init_bboxes[overlaps[:,0]]
+            bboxes1 = self.init_bboxes[overlaps[:,1]]
+            bbox_ov, _ = common.bbox_intersections(bboxes0, bboxes1)
+            ov_cntr = common.bbox_centers(bbox_ov)
+            average_step_size = self.average_tile_size[::-1] / 2
+            ov_indices = np.round((ov_cntr - ov_cntr.min(axis=0))/average_step_size)
+            z_order = common.z_order(ov_indices)
+            return overlaps[z_order]
 
 
     def refine_stage_positions(self):
@@ -637,26 +643,29 @@ class Stitcher:
             stf_x = None
         # soften the mesh with the strain from matching
         strain_list = list(self.match_strains.items())
-        overlap_indices = np.array([s[0] for s in strain_list])
-        strain_vals = np.array([(s[1], s[1]) for s in strain_list])
-        groupov_indices = groupings[overlap_indices]
-        solo_strain = np.zeros(self.num_tiles, dtype=np.float32)
-        for mid in np.unique(overlap_indices, axis=None):
-            idxt = overlap_indices == mid
-            solo_strain[mid] = np.median(strain_vals[idxt])
-        # only probe the interfaces between groups
-        idxt = groupov_indices[:,0] != groupov_indices[:,1]
-        groupov_indices = groupov_indices[idxt].ravel()
-        strain_vals = strain_vals[idxt].ravel()
-        group_strain = np.zeros(self.num_tiles, dtype=np.float32)
-        for g in np.unique(groupov_indices):
-            idxt = groupov_indices == g
-            strn = np.median(strain_vals[idxt])
-            group_strain[groupings == g] = strn
-        avg_strain = np.maximum(group_strain, solo_strain)
-        tile_soft_factors = 1 / (avg_strain + 1 / np.max(self.average_tile_size))
-        tile_soft_factors = tile_soft_factors / np.mean(tile_soft_factors)
-        tile_soft_factors = tile_soft_factors.clip(None, 2.5)
+        if len(strain_list) == 0:
+            tile_soft_factors = np.ones(self.num_tiles, dtype=np.float32)
+        else:
+            overlap_indices = np.array([s[0] for s in strain_list])
+            strain_vals = np.array([(s[1], s[1]) for s in strain_list])
+            groupov_indices = groupings[overlap_indices]
+            solo_strain = np.zeros(self.num_tiles, dtype=np.float32)
+            for mid in np.unique(overlap_indices, axis=None):
+                idxt = overlap_indices == mid
+                solo_strain[mid] = np.median(strain_vals[idxt])
+            # only probe the interfaces between groups
+            idxt = groupov_indices[:,0] != groupov_indices[:,1]
+            groupov_indices = groupov_indices[idxt].ravel()
+            strain_vals = strain_vals[idxt].ravel()
+            group_strain = np.zeros(self.num_tiles, dtype=np.float32)
+            for g in np.unique(groupov_indices):
+                idxt = groupov_indices == g
+                strn = np.median(strain_vals[idxt])
+                group_strain[groupings == g] = strn
+            avg_strain = np.maximum(group_strain, solo_strain)
+            tile_soft_factors = 1 / (avg_strain + 1 / np.max(self.average_tile_size))
+            tile_soft_factors = tile_soft_factors / np.mean(tile_soft_factors)
+            tile_soft_factors = tile_soft_factors.clip(None, 2.5)
         meshes = []
         mesh_indx = np.full(self.num_tiles, -1)
         mesh_params_ptr = {} # map the parameters of the mesh to
@@ -722,7 +731,7 @@ class Stitcher:
         kwargs.setdefault('stiffness_lambda', 1.0)
         if (not kwargs.get('force_update', False)) and (self._optimizer is not None):
             return False
-        if (self.meshes is None) or (self.num_links == 0):
+        if (self.meshes is None): # or (self.num_links == 0):
             raise RuntimeError('meshes and matches not initialized for Stitcher.')
         self._optimizer = SLM(self.meshes, **kwargs)
         for key, mtch in self.matches.items():
