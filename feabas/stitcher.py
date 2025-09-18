@@ -662,6 +662,8 @@ class Stitcher:
         mesh_params_ptr = {} # map the parameters of the mesh to
         if self._default_mesh_cache is None:
             default_caches = {}
+            if cache_size is None:
+                cache_size = self.num_tiles
             for gear in const.MESH_GEARS:
                 default_caches[gear] = defaultdict(lambda: caching.CacheFIFO(maxlen=cache_size))
             self._default_mesh_cache = default_caches
