@@ -2,9 +2,9 @@ from collections import defaultdict, OrderedDict
 
 import cv2
 import numpy as np
+import shapely
 import shapely.geometry as shpgeo
 from shapely.ops import unary_union, linemerge, polygonize
-from shapely import wkb, get_coordinates, minimum_rotated_rectangle, linearrings
 
 from feabas import dal, common, material
 import feabas.constant as const
@@ -140,7 +140,9 @@ def countours_to_polygon(contours, hierarchy, offset, scale, upsample):
         xy = scale_coordinates(xy + np.asarray(offset), scale=scale)
         lr = shpgeo.polygon.LinearRing(xy)
         # lr = smooth_zigzag(lr, scale=scale)
-        pp = shpgeo.Polygon(lr).buffer(0)
+        pp = shpgeo.Polygon(lr)
+        if not pp.is_valid:
+            pp = pp.buffer(0)
         if lr.is_ccw:
             holes[indx] = pp
         else:
@@ -243,7 +245,7 @@ def images_to_polygons(imgs, labels, offset=(0, 0), scale=1.0, upsample=2):
 def index_chain_to_linearrings(vertices, chains):
     chn = np.concatenate(chains, axis=None)
     indx = np.repeat(np.arange(len(chains)), [len(s) for s in chains])
-    lrs = linearrings(vertices[chn], indices=indx)
+    lrs = shapely.linearrings(vertices[chn], indices=indx)
     return list(lrs)
 
 
@@ -280,30 +282,30 @@ def get_polygon_representative_point(poly):
 
 
 
-def polygon_area_filter(poly, area_thresh=0):
+def polygon_area_filter(poly, area_thresh=0, check_exterior=True):
     if area_thresh == 0:
         return poly
     if isinstance(poly, shpgeo.Polygon):
-        if poly.is_empty or shpgeo.Polygon(poly.exterior).area < area_thresh:
+        if poly.is_empty or (check_exterior and shpgeo.Polygon(poly.exterior).area < area_thresh):
             return shpgeo.Polygon()
         Bs = poly.boundary
         if hasattr(Bs,'geoms'):
-            # may need to fill small holes
-            holes_to_fill = []
-            for linestr in Bs.geoms:
-                pp = shpgeo.Polygon(linestr)
-                if pp.area < area_thresh:
-                    holes_to_fill.append(pp)
-            if len(holes_to_fill) > 0:
-                return poly.union(unary_union(holes_to_fill))
+            holes = shapely.build_area(shapely.get_parts(Bs))
+            areas = shapely.area(holes)
+            small_flags = areas < area_thresh
+            if np.any(small_flags):
+                return poly.union(unary_union(holes[small_flags]))
             else:
                 return poly
         else:
             return poly
     elif hasattr(poly, 'geoms'):
         new_poly_list = []
-        for pp in poly.geoms:
-            pp_updated = polygon_area_filter(pp, area_thresh=area_thresh)
+        Bs = [p.exterior for p in poly.geoms]
+        areas = shapely.area(shapely.polygons(Bs))
+        large_pps = shapely.get_parts(poly)[areas > area_thresh]
+        for pp in large_pps:
+            pp_updated = polygon_area_filter(pp, area_thresh=area_thresh, check_exterior=False)
             if not pp_updated.is_empty:
                 new_poly_list.append(pp_updated)
         if len(new_poly_list) > 0:
@@ -347,7 +349,7 @@ def smooth_zigzag(boundary, roi=None, scale=1.0, tol=0.5):
     for lr in boundaries:
         if lr.length == 0:
             continue
-        vertices = get_coordinates(lr)
+        vertices = shapely.get_coordinates(lr)
         if vertices.shape[0] <= 2:
             smoothened.append(lr)
             continue
@@ -425,21 +427,15 @@ def clean_up_small_regions(regions, roi=None, area_thresh=4, buffer=1e-3):
                 small_pieces.extend(list(pp_residue.geoms))
             else:
                 small_pieces.append(pp_residue)
-    for p0 in small_pieces:
-        p0b = p0.buffer(buffer)
-        assigned_label = None
-        max_intersection = 0
-        for lbl, pp in regions_dict.items():
-            if pp.is_empty:
-                continue
-            if not p0b.intersects(pp):
-                continue
-            intersect_area = p0b.intersection(pp).area
-            if intersect_area > max_intersection:
-                assigned_label = lbl
-                max_intersection = intersect_area
-        if assigned_label is not None:
-            regions_dict[assigned_label] = regions_dict[assigned_label].union(p0)
+    small_pieces_buffered = shapely.buffer(small_pieces, buffer)
+    region_labels = list(regions_dict.keys)
+    regions_filtered = [regions_dict[s] for s in region_labels]
+    intersect_regions = shapely.intersection(small_pieces_buffered.reshape(-1,1), regions_filtered)
+    intersect_areas = shapely.area(intersect_regions)
+    for k, pp in enumerate(small_pieces):
+        idx_t = np.argmax(intersect_areas[k,:])
+        if intersect_areas[k, idx_t] > 0:
+            regions_dict[region_labels[idx_t]] = regions_dict[region_labels[idx_t]].union(pp)
     if not orgin_contain_default:
         regions_dict.pop('default')
     if not isinstance(regions, dict):
@@ -522,7 +518,7 @@ def generate_equilat_grid_mask(mask, side_len, anchor_point=None, buffer=None):
     
 
 def find_rotation_for_minimum_rectangle(poly, rounding=0):
-    bbox = minimum_rotated_rectangle(poly)
+    bbox = shapely.minimum_rotated_rectangle(poly)
     corner_xy = np.array(bbox.boundary.coords)
     corner_dxy = np.diff(corner_xy, axis=0)
     sides = np.sum(corner_dxy**2, axis=-1) ** 0.5
@@ -631,10 +627,10 @@ class Geometry:
             if 'epsilon' in f:
                 kwargs['epsilon'] = f['epsilon'][()]
             if 'roi' in f:
-                roi = wkb.loads(bytes.fromhex(f['roi'][()].decode()))
+                roi = shapely.wkb.loads(bytes.fromhex(f['roi'][()].decode()))
             if 'regions' in f:
                 for rname in f['regions']:
-                    regions[rname] = wkb.loads(bytes.fromhex(f['regions/'+rname][()].decode()))
+                    regions[rname] = shapely.wkb.loads(bytes.fromhex(f['regions/'+rname][()].decode()))
         return cls(roi=roi, regions=regions, **kwargs)
 
 
@@ -757,28 +753,34 @@ class Geometry:
             if poly_updated.is_empty:
                 self._regions.pop(lbl)
             else:
-                self._regions[lbl] = poly_updated.buffer(0)
+                if not poly_updated.is_valid:
+                    poly_updated = poly_updated.buffer(0)
+                self._regions[lbl] = poly_updated
                 covered_list.append(poly_updated)
                 if lbl != 'default':
                     mask = mask.difference(poly_updated)
         filtered_roi = polygon_area_filter(mask, area_thresh=area_thresh)
         if not filtered_roi.is_empty:
-            self._default_region = filtered_roi.buffer(0)
+            if not filtered_roi.is_valid:
+                filtered_roi = filtered_roi.buffer(0)
+            self._default_region = filtered_roi
         covered = unary_union(covered_list)
         covered_boundary = covered.boundary
         if hasattr(covered_boundary, 'geoms'):
-            # if boundary has multiple line strings, check for holes
-            filled_cover = []
-            for linestr in covered_boundary.geoms:
-                area_sign = shpgeo.LinearRing(linestr).is_ccw
-                if area_sign:
-                    filled_cover.append(shpgeo.Polygon(linestr))
-            holes = unary_union(filled_cover).difference(covered)
+            covered_boundary = shapely.get_parts(covered_boundary)
+            cww_flags = shapely.is_ccw(covered_boundary)
+            hole_bounds = unary_union(covered_boundary[cww_flags])
+            holes = shapely.build_area(hole_bounds).difference(covered)
             if holes.area > 0:
                 if 'exclude' in self._regions:
-                    self._regions['exclude'] = (self._regions['exclude'].union(holes)).buffer(0)
+                    exclude_regions = self._regions['exclude'].union(holes)
+                    if not exclude_regions.is_valid:
+                        exclude_regions = exclude_regions.buffer(0)
+                    self._regions['exclude'] = exclude_regions
                 else:
-                    self._regions['exclude'] = holes.buffer(0)
+                    if not holes.is_valid:
+                        holes = holes.buffer(0)
+                    self._regions['exclude'] = holes
         self._committed = True
 
 
@@ -1259,7 +1261,7 @@ class Geometry:
         """
         region_tol = kwargs.get('region_tol', 0)
         roi_tol = kwargs.get('roi_tol', 0)
-        method = kwargs.get('method', const.SPATIAL_SIMPLIFY_GROUP)
+        method = kwargs.get('method', const.SPATIAL_SIMPLIFY_GEOM_COLLECTION)
         area_thresh = kwargs.get('area_thresh', 0)
         snap_decimal = kwargs.get('snap_decimal', None)
         scale = kwargs.get('scale', 1.0)
