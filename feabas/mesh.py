@@ -2446,6 +2446,16 @@ class Mesh:
     def is_valid(self, gear=None, tri_mask=None):
         if gear is None:
             gear = self._current_gear
+        flipd, _ = self.locate_flipped_triangles(gear=gear, tri_mask=tri_mask)
+        if flipd.size > 0:
+            return False
+        seg_valid = self.check_segment_collision(gear=gear, tri_mask=tri_mask)
+        return seg_valid
+
+
+    def is_valid_legacy(self, gear=None, tri_mask=None):
+        if gear is None:
+            gear = self._current_gear
         vertices = self.vertices(gear=gear)
         if Mesh._masked_all(tri_mask):
             T = self.triangles
