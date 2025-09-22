@@ -4,6 +4,7 @@ from functools import partial
 import numpy as np
 from scipy import fft
 from scipy.fftpack import next_fast_len
+import shapely
 import shapely.geometry as shpgeo
 from shapely.ops import unary_union
 
@@ -580,8 +581,8 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
                 batched_bboxes1 = []
                 batched_bboxes_union0 = []
                 batched_bboxes_union1 = []
-                bbox_regions0 = shpgeo.box(bboxes0[:,0], bboxes0[:,1], bboxes0[:,2], bboxes0[:,3])
-                bbox_regions1 = shpgeo.box(bboxes1[:,0], bboxes1[:,1], bboxes1[:,2], bboxes1[:,3])
+                bbox_regions0 = shapely.box(bboxes0[:,0], bboxes0[:,1], bboxes0[:,2], bboxes0[:,3])
+                bbox_regions1 = shapely.box(bboxes1[:,0], bboxes1[:,1], bboxes1[:,2], bboxes1[:,3])
                 for bidx0, bidx1 in zip(batch_indices[:-1], batch_indices[1:]):
                     batched_bboxes0.append(bboxes0[bidx0:bidx1])
                     batched_bboxes1.append(bboxes1[bidx0:bidx1])

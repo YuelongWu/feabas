@@ -748,7 +748,7 @@ def render_whole_mesh(mesh, image_loader, prefix, **kwargs):
             max_tasks_per_child = max(1, round(max_tile_per_job/num_tile_per_job))
         else:
             max_tasks_per_child = None
-        bbox_regions = shpgeo.box(bboxes[:,0], bboxes[:,1], bboxes[:,2], bboxes[:,3])
+        bbox_regions = shapely.box(bboxes[:,0], bboxes[:,1], bboxes[:,2], bboxes[:,3])
         N_jobs = max(1, round(num_tiles / num_tile_per_job))
         indices = np.round(np.linspace(0, num_tiles, num=N_jobs+1, endpoint=True))
         indices = np.unique(indices).astype(np.uint32)
@@ -937,7 +937,8 @@ class VolumeRenderer:
                         check_points[z] = f[str(z)][()]
         id_x, id_y = self.writer.morton_xy_grid()
         bboxes = self.writer.grid_indices_to_bboxes(id_x, id_y)
-        bboxes_tree = shapely.STRtree([shpgeo.box(*bbox) for bbox in bboxes])
+        shapely_boxes = shapely.box(bboxes[:,0], bboxes[:,1], bboxes[:,2], bboxes[:,3])
+        bboxes_tree = shapely.STRtree(list(shapely_boxes))
         num_xy_grids = id_x.size
         hit_counts = np.zeros(num_xy_grids, dtype=np.uint16)
         full_meshes = {}
@@ -973,7 +974,7 @@ class VolumeRenderer:
         indices_chunk = np.searchsorted(hit_counts_acc, indices_tile, side='left')
         indices_chunk = np.unique(indices_chunk).astype(np.uint64)
         out_ts = self.ts_spec
-        bbox_regions = shpgeo.box(bboxes[:,0], bboxes[:,1], bboxes[:,2], bboxes[:,3])
+        bbox_regions = shapely.box(bboxes[:,0], bboxes[:,1], bboxes[:,2], bboxes[:,3])
         bboxes_unions = []
         b_dilate = np.max(self.writer.write_chunk_shape[:2]) // 2
         task_id = 0
