@@ -636,7 +636,7 @@ def chain_segment_rings(segments, directed=True, conn_label=None) -> list:
             seq_split, loc_t = split_self_interset_ring(cc)
             if seq_split is not None:
                 split_idx.append(k)
-                split_chains.append(seq_split)
+                split_chains.extend(seq_split)
                 split_loc.append(seg_locs[k][loc_t])
         if len(split_idx) > 0:
             chains = [c for k, c in enumerate(chains) if (k not in split_idx)]
