@@ -2173,6 +2173,7 @@ class Mesh:
 
     def cart2bary(self, xy, gear, tid=None, **kwargs):
         """Cartesian to Barycentric coordinates"""
+        xy = np.atleast_2d(xy)
         if tid is None:
             tid = self.tri_finder(xy, gear=gear, **kwargs)
         indx = (tid >= 0)
@@ -2197,8 +2198,6 @@ class Mesh:
             B = np.full_like(b0, np.nan, shape=(tid.size, 3))
             B[indx,:] = np.stack((b0, b1, b2), axis=-1)
         return tid, B
-
-
 
 
     def bary2cart(self, tid, B, gear, offsetting=True):
