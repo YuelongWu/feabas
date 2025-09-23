@@ -748,6 +748,7 @@ def render_whole_mesh(mesh, image_loader, prefix, **kwargs):
             max_tasks_per_child = max(1, round(max_tile_per_job/num_tile_per_job))
         else:
             max_tasks_per_child = None
+        bboxes = np.array(bboxes)
         bbox_regions = shapely.box(bboxes[:,0], bboxes[:,1], bboxes[:,2], bboxes[:,3])
         N_jobs = max(1, round(num_tiles / num_tile_per_job))
         indices = np.round(np.linspace(0, num_tiles, num=N_jobs+1, endpoint=True))
