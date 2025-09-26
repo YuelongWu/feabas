@@ -48,7 +48,10 @@ class Material:
         self.enable_mesh = kwargs.get('enable_mesh', True)
         self.area_constraint = kwargs.get('area_constraint', 1.0)
         self.render = kwargs.get('render', True)
-        self.render_weight = kwargs.get('render_weight', 1.0)
+        if self.render:
+            self.render_weight = kwargs.get('render_weight', 1.0)
+        else:
+            self.render_weight = 0
         mat_type = kwargs.get('type', const.MATERIAL_MODEL_ENG)
         if isinstance(mat_type, str):
             mat_type = const.MATERIAL_MODEL_LIST.index(mat_type.upper())

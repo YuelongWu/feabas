@@ -766,13 +766,13 @@ def render_whole_mesh(mesh, image_loader, prefix, **kwargs):
                 filenames_list.append(filenames[idx0:idx1])
             else:
                 bboxes_out_list.append(bboxes_out[idx0:idx1])
-        submeshes = mesh.submeshes_from_regions(bbox_unions, save_material=True, buffer=tile_size[0]//2)
+        submeshes = mesh.submeshes_from_regions(bbox_unions, save_material=None, buffer=tile_size[0]//2)
         args_list = []
         for k in range(len(submeshes)):
             msh = submeshes[k]
             if msh is None:
                 continue
-            msh_dict = msh.get_init_dict(save_material=True, vertex_flags=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING))
+            msh_dict = msh.get_init_dict(save_material=True, vertex_flags=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING), filter_material=False)
             bbox = bboxes_list[k]
             if driver == 'image':
                 fnames = filenames_list[k]
@@ -999,12 +999,12 @@ class VolumeRenderer:
             render_seriers.append(bkw)
             bboxes_unions.append(unary_union(bbox_regions[idx0:idx1]))
         for z, mesh in full_meshes.items():
-            submeshes = mesh.submeshes_from_regions(bboxes_unions, save_material=True, buffer=b_dilate)
+            submeshes = mesh.submeshes_from_regions(bboxes_unions, save_material=None, buffer=b_dilate)
             for msh, bkw in zip(submeshes, render_seriers):
                 if msh is None:
                     bkw['meshes'][z] = None
                 else:
-                    msh_dict = msh.get_init_dict(save_material=True, vertex_flags=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING))
+                    msh_dict = msh.get_init_dict(save_material=True, vertex_flags=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING), filter_material=False)
                     bkw['meshes'][z] = msh_dict
         return render_seriers, check_points
 

@@ -558,9 +558,13 @@ class Mesh:
         init_dict['triangles'] = self.triangles
         if self._stiffness_multiplier is not None:
             init_dict['stiffness_multiplier'] = self._stiffness_multiplier
+        filter_material = kwargs.pop('filter_material', True)
         if save_material:
             init_dict['material_ids'] = self._material_ids
-            mtb = self._material_table.uid_filterred_material_table(np.unique(self._material_ids))
+            if filter_material:
+                mtb = self._material_table.uid_filterred_material_table(np.unique(self._material_ids))
+            else:
+                mtb = self._material_table
             init_dict['material_table'] = mtb.save_to_json()
         init_dict['resolution'] = self._resolution
         init_dict['epsilon'] = self._epsilon
@@ -624,20 +628,9 @@ class Mesh:
         """
         get submeshes based on bounding boxes.
         """
-        tree, _ = self.triangles_STRtree(gear=gear)
         bboxes = common.numpy_array(bboxes, copy=True).astype(np.float64)
-        bboxes[..., 0::2] -= self.offset(gear=gear).ravel()[0]
-        bboxes[..., 1::2] -= self.offset(gear=gear).ravel()[1]
         boxes_shp = np.atleast_1d(shapely.box(bboxes[:,0], bboxes[:,1], bboxes[:,2], bboxes[:,3]))
-        indx_b, indx_t = tree.query(boxes_shp, predicate='intersects')
-        submeshes = []
-        for k in range(boxes_shp.size):
-            idx = np.unique(indx_t[indx_b == k])
-            if idx.size == 0:
-                submeshes.append(None)
-            else:
-                submeshes.append(self.submesh(idx, save_material=save_material, append_name=append_name, **kwargs))
-        return submeshes
+        return self.submeshes_from_regions(boxes_shp, gear=gear, save_material=save_material, append_name=append_name, **kwargs)
 
 
     def submeshes_from_regions(self, regions, gear=const.MESH_GEAR_MOVING, save_material=True, append_name=False, **kwargs):
@@ -652,12 +645,24 @@ class Mesh:
             regions = shapely.buffer(regions, buffer)
         indx_b, indx_t = tree.query(regions, predicate='intersects')
         submeshes = []
+        if save_material is None:
+            material_table = self._material_table.id_table
+            material_ids = self._material_ids
+            abnormal_mat = np.zeros_like(material_ids, dtype=bool)
+            for mid in np.unique(material_ids):
+                mat = material_table[mid]
+                if mat.render_weight != 1:
+                    abnormal_mat[material_ids == mid] = True
+            save_material = np.zeros(regions.size, dtype=bool)
+            np.logical_or.at(save_material, indx_b, abnormal_mat[indx_t])
+        else:
+            save_material = np.full(regions.size, save_material)
         for k in range(regions.size):
-            idx = np.unique(indx_t[indx_b == k])
+            idx = np.sorted(indx_t[indx_b == k])
             if idx.size == 0:
                 submeshes.append(None)
             else:
-                submeshes.append(self.submesh(idx, save_material=save_material, append_name=append_name, **kwargs))
+                submeshes.append(self.submesh(idx, save_material=save_material[k], append_name=append_name, **kwargs))
         return submeshes
 
 
