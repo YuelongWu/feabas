@@ -658,7 +658,7 @@ class Mesh:
         else:
             save_material = np.full(regions.size, save_material)
         for k in range(regions.size):
-            idx = np.sorted(indx_t[indx_b == k])
+            idx = np.sort(indx_t[indx_b == k])
             if idx.size == 0:
                 submeshes.append(None)
             else:
