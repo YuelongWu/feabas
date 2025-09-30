@@ -338,6 +338,7 @@ def section_matcher(mesh0, mesh1, image_loader0, image_loader1, **kwargs):
     kwargs.setdefault('batch_size', 100)
     kwargs.setdefault('distributor', 'cartesian_region')
     kwargs.setdefault('link_weight_decay', 0.0)
+    compute_strain = kwargs.pop('compute_strain', False)
     stiffness_multiplier_threshold = kwargs.get('stiffness_multiplier_threshold', 0.1)
     kwargs.setdefault('render_weight_threshold', 0.1)
     stiffness_lambda = kwargs.setdefault('stiffness_lambda', 0.5)
@@ -348,7 +349,7 @@ def section_matcher(mesh0, mesh1, image_loader0, image_loader1, **kwargs):
         mesh1 = mesh1.submesh(idx1)
     if (initial_matches is None) or (mesh0.connected_triangles()[0] == 1 and mesh1.connected_triangles()[0] == 1):
         xy0, xy1, weight, strain = iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1,
-            spacings=spacings, initial_matches=initial_matches, compute_strain=True,
+            spacings=spacings, initial_matches=initial_matches, compute_strain=compute_strain,
             **kwargs)
     else:
         opt = optimizer.SLM([mesh0, mesh1], stiffness_lambda=stiffness_lambda)
@@ -367,7 +368,7 @@ def section_matcher(mesh0, mesh1, image_loader0, image_loader1, **kwargs):
             ini_wt_t = lnk.weight(use_mask=False)
             ini_mtch_t = common.Match(ini_xy0_t, ini_xy1_t, ini_wt_t)
             xy0_t, xy1_t, wt_t, strain = iterative_xcorr_matcher_w_mesh(msh0_t.copy(), msh1_t.copy(),
-                image_loader0, image_loader1, spacings=spacings, compute_strain=True,
+                image_loader0, image_loader1, spacings=spacings, compute_strain=compute_strain,
                 initial_matches=ini_mtch_t, **kwargs)
             if xy0_t is not None:
                 if (msh0_t.uid - msh1_t.uid) * (mesh0.uid - mesh1.uid) > 0:

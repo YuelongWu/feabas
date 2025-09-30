@@ -60,6 +60,7 @@ def generate_match_images(sec_matches, out_dir, ext_out, blksz, ds, resolution, 
         mask0 = cv2.dilate(mask0, skel)
         mask1 = cv2.dilate(mask1, skel)
         img_out = np.stack((img*0.7, img*0.7+100*mask0, img*0.7 + 100*mask1), axis=-1)
+        img_out = img_out.clip(0, 255).astype(np.uint8)
         cv2.imwrite(outname, img_out[::ds,::ds,:])
 
 

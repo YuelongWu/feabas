@@ -1297,7 +1297,8 @@ class SLM:
         check_converge = kwargs.pop('check_converge', config.OPT_CHECK_CONVERGENCE)
         lock_flags = self.lock_flags
         if tolerated_perturbation is not None:
-            tolerated_perturbation = tolerated_perturbation * config.data_resolution() / self.working_resolution
+            if tolerated_perturbation < 0:
+                tolerated_perturbation = abs(tolerated_perturbation) * config.data_resolution() / self.working_resolution
         if np.all(lock_flags):
             return 0, 0 # all locked, nothing to optimize
         stiff_m, stress_v = self.stiffness_matrix(gear=(shape_gear,start_gear),
