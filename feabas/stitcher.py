@@ -277,6 +277,28 @@ class Stitcher:
         self._groupings = groupings
 
 
+    def _flip_height_width(self):
+        self.average_tile_size = self.average_tile_size[::-1]
+        init_offset = self._init_bboxes[...,:2]
+        self._init_bboxes[...,2:] = init_offset + self.tile_sizes.reshape(init_offset.shape)
+        self.tile_sizes = np.flip(self.tile_sizes, axis=-1)
+
+
+    def _check_height_width_order(self):
+        flipped = False
+        if self.average_tile_size[0] == self.average_tile_size[-1]:
+            return flipped
+        imgpath = storage.join_paths(self.imgrootdir, self.imgrelpaths[0])
+        img = common.imread(imgpath, flag=cv2.IMREAD_UNCHANGED)
+        if img is not None:
+            imght, imgwd = img.shape[:2]
+            imght0, imgwd0 = self.tile_sizes[0]
+            if (imght == imgwd0) and (imgwd == imght0):
+                self._flip_height_width()
+                flipped = True
+        return flipped
+
+
   ## ------------------------------ matching ------------------------------- ##
     def dispatch_matchers(self, **kwargs):
         """
@@ -297,6 +319,9 @@ class Stitcher:
         loader_config['number_of_channels'] = 1 # only gray-scale matching are supported
         if self.meshes is not None:
             self.refine_stage_positions()
+        else:
+            if self._refined_init_offset is None:
+                self._check_height_width_order()
         target_func = partial(Stitcher.subprocess_match_list_of_overlaps,
                               root_dir=self.imgrootdir, loader_config=loader_config,
                               **kwargs)
