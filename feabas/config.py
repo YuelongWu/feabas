@@ -207,7 +207,7 @@ def tensorstore_render_dir():
     return outdir
 
 
-lru_cache(maxsize=1)
+@lru_cache(maxsize=1)
 def data_resolution():
     """
     raw data resolution.
@@ -255,7 +255,7 @@ def data_resolution():
     return dt_res
 
 
-lru_cache(maxsize=1)
+@lru_cache(maxsize=1)
 def montage_resolution():
     """
     highest resolution of rendered montage. This will be defined as mip0
@@ -270,7 +270,7 @@ def montage_resolution():
     return mt_res
 
 
-lru_cache(maxsize=1)
+@lru_cache(maxsize=1)
 def thumbnail_resolution():
     thumbnail_mip_lvl = thumbnail_configs().get('thumbnail_mip_level', 6)
     thumbnail_resolution = montage_resolution() * (2 ** thumbnail_mip_lvl)
