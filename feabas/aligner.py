@@ -735,7 +735,7 @@ class Stack:
             dxy = np.concatenate([lnk.dxy(gear=1) for lnk in lnks], axis=0)
             dis = np.sum(dxy ** 2, axis=1)**0.5
             residue[matchname] = (dis.max(), dis.mean())
-        logger.info(f'{optm.meshes[0].name.replace(Stack.DUPLICATED_SUFIX,'')} -> {optm.meshes[-1].name.replace(Stack.DUPLICATED_SUFIX,'')}: cost {cost} | {time.time()-t0} sec')
+        logger.info(f"{optm.meshes[0].name.replace(Stack.DUPLICATED_SUFIX,'')} -> {optm.meshes[-1].name.replace(Stack.DUPLICATED_SUFIX,'')}: cost {cost} | {time.time()-t0} sec")
         return residue
 
 
