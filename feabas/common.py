@@ -429,7 +429,7 @@ def find_elements_in_array(array, elements, tol=0):
 
 def numpy_to_str_ascii(ar):
     t = ar.clip(0,255).astype(np.uint8).ravel()
-    return t.tostring().decode('ascii')
+    return t.tobytes().decode('ascii')
 
 
 def str_to_numpy_ascii(s):
