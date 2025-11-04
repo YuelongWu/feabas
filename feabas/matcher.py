@@ -463,6 +463,7 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
     callback_settings = kwargs.get('callback_settings', {'early_stop_thresh': 0.1, 'chances':10, 'eval_step': 5})
     render_weight_threshold = kwargs.get('render_weight_threshold', 0)
     stiffness_lambda = kwargs.pop('stiffness_lambda', 1)
+    affine_approximated_render = kwargs.pop('affine_approximated_render', True)
     if num_workers > 1 and batch_size is not None:
         batch_size = max(1, batch_size / num_workers)
     if isinstance(image_loader0, dal.AbstractImageLoader):
@@ -540,6 +541,10 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
                 subpixel = True
             else:
                 subpixel = do_subpixel
+            if affine_approximated_render:
+                affine_approx_tol = 0.1
+            else:
+                affine_approx_tol = 0
         else:
             mnb = 1
             if refine_mode == 2:
@@ -550,6 +555,10 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
                 subpixel = False
             else:
                 subpixel = do_subpixel
+            if affine_approximated_render:
+                affine_approx_tol = max(1, 0.02 * sp)
+            else:
+                affine_approx_tol = 0
         if distributor == 'cartesian_bbox':
             bboxes0, bboxes1 = distributor_cartesian_bbox(mesh0, mesh1, sp,
                 min_num_blocks=mnb, shrink_factor=shrink_factor, zorder=True)
@@ -574,7 +583,8 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
             if num_batchs == 1:
                 xy0, xy1, conf = bboxes_mesh_renderer_matcher(mesh0, mesh1,
                     image_loader0, image_loader1, bboxes0, bboxes1,
-                    batch_size=batch_size, pad=pad, subpixel=subpixel, **kwargs)
+                    batch_size=batch_size, pad=pad, subpixel=subpixel, affine_approx_tol=affine_approx_tol,
+                    **kwargs)
             else:
                 batch_indices = np.linspace(0, num_blocks, num=num_batchs+1, endpoint=True)
                 batch_indices = np.unique(batch_indices.astype(np.int32))
@@ -589,7 +599,7 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
                     batched_bboxes1.append(bboxes1[bidx0:bidx1])
                     batched_bboxes_union0.append(unary_union(bbox_regions0[bidx0:bidx1]))
                     batched_bboxes_union1.append(unary_union(bbox_regions1[bidx0:bidx1]))
-                target_func = partial(bboxes_mesh_renderer_matcher, pad=pad, subpixel=subpixel, **kwargs)
+                target_func = partial(bboxes_mesh_renderer_matcher, pad=pad, subpixel=subpixel, affine_approx_tol=affine_approx_tol, **kwargs)
                 submeshes0 = mesh0.submeshes_from_regions(batched_bboxes_union0, save_material=False)
                 submeshes1 = mesh1.submeshes_from_regions(batched_bboxes_union1, save_material=False)
                 xy0 = []
@@ -615,7 +625,7 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
         else:
             xy0, xy1, conf = bboxes_mesh_renderer_matcher(mesh0, mesh1,
                 image_loader0, image_loader1, bboxes0, bboxes1,
-                batch_size=batch_size, pad=pad, subpixel=subpixel, **kwargs)
+                batch_size=batch_size, pad=pad, subpixel=subpixel, affine_approx_tol=affine_approx_tol, **kwargs)
         if np.all(conf <= conf_thresh):
             if not initialized:
                 return invalid_output
@@ -731,6 +741,7 @@ def bboxes_mesh_renderer_matcher(mesh0, mesh1, image_loader0, image_loader1, bbo
     subpixel = kwargs.get('subpixel', False)
     render_weight_threshold = kwargs.get('render_weight_threshold', 0)
     mask_range = kwargs.get('mask_range', None)
+    affine_approx_tol = kwargs.get('affine_approx_tol', 0.0)
     if isinstance(mesh0, dict):
         mesh0 = Mesh(**mesh0)
     elif isinstance(mesh0, str):
@@ -762,8 +773,8 @@ def bboxes_mesh_renderer_matcher(mesh0, mesh1, image_loader0, image_loader1, bbo
     for bidx0, bidx1 in zip(batch_indices[:-1], batch_indices[1:]):
         batched_block_indices0.append(bboxes0[bidx0:bidx1])
         batched_block_indices1.append(bboxes1[bidx0:bidx1])
-    render0 = MeshRenderer.from_mesh(mesh0, image_loader=image_loader0, geodesic_mask=geodesic_mask, render_weight_threshold=render_weight_threshold)
-    render1 = MeshRenderer.from_mesh(mesh1, image_loader=image_loader1, geodesic_mask=geodesic_mask, render_weight_threshold=render_weight_threshold)
+    render0 = MeshRenderer.from_mesh(mesh0, image_loader=image_loader0, geodesic_mask=geodesic_mask, render_weight_threshold=render_weight_threshold, affine_approx_tol=affine_approx_tol)
+    render1 = MeshRenderer.from_mesh(mesh1, image_loader=image_loader1, geodesic_mask=geodesic_mask, render_weight_threshold=render_weight_threshold, affine_approx_tol=affine_approx_tol)
     if (render0 is None) or (render1 is None):
         xy0 = np.empty((0,2))
         xy1 = np.empty((0,2))

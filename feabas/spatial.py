@@ -53,16 +53,18 @@ def fit_affine(pts0, pts1, return_rigid=False, weight=None, svd_clip=(1,1), avoi
         pts1_pad = np.insert(pts1/std_scl, 2, 1, axis=-1)
         res = np.linalg.lstsq(pts1_pad, pts0_pad, rcond=None)
         A = res[0]
-    if return_rigid:
-        u, s, vh = np.linalg.svd(A[:2,:2], compute_uv=True)
-        if svd_clip is not None:
-            s = s.clip(svd_clip[0], svd_clip[-1])
-        R = A.copy()
-        R[:2,:2] = u @ np.diag(s) @ vh
-        R[-1,:2] = R[-1,:2] + mm0 - mm1 @ R[:2,:2]
-        R[:,-1] = np.array([0,0,1])
     A[-1,:2] = A[-1,:2] + mm0 - mm1 @ A[:2,:2]
     A[:,-1] = np.array([0,0,1])
+    if return_rigid:
+        if svd_clip is not None:
+            u, s, vh = np.linalg.svd(A[:2,:2], compute_uv=True)
+            s = s.clip(svd_clip[0], svd_clip[-1])
+            R = A.copy()
+            R[:2,:2] = u @ np.diag(s) @ vh
+            R[-1,:2] = R[-1,:2] + mm0 - mm1 @ R[:2,:2]
+            R[:,-1] = np.array([0,0,1])
+        else:
+            R = A
     if return_rigid:
         return A, R
     else:
@@ -533,6 +535,24 @@ def find_rotation_for_minimum_rectangle(poly, rounding=0):
     if np.abs(theta) > np.pi/2:
         theta = np.pi + theta
     return theta
+
+
+def extract_coords_from_geocollections(G, convert_to_numpy=True):
+    pts = []
+    if G.is_empty:
+        return pts
+    elif hasattr(G, 'geoms'):
+        for g in G.geoms:
+            pts.extend(extract_coords_from_geocollections(g, convert_to_numpy=False))
+    else:
+        try:
+            pts = list(G.coords)
+        except (NotImplementedError, AttributeError):
+            if hasattr(G, 'boundary'):
+                pts = extract_coords_from_geocollections(G.boundary, convert_to_numpy=False)
+    if convert_to_numpy:
+        pts = np.asarray(pts).reshape(-1,2)
+    return pts
 
 
 class Geometry:

@@ -20,7 +20,7 @@ from feabas.matcher import stitching_matcher
 from feabas.mesh import Mesh
 from feabas.optimizer import SLM, relax_mesh_most_deformed
 from feabas import common, caching, storage, logging
-from feabas.spatial import scale_coordinates
+from feabas.spatial import scale_coordinates, fit_affine
 import feabas.constant as const
 from feabas.config import SECTION_THICKNESS, data_resolution, CHECKPOINT_TIME_INTERVAL, MAXIMUM_DEFORM_ALLOWED
 
@@ -1185,7 +1185,7 @@ class Stitcher:
 
 
 
-Mesh_Info = namedtuple('Mesh_Info', ['moving_vertices', 'moving_offsets', 'triangles', 'fixed_verticess'])
+Mesh_Info = namedtuple('Mesh_Info', ['moving_vertices', 'moving_offsets', 'triangles', 'fixed_vertices'])
 
 
 class MontageRenderer:
@@ -1197,7 +1197,7 @@ class MontageRenderer:
     Args:
         imgpaths(list): list of paths of the image tile.
         mesh_info(list): list of mesh information with each element as
-            (moving_vertices, moving_offsets, triangles, fixed_verticess).
+            (moving_vertices, moving_offsets, triangles, fixed_vertices).
         tile_sizes(N x 2 ndarray): tile sizes of each tile.
     Kwargs:
         loader_settings(dict): settings to initialize the image loader, refer to
@@ -1219,6 +1219,7 @@ class MontageRenderer:
         self._identical_tile_size = np.all(np.ptp(self._tile_sizes, axis=0) == 0)
         self._mesh_info = mesh_info
         self._interpolators = None
+        self._affine_approximators = None
         self._rtree = None
         self._image_loader = None
 
@@ -1328,6 +1329,7 @@ class MontageRenderer:
         scale = kwargs.pop('scale', 1)
         fillval = kwargs.get('fillval', self.image_loader.default_fillval)
         dtype_out = kwargs.get('dtype_out', self.image_loader.dtype)
+        affine_tolerance = kwargs.get('affine_tolerance', 0)
         sigma = 2.5 # sigma for pyramid generation.
         weight_eps = 1e-3
         bbox = scale_coordinates(bbox, 1/scale)
@@ -1357,17 +1359,25 @@ class MontageRenderer:
             x_msh = x0[slc_x]
             y_msh = y0[slc_y]
             xx, yy = np.meshgrid(x_msh, y_msh)
-            x_interp, y_interp = self.interpolators[indx]
             offset = self._mesh_info[indx].moving_offsets.ravel()
             xxt = xx - offset[0]
             yyt = yy - offset[1]
-            map_x = x_interp(xxt, yyt)
-            mask =map_x.mask
-            if np.all(mask, axis=None):
-                continue
-            map_y = y_interp(xxt, yyt)
-            x_field = np.nan_to_num(map_x.data, nan=-1, copy=False)
-            y_field = np.nan_to_num(map_y.data, nan=-1, copy=False)
+            field_generated = False
+            if affine_tolerance > 0:
+                A, t, res = self.affine_approximators[indx]
+                if res < affine_tolerance:
+                    x_field = xxt * A[0,0] + yyt * A[1,0] + t[0]
+                    y_field = xxt * A[0,1] + yyt * A[1,1] + t[1]
+                    field_generated = True
+            if not field_generated:
+                x_interp, y_interp = self.interpolators[indx]
+                map_x = x_interp(xxt, yyt)
+                mask = map_x.mask
+                if np.all(mask, axis=None):
+                    continue
+                map_y = y_interp(xxt, yyt)
+                x_field = np.nan_to_num(map_x.data, nan=-1, copy=False)
+                y_field = np.nan_to_num(map_y.data, nan=-1, copy=False)
             tile_ht, tile_wd = self.tile_size(indx)
             weight = np.minimum.reduce([x_field - clip_ltrb[0] + 0.5,
                                     - x_field + tile_wd - clip_ltrb[2] - 0.5,
@@ -1760,12 +1770,26 @@ class MontageRenderer:
         if self._interpolators is None:
             self._interpolators = []
             for msh in self._mesh_info:
-                v1, T, v0 = msh.moving_vertices, msh.triangles, msh.fixed_verticess
+                v1, T, v0 = msh.moving_vertices, msh.triangles, msh.fixed_vertices
                 mattri = matplotlib.tri.Triangulation(v1[:,0], v1[:,1], triangles=T)
                 xinterp = matplotlib.tri.LinearTriInterpolator(mattri, v0[:,0])
                 yinterp = matplotlib.tri.LinearTriInterpolator(mattri, v0[:,1])
                 self._interpolators.append((xinterp, yinterp))
         return self._interpolators
+
+
+    @property
+    def affine_approximators(self):
+        if self._affine_approximators is None:
+            self._affine_approximators = []
+            for msh in self._mesh_info:
+                v1, v0 = msh.moving_vertices, msh.fixed_vertices
+                A_a = fit_affine(v0, v1)
+                A = A_a[:2,:2]
+                t = A_a[-1,:2]
+                res = np.max(np.sum((v1 - v0 @ A - t)**2, axis=-1)) ** 0.5
+                self._affine_approximators.append((A, t, res))
+        return self._affine_approximators
 
 
     @property

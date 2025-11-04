@@ -292,6 +292,8 @@ def render_by_subregions(map_x, map_y, mask, img_loader, fileid=None,  **kwargs)
     multichannel = False
     while np.any(to_render, axis=None):
         if seed_indices.size > 0:
+            sel_idx = to_render[seed_indices[:,0], seed_indices[:,1]]
+            seed_indices = seed_indices[sel_idx]
             indx0_sel = seed_indices[0, 0]
             indx1_sel = seed_indices[0, 1]
         else:
@@ -340,9 +342,6 @@ def render_by_subregions(map_x, map_y, mask, img_loader, fileid=None,  **kwargs)
             else:
                 imgt[mskt] = imgtt.ravel()
         to_render = to_render & (~mskt)
-        if seed_indices.size > 0:
-            sel_idx = to_render[seed_indices[:,0], seed_indices[:,1]]
-            seed_indices = seed_indices[sel_idx]
     return imgt
 
 

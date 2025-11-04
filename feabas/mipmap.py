@@ -110,6 +110,7 @@ def mip_one_level(src_dir, out_dir, **kwargs):
         kwargs.setdefault('mx_dis', (tile_size[0]/2+4, tile_size[-1]/2+4))
         rendered = render_whole_mesh(M, image_loader, prefix, tile_size=tile_size,
                                      pattern=pattern+'.'+ext_out, scale= 1/downsample,
+                                     affine_approx_tol=1e-2,
                                      **kwargs)
         if len(rendered) > 0:
             fnames = sorted(list(rendered.keys()))

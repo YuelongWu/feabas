@@ -38,6 +38,8 @@ class MeshRenderer:
         self._dtype = kwargs.get('dtype', None)
         self._geodesic_mask = kwargs.get('geodesic_mask', False)
         self._geodesic_info = kwargs.get('geodesic_info', None)
+        self._affine_approximator = kwargs.get('affine_approximator', None)
+        self._affine_approx_tol = kwargs.get('affine_approx_tol', 0)
 
 
     @classmethod
@@ -47,6 +49,7 @@ class MeshRenderer:
         local_cache = kwargs.get('cache', False)
         render_weight_threshold = kwargs.get('render_weight_threshold', 0)
         geodesic_mask = kwargs.get('geodesic_mask', False)
+        affine_approx_tol = kwargs.pop('affine_approx_tol', 0)
         msh_wt = srcmesh.weight_multiplier_for_render()
         if np.any(msh_wt != 1):
             weighted_material = True
@@ -83,6 +86,22 @@ class MeshRenderer:
             geodesic_info['seg_line'] = unary_union([shpgeo.LineString(vtx0[s]) for s in segs])
         else:
             geodesic_info = None
+        if affine_approx_tol == 0:
+            affine_approximator = None
+        else:
+            affine_approximator = {}
+            v0_a = srcmesh.vertices(gear=gear[0])
+            v1_a = srcmesh.vertices_w_offset(gear=gear[-1])
+            vidx_a = np.unique(srcmesh.edges(tri_mask=render_mask))
+            A_a = spatial.fit_affine(v1_a[vidx_a], v0_a[vidx_a])
+            v0_a_t = v0_a[vidx_a] @ A_a[:2,:2] + A_a[-1,:2]
+            dis_a = np.max(np.sum((v1_a[vidx_a] - v0_a_t)**2, axis=-1)) ** 0.5
+            affine_approximator['global_affine'] = A_a
+            affine_approximator['global_residue'] = dis_a
+            if dis_a > affine_approx_tol:
+                str_tree, tids = srcmesh.triangles_STRtree(gear=gear[0], tri_mask=render_mask)
+                T0 = srcmesh.triangles[tids]
+                affine_approximator['vertices'] = (str_tree, T0, v0_a, v1_a)
         interpolators = []
         weight_generator = []
         collision_region = []
@@ -136,7 +155,8 @@ class MeshRenderer:
             weight_params=weight_params, weight_generator=weight_generator,
             weight_multiplier=weight_multiplier,
             collision_region=collision_region, resolution=resolution,
-            geodesic_info=geodesic_info,
+            geodesic_info=geodesic_info, affine_approximator=affine_approximator,
+            affine_approx_tol=affine_approx_tol,
             **kwargs)
 
 
@@ -369,6 +389,49 @@ class MeshRenderer:
         return A, t
 
 
+    def bbox_affine_tform(self, bbox, offsetting=True, svd_clip=None):
+        empty_output = (None, None, None)
+        if self._affine_approximator is None:
+            return empty_output
+        bbox0 = np.array(bbox).reshape(4)
+        if offsetting:
+            bbox0 = bbox0 - np.tile(self._offset.ravel(), 2)
+        str_tree, T0, v0m, v1m = self._affine_approximator['vertices']
+        idx_T = str_tree.query(shpgeo.box(*bbox0), predicate='intersects')
+        if idx_T.size == 0:
+            return empty_output
+        T = T0[idx_T]
+        idx_v = np.unique(T, axis=None)
+        v0 = v0m[idx_v]
+        v1 = v1m[idx_v]
+        _, A_a = spatial.fit_affine(v1, v0, return_rigid=True, svd_clip=svd_clip)
+        A = A_a[:2,:2]
+        t = A_a[-1,:2]
+        res = np.max(np.sum((v1 - v0 @ A - t)**2, axis=-1)) ** 0.5
+        return A, t, res
+
+
+    def crop_field_affine(self, bbox, A, t, **kwargs):
+        offsetting = kwargs.get('offsetting', True)
+        out_resolution = kwargs.get('out_resolution', None)
+        bbox0 = np.array(bbox).reshape(4)
+        outwd = round(bbox0[2]-bbox0[0])
+        outht = round(bbox0[3]-bbox0[1])
+        if offsetting:
+            bbox0 = bbox0 - np.tile(self._offset.ravel(), 2)
+        xs = np.linspace(bbox0[0], bbox0[2], num=outwd, endpoint=False, dtype=float)
+        ys = np.linspace(bbox0[1], bbox0[3], num=outht, endpoint=False, dtype=float)
+        if out_resolution is not None:
+            scale = out_resolution / self.resolution
+            xs = spatial.scale_coordinates(xs, scale)
+            ys = spatial.scale_coordinates(ys, scale)
+        xx, yy = np.meshgrid(xs, ys)
+        x_field = xx * A[0,0] + yy * A[1,0] + t[0]
+        y_field = xx * A[0,1] + yy * A[1,1] + t[1]
+        mask = np.ones_like(x_field, dtype=bool)
+        return x_field, y_field, mask
+
+
     def crop_field(self, bbox, **kwargs):
         """
         compute the deformation field within a bounding box.
@@ -388,6 +451,7 @@ class MeshRenderer:
         mode = kwargs.get('mode', const.RENDER_FULL)
         offsetting = kwargs.get('offsetting', True)
         out_resolution = kwargs.get('out_resolution', None)
+        affine_tolerance = kwargs.get('affine_tolerance', self._affine_approx_tol)
         bbox0 = np.array(bbox).reshape(4)
         outwd = round(bbox0[2]-bbox0[0])
         outht = round(bbox0[3]-bbox0[1])
@@ -407,67 +471,76 @@ class MeshRenderer:
             A, t = self.local_affine_tform(bcntr, offsetting=False, svd_clip=svd_clip)
             if A is None:
                 return empty_output
-            xs = np.linspace(bbox0[0], bbox0[2], num=outwd, endpoint=False, dtype=float)
-            ys = np.linspace(bbox0[1], bbox0[3], num=outht, endpoint=False, dtype=float)
-            if out_resolution is not None:
-                scale = out_resolution / self.resolution
-                xs = spatial.scale_coordinates(xs, scale)
-                ys = spatial.scale_coordinates(ys, scale)
-            xx, yy = np.meshgrid(xs, ys)
-            x_field = xx * A[0,0] + yy * A[1,0] + t[0]
-            y_field = xx * A[0,1] + yy * A[1,1] + t[1]
-            mask = np.ones_like(x_field, dtype=bool)
-        elif mode == const.RENDER_CONTIGEOUS:
-            x_field, y_field, weight = self.field_w_weight(bbox0, region_id=None,
-                out_resolution=out_resolution, offsetting=False, compute_wt=True)
-            if weight is None:
-                mask = None
-            else:
-                mask = weight > 0
-        elif mode == const.RENDER_FULL:
-            regions = self.region_finder_for_bbox(bbox0, offsetting=False)
-            if regions.size == 0:
-                return empty_output
-            elif regions.size == 1:
-                blend = const.BLEND_NONE
-            else:
-                blend = kwargs.get('blend', const.BLEND_MAX)
-            initialized = False
-            for rid in regions:
-                xf, yf, wt = self.field_w_weight(bbox0, region_id=rid,
-                    out_resolution=out_resolution, offsetting=False, compute_wt=True)
-                if xf is None:
-                    continue
-                if not initialized:
-                    x_field = np.zeros_like(xf)
-                    y_field = np.zeros_like(yf)
-                    weight = np.zeros_like(wt)
-                    initialized = True
-                if blend == const.BLEND_LINEAR:
-                    x_field = x_field + xf * wt
-                    y_field = y_field + yf * wt
-                    weight = weight + wt
-                elif blend == const.BLEND_MAX:
-                    tmask = wt >= weight
-                    x_field[tmask] = xf[tmask]
-                    y_field[tmask] = yf[tmask]
-                    weight[tmask] = wt[tmask]
-                else:
-                    tmask = wt > 0
-                    x_field[tmask] = xf[tmask]
-                    y_field[tmask] = yf[tmask]
-                    weight[tmask] = wt[tmask]
-            if not initialized:
-                return empty_output
-            if blend == const.BLEND_LINEAR:
-                with np.errstate(invalid='ignore', divide='ignore'):
-                    x_field = np.nan_to_num(x_field / weight, nan=0,posinf=0, neginf=0)
-                    y_field = np.nan_to_num(y_field / weight, nan=0,posinf=0, neginf=0)
-            mask = weight > 0
+            x_field, y_field, mask = self.crop_field_affine(bbox0, A, t, offsetting=False, out_resolution=out_resolution)
         else:
-            raise ValueError
-        if self._geodesic_mask:
-            mask = weight
+            if self._geodesic_mask and (self._geodesic_info is not None):
+                if self._geodesic_info['seg_line'].intersects(shpgeo.box(*bbox0)):
+                    affine_tolerance = 0
+            field_generated = False
+            if (affine_tolerance > 0) and (self._affine_approximator is not None):
+                if self._affine_approximator['global_residue'] < affine_tolerance:
+                    A_a = self._affine_approximator['global_affine']
+                    A = A_a[:2,:2]
+                    t = A_a[-1,:2]
+                    x_field, y_field, mask = self.crop_field_affine(bbox0, A, t, offsetting=False, out_resolution=out_resolution)
+                    field_generated = True
+                else:
+                    A, t, res = self.bbox_affine_tform(bbox0, offsetting=False)
+                    if res < affine_tolerance:
+                        x_field, y_field, mask = self.crop_field_affine(bbox0, A, t, offsetting=False, out_resolution=out_resolution)
+                        field_generated = True
+            if not field_generated:
+                if mode == const.RENDER_CONTIGEOUS:
+                    x_field, y_field, weight = self.field_w_weight(bbox0, region_id=None,
+                        out_resolution=out_resolution, offsetting=False, compute_wt=True)
+                    if weight is None:
+                        mask = None
+                    else:
+                        mask = weight > 0
+                elif mode == const.RENDER_FULL:
+                    regions = self.region_finder_for_bbox(bbox0, offsetting=False)
+                    if regions.size == 0:
+                        return empty_output
+                    elif regions.size == 1:
+                        blend = const.BLEND_NONE
+                    else:
+                        blend = kwargs.get('blend', const.BLEND_MAX)
+                    initialized = False
+                    for rid in regions:
+                        xf, yf, wt = self.field_w_weight(bbox0, region_id=rid,
+                            out_resolution=out_resolution, offsetting=False, compute_wt=True)
+                        if xf is None:
+                            continue
+                        if not initialized:
+                            x_field = np.zeros_like(xf)
+                            y_field = np.zeros_like(yf)
+                            weight = np.zeros_like(wt)
+                            initialized = True
+                        if blend == const.BLEND_LINEAR:
+                            x_field = x_field + xf * wt
+                            y_field = y_field + yf * wt
+                            weight = weight + wt
+                        elif blend == const.BLEND_MAX:
+                            tmask = wt >= weight
+                            x_field[tmask] = xf[tmask]
+                            y_field[tmask] = yf[tmask]
+                            weight[tmask] = wt[tmask]
+                        else:
+                            tmask = wt > 0
+                            x_field[tmask] = xf[tmask]
+                            y_field[tmask] = yf[tmask]
+                            weight[tmask] = wt[tmask]
+                    if not initialized:
+                        return empty_output
+                    if blend == const.BLEND_LINEAR:
+                        with np.errstate(invalid='ignore', divide='ignore'):
+                            x_field = np.nan_to_num(x_field / weight, nan=0,posinf=0, neginf=0)
+                            y_field = np.nan_to_num(y_field / weight, nan=0,posinf=0, neginf=0)
+                    mask = weight > 0
+                else:
+                    raise ValueError
+                if self._geodesic_mask:
+                    mask = weight
         return x_field, y_field, mask
 
 
