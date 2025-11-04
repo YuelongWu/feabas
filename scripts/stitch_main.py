@@ -68,6 +68,19 @@ def optimize_one_section(matchname, outname, **kwargs):
     mesh_sizes = mesh_settings.pop('mesh_sizes', [100, 300])
     t0 = time.time()
     stitcher = Stitcher.from_h5(matchname, load_matches=True, load_meshes=False)
+    if stitcher.num_tiles == 1:
+        logger.info(f"{bname}: single tile: generating identity transform and skipping optimization")
+        mesh_settings["border_width"] = 0.0
+        mesh_settings["soft_top"] = 1.0
+        mesh_settings["soft_top_width"] = 0.0
+        mesh_settings["soft_left"] = 1.0
+        mesh_settings["soft_left_width"] = 0.0
+        stitcher.initialize_meshes([mesh_sizes[1]], **mesh_settings)
+        stitcher.initialize_optimizer()
+        stitcher.refine_stage_positions()
+        stitcher.normalize_coordinates(**normalize_setting)
+        stitcher.save_to_h5(outname, save_matches=False, save_meshes=True)
+        return
     if stitcher.num_links == 0:
         stitcher.initialize_meshes(mesh_sizes, **mesh_settings)
         stitcher.initialize_optimizer()

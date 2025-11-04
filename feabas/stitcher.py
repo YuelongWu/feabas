@@ -331,6 +331,11 @@ class Stitcher:
             overlaps = self.overlaps
         else:
             overlaps = self.overlaps_without_matches
+        if self.num_tiles == 1:
+            logger.info("Single-tile section detected — skipping matching and creating identity mesh.")
+            self.matches = {}
+            self._connected_subsystem = np.array([0], dtype=np.int32)
+            return 1, False
         if overlaps.size == 0:
             logger.warning('no expected overlap, skip matching..')
             return 0, False
