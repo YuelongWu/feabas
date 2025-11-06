@@ -397,7 +397,7 @@ class MeshRenderer:
         if offsetting:
             bbox0 = bbox0 - np.tile(self._offset.ravel(), 2)
         str_tree, T0, v0m, v1m = self._affine_approximator['vertices']
-        idx_T = str_tree.query(shpgeo.box(*bbox0), predicate='intersects')
+        idx_T = str_tree.query(shpgeo.box(*(bbox0-0.5)), predicate='intersects')
         if idx_T.size == 0:
             return empty_output
         T = T0[idx_T]
@@ -414,6 +414,7 @@ class MeshRenderer:
     def crop_field_affine(self, bbox, A, t, **kwargs):
         offsetting = kwargs.get('offsetting', True)
         out_resolution = kwargs.get('out_resolution', None)
+        precise_mask = kwargs.get('precise_mask', True)
         bbox0 = np.array(bbox).reshape(4)
         outwd = round(bbox0[2]-bbox0[0])
         outht = round(bbox0[3]-bbox0[1])
@@ -428,7 +429,17 @@ class MeshRenderer:
         xx, yy = np.meshgrid(xs, ys)
         x_field = xx * A[0,0] + yy * A[1,0] + t[0]
         y_field = xx * A[0,1] + yy * A[1,1] + t[1]
-        mask = np.ones_like(x_field, dtype=bool)
+        if precise_mask:
+            shpbox = shpgeo.box(*(bbox0-0.5))
+            covered = self.covered_regions
+            intsct = covered.intersection(shpbox)
+            if (shpbox.area - intsct.area) < 1:
+                mask = np.ones_like(x_field, dtype=bool)
+            else:
+                shapely.prepare(intsct)
+                mask = shapely.contains_xy(intsct, xx, yy)
+        else:
+            mask = np.ones_like(x_field, dtype=bool)
         return x_field, y_field, mask
 
 
@@ -452,6 +463,7 @@ class MeshRenderer:
         offsetting = kwargs.get('offsetting', True)
         out_resolution = kwargs.get('out_resolution', None)
         affine_tolerance = kwargs.get('affine_tolerance', self._affine_approx_tol)
+        log_sigma = kwargs.get('log_sigma', 0)
         bbox0 = np.array(bbox).reshape(4)
         outwd = round(bbox0[2]-bbox0[0])
         outht = round(bbox0[3]-bbox0[1])
@@ -471,7 +483,7 @@ class MeshRenderer:
             A, t = self.local_affine_tform(bcntr, offsetting=False, svd_clip=svd_clip)
             if A is None:
                 return empty_output
-            x_field, y_field, mask = self.crop_field_affine(bbox0, A, t, offsetting=False, out_resolution=out_resolution)
+            x_field, y_field, mask = self.crop_field_affine(bbox0, A, t, offsetting=False, out_resolution=out_resolution, precise_mask=log_sigma>0)
         else:
             if self._geodesic_mask and (self._geodesic_info is not None):
                 if self._geodesic_info['seg_line'].intersects(shpgeo.box(*bbox0)):
@@ -482,12 +494,12 @@ class MeshRenderer:
                     A_a = self._affine_approximator['global_affine']
                     A = A_a[:2,:2]
                     t = A_a[-1,:2]
-                    x_field, y_field, mask = self.crop_field_affine(bbox0, A, t, offsetting=False, out_resolution=out_resolution)
+                    x_field, y_field, mask = self.crop_field_affine(bbox0, A, t, offsetting=False, out_resolution=out_resolution, precise_mask=log_sigma>0)
                     field_generated = True
                 else:
                     A, t, res = self.bbox_affine_tform(bbox0, offsetting=False)
                     if res < affine_tolerance:
-                        x_field, y_field, mask = self.crop_field_affine(bbox0, A, t, offsetting=False, out_resolution=out_resolution)
+                        x_field, y_field, mask = self.crop_field_affine(bbox0, A, t, offsetting=False, out_resolution=out_resolution, precise_mask=log_sigma>0)
                         field_generated = True
             if not field_generated:
                 if mode == const.RENDER_CONTIGEOUS:
@@ -658,6 +670,15 @@ class MeshRenderer:
                 self._default_fillval = 0
         return self._default_fillval
 
+
+    @property
+    def covered_regions(self):
+        if not hasattr(self, '_covered_regions'):
+            covered_region = unary_union(self._region_tree.geometries)
+            covered_region = covered_region.buffer(-0.5).simplify(0.5)
+            shapely.prepare(covered_region)
+            self._covered_regions = covered_region
+        return self._covered_regions
 
 
 def render_whole_mesh(mesh, image_loader, prefix, **kwargs):
