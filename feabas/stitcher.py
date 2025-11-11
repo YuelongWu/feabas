@@ -405,35 +405,36 @@ class Stitcher:
 
 
     def refine_stage_positions(self):
-        if self.meshes is None:
-            dummy_meshes = True
-        else:
-            dummy_meshes = False
-        if dummy_meshes:
-            mesh_cache = {}
-            meshes = []
-            for k, tilesz in enumerate(self.tile_sizes):
-                mkey = tuple(tilesz)
-                if mkey in mesh_cache:
-                    M0 = mesh_cache[mkey].copy(override_dict={'uid':k})
-                else:
-                    tileht, tilewd = tilesz
-                    M0 = Mesh.from_bbox((0,0,tilewd,tileht), cartesian=True, mesh_size=max(tileht, tilewd), uid=k)
-                    mesh_cache[mkey] = M0
-                meshes.append(M0)
-            for M, offset in zip(meshes, self._init_offset):
-                M.apply_translation(offset, gear=const.MESH_GEAR_FIXED)
-            self.meshes = meshes
-            self.optimize_translation(residue_threshold=0.5)
-            self.connect_isolated_subsystem(explode_factor=1.0)
-        txy = np.array([m.estimate_translation(gear=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING)) for m in self.meshes])
-        self._refined_init_offset = np.round(txy - txy.min(axis=0)).astype(self._init_offset.dtype)
-        txy_chg = self._refined_init_offset - self._init_offset
-        self._refined_init_bboxes = self._init_bboxes + np.tile(txy_chg, 2)
-        self._overlaps = None
-        self._overlap_widths = None
-        if dummy_meshes:
-            self.meshes = None
+        if self.num_links > 0:
+            if self.meshes is None:
+                dummy_meshes = True
+            else:
+                dummy_meshes = False
+            if dummy_meshes:
+                mesh_cache = {}
+                meshes = []
+                for k, tilesz in enumerate(self.tile_sizes):
+                    mkey = tuple(tilesz)
+                    if mkey in mesh_cache:
+                        M0 = mesh_cache[mkey].copy(override_dict={'uid':k})
+                    else:
+                        tileht, tilewd = tilesz
+                        M0 = Mesh.from_bbox((0,0,tilewd,tileht), cartesian=True, mesh_size=max(tileht, tilewd), uid=k)
+                        mesh_cache[mkey] = M0
+                    meshes.append(M0)
+                for M, offset in zip(meshes, self._init_offset):
+                    M.apply_translation(offset, gear=const.MESH_GEAR_FIXED)
+                self.meshes = meshes
+                self.optimize_translation(residue_threshold=0.5)
+                self.connect_isolated_subsystem(explode_factor=1.0)
+            txy = np.array([m.estimate_translation(gear=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING)) for m in self.meshes])
+            self._refined_init_offset = np.round(txy - txy.min(axis=0)).astype(self._init_offset.dtype)
+            txy_chg = self._refined_init_offset - self._init_offset
+            self._refined_init_bboxes = self._init_bboxes + np.tile(txy_chg, 2)
+            self._overlaps = None
+            self._overlap_widths = None
+            if dummy_meshes:
+                self.meshes = None
         
 
 
@@ -616,6 +617,9 @@ class Stitcher:
         groupings = self.groupings(normalize=True)
         if (not kwargs.get('force_update', False)) and (self.meshes is not None):
             return
+        if self.num_links == 0:
+            mesh_sizes = np.inf
+            border_width = 0
         if (not hasattr(mesh_sizes, '__len__')) or (len(mesh_sizes) == 1) or (len(self.matches) == 0):
             tile_mesh_sizes = np.full(self.num_tiles, np.max(mesh_sizes))
         else:
@@ -714,10 +718,15 @@ class Stitcher:
                 M0 = meshes[midx].copy(override_dict={'uid':k, 'soft_factor':tsf})
             else:
                 tileht, tilewd = tile_size
-                M0 = Mesh.from_boarder_bbox((0,0,tilewd,tileht), bd_width=tbwd,
-                    mesh_growth=interior_growth, mesh_size=tmsz, uid=k,
-                    soft_factor=tsf, resolution=self.resolution)
-                M0.set_stiffness_multiplier_from_interp(xinterp=stf_x, yinterp=stf_y)
+                if tmsz > min(tileht, tilewd):
+                    M0 = Mesh.from_bbox((0,0,tilewd,tileht), cartesian=True,
+                                        mesh_size=tmsz, uid=k, soft_factor=tsf,
+                                        resolution=self.resolution)
+                else:
+                    M0 = Mesh.from_boarder_bbox((0,0,tilewd,tileht), bd_width=tbwd,
+                        mesh_growth=interior_growth, mesh_size=tmsz, uid=k,
+                        soft_factor=tsf, resolution=self.resolution)
+                    M0.set_stiffness_multiplier_from_interp(xinterp=stf_x, yinterp=stf_y)
                 M0.center_meshes_w_offsets(gear=const.MESH_GEAR_FIXED)
                 mesh_params_ptr[key] = k
                 mesh_indx[k] = k
