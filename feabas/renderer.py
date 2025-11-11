@@ -390,7 +390,7 @@ class MeshRenderer:
 
 
     def bbox_affine_tform(self, bbox, offsetting=True, svd_clip=None):
-        empty_output = (None, None, None)
+        empty_output = (None, None, np.inf)
         if self._affine_approximator is None:
             return empty_output
         bbox0 = np.array(bbox).reshape(4)
