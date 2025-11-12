@@ -53,8 +53,6 @@ def fit_affine(pts0, pts1, return_rigid=False, weight=None, svd_clip=(1,1), avoi
         pts1_pad = np.insert(pts1/std_scl, 2, 1, axis=-1)
         res = np.linalg.lstsq(pts1_pad, pts0_pad, rcond=None)
         A = res[0]
-    A[-1,:2] = A[-1,:2] + mm0 - mm1 @ A[:2,:2]
-    A[:,-1] = np.array([0,0,1])
     if return_rigid:
         if svd_clip is not None:
             u, s, vh = np.linalg.svd(A[:2,:2], compute_uv=True)
@@ -65,6 +63,8 @@ def fit_affine(pts0, pts1, return_rigid=False, weight=None, svd_clip=(1,1), avoi
             R[:,-1] = np.array([0,0,1])
         else:
             R = A
+    A[-1,:2] = A[-1,:2] + mm0 - mm1 @ A[:2,:2]
+    A[:,-1] = np.array([0,0,1])
     if return_rigid:
         return A, R
     else:
