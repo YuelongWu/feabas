@@ -40,6 +40,7 @@ class MeshRenderer:
         self._geodesic_info = kwargs.get('geodesic_info', None)
         self._affine_approximator = kwargs.get('affine_approximator', None)
         self._affine_approx_tol = kwargs.get('affine_approx_tol', 0)
+        self._covered_region = kwargs.get('covered_region', None)
 
 
     @classmethod
@@ -88,6 +89,7 @@ class MeshRenderer:
             geodesic_info = None
         if affine_approx_tol == 0:
             affine_approximator = None
+            covered_region = None
         else:
             affine_approximator = {}
             v0_a = srcmesh.vertices(gear=gear[0])
@@ -98,6 +100,9 @@ class MeshRenderer:
             dis_a = np.max(np.sum((v1_a[vidx_a] - v0_a_t)**2, axis=-1)) ** 0.5
             affine_approximator['global_affine'] = A_a
             affine_approximator['global_residue'] = dis_a
+            covered_region = srcmesh.shapely_regions(gear=gear[-1], tri_mask=render_mask, offsetting=True)
+            covered_region = covered_region.buffer(-0.5).simplify(0.5)
+            shapely.prepare(covered_region)
             if dis_a > affine_approx_tol:
                 str_tree, tids = srcmesh.triangles_STRtree(gear=gear[0], tri_mask=render_mask)
                 T0 = srcmesh.triangles[tids]
@@ -156,7 +161,7 @@ class MeshRenderer:
             weight_multiplier=weight_multiplier,
             collision_region=collision_region, resolution=resolution,
             geodesic_info=geodesic_info, affine_approximator=affine_approximator,
-            affine_approx_tol=affine_approx_tol,
+            affine_approx_tol=affine_approx_tol, covered_region=covered_region,
             **kwargs)
 
 
@@ -429,15 +434,17 @@ class MeshRenderer:
         xx, yy = np.meshgrid(xs, ys)
         x_field = xx * A[0,0] + yy * A[1,0] + t[0]
         y_field = xx * A[0,1] + yy * A[1,1] + t[1]
-        if precise_mask:
-            shpbox = shpgeo.box(*(bbox0-0.5))
-            covered = self.covered_regions
+        if precise_mask and (self._covered_region is not None):
+            shpbox0 = shpgeo.box(*(bbox0-0.5))
+            mtrx = np.concatenate((A.T, t), axis=None)
+            shpbox = shapely.affinity.affine_transform(shpbox0,mtrx)
+            covered = self._covered_region
             intsct = covered.intersection(shpbox)
             if (shpbox.area - intsct.area) < 1:
                 mask = np.ones_like(x_field, dtype=bool)
             else:
                 shapely.prepare(intsct)
-                mask = shapely.contains_xy(intsct, xx, yy)
+                mask = shapely.contains_xy(intsct, x_field, y_field)
         else:
             mask = np.ones_like(x_field, dtype=bool)
         return x_field, y_field, mask
@@ -670,15 +677,6 @@ class MeshRenderer:
                 self._default_fillval = 0
         return self._default_fillval
 
-
-    @property
-    def covered_regions(self):
-        if not hasattr(self, '_covered_regions'):
-            covered_region = unary_union(self._region_tree.geometries)
-            covered_region = covered_region.buffer(-0.5).simplify(0.5)
-            shapely.prepare(covered_region)
-            self._covered_regions = covered_region
-        return self._covered_regions
 
 
 def render_whole_mesh(mesh, image_loader, prefix, **kwargs):

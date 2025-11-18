@@ -354,17 +354,16 @@ def masked_dog_filter(img, sigma, mask=None, signed=True):
         sigma (float): standard deviation of first Gaussian kernel.
         mask: region that should be kept. H x W
     """
-    sigma0, sigma1 = sigma, 2 * sigma
+    sigma0, sigma1 = sigma, sigma
     if not np.issubdtype(img.dtype, np.floating):
         img = img.astype(np.float32)
     img0f = gaussian_filter1d(gaussian_filter1d(img, sigma0, axis=-1, mode='nearest'), sigma0, axis=-2, mode='nearest')
-    img1f = gaussian_filter1d(gaussian_filter1d(img, sigma1, axis=-1, mode='nearest'), sigma1, axis=-2, mode='nearest')
+    img1f = gaussian_filter1d(gaussian_filter1d(img0f, sigma1, axis=-1, mode='nearest'), sigma1, axis=-2, mode='nearest')
     imgf = img0f - img1f
     if (mask is not None) and (not np.all(mask, axis=None)):
         mask_img = np.ptp(img) * (mask == 0)
-        mask0f = gaussian_filter1d(gaussian_filter1d(mask_img, sigma0, axis=-1, mode='nearest'), sigma0, axis=-2, mode='nearest')
-        mask1f = gaussian_filter1d(gaussian_filter1d(mask_img, sigma1, axis=-1, mode='nearest'), sigma1, axis=-2, mode='nearest')
-        maskf = np.maximum(mask0f, mask1f)
+        sigma_c = (sigma0**2 + sigma1**2) ** 0.5
+        maskf = gaussian_filter1d(gaussian_filter1d(mask_img,sigma_c, axis=-1, mode='nearest'), sigma_c, axis=-2, mode='nearest') * (sigma_c**2) / (sigma0 ** 2)
         imgf_a = np.abs(imgf)
         imgf_a = (imgf_a - maskf).clip(0, None)
         imgf = imgf_a * np.sign(imgf)
