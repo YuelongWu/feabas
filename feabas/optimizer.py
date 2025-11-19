@@ -1757,7 +1757,7 @@ class SLM:
         return self.meshes[0].resolution
 
 
-    def match_residues(self, gear=const.MESH_GEAR_MOVING, use_mask=False, quantile=1):
+    def match_residues(self, gear=const.MESH_GEAR_MOVING, use_mask=False, quantile=0.75):
         dis = []
         for lnk in self.links:
             if use_mask and not lnk.relevant:

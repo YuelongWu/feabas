@@ -1189,7 +1189,7 @@ class Stitcher:
         return len(self.matches)
 
 
-    def match_residues(self, quantile=1):
+    def match_residues(self, quantile=0.75):
         return self._optimizer.match_residues(gear=const.MESH_GEAR_MOVING, use_mask=True, quantile=quantile)
 
 

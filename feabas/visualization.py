@@ -129,7 +129,7 @@ def plot_link(link, gear=const.MESH_GEAR_MOVING, minimum_residue=0, num_matches=
     visualize feabas.optimizer.Link object
     """
     m0, m1 = link.meshes
-    xy0 = link.xy0(gear=gear, use_mask=False)
+    xy0 = link.xy0(gear=gear, use_mask=True)
     xy1 = link.xy1(gear=gear, use_mask=True)
     d = np.sum((xy0 - xy1)**2, axis=-1)**0.5
     idx_s = np.argsort(d)[::-1]
