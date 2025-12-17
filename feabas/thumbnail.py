@@ -392,7 +392,7 @@ def match_two_thumbnails_LRadon(img0, img1, mask0=None, mask1=None, **kwargs):
                 optm.optimize_affine_cascade(target_gear=const.MESH_GEAR_FIXED)
                 optm.anneal(gear=(const.MESH_GEAR_FIXED, const.MESH_GEAR_MOVING), mode=const.ANNEAL_COPY_EXACT)
                 optm.clear_equation_terms()
-                optm.optimize_linear(tol=1.0e-5, targt_gear=const.MESH_GEAR_MOVING)
+                optm.optimize_linear(tol=1.0e-5, targt_gear=const.MESH_GEAR_MOVING, tolerated_perturbation=0.1)
                 valid_num = 0
                 xy0_t_list = []
                 xy1_t_list = []
@@ -532,10 +532,7 @@ def align_two_thumbnails(img0, img1, outname, mask0=None, mask1=None, **kwargs):
     block_match_settings = kwargs.get('block_matching', {}).copy()
     feature_match_dir = kwargs.get('feature_match_dir', None)
     save_feature_match = kwargs.get('save_feature_match', False)
-    logger_info = kwargs.get('logger', None)
-    logger= logging.get_logger(logger_info)
     bname_ext = os.path.basename(outname)
-    bname = bname_ext.replace('.h5', '')
     if feature_match_dir is not None:
         feature_matchname = storage.join_paths(feature_match_dir, bname_ext)
     else:
@@ -549,7 +546,6 @@ def align_two_thumbnails(img0, img1, outname, mask0=None, mask1=None, **kwargs):
             mtch0 = match_two_thumbnails_LRadon(img0, img1, mask0=mask0, mask1=mask1,
                                                 **feature_match_settings)
             if mtch0 is None:
-                logger.warning(f'{bname}: fail to find matches.')
                 return 0
             if save_feature_match:
                 xy0, xy1, weight, _ = mtch0
@@ -582,16 +578,13 @@ def align_two_thumbnails(img0, img1, outname, mask0=None, mask1=None, **kwargs):
                 if conf >= conf_thresh:
                     break
             if conf < conf_thresh:
-                logger.warning(f'{bname}: fail to find matches.')
                 return 0
             txy = (tx * pmcc_scale[-1], ty * pmcc_scale[-1])
             mtch0 = None
     mtch1 = match_two_thumbnails_pmcc(img0, img1, mask0=mask0, mask1=mask1,
                                     initial_matches=mtch0, txy = txy,
                                     **block_match_settings)
-
     if mtch1 is None:
-        logger.warning(f'{bname}: fail to find matches.')
         return 0
     else:
         xy0, xy1, weight, strain = mtch1

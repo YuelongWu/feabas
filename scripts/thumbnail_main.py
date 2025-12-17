@@ -204,6 +204,7 @@ def align_thumbnail_pairs(pairnames, image_dir, out_dir, **kwargs):
         region_labels = [default_mat.mask_label]
     for pname in pairnames:
         try:
+            t0 = time.time()
             sname0_ext, sname1_ext = pname
             sname0 = os.path.splitext(sname0_ext)[0]
             sname1 = os.path.splitext(sname1_ext)[0]
@@ -252,7 +253,12 @@ def align_thumbnail_pairs(pairnames, image_dir, out_dir, **kwargs):
                     mask1 = mask_t
                 minfo1 = thumbnail.prepare_image(img1, mask=mask1, **feature_match_settings)
                 prepared_cache[sname1] = minfo1
-            thumbnail.align_two_thumbnails(minfo0, minfo1, outname, **kwargs)
+            num_mtches = thumbnail.align_two_thumbnails(minfo0, minfo1, outname, **kwargs)
+            if num_mtches == 0:
+                logger.warning(f'{pname}: fail to find matches.')
+            else:
+                dtime = time.time() - t0
+                logger.info(f'{pname}: {num_mtches} matches found in {dtime} sec.')
         except Exception as err:
             logger.error(f'{pname}: error {err}')
 
