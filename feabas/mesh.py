@@ -2425,7 +2425,7 @@ class Mesh:
         elif mode in (const.ANNEAL_CONNECTED_RIGID, const.ANNEAL_CONNECTED_AFFINE):
             N_conn, V_conn = self.connected_vertices()
             self.anneal(gear=gear, mode=const.ANNEAL_GLOBAL_RIGID) # center the mesh
-            if (N_conn == 1) and (mode == const.ANNEAL_GLOBAL_RIGID):
+            if (N_conn == 1) and (mode == const.ANNEAL_CONNECTED_RIGID):
                 return
             v0 = self.vertices_w_offset(gear=gear[0])
             v1 = self.vertices_w_offset(gear=gear[1])
