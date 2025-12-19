@@ -1,6 +1,7 @@
 from collections import defaultdict
 import gc
 import numpy as np
+import pyamg
 import scipy
 from scipy import sparse
 from scipy.spatial import KDTree
@@ -1295,6 +1296,7 @@ class SLM:
         remove_material_dof = kwargs.get('remove_material_dof', None)
         tolerated_perturbation = kwargs.get('tolerated_perturbation', None)
         check_converge = kwargs.pop('check_converge', config.OPT_CHECK_CONVERGENCE)
+        M = kwargs.get('precondition', 'jacobi')
         lock_flags = self.lock_flags
         if tolerated_perturbation is not None:
             if tolerated_perturbation < 0:
@@ -1413,11 +1415,6 @@ class SLM:
         stiffness_lambda, crosslink_lambda = self.relative_lambda_trace(stiffness_lambda, crosslink_lambda)
         A = stiffness_lambda * stiff_m + crosslink_lambda * Cs_lft
         b = crosslink_lambda * Cs_rht - stiffness_lambda * stress_v
-        A_diag = A.diagonal()
-        if A_diag.max() > 0:
-            M = sparse.diags(1/(A_diag.clip(min(1.0, A_diag.max()/1000),None))) # Jacobi precondition
-        else:
-            M = None
         dd = solve(A, b, solver, tol=tol, maxiter=maxiter, check_converge=check_converge, atol=atol, M=M, extra_dof_constraint=edc, tolerated_perturbation=tolerated_perturbation, **callback_settings)
         cost = (float(np.linalg.norm(b)), float(np.linalg.norm(A.dot(dd) - b)))
         if cost[1] < cost[0]:
@@ -1960,6 +1957,16 @@ def solve(A, b, solver, x0=None, tol=1e-7, atol=None, maxiter=None, M=None, **kw
         dx_t = np.stack((sin_t, cos_t), axis=-1)
         dx_t = dx_t.ravel()
         tolerated_perturbation = tolerated_perturbation * dx_t[:b.size]
+    if isinstance(M, str):
+        if M.lower().startswith(('smooth', 'sa')):
+            ml = pyamg.smoothed_aggregation_solver(A)
+            M =  ml.aspreconditioner(cycle='V')
+        else:
+            A_diag = A.diagonal()
+            if A_diag.max() > 0:
+                M = sparse.diags(1/(A_diag.clip(min(1.0, A_diag.max()/1000),None))) # Jacobi precondition
+            else:
+                M = None
     if (maxiter == 0) or (np.linalg.norm(b) == 0):
         return np.zeros_like(b)
     if edc is not None:
@@ -2098,6 +2105,7 @@ def relax_mesh(M, free_vertices=None, free_triangles=None, **kwargs):
     atol = kwargs.get('atol', 0.0)
     callback_settings = kwargs.get('callback_settings', {}).copy()
     tolerated_perturbation = kwargs.get('tolerated_perturbation', 0.25 * (config.data_resolution() / M.resolution))
+    cond = kwargs.get('precondition', 'jacobi')
     modified = False
     locked = M.locked
     M.locked = False
@@ -2124,11 +2132,6 @@ def relax_mesh(M, free_vertices=None, free_triangles=None, **kwargs):
         return modified
     A = stiff_M[vmask_pad][:,vmask_pad]
     b = -stress_v[vmask_pad]
-    A_diag = A.diagonal()
-    if A_diag.max() > 0:
-        cond = sparse.diags(1/(A_diag.clip(min(1.0, A_diag.max()/1000),None))) # Jacobi precondition
-    else:
-        cond = None
     dd = solve(A, b, solver, tol=tol, maxiter=maxiter, atol=atol, M=cond, tolerated_perturbation=tolerated_perturbation, **callback_settings)
     cost = (np.linalg.norm(b), np.linalg.norm(A.dot(dd) - b))
     if (cost[1] < cost[0]) and np.any(dd != 0):

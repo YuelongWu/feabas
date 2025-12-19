@@ -16,6 +16,7 @@ install_requires = [
     'numpy<2',
     'opencv-python',
     'psutil',
+    'pyamg',
     'pyyaml',
     'rtree',
     'scikit-image',
