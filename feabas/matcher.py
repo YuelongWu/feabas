@@ -488,7 +488,6 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
     spacings = common.numpy_array(spacings, copy=False)
     kwargs_opt = {
         "callback_settings": callback_settings,
-        "tolerated_perturbation": 0.5,
         "check_converge": True
     }
     linear_system = mesh0.is_linear and mesh1.is_linear
@@ -510,6 +509,7 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
         mesh0_ori, mesh1_ori = mesh0.copy(), mesh1.copy()
     opt = optimizer.SLM([mesh0, mesh1], stiffness_lambda=stiffness_lambda)
     if initial_matches is not None:
+        kwargs_opt["tolerated_perturbation"] = 0.1
         xy0, xy1, weight = initial_matches.xy0, initial_matches.xy1, initial_matches.weight
         opt.add_link_from_coordinates(mesh0.uid, mesh1.uid, xy0, xy1,
             gear=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_INITIAL), weight=weight,
@@ -533,6 +533,7 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
         pad = True
     else:
         pad = to_pad
+    kwargs_opt["tolerated_perturbation"] = 0.5
     while sp_indx < spacings.size:
         if sp == spacings[-1]:
             mnb = min_num_blocks

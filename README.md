@@ -170,7 +170,7 @@ By default, the thumbnail-matching step assumes all the connected regions in the
 
 In some applications where the user only needs to use FEABAS for alignment of a single-tile stack, bypassing stitching, they can structure their working directory by making their images as if they were thumbnails; and start with the thumbnails step. If the image extention is not PNG, the setting `thumbnail_format` in `(work_dir)\configs\thumbnail_configs.yaml` needed to be changed to relect that. Also be sure to provide the mask files in `(work_dir)/thumbnail_align/material_masks`. Each mask file (in PNG format) should be the same size as its correspoding image files, with regions that contain the actually data painted black, and regions outside of the ROI painted white. If FEABAS, matchings are done after band-pass filtering the images, therefore telling the software where the imaged areas start by providing the mask is important to ensure the sharp borders will not interfere with the alignment. The mask files are also used for generaing the meshes for the optimization step. If the entire image contains data, a completely black image of the same size can be used as the material mask.
 
-For a standard FEABAS workflow, the user can go from here and directly go to the fine alignment steps. However, from version 3.0.1, FEABAS also provide the options to carry out the optimization and the rendering steps at the thumbnail level, by calling:
+Technically, the user can go from here and directly go to the fine alignment steps. However, from version 3.0.1, FEABAS also provides (and recommends) the options to carry out the optimization and the rendering steps at the thumbnail level, by calling:
 
 ```bash
 python scripts/thumbnail_main.py --mode optimization
@@ -208,7 +208,7 @@ python scripts/align_main.py --mode matching
 
 It reads all the matching files from the thumbnail alignment, finds the right images from the folder that stores the stitched images, and performs template matching at a higher resolution. The results will be saved to `(work_dir)/align/matches`. The working resolution for the fine matching step can be defined by `matching: working_mip_level` field in `alignment_configs.yaml`. It is advisable to select a working mipmap level that makes the xy resolution of the image closer to its section thickness, making it more isotropic. For example, with 4nm full-resolution datasets, one can elect mip2 (16nm) or mip3 (32nm) for 30nm thick sections, or mip4 (64nm) for 80 nm sections.
 
-Personally, I like to run `tools\visualize_align_match_coverage.py` after the matching step to generate the visualizations of the matching locations (saved to `(work_dir)/align/matches/match_cover/`). In these visualization, colored areas indicates a lack of matches. I found it is very useful for quality control.
+Personally, I like to run `tools\visualize_align_match_coverage.py` after the matching step to generate the visualizations of the matching locations (saved to `(work_dir)/align/matches/match_cover/`). In these visualization, matching locations are overlaid on the thumbnail images of each section in red (sections before) and green (sections after) channel. Therefore, areas without yellow color indicates a lack of matches. I found it to be useful for quality control.
 
 
 #### optimization
@@ -246,7 +246,9 @@ Note that if there are meshes already existing in `(work_dir)/align/tform` folde
 
 #### rendering
 
-To render the aligned stack, navigate to the FEABAS root directory, and run:
+FEABAS provides two ways of rendering the alignment results: either to non-overlapping PNG tiles (to be viewed in [VAST](https://lichtman.rc.fas.harvard.edu/vast/)), or [Neuroglancer](https://github.com/google/neuroglancer) precomputed format.
+
+To render the aligned stack into PNG tiles, navigate to the FEABAS root directory, and run:
 
 ```bash
 python scripts/align_main.py --mode rendering
@@ -254,7 +256,7 @@ python scripts/align_main.py --mode rendering
 
 Again, the user can control the details of the rendering process via `rendering` settings in `alignment_configs.yaml`. As with the rendering step in the stitching workflow earlier, the output images can be directed to another storage location other than the *working directory* by providing the path to `rendering: out_dir` field in the configuration file.
 
-Alternatively, the aligned stack can also be rendered as a [TensorStore](https://google.github.io/tensorstore/python/api/index.html) volume, instead by running:
+Alternatively, the aligned stack can also be rendered as a Neuroglancer precomputed volume with [TensorStore](https://google.github.io/tensorstore/python/api/index.html), instead by running:
 
 ```bash
 python scripts/align_main.py --mode tsr
@@ -293,7 +295,7 @@ This becomes handy for distributing works on multiple machines in e.g. an produc
 
 ### TensorStore related RAM issue
 
-I noticed that on some machines, the FEABAS steps involving usage of [TensorStore](https://google.github.io/tensorstore/) (e.g. rendering, downsampling, alignment matching) may lead to large RAM usage, which based on my current theory is caused by memory fragmentation. If you are on a linux machine, this can be mitigated by switiching to a different allocator (e.g. tcmalloc), or lowering the `MALLOC_ARENA_MAX` environment variable.
+I noticed that on some machines, the FEABAS steps involving usage of [TensorStore](https://google.github.io/tensorstore/) (e.g. rendering, downsampling, alignment matching) may lead to large RAM usage, which is caused by memory fragmentation. If you are on a linux machine, this can be mitigated by switiching to a different allocator (e.g. tcmalloc), or lowering the `MALLOC_ARENA_MAX` environment variable.
 
 
 ### Advanced Topic: Non-Smooth Transformation in Alignment
