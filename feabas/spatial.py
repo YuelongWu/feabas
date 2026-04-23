@@ -1211,7 +1211,10 @@ class Geometry:
         if epsilon1 < self._epsilon:
             self._epsilon = epsilon1
         tols = [region_tols[lbl] for lbl in self._regions]
-        tol = min(tols) * scale
+        if len(tols) == 0:
+            tol = 0
+        else:
+            tol = min(tols) * scale
         covered = shpgeo.Polygon()
         # expand the regions a bit for tolerance
         region_expanded = []
