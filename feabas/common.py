@@ -88,6 +88,9 @@ def inverse_image(img, dtype=np.uint8):
     if dtype is None:
         if isinstance(img, np.ndarray):
             dtype = img.dtype
+        elif isinstance(img, (list, tuple)):
+            img = np.array(img)
+            dtype = img.dtype
         else:
             dtype = type(img)
     dtype = np.dtype(dtype)

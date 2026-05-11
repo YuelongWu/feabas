@@ -8,7 +8,7 @@ import numpy as np
 import os
 from rtree import index
 from scipy.interpolate import interp1d
-from scipy.ndimage import gaussian_filter, binary_dilation
+from scipy.ndimage import gaussian_filter, binary_dilation, distance_transform_cdt
 from scipy import sparse
 import scipy.sparse.csgraph as csgraph
 import tensorstore as ts
@@ -538,6 +538,8 @@ class Stitcher:
                     mask0 = mask_loader.crop(bbox_ov0, idx0, return_index=False) > 0
                 elif maskout_val is not None:
                     mask0t = img0 == maskout_val
+                    if mask0t.ndim > 2:
+                        mask0t = np.all(mask0t, axis=tuple(range(2, mask0t.ndim)))
                     if np.any(mask0t):
                         mask0 = ~binary_dilation(mask0t, iterations=2)
                     else:
@@ -548,6 +550,8 @@ class Stitcher:
                     mask1 = mask_loader.crop(bbox_ov1, idx1, return_index=False) > 0
                 elif maskout_val is not None:
                     mask1t = img1 == maskout_val
+                    if mask1t.ndim > 2:
+                        mask1t = np.all(mask1t, axis=tuple(range(2, mask1t.ndim)))
                     if np.any(mask1t):
                         mask1 = ~binary_dilation(mask1t, iterations=2)
                     else:
@@ -1336,11 +1340,13 @@ class MontageRenderer:
         refer to feabas.common.render_by_subregions for other kwargs
         """
         blend = kwargs.pop('blend', 'LINEAR')
+        maskout_val = kwargs.pop('maskout_val', None)
         clip_ltrb = kwargs.pop('clip_lrtb', (0,0,0,0))
         scale = kwargs.pop('scale', 1)
         fillval = kwargs.get('fillval', self.image_loader.default_fillval)
         dtype_out = kwargs.get('dtype_out', self.image_loader.dtype)
         affine_tolerance = kwargs.get('affine_tolerance', 0.2)
+        inverse = self.image_loader._inverse
         sigma = 2.5 # sigma for pyramid generation.
         weight_eps = 1e-3
         bbox = scale_coordinates(bbox, 1/scale)
@@ -1349,6 +1355,15 @@ class MontageRenderer:
             return None
         elif len(hits) == 1:
             blend = None
+        if isinstance(blend, str):
+            blend = blend.upper()
+        if inverse:
+            if blend == 'MIN':
+                blend = 'MAX'
+            elif blend == 'MAX':
+                blend = 'MIN'
+            if maskout_val is not None:
+                maskout_val = common.inverse_image(maskout_val)
         x_min0 = bbox[0]
         y_min0 = bbox[1]
         ht0 = round(bbox[3] - y_min0)
@@ -1399,12 +1414,19 @@ class MontageRenderer:
                 continue
             expand_image = partial(common.expand_image, target_size=(y0.size, x0.size), slices=(slc_y, slc_x))
             imgt = common.render_by_subregions(x_field, y_field, mask, self.image_loader, fileid=indx, **kwargs)
+            if imgt is None:
+                continue
             if blend is None:
                 image_hp = expand_image(imgt)
                 weight_sum = expand_image(weight)
                 break
-            if imgt is None:
-                continue
+            if (maskout_val is not None) and (imgt is not None):
+                mask_backgrnd = imgt == maskout_val
+                if mask_backgrnd.ndim > 2:
+                    mask_backgrnd = np.all(mask_backgrnd, axis=tuple(range(2, mask_backgrnd.ndim)))
+                if np.any(mask_backgrnd) and (not np.all(mask_backgrnd)):
+                    dist_mask = distance_transform_cdt(~mask_backgrnd)
+                    weight = np.minimum(weight, dist_mask-1)
             if not np.issubdtype(imgt.dtype, np.floating):
                 imgt = imgt.astype(np.float32, copy=False)
             imgshp = imgt.shape
@@ -1440,6 +1462,7 @@ class MontageRenderer:
                 image_hp[maskb] = np.maximum(image_hp[maskb], expand_image(imgt)[maskb])
             elif blend == 'MIN':
                 maskb = expand_image(weight > 0)
+                maskb = cv2.erode(maskb.astype(np.uint8), np.ones((3,3)))>0
                 image_hp[maskb] = np.minimum(image_hp[maskb], expand_image(imgt)[maskb])
             elif blend == 'NONE':
                 maskb = expand_image(weight > 0)
