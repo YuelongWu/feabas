@@ -571,27 +571,29 @@ class MeshRenderer:
             raise RuntimeError('Image loader not defined.')
         x_field, y_field, mask = self.crop_field(bbox, **kwargs)
         if self._geodesic_mask:
-            weight = mask
+            weight = mask # H x W
             mask = weight > 0
         if image_loader.resolution != self.resolution:
             scale = self.resolution / image_loader.resolution
             x_field = spatial.scale_coordinates(x_field, scale)
             y_field = spatial.scale_coordinates(y_field, scale)
-        imgt = common.render_by_subregions(x_field, y_field, mask, image_loader, **kwargs)
+        imgt = common.render_by_subregions(x_field, y_field, mask, image_loader, **kwargs) # H x W X C
         if (log_sigma > 0) and (imgt is not None):
-            if len(imgt.shape) > 2:
-                imgt = np.moveaxis(imgt, -1, 0)
+            if imgt.ndim == 3:
+                imgt = np.moveaxis(imgt, -1, 0) # C x H x W
             if mask_range is not None:
                 mask_range = np.atleast_1d(mask_range)
                 mask_t = (imgt >= mask_range[0]) & (imgt <= mask_range[-1])
-                mask = mask & mask_t
-            imgt = common.masked_dog_filter(imgt, log_sigma, mask=mask)
-            if len(imgt.shape) > 2:
-                imgt = np.moveaxis(imgt, 0, -1)
+                mask = mask & mask_t    # (C x )H x W
+            imgt = common.masked_dog_filter(imgt, log_sigma, mask=mask) # (C x )H x W
+            if imgt.ndim == 3:
+                imgt = np.moveaxis(imgt, 0, -1) # H x W x C
         if (self._geodesic_mask) and (imgt is not None):
             dtp = imgt.dtype
             kk = 2
             weight = (np.arctan((weight - 0.5)*2*kk*np.pi) + np.arctan(kk*np.pi)) / (2*np.arctan(kk*np.pi))
+            if imgt.ndim > weight.ndim:
+                weight = weight.reshape(weight.shape+(1,)*(imgt.ndim-weight.ndim))
             imgt = (imgt * weight).astype(dtp)
         return imgt
 
@@ -612,36 +614,37 @@ class MeshRenderer:
             y_field_list.append(y_f)
             mask_list.append(msk)
         Nbox = len(x_field_list)
-        x_field = np.concatenate(x_field_list, axis=0)
-        y_field = np.concatenate(y_field_list, axis=0)
-        mask = np.concatenate(mask_list, axis=0)   
+        x_field = np.concatenate(x_field_list, axis=0)  # NH x W
+        y_field = np.concatenate(y_field_list, axis=0)  # NH x W
+        mask = np.concatenate(mask_list, axis=0)   # NH x W
         if self._geodesic_mask:
-            weight = mask
+            weight = mask # NH x W
             mask = weight > 0
         if image_loader.resolution != self.resolution:
             scale = self.resolution / image_loader.resolution
             x_field = spatial.scale_coordinates(x_field, scale)
             y_field = spatial.scale_coordinates(y_field, scale)
-        imgt = common.render_by_subregions(x_field, y_field, mask, image_loader, **kwargs)
+        imgt = common.render_by_subregions(x_field, y_field, mask, image_loader, **kwargs) # NH x W x C
         if imgt is None:
             return imgt
-        imgt = imgt.reshape((Nbox,-1, *imgt.shape[1:]))
-        mask = mask.reshape((Nbox, -1, *mask.shape[1:]))
+        imgt = imgt.reshape((Nbox,-1, *imgt.shape[1:])) # N x H x W (x C)
+        mask = mask.reshape((Nbox, -1, *mask.shape[1:])) # N x H x W
         if log_sigma > 0:
-            if len(imgt.shape) > 3:
-                imgt = np.moveaxis(imgt, -1, 0)
+            if imgt.ndim == 4:
+                imgt = np.moveaxis(imgt, -1, 0) # (C x) N x H x W
             if mask_range is not None:
                 mask_range = np.atleast_1d(mask_range)
                 mask_t = (imgt >= mask_range[0]) & (imgt <= mask_range[-1])
-                mask = mask & mask_t
-            imgt = common.masked_dog_filter(imgt, log_sigma, mask=mask)
-            if len(imgt.shape) > 3:
-                imgt = np.moveaxis(imgt, 0, -1)
+                mask = mask & mask_t # (C x) N x H x W 
+            imgt = common.masked_dog_filter(imgt, log_sigma, mask=mask) # (C x) N x H x W 
+            if imgt.ndim == 4:
+                imgt = np.moveaxis(imgt, 0, -1) # N x H x W (xC)
         if self._geodesic_mask:
             dtp = imgt.dtype
             kk = 2
             weight = (np.arctan((weight - 0.5)*2*kk*np.pi) + np.arctan(kk*np.pi)) / (2*np.arctan(kk*np.pi))
-            imgt = (imgt * (weight.reshape(mask.shape))).astype(dtp)
+            wt_shape = (Nbox, -1, *weight.shape[1:])+(1,)*(imgt.ndim-weight.ndim)
+            imgt = (imgt * (weight.reshape(wt_shape))).astype(dtp)
         return imgt
 
 
