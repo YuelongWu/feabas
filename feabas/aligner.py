@@ -1157,21 +1157,24 @@ class Aligner():
 
     def run(self, **kwargs0):
         num_workers = kwargs0.get('num_workers', 1)
-        stiffness = kwargs0.pop('stiffness', 1.0)
         chunked_to_depth = kwargs0.pop('chunked_to_depth', 0)
         residue_file = kwargs0.pop('residue_file', None)
         pad_junctional = kwargs0.pop('pad_junctional', True)
+        if 'stiffness' in kwargs0:
+            stiffness = kwargs0.pop('stiffness', 1.0)
+        else:
+            stiffness = kwargs0.get('slide_window', {}).get('elastic_params',{}).get('stiffness_lambda', 1.0)
         kwargs = {
             'slide_window': {
                 'num_workers': num_workers,
                 'elastic_params':{
-                    'stiffness_lambda': stiffness,
                     'tolerated_perturbation': 0.25,
                 }
             },
             'pad_junctional': pad_junctional
         }
         config.merge_config(kwargs, kwargs0)
+        kwargs['slide_window']['elastic_params']['stiffness_lambda'] = stiffness
         worker_settings = kwargs.get('worker_settings', {})
         second_smooth = kwargs.get('second_smooth', True)
         if residue_file is None:
@@ -1205,7 +1208,10 @@ class Aligner():
                 meta_aligner = Aligner(**meta_aligner_settings)
                 if chunked_to_depth is not None:
                     chunked_to_depth -= 1
-                meta_aligner.run(stiffness=stiffness, chunked_to_depth=chunked_to_depth, **kwargs0)
+                section_chunk_id = self.section_chunk_id
+                _, ccnt = np.unique(section_chunk_id, return_counts=True)
+                stiffness_composite = np.mean(ccnt)
+                meta_aligner.run(stiffness=stiffness*stiffness_composite, chunked_to_depth=chunked_to_depth, **kwargs0)
                 self.predeform_sections_by_chunk(num_workers=num_workers, worker_settings=worker_settings, commit_directly=(not second_smooth))
                 if second_smooth:
                     locked_array = self.mesh_versions_array == Aligner.ALIGNED

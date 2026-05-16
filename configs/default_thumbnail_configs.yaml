@@ -68,6 +68,7 @@ alignment:
             residue_mode: huber
             residue_len: -3 # matching points with error larger than this width will be weakened in the second round of mesh relaxation
             elastic_params:
+                stiffness_lambda: 1.0 # control the stiffness of the meshes. Smaller numbers makes the meshes easier to deform
                 tol: 1.0e-7 # convergence tolerance for the solver
                 atol: 0.001
                 precondition: jacobi # jacobi or smoothed_aggregation
