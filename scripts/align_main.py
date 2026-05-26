@@ -484,6 +484,7 @@ if __name__ == '__main__':
             meta_list = meta_list[::-1]
         generate_aligned_mipmaps(render_dir, max_mip=max_mip, meta_list=meta_list, min_mip=min_mip, **align_config)
     elif mode == 'tensorstore_rendering':
+        os.makedirs(ts_flag_dir, exist_ok=True)
         logger_info = logging.initialize_main_logger(logger_name='tensorstore_render', mp=num_workers>1)
         logger = logging.get_logger(logger_info[0])
         mip_level = align_config.pop('mip_level', 0)
@@ -510,8 +511,8 @@ if __name__ == '__main__':
         loader_list = [os.path.join(loader_dir, os.path.basename(s).replace('.h5', '.json')) for s in tform_list]
         resolution = config.montage_resolution() * (2 ** mip_level)
         vol_renderer = VolumeRenderer(tform_list, loader_list, tensorstore_render_dir,
-                                      z_indx = z_indx, resolution=resolution,
-                                      flag_dir = ts_flag_dir, **align_config)
+                          z_indx = z_indx, resolution=resolution,
+                          flag_dir = ts_flag_dir, **align_config)
         vol_renderer.render_volume(skip_indx=indx, logger=logger_info[0], **align_config)
         logger.info('finished')
         logging.terminate_logger(*logger_info)
