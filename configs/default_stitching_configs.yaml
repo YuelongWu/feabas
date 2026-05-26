@@ -17,12 +17,14 @@ matching:   # see stitcher.Stitcher.subprocess_match_list_of_overlaps for detail
         sigma: 2.5          # sigma of DoG filter applied to the images before matching
         coarse_downsample: 0.5      # down-sample the images at the coase-level matching
         fine_downsample: 1.0        # down-sample the images at the fine-level matching to save time at the cost of accuracy
+        compute_photometric: false   # compute brightness/contrast of the overlapping areas for later equalization
 
 optimization:
     num_workers: 3
     use_group: true     # whether to bundle the deformation within group of tiles (e.g. mFoV) at the initial stage of the optimization to correct fixed pattern distortion
     msem: false          # if is MultiSEM data. used to group tiles.
     minweight: 0.1      # filter out matches with weight smaller than this
+    equalize_brightness_contrast: false # whether to use the overlapping areas to equalize brightness/contrast of the image tiles
     mesh_settings:  # see stitcher.Stitcher.initialize_meshes
         mesh_sizes: [100, 300]   # mesh sizes to select from based on how distorted are the matches
         cache_size: null    # size of the cache to save intermediate values. No need to worry about this unless very tight on RAM.

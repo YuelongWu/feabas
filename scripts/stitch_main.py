@@ -68,6 +68,12 @@ def optimize_one_section(matchname, outname, **kwargs):
     mesh_sizes = mesh_settings.pop('mesh_sizes', [100, 300])
     t0 = time.time()
     stitcher = Stitcher.from_h5(matchname, load_matches=True, load_meshes=False)
+    if kwargs.get('equalize_brightness_contrast', False):
+        if use_group and msem:
+            _, bc_groupings = multisem.mfovids_beamids_from_filenames(stitcher.imgrelpaths)
+        else:
+            bc_groupings = None
+        stitcher.equalize_brightness_contrast(groupings=bc_groupings)
     if stitcher.num_links == 0:
         stitcher.initialize_meshes(mesh_sizes, **mesh_settings)
         stitcher.initialize_optimizer()

@@ -891,3 +891,6 @@ def numpy_array(obj, copy=False):
         else:
             return np.array(obj, copy=None)
 
+
+def damped_lsqr(A, b, damp=None, x0=None, **kwargs):
+    pass

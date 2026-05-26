@@ -11,6 +11,7 @@ from scipy.interpolate import interp1d
 from scipy.ndimage import gaussian_filter, binary_dilation, distance_transform_cdt
 from scipy import sparse
 import scipy.sparse.csgraph as csgraph
+import scipy.sparse.linalg as splinalg
 import tensorstore as ts
 import time
 
@@ -65,8 +66,10 @@ class Stitcher:
         self._refined_init_offset = None
         self.matches = {}
         self.match_strains = {}
+        self.match_brightness_contrast = {}
         self.meshes = None
         self.mesh_sharing = np.arange(self.num_tiles)
+        self._brightness_contrast_adjust = None
         self._optimizer = None
         self._default_mesh_cache = None
         self.set_groupings(groupings)
@@ -146,6 +149,11 @@ class Stitcher:
                     data = np.concatenate((xy0, xy1, weight, strain), axis=None)
                     data = data.astype(np.float32, copy=False)
                     create_dataset(prefix, data=data)
+            if save_matches and (len(self.match_brightness_contrast) > 0):
+                bc_keys = np.array(list(self.match_brightness_contrast.keys()))
+                bc_vals = np.array(list(self.match_brightness_contrast.values()))
+                create_dataset('matches_brightness_contrast_keys', data=bc_keys)
+                create_dataset('matches_brightness_contrast_vals', data=bc_vals)
             if save_meshes and (self.meshes is not None):
                 soft_factors = np.array([m.soft_factor for m in self.meshes], dtype=np.float32)
                 create_dataset('mesh_soft_factors', data=soft_factors)
@@ -164,6 +172,11 @@ class Stitcher:
                         prefix = 'moving_vertices/' + str(k)
                         v = m.vertices(gear=const.MESH_GEAR_MOVING)
                         create_dataset(prefix, data=v)
+                if self._brightness_contrast_adjust is not None:
+                    brightness = self._brightness_contrast_adjust['brightness']
+                    contrast = self._brightness_contrast_adjust['contrast']
+                    create_dataset('brightness_adjust', data=brightness)
+                    create_dataset('contrast_adjust', data=contrast)
 
 
     def load_matches_from_h5(self, fname, check_order=False):
@@ -174,7 +187,7 @@ class Stitcher:
             if check_order:
                 imgnames = common.numpy_to_str_ascii(f['imgrelpaths'][()]).split('\n')
                 name_lut = {name: k for k, name in enumerate(self.imgrelpaths)}
-                indx_mapper = [name_lut.get(s, -1) for s in imgnames]
+                indx_mapper = np.array([name_lut.get(s, -1) for s in imgnames])
             else:
                 indx_mapper = None
             matches = f['matches']
@@ -194,6 +207,15 @@ class Stitcher:
                 self.matches[(uid0, uid1)] = (xy0, xy1, weight)
                 self.match_strains[(uid0, uid1)] = strain
                 match_cnt += 1
+            if ('matches_brightness_contrast_keys' in f) and ('matches_brightness_contrast_vals' in f):
+                bc_keys = f['matches_brightness_contrast_keys'][()]
+                bc_vals = f['matches_brightness_contrast_vals'][()]
+                if indx_mapper is not None:
+                    bc_keys = indx_mapper[bc_keys]
+                    valid_idx = np.all(bc_keys >= 0, axis=-1)
+                    bc_keys = bc_keys[valid_idx]
+                    bc_vals = bc_vals[valid_idx]
+                self.match_brightness_contrast.update({tuple(k):v for k, v in zip(bc_keys, bc_vals)})
         return match_cnt
 
 
@@ -248,6 +270,13 @@ class Stitcher:
                 self.meshes.append(M)
             self.mesh_sharing = mesh_sharing
             mesh_loaded = True
+            if ('brightness_adjust' in f) and ('contrast_adjust' in f):
+                brightness = f['brightness_adjust'][()]
+                contrast = f['contrast_adjust'][()]
+                if indx_mapper is not None:
+                    brightness = brightness[indx_mapper]
+                    contrast = contrast[indx_mapper]
+                self._brightness_contrast_adjust = {'brightness': brightness, 'contrast': contrast}
         return mesh_loaded
 
 
@@ -338,9 +367,10 @@ class Stitcher:
             return 0, False
         num_overlaps = len(overlaps)
         if ((num_workers is not None) and (num_workers <= 1)) or (num_overlaps <= 1):
-            new_matches, match_strains, err_raised = target_func(overlaps, self.imgrelpaths, self.init_bboxes)
+            new_matches, match_strains, brightness_contrast, err_raised = target_func(overlaps, self.imgrelpaths, self.init_bboxes)
             self.matches.update(new_matches)
             self.match_strains.update(match_strains)
+            self.match_brightness_contrast.update(brightness_contrast)
             return len(new_matches), err_raised
         num_workers = min(num_workers, num_overlaps)
         num_overlaps_per_job = min(num_overlaps//num_workers, num_overlaps_per_job)
@@ -362,11 +392,12 @@ class Stitcher:
             kwargs_list.append({'index_mapper': mapper})
         matched_counter = 0
         for res in submit_to_workers(target_func, args=args_list, kwargs=kwargs_list, num_workers=num_workers):
-            matches, match_strains, ouch = res
+            matches, match_strains, brightness_contrast, ouch = res
             err_raised = err_raised or ouch
             num_new_matches += len(matches)
             self.matches.update(matches)
             self.match_strains.update(match_strains)
+            self.match_brightness_contrast.update(brightness_contrast)
             matched_counter += len(matches)
             if matched_counter > (len(overlaps)/10):
                 logger.debug(f'matching in progress: {num_new_matches}/{len(overlaps)}')
@@ -486,7 +517,7 @@ class Stitcher:
         logger = logging.get_logger(logger_info)
         err_raised = False
         if len(overlaps) == 0:
-            return {}, {}, err_raised
+            return {}, {}, {}, err_raised
         bboxes_overlap, wds = common.bbox_intersections(bboxes[overlaps[:,0]], bboxes[overlaps[:,1]])
         if 'cache_border_margin' not in loader_config:
             loader_config = loader_config.copy()
@@ -516,6 +547,7 @@ class Stitcher:
             mask_exist = np.zeros(len(imgpaths), dtype=bool)
         matches = {}
         strains = {}
+        brightness_contrast = {}
         error_messages = []
         err_count = 0
         for indices, bbox_ov, wd in zip(overlaps, bboxes_overlap, wds):
@@ -558,7 +590,7 @@ class Stitcher:
                         mask1 = None
                 else:
                     mask1 = None
-                xy0, xy1, weight, strain = stitching_matcher(img0, img1, mask0=mask0, mask1=mask1, **matcher_config)
+                xy0, xy1, weight, strain, phtm = stitching_matcher(img0, img1, mask0=mask0, mask1=mask1, **matcher_config)
                 if xy0 is None:
                     continue
                 offset0 = bbox_ov0[:2] - bbox0[:2]
@@ -570,6 +602,8 @@ class Stitcher:
                     idx1 = index_mapper[idx1]
                 matches[(idx0, idx1)] = (xy0, xy1, weight)
                 strains[(idx0, idx1)] = strain
+                if phtm is not None:
+                    brightness_contrast[(idx0, idx1)] = phtm
             except Exception as err:
                 err_count += 1
                 if not err_raised:
@@ -584,7 +618,7 @@ class Stitcher:
         image_loader.clear_cache()
         if instant_gc:
             gc.collect()
-        return matches, strains, err_raised
+        return matches, strains, brightness_contrast, err_raised
 
 
   ## -------------------------- mesh relaxation ---------------------------- ##
@@ -987,7 +1021,6 @@ class Stitcher:
         return modified 
 
 
-
     def connect_isolated_subsystem(self, **kwargs):
         """
         translate blocks of tiles that are connected by links as a whole so that
@@ -1111,6 +1144,46 @@ class Stitcher:
             gc.collect()
 
 
+    def equalize_brightness_contrast(self, groupings=None, **kwargs):
+        # xj_new = aj * xj + bj
+        max_contrast_ratio = kwargs.get('max_contrast_ratio', 4)
+        damp = kwargs.get('damp', 0.77)
+        if len(self.match_brightness_contrast) > 0:
+            bc_keys = np.array(list(self.match_brightness_contrast.keys()))
+            bc_vals = np.array(list(self.match_brightness_contrast.values()))
+            midx0, midx1 = bc_keys[:,0], bc_keys[:,1]
+            av0, av1, std0, std1 = bc_vals[:,0], bc_vals[:,1], bc_vals[:,2], bc_vals[:,3]
+            num_matches = bc_keys.shape[0]
+            idx0 = np.repeat(np.arange(num_matches), 2)
+            idx1 = bc_keys.ravel()
+            v = np.tile([1, -1], num_matches)
+            A = sparse.csr_matrix((v, (idx0, idx1)), shape=(num_matches, self.num_tiles))
+            bc = np.log(std1) - np.log(std0)
+            bc = bc.clip(np.log(1/max_contrast_ratio), np.log(max_contrast_ratio))
+            if groupings is not None:
+                g_u, groupings = np.unique(groupings, return_inverse=True)
+                s_m = sparse.csr_matrix((np.ones_like(groupings), 
+                        (np.arange(self.num_tiles), groupings)),
+                        shape=(self.num_tiles, g_u.size))
+                A_g = (s_m.T) @ (A.T) @ A @ s_m + damp * (s_m.T) @ s_m
+                bc_g = s_m.T @ (A.T).dot(bc)
+                lc_g = splinalg.lsqr(A_g, bc_g)[0]
+                lc0 = s_m @ lc_g
+                explc0 = np.exp(lc0)
+                bb_g = s_m.T @ (A.T).dot(explc0[midx1]*av1 - explc0[midx0]*av0)
+                lb_g = splinalg.lsqr(A_g, bb_g)[0]
+                lb0 = s_m @ lb_g
+            else:
+                lc0 = None
+                lb0 = None
+            lc = splinalg.lsqr(A, bc, damp=damp, x0=lc0)[0]
+            explc = np.exp(lc)
+            bb = explc[midx1]*av1 - explc[midx0]*av0
+            lb = splinalg.lsqr(A, bb, damp=damp, x0=lb0)[0]
+            self._brightness_contrast_adjust = {'brightness': lb, 'contrast': explc}
+
+
+
   ## ----------------------------- properties ------------------------------ ##
     def groupings(self, normalize=False):
         if self._groupings is None:
@@ -1230,6 +1303,7 @@ class MontageRenderer:
         else:
             self.imgrootdir = os.path.dirname(os.path.commonprefix(imgpaths))
             self.imgrelpaths = [os.path.relpath(s, self.imgrootdir) for s in imgpaths]
+        self._brightness_contrast_adjust = kwargs.get('brightness_contrast_adjust', None)
         self._tile_sizes = tile_sizes.reshape(-1,2)
         self._identical_tile_size = np.all(np.ptp(self._tile_sizes, axis=0) == 0)
         self._mesh_info = mesh_info
@@ -1248,6 +1322,7 @@ class MontageRenderer:
         tile_sizes = stitcher.tile_sizes
         connected_subsystem = stitcher.connected_subsystem
         resolution = stitcher.resolution
+        brightness_contrast_adjust = stitcher._brightness_contrast_adjust
         mesh_info = []
         for M in stitcher.meshes:
             v0 = M.vertices_w_offset(gear=gear[0])
@@ -1256,7 +1331,8 @@ class MontageRenderer:
             T = M.triangles
             mesh_info.append(Mesh_Info(v1, offset, T, v0))
         return cls(imgpaths, mesh_info, tile_sizes, root_dir=root_dir,
-                   connected_subsystem=connected_subsystem, resolution=resolution, **kwargs)
+                   connected_subsystem=connected_subsystem, resolution=resolution,
+                   brightness_contrast_adjust=brightness_contrast_adjust, **kwargs)
 
 
     @classmethod
@@ -1829,6 +1905,12 @@ class MontageRenderer:
     @property
     def image_loader(self):
         if self._image_loader is None:
+            if self._brightness_contrast_adjust is not None:
+                tf_lut0 = {'__TYPE__': 'BRIGHTNESS_CONTRAST_ADJUST'}
+                adj_b = self._brightness_contrast_adjust['brightness']
+                adj_c = self._brightness_contrast_adjust['contrast']
+                tf_lut0.update({os.path.basename(mn): (bc, cc) for mn, bc, cc in zip(self.imgrelpaths, adj_b, adj_c)})
+                self._loader_settings.setdefault('tf_lut', tf_lut0)
             if self._identical_tile_size:
                 tile_size = self._tile_sizes[0]
                 self._image_loader = StaticImageLoader(self.imgrelpaths,

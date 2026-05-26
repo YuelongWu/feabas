@@ -229,6 +229,7 @@ def stitching_matcher(img0, img1, **kwargs):
     sigma = kwargs.pop('sigma', 2.5)
     mask0 = kwargs.pop('mask0', None)
     mask1 = kwargs.pop('mask1', None)
+    compute_photometric = kwargs.pop('compute_photometric', False)
     coarse_downsample = kwargs.pop('coarse_downsample', 1)
     fine_downsample = kwargs.pop('fine_downsample', 1)
     spacings = kwargs.pop('spacings', None)
@@ -267,12 +268,51 @@ def stitching_matcher(img0, img1, **kwargs):
         mask0_g = mask0
         mask1_g = mask1
     if sigma > 0:
+        img0_raw = img0_g
+        img1_raw = img1_g
         img0_g = common.masked_dog_filter(img0_g, sigma*coarse_downsample, mask=mask0_g)
         img1_g = common.masked_dog_filter(img1_g, sigma*coarse_downsample, mask=mask1_g)
     tx0, ty0, conf0 = global_translation_matcher(img0_g, img1_g, conf_mode=conf_mode,
         conf_thresh=conf_thresh)
     if conf0 < conf_thresh:
-        return None, None, conf_thresh, None
+        return None, None, conf_thresh, None, None
+    if compute_photometric:
+        txx, tyy = int(tx0), int(ty0)
+        bb0 = (txx, tyy, img0_g.shape[1]+txx, img0_g.shape[0]+tyy)
+        bb1 = (0, 0, img1_g.shape[1], img1_g.shape[0])
+        bb_int, _ = common.intersect_bbox(bb0, bb1)
+        bb_xmin, bb_ymin, bb_xmax, bb_ymax = bb_int
+        indx0 = (slice(bb_ymin-tyy, bb_ymax-tyy), slice(bb_xmin-txx, bb_xmax-txx), Ellipsis)
+        indx1 = (slice(bb_ymin, bb_ymax), slice(bb_xmin, bb_xmax), Ellipsis)
+        if mask0_g is None:
+            mask0_p = np.ones((bb_ymax-bb_ymin, bb_xmax-bb_xmin), dtype=bool)
+        else:
+            mask0_p = mask0_g[indx0]
+        if mask1_g is None:
+            mask1_p = np.ones((bb_ymax-bb_ymin, bb_xmax-bb_xmin), dtype=bool)
+        else:
+            mask1_p = mask1_g[indx1]
+        mask_p = mask0_p & mask1_p
+        if np.sum(mask0_p) > 3:
+            if sigma > 0:
+                im0 = img0_raw[indx0]
+                av0 = np.mean(im0[mask_p])
+                im1 = img1_raw[indx1]
+                av1 = np.mean(im1[mask_p])
+                im0 = img0_g[indx0]
+                std0 = np.mean(np.abs(im0[mask_p]))
+                im1 = img1_g[indx1]
+                std1 = np.mean(np.abs(im1[mask_p]))
+            else:
+                im0 = img0_g[indx0]
+                av0 = np.mean(im0[mask_p])
+                std0 = np.std(im0[mask_p])
+                im1 = img1_g[indx1]
+                av1 = np.mean(im1[mask_p])
+                std1 = np.std(im1[mask_p])
+            phtm = (av0, av1, std0, std1)
+        else:
+            phtm = None
     if fine_downsample == coarse_downsample:
         img0_f = img0_g
         img1_f = img1_g
@@ -325,7 +365,7 @@ def stitching_matcher(img0, img1, **kwargs):
     if (fine_downsample != 1) and (xy0 is not None):
         xy0 = spatial.scale_coordinates(xy0, 1/fine_downsample)
         xy1 = spatial.scale_coordinates(xy1, 1/fine_downsample)
-    return xy0, xy1, weight, strain
+    return xy0, xy1, weight, strain, phtm
 
 
 def section_matcher(mesh0, mesh1, image_loader0, image_loader1, **kwargs):

@@ -411,14 +411,24 @@ class AbstractImageLoader(ABC):
                 img = img.mean(axis=-1).astype(dtype)
         if len(self.tf_lut) > 0:
             mbname = os.path.basename(imgpath)
+            if np.issubdtype(dtype, np.integer):
+                mask_t = (img == np.iinfo(dtype).min) | (img == np.iinfo(dtype).max)
+                if np.any(mask_t):
+                    mask_t = cv2.dilate(mask_t.astype(np.uint8), np.ones((3,3), dtype=np.uint8))
+                    mask_t = cv2.erode(mask_t.astype(np.uint8), np.ones((3,3), dtype=np.uint8))>0
+                val_t = img[mask_t]
             if mbname in self.tf_lut:
-                tf = self.tf[mbname]
-                img = tf(img).astype(dtype)
+                tf = self.tf_lut[mbname]
+                img = tf(img)
             else:
                 for nm, tf in self.tf_lut.items():
                     if nm in os.path.basename(imgpath):
-                        img = tf(img).astype(dtype)
+                        img = tf(img)
                         break
+            if np.issubdtype(dtype, np.integer):
+                img[mask_t] = val_t
+                img = img.clip(np.iinfo(dtype).min, np.iinfo(dtype).max)
+            img = img.astype(dtype)
         if apply_CLAHE:
             if (len(img.shape) > 2) and (img.shape[-1] == 3):
                 img = cv2.cvtColor(img, cv2.COLOR_RGB2Lab)
@@ -484,13 +494,21 @@ class AbstractImageLoader(ABC):
             self._tf_lut_cache = {}
             tf_lut_dict, _ = common.parse_json_file(self._tf_lut)
             if tf_lut_dict is not None:
-                for nm, gspairs in tf_lut_dict.items():
-                    src_gs, tgt_gs = gspairs
-                    src_gs = np.array(src_gs).ravel()
-                    tgt_gs = np.array(tgt_gs).ravel()
-                    fillval = (np.min(tgt_gs), np.max(tgt_gs))
-                    tf0 = interp1d(src_gs, tgt_gs, kind='linear', bounds_error=False, fill_value=fillval)
-                    self._tf_lut_cache[nm] = tf0
+                tf_type = tf_lut_dict.get('__TYPE__', 'INTERP1D')
+                for nm, vals in tf_lut_dict.items():
+                    if nm == '__TYPE__':
+                        continue
+                    if tf_type == 'INTERP1D':
+                        src_gs, tgt_gs = vals
+                        src_gs = np.array(src_gs).ravel()
+                        tgt_gs = np.array(tgt_gs).ravel()
+                        fillval = (np.min(tgt_gs), np.max(tgt_gs))
+                        tf0 = interp1d(src_gs, tgt_gs, kind='linear', bounds_error=False, fill_value=fillval)
+                        self._tf_lut_cache[nm] = tf0
+                    elif tf_type == 'BRIGHTNESS_CONTRAST_ADJUST':
+                        bc, cc = vals
+                        tf0 = np.polynomial.Polynomial([bc, cc])
+                        self._tf_lut_cache[nm] = tf0
         return self._tf_lut_cache
 
 
