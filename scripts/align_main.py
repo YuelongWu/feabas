@@ -484,7 +484,7 @@ if __name__ == '__main__':
             meta_list = meta_list[::-1]
         generate_aligned_mipmaps(render_dir, max_mip=max_mip, meta_list=meta_list, min_mip=min_mip, **align_config)
     elif mode == 'tensorstore_rendering':
-        os.makedirs(ts_flag_dir, exist_ok=True)
+        storage.makedirs(ts_flag_dir)
         logger_info = logging.initialize_main_logger(logger_name='tensorstore_render', mp=num_workers>1)
         logger = logging.get_logger(logger_info[0])
         mip_level = align_config.pop('mip_level', 0)
