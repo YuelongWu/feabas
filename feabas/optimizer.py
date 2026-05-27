@@ -1,15 +1,18 @@
 from collections import defaultdict
 import gc
-import h5py
 import numpy as np
-import os
+import pyamg
+import scipy
 from scipy import sparse
+from scipy.sparse.linalg import LinearOperator
+from scipy.spatial import KDTree
 import time
 
-from feabas import spatial, common, caching
+from feabas import config, spatial, common, caching, storage
 import feabas.constant as const
 from feabas.mesh import Mesh
 
+DIRECT_SOLVER_SWITCH = 1000 # size of matrix to use direct solver instead of iterative
 
 class Link:
     """
@@ -17,6 +20,14 @@ class Link:
     """
     def __init__(self, mesh0, mesh1, tid0, tid1, B0, B1, weight=None, **kwargs):
         name = kwargs.get('name',  None)
+        self.strain = kwargs.get('strain', config.DEFAULT_AVG_DEFORM)
+        self._sample_err = kwargs.get('sample_err', None)
+        self._spacing = kwargs.get('spacing', None)
+        if self._sample_err is None:
+            A0 = mesh0.triangle_areas(gear=const.MESH_GEAR_INITIAL)[tid0]
+            A1 = mesh1.triangle_areas(gear=const.MESH_GEAR_INITIAL)[tid1]
+            sample_err = 0.4387 * (np.minimum(A0, A1))**0.5 * self.strain
+            self._sample_err = sample_err
         self.uids = [mesh0.uid, mesh1.uid]
         if name is None:
             self.name = self.default_name
@@ -35,6 +46,7 @@ class Link:
         self._weight_func = None
         self._mask = None
         self._disabled = False
+        self._dis_smooth_matrix = {0: None}
 
 
     @classmethod
@@ -85,14 +97,39 @@ class Link:
             aB1 = other._B1
             atid0 = other._tid0
             atid1 = other._tid1
+        wtsum, ot_wtsum = np.sum(self._weight), np.sum(other._weight)
+        self.strain = (self.strain *wtsum + other.strain * ot_wtsum)/(wtsum + ot_wtsum)
         self._B0 = np.concatenate((self._B0, aB0), axis=0)
         self._B1 = np.concatenate((self._B1, aB1), axis=0)
         self._tid0 = np.concatenate((self._tid0, atid0), axis=0)
         self._tid1 = np.concatenate((self._tid1, atid1), axis=0)
         self._weight = np.concatenate((self._weight, other._weight), axis=0)
         self._residue_weight = np.concatenate((self._residue_weight, other._residue_weight), axis=0)
+        self._sample_err = np.concatenate((self.sample_err, other.sample_err), axis=0)
         self._mask = None
+        self._initial_kd_tree = None
+        self._dis_smooth_matrix = {0: None}
 
+
+    def shape_matrix_contrib(self, index_offsets, **kwargs):
+        use_mask = kwargs.get('use_mask', False)
+        B, indx_B = None, None
+        if (not self.relevant) or ((index_offsets[0] < 0) and (index_offsets[1] < 0)):
+            return B, indx_B
+        L_b = []
+        L_indx = []
+        if not self.meshes[0].locked:
+            L_b.append(self.B0(use_mask=use_mask))
+            vidx = self.meshes[0].triangles[self.tid0(use_mask=use_mask)]
+            L_indx.append(2 * vidx + index_offsets[0]) # multiply by 2 for x, y
+        if not self.meshes[1].locked:
+            L_b.append(-self.B1(use_mask=use_mask))
+            vidx = self.meshes[1].triangles[self.tid1(use_mask=use_mask)]
+            L_indx.append(2 * vidx + index_offsets[1])
+        B = np.concatenate(L_b, axis=-1)
+        indx_B = np.concatenate(L_indx, axis=-1)
+        return B, indx_B
+        
 
     def equation_contrib(self, index_offsets, **kwargs):
         """computing the contribution needed to add to the FEM assembled matrix."""
@@ -103,18 +140,9 @@ class Link:
         num_matches = self.num_matches
         gears = [targt_gear if m.locked else start_gear for m in self.meshes]
         m_rht = self.dxy(gear=gears, use_mask=True)
-        L_b = []  # barycentric coordinate matrices
-        L_indx = [] # indices in the assembled system matrix
-        if not self.meshes[0].locked:
-            L_b.append(self.B0(use_mask=True))
-            vidx = self.meshes[0].triangles[self.tid0(use_mask=True)]
-            L_indx.append(2 * vidx + index_offsets[0]) # multiply by 2 for x, y
-        if not self.meshes[1].locked:
-            L_b.append(-self.B1(use_mask=True))
-            vidx = self.meshes[1].triangles[self.tid1(use_mask=True)]
-            L_indx.append(2 * vidx + index_offsets[1])
-        B = np.concatenate(L_b, axis=-1)
-        indx = np.concatenate(L_indx, axis=-1).reshape(num_matches, -1, 1)
+        wt  = self.weight(use_mask=True)
+        B, indx = self.shape_matrix_contrib(index_offsets, use_mask=True)
+        indx = indx.reshape(B.shape[0], -1, 1)
         C = B.reshape(num_matches, -1, 1) @ B.reshape(num_matches, 1, -1)
         indx0 = np.tile(indx, (1,1, indx.shape[1]))
         indx1 = np.swapaxes(indx0, 1, 2)
@@ -123,7 +151,6 @@ class Link:
         # left-hand side:
         indx0_lft = np.concatenate((indx0.ravel(), indx0.ravel()+1))
         indx1_lft = np.concatenate((indx1.ravel(), indx1.ravel()+1))
-        wt  = self.weight(use_mask=True)
         if np.any(wt != 1):
             C = wt.reshape(-1,1,1) * C
             rht_x = wt.reshape(-1,1) * rht_x
@@ -133,6 +160,15 @@ class Link:
         indx_rht = np.concatenate((indx.ravel(), indx.ravel()+1))
         V_rht = np.concatenate((rht_x.ravel(), rht_y.ravel()))
         return V_lft, (indx0_lft, indx1_lft), V_rht, indx_rht
+
+
+    def crosslink_energy(self, **kwargs):
+        targt_gear = kwargs.get('target_gear', const.MESH_GEAR_MOVING)
+        shape_gear = kwargs.get('shape_gear', const.MESH_GEAR_FIXED)
+        wt  = self.weight(use_mask=True)
+        dxy_energy = self.dxy(gear=[targt_gear if m.locked else shape_gear for m in self.meshes], use_mask=True)
+        energy = np.sum(np.sum(dxy_energy ** 2, axis=-1) * wt)
+        return energy
 
 
     def adjust_weight_from_residue(self, gear=(const.MESH_GEAR_MOVING, const.MESH_GEAR_MOVING)):
@@ -145,6 +181,7 @@ class Link:
         previous_connection = self.num_matches > 0
         dxy = self.dxy(gear=gear, use_mask=False)
         dis = np.sum(dxy ** 2, axis=-1) ** 0.5
+        dis = ((dis**2 - self.sample_err**2).clip(0, None))**0.5
         residue_weight = self._weight_func(dis).astype(np.float32)
         if np.any(residue_weight != previous_weight):
             self._residue_weight = residue_weight
@@ -280,6 +317,53 @@ class Link:
             return self._weight * self._residue_weight
 
 
+    def smooth_matrix(self, sigma=None):
+        if sigma is None:
+            sigma = 3 * self.spacing
+        if sigma not in self._dis_smooth_matrix:
+            xy0 = self.xy0(gear=const.MESH_GEAR_INITIAL, use_mask=False)
+            Npt = xy0.shape[0]
+            pairs = self.initial_kd_tree.query_pairs(2.5*sigma, output_type='ndarray')
+            dis_wt = np.exp(-np.sum((xy0[pairs[:,0]] - xy0[pairs[:,1]])**2, axis=-1) / sigma**2)
+            mtx = sparse.csr_matrix((dis_wt, (pairs[:,0], pairs[:,1])), shape=(Npt, Npt))
+            mtx = mtx + mtx.T
+            self._dis_smooth_matrix[sigma] = mtx
+        return self._dis_smooth_matrix[sigma]
+
+
+    def dxy_smoothen(self, gear=(const.MESH_GEAR_MOVING, const.MESH_GEAR_MOVING), sigma=None):
+        dxy = self.dxy(gear=gear, use_mask=False)
+        dx0, dy0 = dxy[:,0], dxy[:,1]
+        wt = self.weight(use_mask=False)
+        mtx = self.smooth_matrix(sigma=sigma)
+        if mtx is None:
+            dxy_sm = np.zeros_like(dxy)
+        else:
+            wt_v = mtx.dot(wt)
+            dx_v = mtx.dot(dx0 * wt)
+            dy_v = mtx.dot(dy0 * wt)
+            dxy_sm = np.full_like(dxy, np.nan)
+            idx = wt_v > 0
+            dxy_sm[idx, 0] = dx_v[idx] / wt_v[idx]
+            dxy_sm[idx, 1] = dy_v[idx] / wt_v[idx]
+        return dxy_sm
+
+
+    def spatial_autocorrelation(self, gear=(const.MESH_GEAR_MOVING, const.MESH_GEAR_MOVING), sigma=None):
+        mtx = self.smooth_matrix(sigma=sigma)
+        if mtx is None:
+            return 0
+        dxy = self.dxy(gear=gear, use_mask=False)
+        dxy_sm = self.dxy_smoothen(gear=gear, sigma=sigma)
+        wt = self.weight(use_mask=False)
+        rr = np.sum((dxy - dxy_sm)**2, axis=-1) / (np.sum(dxy**2, axis=-1) + np.sum(dxy_sm**2, axis=-1))
+        idx = ~np.isnan(rr)
+        if not np.any(idx):
+            return 0
+        r = 1 - np.average(rr[idx], weights=wt[idx])
+        return r
+
+
     @property
     def default_name(self):
         return '_'.join(str(s) for s in self.uids)
@@ -318,6 +402,40 @@ class Link:
         return self._mask
 
 
+    @property
+    def sample_err(self):
+        num_mtch = self._tid0.size
+        if self._sample_err is None:
+            return np.zeros(num_mtch, dtype=np.float32)
+        else:
+            se = np.array(self._sample_err)
+            if se.size == 1:
+                se = np.full(num_mtch, se)
+            return se
+
+
+    @property
+    def initial_kd_tree(self):
+        if (not hasattr(self, '_initial_kd_tree')) or (self._initial_kd_tree) is None:
+            xy0 = self.xy0(gear=const.MESH_GEAR_INITIAL, use_mask=False)
+            self._initial_kd_tree = KDTree(xy0)
+        return self._initial_kd_tree
+
+
+    @property
+    def spacing(self):
+        if self._spacing is None:
+            xy0 = self.xy0(gear=const.MESH_GEAR_INITIAL, use_mask=False)
+            if xy0.shape[0] < 2:
+                self._spacing = 0
+            m = Mesh.from_PSLG(xy0, segments=None, mesh_size=0)
+            edg = m.edges()
+            edg_len = np.sum(np.diff(xy0[edg], axis=-2)**2, axis=-1)**0.5
+            self._spacing = np.median(edg_len, axis=None)
+        return self._spacing
+
+
+
 class MeshList:
     """
     list of meshes. Each element could be a Mesh object, or as string direct to
@@ -340,7 +458,7 @@ class MeshList:
             return m
         elif key in self._mesh_cache:
             return self._mesh_cache[key]
-        elif isinstance(m, str) and os.path.isfile(m):
+        elif isinstance(m, str) and storage.file_exists(m):
             M = Mesh.from_h5(m)
             self._mesh_cache[key] = M
             return M
@@ -376,7 +494,13 @@ class SLM:
             links = []
         self.meshes = MeshList.init(meshes, maxlen=kwargs.get('maxlen', None))
         self.links = links
-        self._stiffness_lambda = kwargs.get('stiffness_lambda', 1.0)
+        assert_dominance = kwargs.pop('assert_dominance', False)
+        dominant_mesh = kwargs.pop('dominant_mesh', None)
+        if assert_dominance:
+            self.make_dominant_section(dominant_mesh)
+            self._stiffness_lambda = kwargs.get('stiffness_lambda', 1.0) * config.MATCH_SOFTFACTOR_DOMINANCE
+        else:
+            self._stiffness_lambda = kwargs.get('stiffness_lambda', 1.0)
         self._crosslink_lambda = kwargs.get('crosslink_lambda', -1.0)
         self._shared_cache = kwargs.get('shared_cache', None)
         self.clear_cached_attr()
@@ -384,12 +508,14 @@ class SLM:
 
     def clear_cached_attr(self, instant_gc=False):
         self._mesh_uids = None
+        self._uid2mesh_lut = None
         self._link_uids = None
         self._link_names = []
         self._linkage_adjacency = None
         self._connected_subsystems = None
         self._stiffness_matrix = None
         self._crosslink_terms = None
+        self._crosslink_shape = None
         if instant_gc:
             gc.collect()
 
@@ -403,6 +529,7 @@ class SLM:
         self._linkage_adjacency = None
         self._connected_subsystems = None
         self._crosslink_terms = None
+        self._crosslink_shape = None
         if instant_gc:
             gc.collect()
 
@@ -413,10 +540,12 @@ class SLM:
         graph. Note that only changing vertices is not considered mesh change.
         """
         self._mesh_uids = None
+        self._uid2mesh_lut = None
         self._linkage_adjacency = None
         self._connected_subsystems = None
         self._stiffness_matrix = None
         self._crosslink_terms = None
+        self._crosslink_shape = None
         if instant_gc:
             gc.collect()
 
@@ -426,6 +555,21 @@ class SLM:
         self._crosslink_terms = None
         if instant_gc:
             gc.collect()
+
+
+    def make_dominant_section(self, dominant_mesh):
+        mx_soft_factor = 0.0
+        shape_compactness = []
+        for m in self.meshes:
+            mx_soft_factor = max(mx_soft_factor, m.soft_factor)
+            if dominant_mesh is None:
+                shape_compactness.append(m.shape_compactness(gear=const.MESH_GEAR_INITIAL))
+        if dominant_mesh is None:
+            indx = np.argmin(shape_compactness)
+            dominant_mesh = np.floor(self.meshes[indx].uid)
+        for m in self.meshes:
+            if np.floor(m.uid) == dominant_mesh:
+                m.soft_factor = mx_soft_factor * config.MATCH_SOFTFACTOR_DOMINANCE
 
 
   ## -------------------------- system manipulation ------------------------ ##
@@ -616,9 +760,22 @@ class SLM:
             m.anneal(gear=gear, mode=mode)
 
 
-    def adjust_link_weight_by_residue(self, gear=(const.MESH_GEAR_MOVING, const.MESH_GEAR_MOVING)):
+    def relax_higly_deformed(self, gear=(const.MESH_GEAR_FIXED, const.MESH_GEAR_MOVING), deform_cutoff=config.MAXIMUM_DEFORM_ALLOWED, iqr=0):
+        modified = 0
+        deform_thresh = 1 - 1 / (abs(deform_cutoff) + 1)
+        for m in self.meshes:
+            if m.locked:
+                continue
+            md = relax_mesh_most_deformed(m, gear=gear, deform_cutoff=deform_thresh, iqr=iqr)
+            modified = modified + md
+        return modified
+
+
+    def adjust_link_weight_by_residue(self, gear=(const.MESH_GEAR_MOVING, const.MESH_GEAR_MOVING), relax_first=False):
         weight_modified = False
         connection_modified = False
+        if relax_first:
+            self.relax_higly_deformed()
         for lnk in self.links:
             w,c = lnk.adjust_weight_from_residue(gear=gear)
             weight_modified |= w
@@ -651,8 +808,6 @@ class SLM:
                 computation (and stiffness if nonlinear).
             inner_cache: the cache to store intermediate attributes like shape
                 matrices. Use default if set to None.
-            check_flip(bool): check if any triangles are flipped.
-            continue_on_flip: whether to exit when a flipped triangle is detected.
         """
         if (self._stiffness_matrix is None) or force_update:
             STIFF_M = []
@@ -682,14 +837,84 @@ class SLM:
                 the displacement
             target_gear: gear that associated with the vertices at the final
                 postions for locked meshes.
+        """
+        if (self._crosslink_terms is None) or force_update:
+            start_gear = kwargs.get('start_gear', const.MESH_GEAR_MOVING)
+            targt_gear = kwargs.get('target_gear', const.MESH_GEAR_MOVING)
+            shpmat_x, enable_flags = self.crosslink_shape_matrix(force_update=False, to_cache=to_cache)
+            num_pts = shpmat_x.shape[0]
+            m_rht = np.zeros((num_pts, 2), dtype=np.float64)
+            weights = np.zeros(num_pts, dtype=np.float32)
+            crnt_pos = 0
+            for lnk, enabled in zip(self.links, enable_flags):
+                if not enabled:
+                    continue
+                gears = [targt_gear if m.locked else start_gear for m in lnk.meshes]
+                dxy = lnk.dxy(gear=gears, use_mask=False)
+                wt  = lnk.weight(use_mask=False)
+                idx_t = slice(crnt_pos, crnt_pos + wt.size, 1)
+                m_rht[idx_t, :] = dxy
+                weights[idx_t] = wt
+                crnt_pos += wt.size
+            D = sparse.diags(weights, shape=(num_pts, num_pts))
+            Clft_x = (shpmat_x.T @ D @ shpmat_x).T
+            Clft_y = sparse.csr_matrix((Clft_x.data, Clft_x.indices+1, np.insert(Clft_x.indptr[:-1],0,0)), shape=Clft_x.shape)
+            Cs_lft = Clft_x + Clft_y
+            Cs_rht = shpmat_x.T.dot(weights*m_rht[:,0])
+            Crht_y = shpmat_x.T.dot(weights*m_rht[:,1])
+            Cs_rht[1:] = Cs_rht[1:] + Crht_y[0:-1]
+            if to_cache:
+                self._crosslink_terms = (Cs_lft, Cs_rht)
+            return (Cs_lft, Cs_rht)
+        else:
+            return self._crosslink_terms
+
+
+    def crosslink_shape_matrix(self, force_update=False, to_cache=True, **kwargs):
+        if (self._crosslink_shape is None) or force_update:
+            num_dof = self.degree_of_freedom
+            index_offsets_mapper = self.index_offsets
+            flags = np.ones(len(self.links), dtype=bool)
+            datas = []
+            indices = []
+            indptrs = [[0]]
+            crnt_pt_loc = 0 
+            for k, lnk in enumerate(self.links):
+                indx_offst = [index_offsets_mapper[uid] for uid in lnk.uids]
+                B, indx_B = lnk.shape_matrix_contrib(indx_offst, use_mask=False)
+                if (B is None) or (B.size == 0):
+                    flags[k] = False
+                    continue
+                datas.append(B.ravel())
+                indices.append(indx_B.ravel())
+                ptr = (np.arange(B.shape[0]) + 1) * B.shape[1] + crnt_pt_loc
+                indptrs.append(ptr)
+                crnt_pt_loc += B.size
+            datas = np.concatenate(datas, axis=None)
+            indices = np.concatenate(indices, axis=None)
+            indptrs = np.concatenate(indptrs, axis=None)
+            shp_mat = sparse.csr_matrix((datas, indices, indptrs), shape=(indptrs.size-1, num_dof), dtype=np.float32)
+            if to_cache:
+                self._crosslink_shape = (shp_mat, flags)
+            return shp_mat, flags
+        else:
+            return self._crosslink_shape
+
+
+    def crosslink_terms_legacy(self,  force_update=False, to_cache=True, **kwargs):
+        """
+        compute the terms associated with the links in the assembled equation.
+        Kwargs:
+            start_gear: gear that associated with the vertices before applying
+                the displacement
+            target_gear: gear that associated with the vertices at the final
+                postions for locked meshes.
             batch_num_matches: the accumulated number of matches to scan before
                 constructing the incremental sparse matrices. Larger number
                 needs more RAM but faster
         """
         if (self._crosslink_terms is None) or force_update:
-            start_gear = kwargs.get('start_gear', const.MESH_GEAR_MOVING)
-            targt_gear = kwargs.get('target_gear', const.MESH_GEAR_MOVING)
-            batch_num_matches = kwargs.get('batch_num_matches', None)
+            batch_num_matches = kwargs.pop('batch_num_matches', None)
             if batch_num_matches is None:
                 batch_num_matches = self.num_matches / 10
             if batch_num_matches < 1:
@@ -704,8 +929,7 @@ class SLM:
             num_match = 0
             for lnk in self.links:
                 indx_offst = [index_offsets_mapper[uid] for uid in lnk.uids]
-                v_lft, indices_lft, v_rht, indx_rht = lnk.equation_contrib(indx_offst,
-                    start_gear=start_gear, target_gear=targt_gear)
+                v_lft, indices_lft, v_rht, indx_rht = lnk.equation_contrib(indx_offst, **kwargs)
                 if v_lft is None:
                     continue
                 V_lft_a.append(v_lft)
@@ -730,6 +954,7 @@ class SLM:
             return (Cs_lft, Cs_rht)
         else:
             return self._crosslink_terms
+
 
 
     @property
@@ -762,17 +987,21 @@ class SLM:
         tol = kwargs.get('tol', 1e-07)
         start_gear = kwargs.get('start_gear', const.MESH_GEAR_FIXED)
         targt_gear = kwargs.get('target_gear', const.MESH_GEAR_FIXED)
+        return_residue = kwargs.get('return_residue', True)
         locked_flag = self.lock_flags
         active_index = np.nonzero(~locked_flag)[0]
-        links = self.relevant_links
+        links = self.links
         num_links = len(links)
+        relevant_flags = np.zeros(num_links, dtype=np.float32)
+        cost = None
+        residue = None
         if num_links == 0:
-            return False
+            return cost, residue
         mesh_uids = self.mesh_uids[~locked_flag]
         num_meshes = mesh_uids.size
         mesh_uids_mapper = {uid: k for k, uid in enumerate(mesh_uids)}
         if num_meshes == 0:
-            return False
+            return cost, residue
         conn_lbl, _ = self.connected_subsystems
         conn_lbl_active = conn_lbl[~locked_flag]
         conn_lbl_locked = conn_lbl[locked_flag]
@@ -782,7 +1011,9 @@ class SLM:
         bx = np.zeros(num_links + num_constraints)
         by = np.zeros(num_links + num_constraints)
         col_k = 0
-        for lnk in links:
+        for k, lnk in enumerate(links):
+            if not self.link_is_relevant(lnk):
+                continue
             wt = lnk.weight_sum ** 0.5
             if wt == 0:
                 continue
@@ -797,12 +1028,13 @@ class SLM:
                 gears.append(start_gear)
             else:
                 gears.append(targt_gear)
-            dxy = np.nanmedian(lnk.dxy(gear=gears, use_mask=True), axis=0)
+            dxy = np.median(lnk.dxy(gear=gears, use_mask=True), axis=0)
             bx[col_k] = dxy[0] * wt
             by[col_k] = dxy[1] * wt
+            relevant_flags[k] = wt
             col_k += 1
         if col_k == 0:
-            return False
+            return cost, residue
         wt = (A.power(2).sum(axis=None) / A.getnnz(axis=None)) ** 0.5
         for lbl in uncontraint_labels:
             pos = np.nonzero(conn_lbl_active == lbl)[0][0]
@@ -814,10 +1046,12 @@ class SLM:
         A = A.tocsr()
         Tx = sparse.linalg.lsqr(A, bx, atol=tol, btol=tol, iter_lim=maxiter)[0]
         Ty = sparse.linalg.lsqr(A, by, atol=tol, btol=tol, iter_lim=maxiter)[0]
+        residue_x = A.dot(Tx) - bx
+        residue_y = A.dot(Ty) - by
         cost0_x = np.linalg.norm(bx)
-        cost1_x = np.linalg.norm(A.dot(Tx) - bx)
+        cost1_x = np.linalg.norm(residue_x)
         cost0_y = np.linalg.norm(by)
-        cost1_y = np.linalg.norm(A.dot(Ty) - by)
+        cost1_y = np.linalg.norm(residue_y)
         cost0 = 0
         cost1 = 0
         if cost0_x <= cost1_x:
@@ -833,7 +1067,15 @@ class SLM:
         if np.any(Tx!=0, axis=None) or np.any(Ty!=0, axis=None):
             for idx, tx, ty in zip(active_index, Tx, Ty):
                 self.meshes[idx].set_translation((tx, ty), gear=(start_gear,targt_gear))
-        return (cost0, cost1)
+            cost = (float(cost0), float(cost1))
+        if return_residue and (cost is not None):
+            idx_t = relevant_flags > 0
+            num_rel_links = np.sum(idx_t)
+            residue_x = residue_x[:num_rel_links]
+            residue_y = residue_y[:num_rel_links]
+            residue = np.zeros(num_links, dtype=np.float32)
+            residue[idx_t] = (residue_x ** 2 + residue_y ** 2) ** 0.5 / relevant_flags[idx_t]
+        return cost, residue
 
 
     def optimize_translation_w_filtering(self, **kwargs):
@@ -856,36 +1098,27 @@ class SLM:
         target_gear = kwargs.get('target_gear', const.MESH_GEAR_FIXED)
         start_gear = kwargs.get('start_gear', target_gear)
         residue_threshold = kwargs.get('residue_threshold', None)
-        cost0 = self.optimize_translation_lsqr(maxiter=maxiter, tol=tol,
+        cost0, residue = self.optimize_translation_lsqr(maxiter=maxiter, tol=tol,
             start_gear=start_gear, target_gear=target_gear)
         num_disabled = 0
-        if (residue_threshold is not None) and (residue_threshold > 0):
+        if (residue_threshold is not None) and (residue_threshold > 0) and (cost0 is not None):
             while True:
-                lnks_w_large_dis = []
-                mxdis = 0
-                for k, lnk in enumerate(self.links):
-                    if not lnk.relevant:
-                        continue
-                    dxy = lnk.dxy(gear=(target_gear, target_gear), use_mask=True)
-                    dxy_m = np.median(dxy, axis=0)
-                    dis = np.sqrt(np.sum(dxy_m**2))
-                    mxdis = max(mxdis, dis)
-                    if dis > residue_threshold:
-                        lnks_w_large_dis.append((dis, lnk.uids, k))
+                idx_t = np.flatnonzero(residue > residue_threshold)
+                lnks_w_large_dis = [(residue[k], self.links[k].uids, k) for k in idx_t]
                 if not lnks_w_large_dis:
                     break
                 else:
                     lnks_w_large_dis.sort(reverse=True)
                     uid_record = set()
                     for lnk in lnks_w_large_dis:
-                        dis, lnk_uids, lnk_k = lnk
+                        _, lnk_uids, lnk_k = lnk
                         if uid_record.isdisjoint(lnk_uids):
                             self.links[lnk_k].disable()
                             num_disabled += 1
                         uid_record.update(lnk_uids)
-                    cost1 = self.optimize_translation_lsqr(maxiter=maxiter,
+                    cost1, residue = self.optimize_translation_lsqr(maxiter=maxiter,
                         tol=tol,start_gear=start_gear, target_gear=target_gear)
-                    if cost1[1] >= cost1[0]:
+                    if (cost1 is None) or (cost1[1] >= cost1[0]):
                         break
                     else:
                         cost0 = (cost0[0], min(cost1[1], cost0[1]))
@@ -1025,9 +1258,9 @@ class SLM:
         """
         optimize the linear system or the tangent problem of non-linear system.
         kwargs:
-            maxiter: maximum number of iterations in bicgstab. None if no limit.
-            tol: the relative stopping tolerance of the bicgstab.
-            atol: the absolute stopping tolerance of the bicgstab.
+            maxiter: maximum number of iterations in bicgstab/minres. None if no limit.
+            tol: the relative stopping tolerance of the bicgstab/minres.
+            atol: the absolute stopping tolerance of the bicgstab/minres.
             shape_gear: gear to caculate shape matrix.
             start_gear: the gear that associated with the vertex positions before
                 applying the field from optimization. Also used for computing
@@ -1039,11 +1272,6 @@ class SLM:
             stiffness_lambda: stiffness term multiplier.
             crosslink_lambda: crosslink term multiplier.
             inner_cache: the cache to store intermediate attributes.
-            continue_on_flip(bool): whether to continue with flipped triangles
-                detected.
-            batch_num_matches: the accumulated number of matches to scan before
-                constructing the incremental sparse matrices. Larger number
-                needs more RAM but faster
             groupings(ndarray): a ndarray of shape (N_mesh,) with entries as
                 the group identities of the corresponding meshes. meshes in the
                 same group have identical deformations, therefore they need to
@@ -1052,9 +1280,10 @@ class SLM:
                 optimization is done. In some occasions, like flip checking
                 in Newton_Raphson method, this could be set to False.
         """
+        solver = kwargs.get('solver', 'minres')
         maxiter = kwargs.get('maxiter', None)
         tol = kwargs.get('tol', 1e-7)
-        atol = kwargs.get('atol', None)
+        atol = kwargs.get('atol', 0.0)
         callback_settings = kwargs.get('callback_settings', True)
         shape_gear = kwargs.get('shape_gear', const.MESH_GEAR_FIXED)
         targt_gear = kwargs.get('target_gear', const.MESH_GEAR_MOVING)
@@ -1062,18 +1291,74 @@ class SLM:
         stiffness_lambda = kwargs.get('stiffness_lambda', self._stiffness_lambda)
         crosslink_lambda = kwargs.get('crosslink_lambda', self._crosslink_lambda)
         inner_cache = kwargs.get('inner_cache', self._shared_cache)
-        cont_on_flip = kwargs.get('continue_on_flip', False)
-        batch_num_matches = kwargs.get('batch_num_matches', None)
         groupings = kwargs.get('groupings', None)
         auto_clear = kwargs.get('auto_clear', True)
         remove_extra_dof = kwargs.get('remove_extra_dof', False)
-        check_flip = not cont_on_flip
-        stiff_m, stress_v = self.stiffness_matrix(gear=(shape_gear,start_gear),
-            inner_cache=inner_cache, check_flip=check_flip,
-            continue_on_flip=cont_on_flip)
+        remove_material_dof = kwargs.get('remove_material_dof', None)
+        tolerated_perturbation = kwargs.get('tolerated_perturbation', None)
+        check_converge = kwargs.pop('check_converge', config.OPT_CHECK_CONVERGENCE)
+        M = kwargs.get('precondition', 'jacobi')
         lock_flags = self.lock_flags
+        if tolerated_perturbation is not None:
+            if tolerated_perturbation < 0:
+                tolerated_perturbation = abs(tolerated_perturbation) * config.data_resolution() / self.working_resolution
+        if np.all(lock_flags):
+            return 0, 0 # all locked, nothing to optimize
+        stiff_m, stress_v = self.stiffness_matrix(gear=(shape_gear,start_gear),
+            inner_cache=inner_cache)
+        Cs_lft, Cs_rht = self.crosslink_terms(start_gear=start_gear,
+            target_gear=targt_gear)
+        if isinstance(callback_settings, bool):
+            if callback_settings:
+                callback_settings = {'chances':5, 'eval_step':10}
+            else:
+                callback_settings = {}
+        elif isinstance(callback_settings, dict):
+            callback_settings = callback_settings.copy()
+        else:
+            raise TypeError
         edc = None
-        if remove_extra_dof:
+        if remove_material_dof is not None:
+            border_marker = '_freeborder'
+            if isinstance(remove_material_dof, str):
+                rm_mlist = [remove_material_dof]
+            elif isinstance(remove_material_dof, (tuple, list)):
+                rm_mlist = remove_material_dof
+            else:
+                raise TypeError
+            free_border = [s.replace(border_marker, '') for s in rm_mlist if border_marker in s]
+            fixed_border = [s for s in rm_mlist if border_marker not in s]
+            edc = []
+            for m in self.meshes:
+                if m.locked:
+                    continue
+                m_t = m.triangles
+                edc_m = np.ones(m.num_vertices*2, dtype=bool)
+                for mtname in free_border:
+                    tid = np.zeros(m.num_triangles, dtype=bool)
+                    if mtname in m.named_material_table:
+                        mid = m.named_material_table[mtname].uid
+                        tid = tid | (m.material_ids == mid)
+                    vid_n = np.unique(m_t[tid], axis=None)
+                    vid_p = np.unique(m_t[~tid], axis=None)
+                    if vid_n.size > 0:
+                        edc_m[2*vid_n] = 0
+                        edc_m[2*vid_n + 1] = 0
+                    if vid_p.size > 0:
+                        edc_m[2*vid_p] = 1
+                        edc_m[2*vid_p + 1] = 1
+                for mtname in fixed_border:
+                    tid = np.zeros(m.num_triangles, dtype=bool)
+                    if mtname in m.named_material_table:
+                        mid = m.named_material_table[mtname].uid
+                        tid = tid | (m.material_ids == mid)
+                    vid_n = np.unique(m_t[tid], axis=None)
+                    if vid_n.size > 0:
+                        edc_m[2*vid_n] = 0
+                        edc_m[2*vid_n + 1] = 0
+                edc.append(edc_m)
+            edc = np.concatenate(edc, axis=None)
+        elif remove_extra_dof:
             conn_lbl, _ = self.connected_subsystems
             rm_flag = np.zeros_like(conn_lbl, dtype=bool)
             for lbl in np.unique(conn_lbl):
@@ -1090,25 +1375,6 @@ class SLM:
                         s[:3] = False
                     edc.append(s)
                 edc = np.concatenate(edc, axis=None)
-        if isinstance(callback_settings, bool):
-            if callback_settings:
-                callback_settings = {'chances':5, 'eval_step':10}
-            else:
-                callback_settings = {}
-        elif isinstance(callback_settings, dict):
-            callback_settings = callback_settings.copy()
-        else:
-            raise TypeError
-        if np.all(lock_flags):
-            return 0, 0 # all locked, nothing to optimize
-        if stiff_m is None:
-            return None, None # flipped triangles
-        Cs_lft, Cs_rht = self.crosslink_terms(start_gear=start_gear,
-            target_gear=targt_gear, batch_num_matches=batch_num_matches)
-        stiffness_lambda, crosslink_lambda = self.relative_lambda(stiffness_lambda, crosslink_lambda)
-        A = stiffness_lambda * stiff_m + crosslink_lambda * Cs_lft
-        A = 0.5*(A + A.transpose())
-        b = crosslink_lambda * Cs_rht - stiffness_lambda * stress_v
         if groupings is not None:
             group_u, indx, group_nm, g_cnt = np.unique(groupings, return_index=True, return_inverse=True, return_counts=True)
             if group_u.size < groupings.size:
@@ -1138,21 +1404,20 @@ class SLM:
                 indx0 = np.concatenate(indx0, axis=None)
                 indx1 = np.concatenate(indx1, axis=None)
                 T_m = sparse.csr_matrix((np.ones_like(indx0, dtype=np.float32),
-                                        (indx1, indx0)), shape=(grouped_dof, A.shape[0]))
-                A = T_m @ A @ T_m.transpose() / np.mean(g_cnt)
-                b = T_m @ b / np.mean(g_cnt)
+                                        (indx1, indx0)), shape=(grouped_dof, stiff_m.shape[0]))
+                stiff_m = T_m @ stiff_m @ T_m.transpose() / np.mean(g_cnt)
+                Cs_lft = T_m @ Cs_lft @ T_m.transpose() / np.mean(g_cnt)
+                stress_v = T_m @ stress_v / np.mean(g_cnt)
+                Cs_rht = T_m @ Cs_rht / np.mean(g_cnt)
                 if edc is not None:
                     edc = (T_m @ edc) > 0
             else:
                 groupings = None
-        A_diag = A.diagonal()
-        if A_diag.max() > 0:
-            M = sparse.diags(1/(A_diag.clip(min(1.0, A_diag.max()/1000),None))) # Jacobi precondition
-        else:
-            M = None
-        # dd, _ = sparse.linalg.bicgstab(A, b, tol=tol, maxiter=maxiter, atol=atol, M=M)
-        dd = bicgstab(A, b, tol=tol, maxiter=maxiter, atol=atol, M=M, extra_dof_constraint=edc, **callback_settings)
-        cost = (np.linalg.norm(b), np.linalg.norm(A.dot(dd) - b))
+        stiffness_lambda, crosslink_lambda = self.relative_lambda_trace(stiffness_lambda, crosslink_lambda)
+        A = stiffness_lambda * stiff_m + crosslink_lambda * Cs_lft
+        b = crosslink_lambda * Cs_rht - stiffness_lambda * stress_v
+        dd = solve(A, b, solver, tol=tol, maxiter=maxiter, check_converge=check_converge, atol=atol, M=M, extra_dof_constraint=edc, tolerated_perturbation=tolerated_perturbation, **callback_settings)
+        cost = (float(np.linalg.norm(b)), float(np.linalg.norm(A.dot(dd) - b)))
         if cost[1] < cost[0]:
             index_offsets = self.index_offsets
             for k, m in enumerate(self.meshes):
@@ -1189,52 +1454,42 @@ class SLM:
             stiffness_lambda: stiffness term multipliers for each Newton step.
             crosslink_lambda: crosslink term multiplier for each Newton step.
             inner_cache: the cache to store intermediate attributes.
-            continue_on_flip(bool): whether to continue with flipped triangles
-                detected.
             crosslink_shrink: in the presence of flipped triangles,
                 the decay applied to the crosslink term so that it takes smaller
                 step.
             shrink_trial: maximum number of trials to attempt when shrinking the
                 crosslink_lambda to battle triangle flips.
-            batch_num_matches: the accumulated number of matches to scan before
-                constructing the incremental sparse matrices. Larger number
-                needs more RAM but faster
         """
-        max_newtonstep = kwargs.get('max_newtonstep', 5)
-        tol = kwargs.get('tol', 1e-7)
-        atol = kwargs.get('atol', None)
-        maxiter = SLM.expand_to_list(kwargs.get('maxiter', None), max_newtonstep)
-        step_tol = SLM.expand_to_list(kwargs.get('step_tol', tol), max_newtonstep)
-        step_atol = SLM.expand_to_list(kwargs.get('step_atol', atol), max_newtonstep)
-        stiffness_lambda = SLM.expand_to_list(kwargs.get('stiffness_lambda', self._stiffness_lambda), max_newtonstep)
-        crosslink_lambda = SLM.expand_to_list(kwargs.get('crosslink_lambda', self._crosslink_lambda), max_newtonstep)
-        residue_mode = SLM.expand_to_list(kwargs.get('residue_mode', None), max_newtonstep)
-        residue_len = SLM.expand_to_list(kwargs.get('residue_len', 0), max_newtonstep)
-        anneal_mode = SLM.expand_to_list(kwargs.get('anneal_mode', None), max_newtonstep)
-        inner_cache = kwargs.get('inner_cache', self._shared_cache)
-        cont_on_flip = kwargs.get('continue_on_flip', False)
-        crosslink_shrink = kwargs.get('crosslink_shrink', 0.25)
-        shrink_trial = kwargs.get('shrink_trial', 3)
-        groupings = kwargs.get('groupings', None)
-        batch_num_matches = kwargs.get('batch_num_matches', None)
-        callback_settings = kwargs.get('callback_settings', True)
+        max_newtonstep = kwargs.pop('max_newtonstep', 5)
+        tol = kwargs.pop('tol', 1e-7)
+        atol = kwargs.pop('atol', 0)
+        maxiter = SLM.expand_to_list(kwargs.pop('maxiter', None), max_newtonstep)
+        tol_stp = (max(tol, 1e-5) / tol) ** (1/(max_newtonstep-1))
+        step_tol = SLM.expand_to_list(kwargs.pop('step_tol', tol), max_newtonstep, kfunc=(lambda p: p*tol_stp))
+        step_atol = SLM.expand_to_list(kwargs.pop('step_atol', atol), max_newtonstep)
+        stiffness_lambda = SLM.expand_to_list(kwargs.pop('stiffness_lambda', self._stiffness_lambda), max_newtonstep)
+        crosslink_lambda = SLM.expand_to_list(kwargs.pop('crosslink_lambda', self._crosslink_lambda), max_newtonstep)
+        residue_mode = SLM.expand_to_list(kwargs.pop('residue_mode', None), max_newtonstep, kfunc=(lambda _: None))
+        residue_len = SLM.expand_to_list(kwargs.pop('residue_len', 0), max_newtonstep, kfunc=(lambda p: p*2))
+        anneal_mode = SLM.expand_to_list(kwargs.pop('anneal_mode', None), max_newtonstep)
+        deform_outlier_constant = SLM.expand_to_list(kwargs.pop('deform_outlier_constant', 0), max_newtonstep)
+        check_converge = SLM.expand_to_list(kwargs.pop('check_converge', config.OPT_CHECK_CONVERGENCE), max_newtonstep, kfunc=(lambda _: False))
+        inner_cache = kwargs.pop('inner_cache', self._shared_cache)
         shape_gear = const.MESH_GEAR_FIXED
         start_gear = const.MESH_GEAR_MOVING
-        if cont_on_flip:
-            target_gear = const.MESH_GEAR_MOVING
-        else:
-            target_gear = const.MESH_GEAR_STAGING
-        # initialize cost and check flipped triangles
-        check_flip = not cont_on_flip
+        aspect_ratio = config.section_thickness() / self.working_resolution
+        for k, rl in enumerate(residue_len):
+            if rl < 0:
+                residue_len[k] = abs(rl) * aspect_ratio
+        target_gear = kwargs.pop('target_gear', const.MESH_GEAR_MOVING)
+        # initialize cost
         stiff_m, _ = self.stiffness_matrix(gear=(shape_gear,start_gear),
             force_update=True, to_cache=True,
-            inner_cache=inner_cache, check_flip=check_flip,
-            continue_on_flip=cont_on_flip)
+            inner_cache=inner_cache)
         if stiff_m is None:
             return None, None
         _, _ = self.crosslink_terms(force_update=True, to_cache=True,
-            start_gear=start_gear, target_gear=target_gear,
-            batch_num_matches=batch_num_matches)
+            start_gear=start_gear, target_gear=target_gear)
         cost0 = self.cost(stiffness_lambda[-1], crosslink_lambda[-1])
         cost = np.inf
         if tol is None:
@@ -1242,63 +1497,66 @@ class SLM:
         elif atol is None:
             tol0 = cost0 * tol
         else:
-            tol0 = min(cost0 * tol, atol)
+            tol0 = max(cost0 * tol, atol)
+        step_atol = [max(s, tol0) for s in step_atol]
         ke = 0 # newton step counter
-        kshrk = 0 # crosslink_shrink counter
-        cshrink = 1
         while ke < max_newtonstep:
             step_cost = self.optimize_linear(maxiter=maxiter[ke],
                 tol=step_tol[ke], atol=step_atol[ke],
                 shape_gear=shape_gear, start_gear=start_gear, target_gear=target_gear,
                 stiffness_lambda=stiffness_lambda[ke],
-                crosslink_lambda=crosslink_lambda[ke]*cshrink,
-                inner_cache=inner_cache, continue_on_flip=cont_on_flip,
-                batch_num_matches=batch_num_matches, groupings=groupings,
-                auto_clear=False, callback_settings=callback_settings)
+                crosslink_lambda=crosslink_lambda[ke],
+                inner_cache=inner_cache,
+                auto_clear=False, check_converge=check_converge[ke], **kwargs)
             if (step_cost[0] is None) or (step_cost[0] < step_cost[1]):
                 break
+            this_session_annealed = False
             if anneal_mode[ke] is not None:
-                self.anneal(gear=(target_gear, shape_gear), mode=anneal_mode[ke])
+                if deform_outlier_constant[ke] > 0:
+                    self.relax_higly_deformed(gear=(shape_gear, const.MESH_GEAR_STAGING), iqr=deform_outlier_constant[ke])
+                self.anneal(gear=(const.MESH_GEAR_STAGING, shape_gear), mode=anneal_mode[ke])
+                for m in self.meshes:
+                    if m.locked:
+                        continue
+                    m.staging_vertices = None
+                    m.set_offset(0*m.offset(gear=const.MESH_GEAR_STAGING), gear=const.MESH_GEAR_STAGING)
+                this_session_annealed = True
             stiff_m, _ = self.stiffness_matrix(gear=(shape_gear,target_gear),
                 force_update=True, to_cache=True,
-                inner_cache=inner_cache, check_flip=check_flip,
-                continue_on_flip=cont_on_flip)
-            if stiff_m is None:
-                cshrink *= crosslink_shrink
-                kshrk += 1
-                if kshrk > shrink_trial:
-                    break
-                continue
-            kshrk = 0
+                inner_cache=inner_cache)
             if residue_mode[ke] is not None:
                 if residue_len[ke] > 0:
                     if residue_mode[ke] == 'huber':
                         self.set_link_residue_huber(residue_len[ke])
                     else:
                         self.set_link_residue_threshold(residue_len[ke])
-                self.adjust_link_weight_by_residue(gear=(target_gear, target_gear))
+                self.adjust_link_weight_by_residue(gear=(target_gear, target_gear), relax_first=(not this_session_annealed))
             _, _ = self.crosslink_terms(force_update=True, to_cache=True,
-                start_gear=target_gear, target_gear=target_gear,
-                batch_num_matches=batch_num_matches)
+                start_gear=target_gear, target_gear=target_gear)
             if start_gear != target_gear:
                 self.anneal(gear=(target_gear, start_gear), mode=const.ANNEAL_COPY_EXACT)
             cost = min(cost, self.cost(stiffness_lambda[-1], crosslink_lambda[-1]))
-            if (tol0 is not None) and (cost < tol0):
-                break
             ke += 1
+            if (tol0 is not None) and (cost < tol0):
+                ke = max(ke, max_newtonstep-1)
             if ke >= len(stiffness_lambda):
                 break
         return cost0, cost
 
 
     def optimize_elastic(self, **kwargs):
-        if self.is_linear:
+        online_anneal = kwargs.get('online_anneal', False)
+        if online_anneal:
+            kwargs.setdefault('anneal_mode', const.ANNEAL_COPY_EXACT)
+            kwargs.setdefault('deform_outlier_constant', 1.5)
+        if (self.is_linear) and not online_anneal:
             return self.optimize_linear(**kwargs)
         else:
             return self.optimize_Newton_Raphson(**kwargs)
 
 
-    def relative_lambda(self, stiffness_lambda, crosslink_lambda):
+    def relative_lambda_frobenius(self, stiffness_lambda, crosslink_lambda):
+        # adjust normal based on the Frobenius norms of the matrices
         if (stiffness_lambda < 0) or (crosslink_lambda < 0):
             if (self._stiffness_matrix is None) or (self._crosslink_terms is None):
                 raise RuntimeError('System equation not initialized')
@@ -1312,15 +1570,35 @@ class SLM:
         return stiffness_lambda, crosslink_lambda
 
 
+    def relative_lambda_trace(self, stiffness_lambda, crosslink_lambda):
+        # adjust normal based on the traces; equivalent to forces introduced by random displacement
+        if (stiffness_lambda < 0) or (crosslink_lambda < 0):
+            if (self._stiffness_matrix is None) or (self._crosslink_terms is None):
+                raise RuntimeError('System equation not initialized')
+            ratio = abs(stiffness_lambda / crosslink_lambda)
+            stiff_m, _ = self._stiffness_matrix
+            Cs_lft, _ = self._crosslink_terms
+            nm_cl = Cs_lft.trace()
+            if nm_cl == 0:
+                stiffness_lambda = 0
+            else:
+                diag_stiff = stiff_m.diagonal()
+                diag_cl = Cs_lft.diagonal()
+                nm_stiff = np.sum(diag_stiff[diag_cl != 0])
+                stiffness_lambda = abs(ratio * nm_cl / nm_stiff)
+            crosslink_lambda = 1.0
+        return stiffness_lambda, crosslink_lambda
+
+
     def cost(self, stiffness_lambda, crosslink_lambda):
         if (self._stiffness_matrix is None) or (self._crosslink_terms is None):
             raise RuntimeError('System equation not initialized')
         stiff_m, stress_v = self._stiffness_matrix
         if stiff_m is None:
             return None
-        stiffness_lambda, crosslink_lambda = self.relative_lambda(stiffness_lambda, crosslink_lambda)
+        stiffness_lambda, crosslink_lambda = self.relative_lambda_trace(stiffness_lambda, crosslink_lambda)
         Cs_rht, Cs_rht = self._crosslink_terms
-        return np.linalg.norm(crosslink_lambda * Cs_rht - stiffness_lambda * stress_v)
+        return float(np.linalg.norm(crosslink_lambda * Cs_rht - stiffness_lambda * stress_v))
 
 
     def flag_outcasts(self):
@@ -1382,6 +1660,19 @@ class SLM:
         if self._mesh_uids is None:
             self._mesh_uids = np.array([m.uid for m in self.meshes])
         return self._mesh_uids
+
+
+    @property
+    def uid2mesh_lut(self):
+        if self._uid2mesh_lut is None:
+            mesh_lut = defaultdict(list)
+            for k, uid in enumerate(self.mesh_uids):
+                uid = float(uid)
+                mesh_lut[uid].append(k)
+                if np.floor(uid) != uid:
+                    mesh_lut[np.floor(uid)].append(k)
+            self._uid2mesh_lut = mesh_lut
+        return self._uid2mesh_lut
 
 
     def linkage_adjacency(self, directional=False):
@@ -1459,7 +1750,12 @@ class SLM:
         return [lnk for lnk in self.links if (self.link_is_relevant(lnk) == 1)]
 
 
-    def match_residues(self, gear=const.MESH_GEAR_MOVING, use_mask=False, quantile=1):
+    @property
+    def working_resolution(self):
+        return self.meshes[0].resolution
+
+
+    def match_residues(self, gear=const.MESH_GEAR_MOVING, use_mask=False, quantile=0.75):
         dis = []
         for lnk in self.links:
             if use_mask and not lnk.relevant:
@@ -1507,28 +1803,15 @@ class SLM:
         """
         if self.num_meshes == 0:
             return [], False
-        uid = float(uid)
-        mesh_uids = self.mesh_uids
-        dis = np.abs(mesh_uids - uid)
-        if np.min(dis) == 0:
-            # the exact mesh found
-            indx = np.nonzero(dis == 0)[0][0]
-            return [self.meshes[indx]], True
-        elif uid.is_integer():
-            # probing uid is a complete mesh, but the corresponding mesh inside
-            #   the system is subdivided already
-            indx = np.nonzero(dis < 0.5)[0]
+        uid2mesh_lut = self.uid2mesh_lut
+        if uid in uid2mesh_lut:
+            indx = uid2mesh_lut[uid]
+            return [self.meshes[s] for s in indx], len(indx) == 1
+        elif np.floor(uid) in uid2mesh_lut:
+            indx = uid2mesh_lut[np.floor(uid)]
             return [self.meshes[s] for s in indx], False
         else:
-            # probing uid is a submesh. only return if the mesh in the system is
-            #   a complete mesh or exact the same (as in the first condition)
-            uid_r = np.floor(uid)
-            dis_r = np.abs(mesh_uids - uid_r)
-            if np.min(dis_r) == 0:
-                indx = np.nonzero(dis_r == 0)[0][0]
-                return [self.meshes[indx]], False
-            else:
-                return [], False
+            return [], False
 
 
     @staticmethod
@@ -1538,6 +1821,7 @@ class SLM:
         if isinstance(link, Link):
             link_initialized = True
         elif isinstance(link, common.Match):
+            kwargs.setdefault('strain', link.strain)
             link_initialized = False
         else:
             raise TypeError
@@ -1575,11 +1859,19 @@ class SLM:
 
 
     @staticmethod
-    def expand_to_list(elem, list_len):
-        if (not hasattr(elem, '__len__')) or isinstance(elem, str):
-            return [elem] * list_len
+    def expand_to_list(elem, list_len, kfunc=None):
+        if (not hasattr(elem, '__len__')) or isinstance(elem, str) or (len(elem) == 0):
+            out_lst =  [elem]
         else:
-            return elem
+            out_lst = list(elem)[::-1]
+        while len(out_lst) < list_len:
+            last_elem = out_lst[-1]
+            if kfunc is not None:
+                out_lst.append(kfunc(last_elem))
+            else:
+                out_lst.append(last_elem)
+        return out_lst[::-1]
+
 
 
 class EarlyStopFlag(Exception):
@@ -1588,7 +1880,7 @@ class EarlyStopFlag(Exception):
 
 class SLM_Callback:
     """
-    call back function class fed to bicgstab optimizer.
+    call back function class fed to iterative solver.
     Args:
         A, b: equation terms to solve x: Ax = b.
     Kwargs:
@@ -1599,10 +1891,12 @@ class SLM_Callback:
         chances: if the number of consecutive iterations with enlarged cost or
             small updates is larger than this number, envoke early stopping.
     """
-    def __init__(self, A, b, timeout=None, early_stop_thresh=None, chances=5, eval_step=10):
+    def __init__(self, A, b, timeout=None, early_stop_thresh=None, chances=5, eval_step=10, atol=None):
         self._A = A
         self._b = b
-        self._timout = timeout
+        self._timeout = timeout
+        self._atol = atol
+        self._time_elapse = 0
         self._early_stop_thresh = early_stop_thresh
         self._eval_step = eval_step
         self._t0 = time.time()
@@ -1613,18 +1907,22 @@ class SLM_Callback:
         self._count = 0
         self._chances = chances
         self._exit_count = 0
+        self._exit_code = 0
 
 
     def callback(self, x):
+        self._count += 1
         if (self._count % self._eval_step == 0) or (self._count < min(self._eval_step, 5)):
+            self._time_elapse = time.time() - self._t0
             cost = np.linalg.norm(self._A.dot(x) - self._b)
             if cost < self.min_cost:
                 self.min_cost = cost
                 self.solution = x.copy()
-            if self._timout is not None:
-                t = time.time() - self._t0
-                if t > self._timout:
-                    raise EarlyStopFlag
+            if (self._timeout is not None) and (self._time_elapse > self._timeout):
+                self._exit_code = 1
+                raise EarlyStopFlag
+            if (self._atol is not None) and (cost < self._atol):
+                raise EarlyStopFlag
             if (self._chances is not None) and (self._count >= self._eval_step):
                 if cost > self._last_cost:
                     self._exit_count += 1
@@ -1637,20 +1935,43 @@ class SLM_Callback:
                 else:
                     self._exit_count = 0
                 if self._exit_count > self._chances:
+                    self._exit_code = 2
                     raise EarlyStopFlag
                 self._last_x = x.copy()
                 self._last_cost = cost
-        self._count += 1
         return False
 
 
-def bicgstab(A, b, tol=1e-07, atol=None, maxiter=None, M=None, **kwargs):
+def solve(A, b, solver, x0=None, tol=1e-7, atol=None, maxiter=None, M=None, **kwargs):
     timeout = kwargs.get('timeout', None)
     early_stop_thresh = kwargs.get('early_stop_thresh', None)
     chances = kwargs.get('chances', None)
     eval_step = kwargs.get('eval_step', 10)
     edc = kwargs.get('extra_dof_constraint', None)
-    if maxiter == 0:
+    check_converge = kwargs.get('check_converge', config.OPT_CHECK_CONVERGENCE)
+    tolerated_perturbation = kwargs.get('tolerated_perturbation', None) # if one round of optimization yields no larger benefit compared to recover from such perturbation, then do early stop.
+    allow_direct_solve = kwargs.pop('allow_direct_solve', False)
+    A = 0.5 * (A + A.T)
+    if tolerated_perturbation is not None:
+        theta = np.random.uniform(low=0.0, high=2*np.pi, size=round((b.size + 0.1)/2))
+        sin_t = np.sin(theta)
+        cos_t = np.cos(theta)
+        dx_t = np.stack((sin_t, cos_t), axis=-1)
+        dx_t = dx_t.ravel()
+        tolerated_perturbation = tolerated_perturbation * dx_t[:b.size]
+    A_diag = A.diagonal()
+    if A_diag.max() > 0:
+        M0 = sparse.diags(1/(A_diag.clip(min(1.0, A_diag.max()/1000),None))) # Jacobi precondition
+    else:
+        M0 = None
+    if isinstance(M, str):
+        if M.lower().startswith(('smooth', 'sa')):
+            ml = pyamg.smoothed_aggregation_solver(A, presmoother=('gauss_seidel', {'sweep': 'forward'}), postsmoother=('gauss_seidel', {'sweep': 'backward'}), symmetry='symmetric', smooth=('jacobi', {'omega': 4.0/3.0}))
+            M =  ml.aspreconditioner(cycle='V')
+            M = LinearOperator(shape=A.shape, matvec=M.matvec, rmatvec=M.matvec)
+        else:
+            M = M0
+    if (maxiter == 0) or (np.linalg.norm(b) == 0):
         return np.zeros_like(b)
     if edc is not None:
         if (not isinstance(edc, np.ndarray)) or (edc.dtype != bool):
@@ -1666,15 +1987,92 @@ def bicgstab(A, b, tol=1e-07, atol=None, maxiter=None, M=None, **kwargs):
             b = b[edc]
             if M is not None:
                 M = sparse.csr_matrix(M)[edc][:, edc]
-    cb = SLM_Callback(A, b, timeout=timeout, early_stop_thresh=early_stop_thresh, chances=chances, eval_step=eval_step)
-    callback = cb.callback
-    try:
-        x, _ = sparse.linalg.bicgstab(A, b, tol=tol, maxiter=maxiter, atol=atol, M=M, callback=callback)
-        cost0 = np.linalg.norm(A.dot(x) - b)
-        if cost0 > cb.min_cost:
-            x = cb.solution
-    except EarlyStopFlag:
-        x = cb.solution
+            if tolerated_perturbation is not None:
+                tolerated_perturbation = tolerated_perturbation[edc]
+    kwargs_solver =  {'x0': x0, 'M': M}
+    if atol is not None:
+        rtol0 = atol / np.linalg.norm(b)
+        tol = max(tol, rtol0)
+    atol = tol * np.linalg.norm(b)
+    timeout_t, maxiter_t = timeout, maxiter
+    if x0 is None:
+        x = np.zeros_like(b)
+    else:
+        x = x0
+    tol0 = tol
+    directly_solved = False
+    if allow_direct_solve and (b.shape[0] < DIRECT_SOLVER_SWITCH):
+        try:
+            F = sparse.linalg.factorized(A.tocsc())
+            x = F(b)
+            if not np.any(np.isnan(x)):
+                directly_solved = True
+        except Exception:
+            pass
+    if not directly_solved:
+        while True:
+            # not sure how minres compute rtol... so need a loop to ensure target is met.
+            cb = SLM_Callback(A, b, timeout=timeout_t, early_stop_thresh=early_stop_thresh, chances=chances, eval_step=eval_step, atol=atol)
+            callback = cb.callback
+            if not check_converge:
+                maxiter_irl = maxiter_t
+            else:
+                if maxiter_t is None:
+                    maxiter_irl = 100
+                else:
+                    maxiter_irl = min(maxiter_t, 100)
+            kwargs_solver.update({'maxiter': maxiter_irl, 'callback': callback})
+            if scipy.__version__ >= '1.12.0':
+                kwargs_solver['rtol'] = tol
+            else:
+                kwargs_solver['tol'] = tol
+            if tolerated_perturbation is not None:
+                previous_energy = 0.5 * A.dot(x).dot(x) - b.dot(x)
+            try:
+                if solver == 'bicgstab':
+                    x, _ = sparse.linalg.bicgstab(A, b, **kwargs_solver)
+                elif solver == 'minres':
+                    x, _ = sparse.linalg.minres(A, b, **kwargs_solver)
+                else:
+                    raise NotImplementedError
+                cost0 = np.linalg.norm(A.dot(x) - b)
+                if cost0 > cb.min_cost:
+                    x = cb.solution
+                cost = min(cost0, cb.min_cost)
+            except EarlyStopFlag:
+                x = cb.solution
+                cost = cb.min_cost
+            except KeyboardInterrupt:
+                x = cb.solution
+                break
+            except ValueError: # smoothed aggregation maybe non symmetric
+                if M is not M0:
+                    M = M0
+                    continue
+                else :
+                    raise
+            if (cost <= atol) or (not check_converge):
+                break
+            if tolerated_perturbation is not None:
+                x_abs = np.abs(x)
+                mask_pert = x_abs >= np.mean(x_abs)
+                x_pert = x + tolerated_perturbation * mask_pert
+                current_energy = 0.5 * A.dot(x).dot(x) - b.dot(x)
+                pert_energy = 0.5 * A.dot(x_pert).dot(x_pert) - b.dot(x_pert)
+                if (previous_energy - current_energy) < (pert_energy - current_energy):
+                    break
+            if cb._exit_code != 0:
+                break
+            if timeout_t is not None:
+                timeout_t -= cb._time_elapse
+                if timeout_t <= 0:
+                    break
+            if maxiter_t is not None:
+                maxiter_t -= cb._count
+                if maxiter_t <= 0:
+                    break
+            tol = max(tol0, 0.1 * atol / cost)
+            kwargs_solver.update({'x0': x})
     if edc is not None:
         x0 = x
         x = np.zeros_like(b, shape=edc.shape)
@@ -1682,20 +2080,16 @@ def bicgstab(A, b, tol=1e-07, atol=None, maxiter=None, M=None, **kwargs):
     return x
 
 
-
 def transform_mesh(mesh_unlocked, mesh_locked, **kwargs):
     err_thresh = kwargs.pop('err_thresh', None)
-    kwargs.setdefault('continue_on_flip', True)
     uid_mov = mesh_unlocked.uid
     locked_mov = mesh_unlocked.locked
     mesh_locked = mesh_locked.copy(override_dict={'locked': True, 'uid': 0})
     mesh_unlocked = mesh_unlocked.copy(override_dict={'locked': False, 'uid': 1})
     mesh_unlocked.change_resolution(mesh_locked.resolution)
     xy_fix = mesh_locked.vertices_w_offset(gear=const.MESH_GEAR_INITIAL)
-    # xy_mov = mesh_unlocked.vertices_w_offset(gear=const.MESH_GEAR_INITIAL)
-    # xy0 = np.concatenate((xy_fix, xy_mov), axis=0)
     xy0 = xy_fix
-    opt = SLM([mesh_locked, mesh_unlocked], stiffness_lambda=0.01)
+    opt = SLM([mesh_locked, mesh_unlocked], stiffness_lambda=1.0)
     opt.divide_disconnected_submeshes()
     opt.add_link_from_coordinates(mesh_locked.uid, mesh_unlocked.uid, xy0, xy0, check_duplicates=False)
     opt.optimize_affine_cascade()
@@ -1714,12 +2108,17 @@ def transform_mesh(mesh_unlocked, mesh_locked, **kwargs):
 
 
 def relax_mesh(M, free_vertices=None, free_triangles=None, **kwargs):
+    solver = kwargs.get('solver', 'minres')
     gear = kwargs.get('gear', (const.MESH_GEAR_FIXED, const.MESH_GEAR_MOVING))
     maxiter = kwargs.get('maxiter', None)
     tol = kwargs.get('tol', 1e-7)
-    atol = kwargs.get('atol', None)
+    atol = kwargs.get('atol', 0.0)
     callback_settings = kwargs.get('callback_settings', {}).copy()
+    tolerated_perturbation = kwargs.get('tolerated_perturbation', 0.25 * (config.data_resolution() / M.resolution))
+    cond = kwargs.get('precondition', 'jacobi')
     modified = False
+    locked = M.locked
+    M.locked = False
     if free_vertices is not None:
         vindx = free_vertices
     elif free_triangles is not None:
@@ -1731,23 +2130,61 @@ def relax_mesh(M, free_vertices=None, free_triangles=None, **kwargs):
     vmask[vindx] = True
     if not np.any(vmask):
         return modified
+    tmask = np.any(vmask[M.triangles], axis=-1)
     vmask_pad = np.repeat(vmask, 2)
+    fixed_vertices = M.vertices(gear=gear[0])
+    fixed_offset = M.offset(gear=gear[0])
+    M.anneal(gear=(const.MESH_GEAR_INITIAL, gear[0]), mode=const.ANNEAL_COPY_EXACT)
     M.anneal(gear=gear[::-1],  mode=const.ANNEAL_CONNECTED_RIGID)
     M._vertices_changed(gear=gear[0])
-    stiff_M, stress_v = M.stiffness_matrix(gear=gear, continue_on_flip=True, cache=False)
+    stiff_M, stress_v = M.stiffness_matrix_local_normalized(gear=gear, tri_mask=tmask)
+    if stiff_M is None:
+        return modified
     A = stiff_M[vmask_pad][:,vmask_pad]
     b = -stress_v[vmask_pad]
-    A_diag = A.diagonal()
-    if A_diag.max() > 0:
-        cond = sparse.diags(1/(A_diag.clip(min(1.0, A_diag.max()/1000),None))) # Jacobi precondition
-    else:
-        cond = None
-    dd = bicgstab(A, b, tol=tol, maxiter=maxiter, atol=atol, M=cond, **callback_settings)
+    dd = solve(A, b, solver, tol=tol, maxiter=maxiter, atol=atol, M=cond, tolerated_perturbation=tolerated_perturbation, **callback_settings)
     cost = (np.linalg.norm(b), np.linalg.norm(A.dot(dd) - b))
     if (cost[1] < cost[0]) and np.any(dd != 0):
         modified = True
-        locked = M.locked
-        M.locked = False
         M.apply_field(dd.reshape(-1,2), gear[-1], vtx_mask=vmask)
-        M.locked = locked
+    if gear[0] != gear[1]:
+        M.set_vertices(fixed_vertices, gear=gear[0])
+        M.set_offset(fixed_offset, gear=gear[0])
+    M.locked = locked
+    return modified
+
+
+def relax_mesh_most_deformed(M, gear=(const.MESH_GEAR_FIXED, const.MESH_GEAR_MOVING), deform_cutoff=config.MAXIMUM_DEFORM_ALLOWED, iqr=0):
+    modified = False
+    sa = M.triangle_area_deform(gear=gear).reshape(-1,1)
+    if deform_cutoff < 0: # check flip only
+        tmask = Mesh.svds_to_deform(sa) >= 1
+        if not np.any(tmask):
+            return modified
+        tid = M.triangles[tmask]
+        vid = np.unique(tid)
+        modified = relax_mesh(M, free_vertices=vid, gear=gear)
+    else:
+        deform_thresh = 1 - 1 / (abs(deform_cutoff) + 1)
+        sd = M.triangle_edge_deform(gear=gear).reshape(-1,1)
+        defm = np.maximum(Mesh.svds_to_deform(sa), Mesh.svds_to_deform(sd))
+        m0 = M.effective_stiffness_multiplier()
+        idx_m = m0 >= 0.5* np.median(m0)
+        defm = defm - np.median(defm[idx_m])
+        thresh_t = max(deform_thresh, 0)
+        if iqr > 0:    
+            qq = np.quantile(defm[idx_m], (0.25, 0.75))
+            thresh_iqr = np.max(qq) + iqr * np.ptp(qq)
+            thresh_t = min(thresh_t, thresh_iqr)
+        tmask = defm > max(thresh_t, 1.0e-3)
+        if not np.any(tmask):
+            return modified
+        tid = M.triangles[tmask]
+        vid = np.unique(tid)
+        vmask = np.isin(M.triangles, vid)
+        if deform_cutoff < 0:
+            tmask = np.any(vmask, axis=-1)
+        else:
+            tmask = np.all(vmask, axis=-1)
+        modified = relax_mesh(M, free_triangles=tmask, gear=gear)
     return modified

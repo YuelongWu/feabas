@@ -1,11 +1,8 @@
 from collections import defaultdict
-from concurrent.futures.process import ProcessPoolExecutor
-from concurrent.futures import as_completed
 from functools import partial
-from multiprocessing import get_context
 import matplotlib.tri
 import numpy as np
-import os
+import json
 from scipy.sparse import csgraph
 import shapely
 import shapely.geometry as shpgeo
@@ -14,11 +11,13 @@ import tensorstore as ts
 import time
 
 from feabas.caching import CacheFIFO
+from feabas.concurrent import submit_to_workers
 import feabas.constant as const
 from feabas.mesh import Mesh
-from feabas import common, spatial, dal, logging
-from feabas.config import DEFAULT_RESOLUTION, SECTION_THICKNESS, montage_resolution, TS_TIMEOUT
+from feabas import common, spatial, dal, logging, storage
+from feabas.config import DEFAULT_RESOLUTION, SECTION_THICKNESS, montage_resolution, TS_TIMEOUT, CHECKPOINT_TIME_INTERVAL
 
+H5File = storage.h5file_class()
 
 class MeshRenderer:
     """
@@ -27,7 +26,7 @@ class MeshRenderer:
     def __init__(self, interpolators, **kwargs):
         self._interpolators = interpolators
         n_region = len(self._interpolators)
-        self._offset = np.array(kwargs.get('offset', np.zeros((1,2))), copy=False).reshape(1,2)
+        self._offset = common.numpy_array(kwargs.get('offset', np.zeros((1,2))), copy=False).reshape(1,2)
         self._region_tree = kwargs.get('region_tree', None)
         self._weight_params = kwargs.get('weight_params', const.MESH_TRIFINDER_WHATEVER)
         self.weight_generator = kwargs.get('weight_generator', [None for _ in range(n_region)])
@@ -39,6 +38,9 @@ class MeshRenderer:
         self._dtype = kwargs.get('dtype', None)
         self._geodesic_mask = kwargs.get('geodesic_mask', False)
         self._geodesic_info = kwargs.get('geodesic_info', None)
+        self._affine_approximator = kwargs.get('affine_approximator', None)
+        self._affine_approx_tol = kwargs.get('affine_approx_tol', 0)
+        self._covered_region = kwargs.get('covered_region', None)
 
 
     @classmethod
@@ -48,6 +50,7 @@ class MeshRenderer:
         local_cache = kwargs.get('cache', False)
         render_weight_threshold = kwargs.get('render_weight_threshold', 0)
         geodesic_mask = kwargs.get('geodesic_mask', False)
+        affine_approx_tol = kwargs.pop('affine_approx_tol', 0)
         msh_wt = srcmesh.weight_multiplier_for_render()
         if np.any(msh_wt != 1):
             weighted_material = True
@@ -84,6 +87,26 @@ class MeshRenderer:
             geodesic_info['seg_line'] = unary_union([shpgeo.LineString(vtx0[s]) for s in segs])
         else:
             geodesic_info = None
+        if affine_approx_tol == 0:
+            affine_approximator = None
+            covered_region = None
+        else:
+            affine_approximator = {}
+            v0_a = srcmesh.vertices(gear=gear[0])
+            v1_a = srcmesh.vertices_w_offset(gear=gear[-1])
+            vidx_a = np.unique(srcmesh.edges(tri_mask=render_mask))
+            A_a = spatial.fit_affine(v1_a[vidx_a], v0_a[vidx_a])
+            v0_a_t = v0_a[vidx_a] @ A_a[:2,:2] + A_a[-1,:2]
+            dis_a = np.max(np.sum((v1_a[vidx_a] - v0_a_t)**2, axis=-1)) ** 0.5
+            affine_approximator['global_affine'] = A_a
+            affine_approximator['global_residue'] = dis_a
+            covered_region = srcmesh.shapely_regions(gear=gear[-1], tri_mask=render_mask, offsetting=True)
+            covered_region = covered_region.buffer(-0.5).simplify(0.5)
+            shapely.prepare(covered_region)
+            if dis_a > affine_approx_tol:
+                str_tree, tids = srcmesh.triangles_STRtree(gear=gear[0], tri_mask=render_mask)
+                T0 = srcmesh.triangles[tids]
+                affine_approximator['vertices'] = (str_tree, T0, v0_a, v1_a)
         interpolators = []
         weight_generator = []
         collision_region = []
@@ -137,7 +160,8 @@ class MeshRenderer:
             weight_params=weight_params, weight_generator=weight_generator,
             weight_multiplier=weight_multiplier,
             collision_region=collision_region, resolution=resolution,
-            geodesic_info=geodesic_info,
+            geodesic_info=geodesic_info, affine_approximator=affine_approximator,
+            affine_approx_tol=affine_approx_tol, covered_region=covered_region,
             **kwargs)
 
 
@@ -153,7 +177,7 @@ class MeshRenderer:
         Return:
             rid (N ndarray): the region ids
         """
-        xy0 = np.array(xy, copy=False).reshape(-1,2)
+        xy0 = common.numpy_array(xy, copy=False).reshape(-1,2)
         if offsetting:
             xy0 = xy0 - self._offset
         if len(self._interpolators) == 1:
@@ -259,7 +283,7 @@ class MeshRenderer:
         out_resolution = kwargs.get('out_resolution', None)
         offsetting = kwargs.get('offsetting', True)
         invalid_output = (None, None, None)
-        bbox0 = np.array(bbox, copy=False).reshape(4)
+        bbox0 = common.numpy_array(bbox, copy=False).reshape(4)
         if offsetting:
             bbox0 = bbox0 - np.tile(self._offset.ravel(), 2)
         bcntr = ((bbox0[0] + bbox0[2] - 1)/2, (bbox0[1] + bbox0[3] - 1)/2)
@@ -346,7 +370,7 @@ class MeshRenderer:
 
 
     def local_affine_tform(self, pt, offsetting=True, svd_clip=None):
-        pt0 = np.array(pt, copy=False).ravel()
+        pt0 = common.numpy_array(pt, copy=False).ravel()
         if offsetting:
             pt0 = pt0 - self._offset.ravel()
         region_id = self.region_finder_for_points(pt0, offsetting=False).item()
@@ -370,6 +394,62 @@ class MeshRenderer:
         return A, t
 
 
+    def bbox_affine_tform(self, bbox, offsetting=True, svd_clip=None):
+        empty_output = (None, None, np.inf)
+        if self._affine_approximator is None:
+            return empty_output
+        bbox0 = np.array(bbox).reshape(4)
+        if offsetting:
+            bbox0 = bbox0 - np.tile(self._offset.ravel(), 2)
+        str_tree, T0, v0m, v1m = self._affine_approximator['vertices']
+        idx_T = str_tree.query(shpgeo.box(*(bbox0-0.5)), predicate='intersects')
+        if idx_T.size == 0:
+            return empty_output
+        T = T0[idx_T]
+        idx_v = np.unique(T, axis=None)
+        v0 = v0m[idx_v]
+        v1 = v1m[idx_v]
+        _, A_a = spatial.fit_affine(v1, v0, return_rigid=True, svd_clip=svd_clip)
+        A = A_a[:2,:2]
+        t = A_a[-1,:2]
+        res = np.max(np.sum((v1 - v0 @ A - t)**2, axis=-1)) ** 0.5
+        return A, t, res
+
+
+    def crop_field_affine(self, bbox, A, t, **kwargs):
+        offsetting = kwargs.get('offsetting', True)
+        out_resolution = kwargs.get('out_resolution', None)
+        precise_mask = kwargs.get('precise_mask', True)
+        bbox0 = np.array(bbox).reshape(4)
+        outwd = round(bbox0[2]-bbox0[0])
+        outht = round(bbox0[3]-bbox0[1])
+        if offsetting:
+            bbox0 = bbox0 - np.tile(self._offset.ravel(), 2)
+        xs = np.linspace(bbox0[0], bbox0[2], num=outwd, endpoint=False, dtype=float)
+        ys = np.linspace(bbox0[1], bbox0[3], num=outht, endpoint=False, dtype=float)
+        if out_resolution is not None:
+            scale = out_resolution / self.resolution
+            xs = spatial.scale_coordinates(xs, scale)
+            ys = spatial.scale_coordinates(ys, scale)
+        xx, yy = np.meshgrid(xs, ys)
+        x_field = xx * A[0,0] + yy * A[1,0] + t[0]
+        y_field = xx * A[0,1] + yy * A[1,1] + t[1]
+        if precise_mask and (self._covered_region is not None):
+            shpbox0 = shpgeo.box(*(bbox0-0.5))
+            mtrx = np.concatenate((A.T, t), axis=None)
+            shpbox = shapely.affinity.affine_transform(shpbox0,mtrx)
+            covered = self._covered_region
+            intsct = covered.intersection(shpbox)
+            if (shpbox.area - intsct.area) < 1:
+                mask = np.ones_like(x_field, dtype=bool)
+            else:
+                shapely.prepare(intsct)
+                mask = shapely.contains_xy(intsct, x_field, y_field)
+        else:
+            mask = np.ones_like(x_field, dtype=bool)
+        return x_field, y_field, mask
+
+
     def crop_field(self, bbox, **kwargs):
         """
         compute the deformation field within a bounding box.
@@ -389,6 +469,8 @@ class MeshRenderer:
         mode = kwargs.get('mode', const.RENDER_FULL)
         offsetting = kwargs.get('offsetting', True)
         out_resolution = kwargs.get('out_resolution', None)
+        affine_tolerance = kwargs.get('affine_tolerance', self._affine_approx_tol)
+        log_sigma = kwargs.get('log_sigma', 0)
         bbox0 = np.array(bbox).reshape(4)
         outwd = round(bbox0[2]-bbox0[0])
         outht = round(bbox0[3]-bbox0[1])
@@ -408,95 +490,161 @@ class MeshRenderer:
             A, t = self.local_affine_tform(bcntr, offsetting=False, svd_clip=svd_clip)
             if A is None:
                 return empty_output
-            xs = np.linspace(bbox0[0], bbox0[2], num=outwd, endpoint=False, dtype=float)
-            ys = np.linspace(bbox0[1], bbox0[3], num=outht, endpoint=False, dtype=float)
-            if out_resolution is not None:
-                scale = out_resolution / self.resolution
-                xs = spatial.scale_coordinates(xs, scale)
-                ys = spatial.scale_coordinates(ys, scale)
-            xx, yy = np.meshgrid(xs, ys)
-            x_field = xx * A[0,0] + yy * A[1,0] + t[0]
-            y_field = xx * A[0,1] + yy * A[1,1] + t[1]
-            mask = np.ones_like(x_field, dtype=bool)
-        elif mode == const.RENDER_CONTIGEOUS:
-            x_field, y_field, weight = self.field_w_weight(bbox0, region_id=None,
-                out_resolution=out_resolution, offsetting=False, compute_wt=True)
-            if weight is None:
-                mask = None
-            else:
-                mask = weight > 0
-        elif mode == const.RENDER_FULL:
-            regions = self.region_finder_for_bbox(bbox0, offsetting=False)
-            if regions.size == 0:
-                return empty_output
-            elif regions.size == 1:
-                blend = const.BLEND_NONE
-            else:
-                blend = kwargs.get('blend', const.BLEND_MAX)
-            initialized = False
-            for rid in regions:
-                xf, yf, wt = self.field_w_weight(bbox0, region_id=rid,
-                    out_resolution=out_resolution, offsetting=False, compute_wt=True)
-                if xf is None:
-                    continue
-                if not initialized:
-                    x_field = np.zeros_like(xf)
-                    y_field = np.zeros_like(yf)
-                    weight = np.zeros_like(wt)
-                    initialized = True
-                if blend == const.BLEND_LINEAR:
-                    x_field = x_field + xf * wt
-                    y_field = y_field + yf * wt
-                    weight = weight + wt
-                elif blend == const.BLEND_MAX:
-                    tmask = wt >= weight
-                    x_field[tmask] = xf[tmask]
-                    y_field[tmask] = yf[tmask]
-                    weight[tmask] = wt[tmask]
-                else:
-                    tmask = wt > 0
-                    x_field[tmask] = xf[tmask]
-                    y_field[tmask] = yf[tmask]
-                    weight[tmask] = wt[tmask]
-            if not initialized:
-                return empty_output
-            if blend == const.BLEND_LINEAR:
-                with np.errstate(invalid='ignore', divide='ignore'):
-                    x_field = np.nan_to_num(x_field / weight, nan=0,posinf=0, neginf=0)
-                    y_field = np.nan_to_num(y_field / weight, nan=0,posinf=0, neginf=0)
-            mask = weight > 0
+            x_field, y_field, mask = self.crop_field_affine(bbox0, A, t, offsetting=False, out_resolution=out_resolution, precise_mask=log_sigma>0)
         else:
-            raise ValueError
-        if self._geodesic_mask:
-            mask = weight
+            if self._geodesic_mask and (self._geodesic_info is not None):
+                if self._geodesic_info['seg_line'].intersects(shpgeo.box(*bbox0)):
+                    affine_tolerance = 0
+            field_generated = False
+            if (affine_tolerance > 0) and (self._affine_approximator is not None):
+                if self._affine_approximator['global_residue'] < affine_tolerance:
+                    A_a = self._affine_approximator['global_affine']
+                    A = A_a[:2,:2]
+                    t = A_a[-1,:2]
+                    x_field, y_field, mask = self.crop_field_affine(bbox0, A, t, offsetting=False, out_resolution=out_resolution, precise_mask=log_sigma>0)
+                    field_generated = True
+                else:
+                    A, t, res = self.bbox_affine_tform(bbox0, offsetting=False)
+                    if res < affine_tolerance:
+                        x_field, y_field, mask = self.crop_field_affine(bbox0, A, t, offsetting=False, out_resolution=out_resolution, precise_mask=log_sigma>0)
+                        field_generated = True
+            if not field_generated:
+                if mode == const.RENDER_CONTIGEOUS:
+                    x_field, y_field, weight = self.field_w_weight(bbox0, region_id=None,
+                        out_resolution=out_resolution, offsetting=False, compute_wt=True)
+                    if weight is None:
+                        mask = None
+                    else:
+                        mask = weight > 0
+                elif mode == const.RENDER_FULL:
+                    regions = self.region_finder_for_bbox(bbox0, offsetting=False)
+                    if regions.size == 0:
+                        return empty_output
+                    elif regions.size == 1:
+                        blend = const.BLEND_NONE
+                    else:
+                        blend = kwargs.get('blend', const.BLEND_MAX)
+                    initialized = False
+                    for rid in regions:
+                        xf, yf, wt = self.field_w_weight(bbox0, region_id=rid,
+                            out_resolution=out_resolution, offsetting=False, compute_wt=True)
+                        if xf is None:
+                            continue
+                        if not initialized:
+                            x_field = np.zeros_like(xf)
+                            y_field = np.zeros_like(yf)
+                            weight = np.zeros_like(wt)
+                            initialized = True
+                        if blend == const.BLEND_LINEAR:
+                            x_field = x_field + xf * wt
+                            y_field = y_field + yf * wt
+                            weight = weight + wt
+                        elif blend == const.BLEND_MAX:
+                            tmask = wt >= weight
+                            x_field[tmask] = xf[tmask]
+                            y_field[tmask] = yf[tmask]
+                            weight[tmask] = wt[tmask]
+                        else:
+                            tmask = wt > 0
+                            x_field[tmask] = xf[tmask]
+                            y_field[tmask] = yf[tmask]
+                            weight[tmask] = wt[tmask]
+                    if not initialized:
+                        return empty_output
+                    if blend == const.BLEND_LINEAR:
+                        with np.errstate(invalid='ignore', divide='ignore'):
+                            x_field = np.nan_to_num(x_field / weight, nan=0,posinf=0, neginf=0)
+                            y_field = np.nan_to_num(y_field / weight, nan=0,posinf=0, neginf=0)
+                    mask = weight > 0
+                else:
+                    raise ValueError
+                if self._geodesic_mask:
+                    mask = weight
         return x_field, y_field, mask
 
 
     def crop(self, bbox, **kwargs):
         image_loader = kwargs.get('image_loader', self._image_loader)
         log_sigma = kwargs.get('log_sigma', 0) # apply laplacian of gaussian filter if > 0
+        mask_range = kwargs.get('mask_range',  None)
         if image_loader is None:
             raise RuntimeError('Image loader not defined.')
         x_field, y_field, mask = self.crop_field(bbox, **kwargs)
         if self._geodesic_mask:
-            weight = mask
+            weight = mask # H x W
             mask = weight > 0
         if image_loader.resolution != self.resolution:
             scale = self.resolution / image_loader.resolution
             x_field = spatial.scale_coordinates(x_field, scale)
             y_field = spatial.scale_coordinates(y_field, scale)
-        imgt = common.render_by_subregions(x_field, y_field, mask, image_loader, **kwargs)
+        imgt = common.render_by_subregions(x_field, y_field, mask, image_loader, **kwargs) # H x W X C
         if (log_sigma > 0) and (imgt is not None):
-            if len(imgt.shape) > 2:
-                imgt = np.moveaxis(imgt, -1, 0)
-            imgt = common.masked_dog_filter(imgt, log_sigma, mask=mask)
-            if len(imgt.shape) > 2:
-                imgt = np.moveaxis(imgt, 0, -1)
+            if imgt.ndim == 3:
+                imgt = np.moveaxis(imgt, -1, 0) # C x H x W
+            if mask_range is not None:
+                mask_range = np.atleast_1d(mask_range)
+                mask_t = (imgt >= mask_range[0]) & (imgt <= mask_range[-1])
+                mask = mask & mask_t    # (C x )H x W
+            imgt = common.masked_dog_filter(imgt, log_sigma, mask=mask) # (C x )H x W
+            if imgt.ndim == 3:
+                imgt = np.moveaxis(imgt, 0, -1) # H x W x C
         if (self._geodesic_mask) and (imgt is not None):
             dtp = imgt.dtype
             kk = 2
             weight = (np.arctan((weight - 0.5)*2*kk*np.pi) + np.arctan(kk*np.pi)) / (2*np.arctan(kk*np.pi))
+            if imgt.ndim > weight.ndim:
+                weight = weight.reshape(weight.shape+(1,)*(imgt.ndim-weight.ndim))
             imgt = (imgt * weight).astype(dtp)
+        return imgt
+
+
+    def crop_multiple(self, bboxes, **kwargs):
+        # similar to crop but reduces number of IO calls
+        image_loader = kwargs.get('image_loader', self._image_loader)
+        log_sigma = kwargs.get('log_sigma', 0) # apply laplacian of gaussian filter if > 0
+        mask_range = kwargs.get('mask_range',  None)
+        if image_loader is None:
+            raise RuntimeError('Image loader not defined.')
+        x_field_list = []
+        y_field_list = []
+        mask_list = []
+        for bbox in bboxes:
+            x_f, y_f, msk = self.crop_field(bbox, **kwargs)
+            x_field_list.append(x_f)
+            y_field_list.append(y_f)
+            mask_list.append(msk)
+        Nbox = len(x_field_list)
+        x_field = np.concatenate(x_field_list, axis=0)  # NH x W
+        y_field = np.concatenate(y_field_list, axis=0)  # NH x W
+        mask = np.concatenate(mask_list, axis=0)   # NH x W
+        if self._geodesic_mask:
+            weight = mask # NH x W
+            mask = weight > 0
+        if image_loader.resolution != self.resolution:
+            scale = self.resolution / image_loader.resolution
+            x_field = spatial.scale_coordinates(x_field, scale)
+            y_field = spatial.scale_coordinates(y_field, scale)
+        imgt = common.render_by_subregions(x_field, y_field, mask, image_loader, **kwargs) # NH x W x C
+        if imgt is None:
+            return imgt
+        imgt = imgt.reshape((Nbox,-1, *imgt.shape[1:])) # N x H x W (x C)
+        mask = mask.reshape((Nbox, -1, *mask.shape[1:])) # N x H x W
+        if log_sigma > 0:
+            if imgt.ndim == 4:
+                imgt = np.moveaxis(imgt, -1, 0) # (C x) N x H x W
+            if mask_range is not None:
+                mask_range = np.atleast_1d(mask_range)
+                mask_t = (imgt >= mask_range[0]) & (imgt <= mask_range[-1])
+                mask = mask & mask_t # (C x) N x H x W 
+            imgt = common.masked_dog_filter(imgt, log_sigma, mask=mask) # (C x) N x H x W 
+            if imgt.ndim == 4:
+                imgt = np.moveaxis(imgt, 0, -1) # N x H x W (xC)
+        if self._geodesic_mask:
+            dtp = imgt.dtype
+            kk = 2
+            weight = (np.arctan((weight - 0.5)*2*kk*np.pi) + np.arctan(kk*np.pi)) / (2*np.arctan(kk*np.pi))
+            wt_shape = (Nbox, -1, *weight.shape[1:])+(1,)*(imgt.ndim-weight.ndim)
+            imgt = (imgt * (weight.reshape(wt_shape))).astype(dtp)
         return imgt
 
 
@@ -689,10 +837,15 @@ def render_whole_mesh(mesh, image_loader, prefix, **kwargs):
     else:
         target_func = partial(subprocess_render_mesh_tiles, image_loader, outnames=ts_specs, **kwargs)
     if (num_workers > 1) and (num_tiles > 1):
-        num_tile_per_job = max(1, num_tiles // num_workers)
+        num_tile_per_job = max(1, int((num_tiles // num_workers)**0.5))
         if max_tile_per_job is not None:
             num_tile_per_job = min(num_tile_per_job, max_tile_per_job)
-        N_jobs = round(num_tiles / num_tile_per_job)
+            max_tasks_per_child = max(1, round(max_tile_per_job/num_tile_per_job))
+        else:
+            max_tasks_per_child = None
+        bboxes = np.array(bboxes)
+        bbox_regions = shapely.box(bboxes[:,0], bboxes[:,1], bboxes[:,2], bboxes[:,3])
+        N_jobs = max(1, round(num_tiles / num_tile_per_job))
         indices = np.round(np.linspace(0, num_tiles, num=N_jobs+1, endpoint=True))
         indices = np.unique(indices).astype(np.uint32)
         bboxes_list = []
@@ -703,29 +856,30 @@ def render_whole_mesh(mesh, image_loader, prefix, **kwargs):
             idx0, idx1 = int(idx0), int(idx1)
             bbox_t = bboxes[idx0:idx1]
             bboxes_list.append(bbox_t)
-            bbox_unions.append(common.bbox_enlarge(common.bbox_union(bbox_t), tile_size[0]//2))
+            bbox_unions.append(unary_union(bbox_regions[idx0:idx1]))
             if driver == 'image':
                 filenames_list.append(filenames[idx0:idx1])
             else:
                 bboxes_out_list.append(bboxes_out[idx0:idx1])
-        submeshes = mesh.submeshes_from_bboxes(bbox_unions, save_material=True)
-        jobs = []
-        with ProcessPoolExecutor(max_workers=num_workers, mp_context=get_context('spawn')) as executor:
+        submeshes = mesh.submeshes_from_regions(bbox_unions, save_material=None, buffer=tile_size[0]//2)
+        args_list = []
+        for k in range(len(submeshes)):
+            msh = submeshes[k]
+            if msh is None:
+                continue
+            msh_dict = msh.get_init_dict(save_material=True, vertex_flags=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING), filter_material=False)
+            bbox = bboxes_list[k]
             if driver == 'image':
-                for msh, bbox, fnames in zip(submeshes, bboxes_list, filenames_list):
-                    if msh is None:
-                        continue
-                    msh_dict = msh.get_init_dict(save_material=True, vertex_flags=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING))
-                    job = executor.submit(target_func, msh_dict, bbox, fnames)
-                    jobs.append(job)
+                fnames = filenames_list[k]
+                args_list.append((msh_dict, bbox, fnames))
             else:
-                for msh, bbox, bbox_out in zip(submeshes, bboxes_list, bboxes_out_list):
-                    if msh is None:
-                        continue
-                    msh_dict = msh.get_init_dict(save_material=True, vertex_flags=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING))
-                    job = executor.submit(target_func, msh_dict, bbox, bboxes_out=bbox_out)
-            for job in as_completed(jobs):
-                rendered.update(job.result())
+                bbox_out = bboxes_out_list[k]
+                args_list.append((msh_dict, bbox, bbox_out))
+        for res in submit_to_workers(target_func, args=args_list, num_workers=num_workers, max_tasks_per_child=max_tasks_per_child):
+            if isinstance(rendered, dict):
+                rendered.update(res)
+            else:
+                rendered.extend(res)
     else:
         if driver == 'image':
             rendered = target_func(mesh, bboxes, filenames)
@@ -791,7 +945,7 @@ def subprocess_render_mesh_tiles(imgloader, mesh, bboxes, outnames, **kwargs):
     else:
         rendered = {}
         for fname, bbox in zip(outnames, bboxes):
-            if os.path.isfile(fname):
+            if storage.file_exists(fname):
                 rendered[fname] = bbox
                 continue
             imgt = renderer.crop(bbox, **kwargs)
@@ -814,9 +968,8 @@ class VolumeRenderer:
         driver: tensorstore driver type
         chunk_shape: shape of (write) chunks
         read_chunk_shape: shape of read chunks
-        canvas_bbox: bounding box of the canvas. Because its tensorstore, the
-            bounding box will not be offset to (0,0) in the output space, unlike
-            when rendering image tiles
+        canvas_bbox: bounding box of the canvas. By default it will be 
+            offset to (0,0) in the output space
         resolution: resolution of the renderer
         out_offset: xy offset of the output space
     """
@@ -827,13 +980,20 @@ class VolumeRenderer:
         assert len(meshes) == len(z_indx)
         self._meshes = meshes
         self._zindx = z_indx
-        self._zmin = kwargs.get('z_min', None)
+        self._zmin = kwargs.get('z_min', 0)
         self._zmax = kwargs.get('z_max', None)
+        self._jpeg_compression = kwargs.get('jpeg_compression', False)
+        self._pad_to_tile_size = kwargs.get('pad_to_tile_size', True)
         self._loaders = loaders
         driver = kwargs.get('driver', 'neuroglancer_precomputed')
         self.flag_dir = kwargs.get('flag_dir', None)
-        self._offset = kwargs.get('out_offset', np.zeros((1,2), dtype=np.int64))
+        self.checkpoint_dir = kwargs.get('checkpoint_dir', storage.join_paths(self.flag_dir, 'checkpoint'))
         self._canvas_bbox = kwargs.get('canvas_bbox', None)
+        if self._canvas_bbox is not None:
+            default_offset = -np.array(self._canvas_bbox)[:2].reshape(1,2)
+        else:
+            default_offset =  np.zeros((1,2), dtype=np.int64)
+        self._offset = kwargs.get('out_offset', default_offset.astype(np.int64))
         self._ts_verified = False
         self.resolution = kwargs.get('resolution', montage_resolution())
         self.mip = int(np.log2(self.resolution / montage_resolution()))
@@ -846,160 +1006,174 @@ class VolumeRenderer:
         self._ts_spec = {'driver': driver, 'kvstore': kvstore, 'schema': schema}
 
 
-
-    def plan_one_slab(self, z_start=0, **kwargs):
-        num_workers = kwargs.pop('num_workers', 1)
-        max_tile_per_job = kwargs.pop('max_tile_per_job', None)
+    def plan_one_slab(self, z_ind=0, **kwargs):
+        num_workers = kwargs.get('num_workers', 1)
+        max_tile_per_job = kwargs.get('max_tile_per_job', None)
+        cache_capacity = kwargs.pop('cache_capacity', None)
+        _, _, Z0, _, _, Z1 = self.writer.write_grids
+        z0, z1 = Z0[z_ind], Z1[z_ind]
+        flag_name = kwargs.get('flag_name', f'z{z0}_{z1}')
         render_seriers = []
-        chunk_x, chunk_y, chunk_z = self.chunk_shape
-        z_ind = z_start // chunk_z
-        zz = np.arange(z_ind * chunk_z, (z_ind+1) * chunk_z)
-        if self.flag_dir is not None:
-            z_to_render = []
-            for z in zz:
-                flg_name = os.path.join(self.flag_dir, str(z)+'.json')
-                if not os.path.isfile(flg_name):
-                    z_to_render.append(z)
-            zz = np.array(z_to_render)
-        zz = zz[(zz >= np.min(self._zindx)) & (zz <= np.max(self._zindx))]
-        if zz.size == 0:
-            return render_seriers
-        xmin, ymin, xmax, ymax = self.canvas_bbox
-        x0_mn = np.arange((xmin//chunk_x) * chunk_x, xmax, chunk_x)
-        y0_mn = np.arange((ymin//chunk_y) * chunk_y, ymax, chunk_y)
-        xx_mn, yy_mn = np.meshgrid(x0_mn, y0_mn)
-        xx_mn, yy_mn = xx_mn.ravel(), yy_mn.ravel()
-        idxz = common.z_order(np.stack((xx_mn//chunk_x, yy_mn//chunk_y), axis=-1))
-        xx_mn, yy_mn = xx_mn[idxz], yy_mn[idxz]
-        xx_mx, yy_mx = xx_mn + chunk_x, yy_mn + chunk_y
-        xx_mn, yy_mn = xx_mn.clip(xmin, None), yy_mn.clip(ymin, None)
-        xx_mx, yy_mx = xx_mx.clip(None, xmax), yy_mx.clip(None, ymax)
-        bboxes = np.stack((xx_mn, yy_mn, xx_mx, yy_mx), axis=-1)
-        bboxes_tree = shapely.STRtree([shpgeo.box(*bbox) for bbox in bboxes])
-        hit_counts = np.zeros(bboxes.shape[0])
+        zz = np.arange(z0, z1)
+        flag_file = storage.join_paths(self.flag_dir, flag_name + '.json')
+        checkpoint_file = storage.join_paths(self.checkpoint_dir, flag_name + '.h5')
+        if (flag_file is not None) and storage.file_exists(flag_file):
+            with storage.File(flag_file, 'r') as f:
+                z_rendered = json.load(f)
+        else:
+            z_rendered = []
+        check_points = {z: False for z in z_rendered}
+        z_to_render = [z for z in zz if z not in z_rendered]
+        if len(z_to_render) == 0:
+            return render_seriers, check_points
+        if (checkpoint_file is not None) and storage.file_exists(checkpoint_file):
+            with H5File(checkpoint_file, 'r') as f:
+                for z in z_to_render:
+                    if str(z) in f:
+                        check_points[z] = f[str(z)][()]
+        id_x, id_y = self.writer.morton_xy_grid()
+        bboxes = self.writer.grid_indices_to_bboxes(id_x, id_y)
+        shapely_boxes = shapely.box(bboxes[:,0], bboxes[:,1], bboxes[:,2], bboxes[:,3])
+        bboxes_tree = shapely.STRtree(list(shapely_boxes))
+        num_xy_grids = id_x.size
+        hit_counts = np.zeros(num_xy_grids, dtype=np.uint16)
         full_meshes = {}
         loaders = {}
-        for z, rm in zip(zz, self.region_generator(indx=zz)):
+        for z, rm in zip(z_to_render, self.region_generator(indx=z_to_render)):
             rr = rm[0]
             if rr is None:
                 continue
-            idxt = bboxes_tree.query(rr, predicate='intersects')
-            if idxt.size > 0:
-                np.add.at(hit_counts, idxt, 1)
+            if z not in check_points:
+                idxt = bboxes_tree.query(rr, predicate='intersects')
+                bb = np.zeros(num_xy_grids, dtype=bool)
+                bb[idxt] = True
+                check_points[z] = bb
+            hit_counts += check_points[z]
             full_meshes[z] = rm[1]
             loaders[z] = self.loader_lut.get(z, None)
         if len(full_meshes) == 0:
-            return render_seriers
-        bboxes = bboxes[hit_counts > 0]
-        bboxes_out = bboxes + np.tile(self._offset, 2).reshape(1, 4)
-        hit_counts = hit_counts[hit_counts > 0]
+            return render_seriers, check_points
+        midx_hits = np.nonzero(hit_counts > 0)[0]
+        bboxes = bboxes[midx_hits]
+        hit_counts = hit_counts[midx_hits]
         hit_counts_acc = np.insert(np.cumsum(hit_counts), 0, 0)
         num_tiles = hit_counts_acc[-1]
         num_tile_per_job = max(1, num_tiles // num_workers)
         if max_tile_per_job is not None:
             num_tile_per_job = min(num_tile_per_job, max_tile_per_job)
-        N_jobs = round(num_tiles / num_tile_per_job)
+        if cache_capacity is not None:
+            chunk_mb = np.prod(self.writer.write_chunk_shape[:2]) * self.writer.number_of_channels / (1024 ** 2)
+            max_chunk_per_proc = max(1, cache_capacity / (chunk_mb * num_workers))
+            num_tile_per_job = min(num_tile_per_job, max_chunk_per_proc)
+        N_jobs = max(1, round(num_tiles / num_tile_per_job))
         indices_tile = np.round(np.linspace(0, num_tiles, num=N_jobs+1, endpoint=True))
         indices_chunk = np.searchsorted(hit_counts_acc, indices_tile, side='left')
-        indices_chunk = np.unique(indices_chunk).astype(np.uint32)
+        indices_chunk = np.unique(indices_chunk).astype(np.uint64)
         out_ts = self.ts_spec
+        bbox_regions = shapely.box(bboxes[:,0], bboxes[:,1], bboxes[:,2], bboxes[:,3])
         bboxes_unions = []
+        b_dilate = np.max(self.writer.write_chunk_shape[:2]) // 2
+        task_id = 0
         for idx0, idx1 in zip(indices_chunk[:-1], indices_chunk[1:]):
             idx0, idx1 = int(idx0), int(idx1)
             bbox_b = bboxes[idx0:idx1]
-            bbox_out_b = bboxes_out[idx0:idx1]
             if bbox_b.size == 0:
                 continue
-            bkw = {'loaders': loaders,
+            mindx = midx_hits[idx0:idx1]
+            b_flag = {z: check_points[z][mindx] for z in z_to_render if (z in check_points)}
+            bkw = { 'task_id': task_id,
+                    'loaders': loaders,
                     'meshes': {},
-                    'bboxes': bbox_b,
+                    'morton_indx': mindx,
                     'out_ts': out_ts,
                     'target_resolution': self.resolution,
                     'mip': self.mip,
-                    'bboxes_out': bbox_out_b}
+                    'offset': self._offset,
+                    'flags': b_flag}
+            task_id = task_id + 1
             render_seriers.append(bkw)
-            bboxes_unions.append(common.bbox_enlarge(common.bbox_union(bbox_b), max(chunk_x, chunk_y)//2))
+            bboxes_unions.append(unary_union(bbox_regions[idx0:idx1]))
         for z, mesh in full_meshes.items():
-            submeshes = mesh.submeshes_from_bboxes(bboxes_unions, save_material=True)
+            submeshes = mesh.submeshes_from_regions(bboxes_unions, save_material=None, buffer=b_dilate)
             for msh, bkw in zip(submeshes, render_seriers):
                 if msh is None:
                     bkw['meshes'][z] = None
                 else:
-                    msh_dict = msh.get_init_dict(save_material=True, vertex_flags=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING))
+                    msh_dict = msh.get_init_dict(save_material=True, vertex_flags=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING), filter_material=False)
                     bkw['meshes'][z] = msh_dict
-        return render_seriers
+        return render_seriers, check_points
 
 
     def render_volume(self, skip_indx=None , **kwargs):
         num_workers = kwargs.pop('num_workers', 1)
         max_tile_per_job = kwargs.pop('max_tile_per_job', None)
+        cache_capacity = kwargs.pop('cache_capacity', None)
         logger_info = kwargs.pop('logger', None)
         logger = logging.get_logger(logger_info)
-        chunk_z = self.chunk_shape[2]
-        z_starts = np.unique(self._zindx // chunk_z) * chunk_z
+        _, _, Z0, _, _, Z1 = self.writer.write_grids
+        Z_indices = np.arange(Z0.size)
         if skip_indx is not None:
-            z_starts = z_starts[skip_indx]
-        if self.flag_dir is not None:
-            out_data = ts.open(self.ts_spec).result()
-        for z_stt in z_starts:
+            Z_indices = Z_indices[skip_indx]
+        for z_ind in Z_indices:
             t0 = time.time()
-            rendered = defaultdict(int)
+            err_raised = False
             num_chunks = 0
-            render_seriers = self.plan_one_slab(z_start=z_stt,
-                                                num_workers=num_workers,
-                                                max_tile_per_job=max_tile_per_job)
+            flag_name = f'z{Z0[z_ind]}_{Z1[z_ind]}'
+            flag_file = storage.join_paths(self.flag_dir, flag_name + '.json')
+            checkpoint_file = storage.join_paths(self.checkpoint_dir, flag_name + '.h5')
+            render_seriers, checkpoints = self.plan_one_slab(z_ind=z_ind, num_workers=num_workers, flag_name=flag_name, max_tile_per_job=max_tile_per_job, cache_capacity=cache_capacity)
             if len(render_seriers) == 0:
                 continue
-            logger.info(f'start block from z={z_stt}')
-            actual_num_workers = min(num_workers, len(render_seriers))
-            if actual_num_workers > 1:
-                jobs = []
-                with ProcessPoolExecutor(max_workers=actual_num_workers, mp_context=get_context('spawn')) as executor:
-                    for bkw in render_seriers:
-                        bkw.update(kwargs)
-                        job = executor.submit(subprocess_render_partial_ts_slab, **bkw)
-                        jobs.append(job)
-                    for job in as_completed(jobs):
-                        z_chunks, errmsg = job.result()
-                        if len(errmsg) > 0:
-                            logger.error(errmsg)
-                        for zz, nn in z_chunks.items():
-                            if rendered[zz] is None:
-                                continue
-                            if nn is None:
-                                rendered[zz] = None
-                            else:
-                                num_chunks += nn
-                                rendered[zz] += nn
+            morton_LUT = {s['task_id']: s['morton_indx'] for s in render_seriers}
+            if cache_capacity is None:
+                max_tasks_per_child = None
             else:
-                for bkw in render_seriers:
-                    bkw.update(kwargs)
-                    z_chunks, errmsg = subprocess_render_partial_ts_slab(**bkw)
-                    if len(errmsg) > 0:
-                        logger.error(errmsg)
-                    for zz, nn in z_chunks.items():
-                        if rendered[zz] is None:
-                            continue
-                        if nn is None:
-                            rendered[zz] = None
-                        else:
-                            num_chunks += nn
-                            rendered[zz] += nn
+                max_tasks_per_child = 1
+            logger.info(f'start rendering block z={Z0[z_ind]}->{Z1[z_ind]}')
+            actual_num_workers = min(num_workers, len(render_seriers))
+            for bkw in render_seriers:
+                bkw.update(kwargs)
+            t_check = time.time()
+            res_cnt = 0
+            for res in submit_to_workers(subprocess_render_partial_ts_slab, kwargs=render_seriers, num_workers=actual_num_workers, max_tasks_per_child=max_tasks_per_child):
+                task_id, flag_b, errmsg = res
+                res_cnt += 1
+                if len(errmsg) > 0:
+                    err_raised = True
+                    logger.error(errmsg)
+                morton_idx = morton_LUT[task_id]
+                added_chunk = np.zeros(morton_idx.size, dtype=bool)
+                for zz, flg in flag_b.items():
+                    old_flag =  checkpoints[zz][morton_idx]
+                    new_flag = old_flag & flg
+                    added_chunk = added_chunk | (new_flag < old_flag)
+                    checkpoints[zz][morton_idx] = new_flag
+                num_chunks += np.sum(added_chunk)
+                if (checkpoint_file is not None) and ((time.time() - t_check) > CHECKPOINT_TIME_INTERVAL) and (res_cnt >= num_workers):
+                    res_cnt = 0
+                    t_check = time.time()
+                    storage.makedirs(self.checkpoint_dir)
+                    with H5File(checkpoint_file, 'w') as f:
+                        for zz, flg in checkpoints.items():
+                            if isinstance(flg, np.ndarray):
+                                f.create_dataset(str(zz), data=flg, compression="gzip")
             if self.flag_dir is not None:
-                for zz, nn in rendered.items():
-                    if (nn is not None) and (nn > 0):
-                        flg_name = os.path.join(self.flag_dir, str(zz)+'.json')
-                        kv_headers = ('gs://', 'http://', 'https://', 'file://', 'memory://', 's3://')
-                        for kvh in kv_headers:
-                            if flg_name.startswith(kvh):
-                                break
-                        else:
-                            os.makedirs(self.flag_dir, exist_ok=True)
-                            flg_name = 'file://' + flg_name
-                        flg_ts = out_data[:,:,zz].spec(minimal_spec=True).to_json()
-                        json_ts = ts.open({"driver": "json", "kvstore": flg_name}).result()
-                        json_ts.write(flg_ts).result()
-            logger.info(f'blocks from z={z_stt}: {num_chunks} chunks | {(time.time()-t0)/60} min')
+                if num_chunks > 0:
+                    if err_raised:
+                        z_rendered = []
+                        for zz, flg in checkpoints.items():
+                            if not np.any(flg):
+                                z_rendered.append(zz)
+                    else:
+                        z_rendered = list(checkpoints.keys())
+                    if len(z_rendered) > 0:
+                        z_rendered = [int(zz) for zz in z_rendered]
+                        with storage.File(flag_file, 'w') as f:
+                            json.dump(z_rendered, f)
+                    if not err_raised and (checkpoint_file is not None):
+                        storage.remove_file(checkpoint_file)
+            logger.info(f'blocks z={Z0[z_ind]}->{Z1[z_ind]}: added {num_chunks} chunks | {(time.time()-t0)/60} min')
+        return self.writer.spec
 
 
     @property
@@ -1087,16 +1261,8 @@ class VolumeRenderer:
             spec_copy = self._ts_spec.copy()
             spec_copy.update({'open': True, 'create': False, 'delete_existing': False})
             try:
-                dataset = ts.open(spec_copy).result()
-                # inclusive_min = np.array(dataset.domain.inclusive_min)
-                # exclusive_max = np.array(dataset.domain.exclusive_max)
-                # if np.any(inclusive_min[:3] > canvas_min) or np.any(exclusive_max[:3] < canvas_max):
-                #     inclusive_min[:3] = np.minimum(inclusive_min[:3], canvas_min)
-                #     exclusive_max[:3] = np.maximum(exclusive_max[:3], canvas_max)
-                #     dataset = dataset.resize(inclusive_min=inclusive_min, exclusive_max=exclusive_max,
-                #                              resize_metadata_only=True, expand_only=True).result()
-                self._read_chunk_shape = dataset.schema.chunk_layout.read_chunk.shape[:3]
-                self._chunk_shape = dataset.schema.chunk_layout.write_chunk.shape[:3]
+                writer = dal.TensorStoreWriter.from_json_spec(spec_copy)
+                dataset = writer.dataset
             except ValueError:
                 spec_copy.update({'create': True})
                 xmin, ymin, xmax, ymax = self.canvas_bbox
@@ -1107,11 +1273,17 @@ class VolumeRenderer:
                     zmin = self._zmin
                 if (self._zmax is not None) and zmax < self._zmax:
                     zmax = self._zmax
+                write_chunk = list(self._chunk_shape)
+                read_chunk = list(self._read_chunk_shape)
+                if self._pad_to_tile_size:
+                    shp_x, shp_y = read_chunk[:2]
+                    xmin = int(np.floor(xmin / shp_x)) * shp_x
+                    ymin = int(np.floor(ymin / shp_y)) * shp_y
+                    xmax = int(np.ceil(xmax / shp_x)) * shp_x
+                    ymax = int(np.ceil(ymax / shp_y)) * shp_y
                 canvas_min = np.array((xmin, ymin, zmin))
                 canvas_max = np.array((xmax, ymax, zmax))
                 num_channels = self.number_of_channels
-                write_chunk = list(self._chunk_shape)
-                read_chunk = list(self._read_chunk_shape)
                 if len(write_chunk) < 3:
                     write_chunk = write_chunk + [1]
                 if len(write_chunk) < 4:
@@ -1126,25 +1298,37 @@ class VolumeRenderer:
                     "chunk_layout":{
                         "grid_origin": [0, 0, 0, 0],
                         "inner_order": [3, 2, 1, 0],
-                        "read_chunk": {"shape": read_chunk},
-                        "write_chunk": {"shape": write_chunk},
+                        "read_chunk": {"shape_soft_constraint": read_chunk},
+                        "write_chunk": {"shape_soft_constraint": write_chunk},
                     },
                     "domain":{
                         "exclusive_max": exclusive_max,
                         "inclusive_min": inclusive_min,
                         "labels": ["x", "y", "z", "channel"]
                     },
+                    "codec":{
+                        "driver": "neuroglancer_precomputed"
+                    },
+                    "dimension_units": [[self.resolution, "nm"], [self.resolution, "nm"], [SECTION_THICKNESS, "nm"], None],
                     "dtype": np.dtype(self.dtype).name,
                     "rank" : 4
                 }
-                if np.any(np.array(read_chunk) != np.array(write_chunk)):
-                    schema_extra["codec"]= {
-                        "driver": "neuroglancer_precomputed",
-                        "encoding": "raw",
-                        "shard_data_encoding": "gzip"
-                    }
+                sharding = np.any(np.array(read_chunk) != np.array(write_chunk))
+                if self._jpeg_compression:
+                    schema_extra["codec"].update({"encoding": "jpeg", "jpeg_quality": 95})
+                    if sharding:
+                        schema_extra["codec"].update({"shard_data_encoding": "raw"})
+                else:
+                    schema_extra["codec"].update({"encoding": "raw"})
+                    if sharding:
+                        schema_extra["codec"].update({"shard_data_encoding": "gzip"})
                 spec_copy['schema'].update(schema_extra)
-                dataset = ts.open(spec_copy).result()
+                writer = dal.TensorStoreWriter.from_json_spec(spec_copy)
+                dataset = writer.dataset
+                self._ts_spec = dataset.spec(minimal_spec=True).to_json()
+            self._writer = writer
+            self._read_chunk_shape = dataset.schema.chunk_layout.read_chunk.shape[:3]
+            self._chunk_shape = dataset.schema.chunk_layout.write_chunk.shape[:3]
             self._ts_verified = True
 
 
@@ -1153,6 +1337,11 @@ class VolumeRenderer:
         self._verify_ts()
         return self._ts_spec
 
+
+    @property
+    def writer(self):
+        self._verify_ts()
+        return self._writer
 
     @property
     def chunk_shape(self):
@@ -1172,7 +1361,7 @@ class VolumeRenderer:
             M = msh
         elif isinstance(msh, dict):
             M = Mesh(**msh)
-        elif isinstance(msh, str) and os.path.isfile(msh):
+        elif isinstance(msh, str) and storage.file_exists(msh):
             M = Mesh.from_h5(msh)
         else:
             M = None
@@ -1193,76 +1382,88 @@ class VolumeRenderer:
         return loader
 
 
-def subprocess_render_partial_ts_slab(loaders, meshes, bboxes, out_ts, **kwargs):
+def subprocess_render_partial_ts_slab(loaders, meshes, morton_indx, out_ts, **kwargs):
+    task_id = kwargs.pop('task_id', None)
     target_resolution = kwargs.pop('target_resolution')
-    bboxes_out = kwargs.pop('bboxes_out', bboxes)
     mip = kwargs.pop('mip', None)
     loader_config = kwargs.pop('loader_config', {})
-    num_chunks = {}
+    offset = kwargs.pop('offset', np.zeros((1,2), dtype=np.int64))
+    flags0 = kwargs.pop('flags', {})
+    flags = {}
     loaders = {int(z): VolumeRenderer._get_loader(ldr, mip=mip) for z, ldr in loaders.items()}
     meshes = {int(z): VolumeRenderer._get_mesh(msh) for z, msh in meshes.items()}
-    zindx = set(loaders.keys()).intersection(set(meshes.keys()))
+    zindx = []
     renderers = {}
     to_skip = True
     err_str = ''
-    for z in zindx:
+    for z in set(loaders.keys()).intersection(set(meshes.keys())):
         ldr = loaders[z]
         msh = meshes[z]
         if (ldr is None) or (msh is None):
+            rndr = None
+        elif (z in flags0) and (not np.any(flags0[z])):
             rndr = None
         else:
             msh.change_resolution(target_resolution)
             rndr = MeshRenderer.from_mesh(msh, **loader_config)
             if rndr is not None:
                 rndr.link_image_loader(ldr)
+                zindx.append(z)
+                flags[z] = np.array(flags0.get(z, np.ones(len(morton_indx), dtype=bool)))
                 if to_skip:
                     fillval = kwargs.get('fillval', rndr.default_fillval)
                     to_skip = False
         renderers[z] = rndr
     if to_skip:
-        return num_chunks, err_str
-    if not isinstance(out_ts, ts.TensorStore):
-        out_ts = ts.open(out_ts).result()
-    inclusive_min = out_ts.domain.inclusive_min
-    exclusive_max = out_ts.domain.exclusive_max
-    ts_xmin, ts_ymin = inclusive_min[0], inclusive_min[1]
-    ts_xmax, ts_ymax = exclusive_max[0], exclusive_max[1]
-    ts_bbox = (ts_xmin, ts_ymin, ts_xmax, ts_ymax)
-    for bbox, bbox_out in zip(bboxes, bboxes_out):
+        return task_id, flags, err_str
+    if isinstance(out_ts, dal.TensorStoreWriter):
+        writer = out_ts
+    else:
+        writer = dal.TensorStoreWriter.from_json_spec(out_ts)
+    id_x, id_y = writer.morton_xy_grid(morton_indx)
+    bboxes_out = writer.grid_indices_to_bboxes(id_x, id_y)
+    bboxes = bboxes_out - np.tile(offset, 2).reshape(1, 4)
+    for kb in range(len(bboxes)):
+        bbox, bbox_out = bboxes[kb], bboxes_out[kb]
         updated = False
+        imgs = []
+        bbox_3d = []
+        flags_b = []
         for z in zindx:
             try:    # http error may crash the program
+                if (z in flags) and (not flags[z][kb]):
+                    continue
                 rndr = renderers[z]
                 if rndr is None:
                     continue
-                if num_chunks.get(z, 0) == None: # previously errored out
-                    continue
                 imgt = rndr.crop(bbox, **kwargs)
                 if (imgt is not None) and np.any(imgt != fillval, axis=None):
-                    img_crp, indx = common.crop_image_from_bbox(imgt, bbox_out, ts_bbox,
-                                                        return_index=True, flip_indx=True)
-                    if img_crp is None:
-                        continue
-                    if not updated:
-                        txn = ts.Transaction()
-                        updated = True
-                    data_view = out_ts[indx[1], indx[0], z]
-                    data_view.with_transaction(txn).write(img_crp.reshape(data_view.shape)).result(timeout=TS_TIMEOUT)
-                    num_chunks[z] = num_chunks.get(z, 0) + 1
+                    imgt = np.swapaxes(imgt, 0, 1).copy()
+                    imgs.append(imgt)
+                    bbox_3d.append([*bbox_out[:2], z, *bbox_out[2:], z+1])
+                    updated = True
+                flags_b.append(z)
             except Exception as err:
-                num_chunks[z] = None
                 if isinstance(err, TimeoutError):
-                    err_str = err_str + f'z={z} Tensorstore timed out.\n'
+                    err_str = err_str + f'\tz={z} Tensorstore timed out.\n'
                 else:
-                    err_str = err_str + f'z={z} {err}\n'
-        try:
-            if updated:
-                txn.commit_async().result(timeout=TS_TIMEOUT)
-        except Exception as err:
-            num_chunks = {z: None for z in zindx}
-            if isinstance(err, TimeoutError):
-                err_str = err_str + f'commit error: Tensorstore timed out.\n'
+                    err_str = err_str + f'\tz={z} {err}\n'
+        if updated:
+            try:
+                writer.write_chunks_w_transaction(bboxes=bbox_3d, imgs=imgs)
+            except Exception as err:
+                if isinstance(err, TimeoutError):
+                    err_str = err_str + f'\tcommit error: Tensorstore timed out.\n'
+                else:
+                    err_str = err_str + f'\tcommit error: {err}\n'
+                break
             else:
-                err_str = err_str + f'commit error: {err}\n'
-            break
-    return num_chunks, err_str
+                for z in flags_b:
+                    flags[z][kb] = False
+    for z in zindx:
+        val = flags[z]
+        if not np.any(val):
+            flags[z] = False
+        elif np.all(val):
+            flags[z] = True
+    return task_id, flags, err_str

@@ -1,24 +1,36 @@
-import h5py
 import numpy as np
-import glob
 import os
 
 import shapely
 import shapely.geometry as shpgeo
 from feabas import config
 from feabas.spatial import scale_coordinates
+from feabas.storage import h5file_class, join_paths, list_folder_content
+
+H5File = h5file_class()
 
 def _merge_matches(fname0, fname1, outname, clearance=0, weight=1):
-    with h5py.File(fname0, 'r') as f:
+    STRNS = []
+    with H5File(fname0, 'r') as f:
         xy0 = f['xy0'][()]
         xy1 = f['xy1'][()]
         resolution = f['resolution'][()]
         weight0 = f['weight'][()]
-    with h5py.File(fname1, 'r') as f:
+        if 'strain' in f.keys():
+            STRNS.append((f['strain'][()], np.sum(weight0)))
+    with H5File(fname1, 'r') as f:
         xy0_a = f['xy0'][()]
         xy1_a = f['xy1'][()]
         resolution_a = f['resolution'][()]
         weight_a = f['weight'][()] * weight
+        if 'strain' in f.keys():
+           STRNS.append((f['strain'][()], np.sum(weight_a)))
+    if len(STRNS) == 0:
+        strain = config.DEFAULT_AVG_DEFORM
+    else:
+        ST = np.array([s[0] for s in STRNS]).ravel()
+        WT = np.array([s[1] for s in STRNS]).ravel()
+        strain = np.sum(ST * WT) / np.sum(WT)
     if resolution_a != resolution:
         scale = resolution_a / resolution
         xy0_a = scale_coordinates(xy0_a, scale)
@@ -35,18 +47,19 @@ def _merge_matches(fname0, fname1, outname, clearance=0, weight=1):
     xy0 = np.concatenate((xy0, xy0_a), axis=0)
     xy1 = np.concatenate((xy1, xy1_a), axis=0)
     weight0 = np.concatenate((weight0, weight_a), axis=0)
-    with h5py.File(outname, 'w') as f:
+    with H5File(outname, 'w') as f:
         f.create_dataset('xy0', data=xy0, compression="gzip")
         f.create_dataset('xy1', data=xy1, compression="gzip")
         f.create_dataset('weight', data=weight0, compression="gzip")
+        f.create_dataset('strain', data=strain)
         f.create_dataset('resolution', data=resolution)
 
 
 if __name__ == '__main__':
     root_dir = config.get_work_dir()
-    match_dir = os.path.join(root_dir, 'align', 'matches')
-    merge_dir = os.path.join(match_dir, 'merge')
-    mlist = glob.glob(os.path.join(merge_dir, '*.h5'))
+    match_dir = join_paths(root_dir, 'align', 'matches')
+    merge_dir = join_paths(match_dir, 'merge')
+    mlist = list_folder_content(join_paths(merge_dir, '*.h5'))
     for mname in mlist:
-        fname0 = os.path.join(match_dir, os.path.basename(mname))
+        fname0 = join_paths(match_dir, os.path.basename(mname))
         _merge_matches(fname0, mname, mname, clearance=400, weight=5)

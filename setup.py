@@ -1,25 +1,29 @@
 from setuptools import setup, find_packages
 import platform
 
-VERSION = '2.1.0'
+VERSION = '3.0.5'
 
 def readme():
     with open('README.md') as f:
         return f.read()
 
 install_requires = [
+    'dask[array,distributed,diagnostics]',
+    'dask-jobqueue',
+    'dill',
     'google-cloud-storage',
     'h5py',
-    'numpy',
+    'numpy<2',
     'opencv-python',
     'psutil',
+    'pyamg',
     'pyyaml',
     'rtree',
     'scikit-image',
     'scipy',
-    'shapely>=2.0.0',
-    'tensorstore<=0.1.51',
-    'triangle',
+    'shapely>=2.0.0, <2.1.0',
+    'tensorstore',
+    'triangle'
 ]
 
 if (platform.python_version() < '3.12') and (platform.system() == 'Windows'):

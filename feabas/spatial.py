@@ -1,16 +1,19 @@
 from collections import defaultdict, OrderedDict
 
 import cv2
-import h5py
 import numpy as np
+import shapely
 import shapely.geometry as shpgeo
 from shapely.ops import unary_union, linemerge, polygonize
-from shapely import wkb, get_coordinates
 
 from feabas import dal, common, material
 import feabas.constant as const
-from feabas.config import DEFAULT_RESOLUTION
+from feabas.config import data_resolution, get_numpy_thread
+from feabas.storage import h5file_class
 
+Nthreads = get_numpy_thread()
+cv2.setNumThreads(Nthreads)
+H5File = h5file_class()
 
 JOIN_STYLE = shpgeo.JOIN_STYLE.mitre
 
@@ -53,13 +56,15 @@ def fit_affine(pts0, pts1, return_rigid=False, weight=None, svd_clip=(1,1), avoi
         res = np.linalg.lstsq(pts1_pad, pts0_pad, rcond=None)
         A = res[0]
     if return_rigid:
-        u, s, vh = np.linalg.svd(A[:2,:2], compute_uv=True)
         if svd_clip is not None:
+            u, s, vh = np.linalg.svd(A[:2,:2], compute_uv=True)
             s = s.clip(svd_clip[0], svd_clip[-1])
-        R = A.copy()
-        R[:2,:2] = u @ np.diag(s) @ vh
-        R[-1,:2] = R[-1,:2] + mm0 - mm1 @ R[:2,:2]
-        R[:,-1] = np.array([0,0,1])
+            R = A.copy()
+            R[:2,:2] = u @ np.diag(s) @ vh
+            R[-1,:2] = R[-1,:2] + mm0 - mm1 @ R[:2,:2]
+            R[:,-1] = np.array([0,0,1])
+        else:
+            R = A
     A[-1,:2] = A[-1,:2] + mm0 - mm1 @ A[:2,:2]
     A[:,-1] = np.array([0,0,1])
     if return_rigid:
@@ -74,7 +79,7 @@ def scale_coordinates(coordinates, scale):
     scale coordinates, at the same time align the center of the top-left corner
     pixel to (0, 0).
     """
-    coordinates = np.array(coordinates, copy=False)
+    coordinates = common.numpy_array(coordinates, copy=False)
     if np.all(scale == 1):
         return coordinates
     else:
@@ -139,7 +144,9 @@ def countours_to_polygon(contours, hierarchy, offset, scale, upsample):
         xy = scale_coordinates(xy + np.asarray(offset), scale=scale)
         lr = shpgeo.polygon.LinearRing(xy)
         # lr = smooth_zigzag(lr, scale=scale)
-        pp = shpgeo.Polygon(lr).buffer(0)
+        pp = shpgeo.Polygon(lr)
+        if not pp.is_valid:
+            pp = pp.buffer(0)
         if lr.is_ccw:
             holes[indx] = pp
         else:
@@ -147,11 +154,16 @@ def countours_to_polygon(contours, hierarchy, offset, scale, upsample):
     if len(polygons_staging) == 0:
         return None     # no region found
     hierarchy = hierarchy.reshape(-1, 4)
+    combined_holes = defaultdict(list)
     for indx, hole in holes.items():
         parent_indx = hierarchy[indx][3]
         if parent_indx not in polygons_staging:
             raise RuntimeError('found an orphan hole...') # should never happen
-        polygons_staging[parent_indx] = polygons_staging[parent_indx].difference(hole)
+        combined_holes[parent_indx].append(hole)
+    for indx in polygons_staging:
+        if indx in combined_holes:
+            hole = unary_union(combined_holes[indx])
+            polygons_staging[indx] = polygons_staging[indx].difference(hole)
     return unary_union([s.buffer(0) for s in polygons_staging.values()]).buffer(buffer_r, join_style=JOIN_STYLE)
 
 
@@ -185,7 +197,7 @@ def images_to_polygons(imgs, labels, offset=(0, 0), scale=1.0, upsample=2):
             tile = imgs.crop(bbox, return_empty=False)
             if tile is None:
                 continue
-            xy0 = np.array(bbox[:2], copy=False) + np.array(offset)
+            xy0 = common.numpy_array(bbox[:2], copy=False) + np.array(offset)
             for name, lbl in labels.items():
                 if lbl is None:
                     continue
@@ -234,6 +246,28 @@ def images_to_polygons(imgs, labels, offset=(0, 0), scale=1.0, upsample=2):
     return polygons, extent
 
 
+def index_chain_to_linearrings(vertices, chains):
+    chn = np.concatenate(chains, axis=None)
+    indx = np.repeat(np.arange(len(chains)), [len(s) for s in chains])
+    lrs = shapely.linearrings(vertices[chn], indices=indx)
+    return list(lrs)
+
+
+def segment_rings_to_polygons(vertices, chains):
+    pps = []
+    ccs = []
+    for chain in chains:
+        if len(chain) == 0:
+            continue
+        p0 = vertices[chain[0]]
+        holes = []
+        for c in chain[1:]:
+            holes.append(vertices[c])
+        pps.append((p0, holes))
+        ccs.append(chain)
+    polygons = shpgeo.MultiPolygon(pps)
+    return polygons, ccs
+
 
 def get_polygon_representative_point(poly):
     """
@@ -252,30 +286,31 @@ def get_polygon_representative_point(poly):
 
 
 
-def polygon_area_filter(poly, area_thresh=0):
+def polygon_area_filter(poly, area_thresh=0, check_exterior=True):
     if area_thresh == 0:
         return poly
     if isinstance(poly, shpgeo.Polygon):
-        if poly.is_empty or shpgeo.Polygon(poly.exterior).area < area_thresh:
+        if poly.is_empty or (check_exterior and shpgeo.Polygon(poly.exterior).area < area_thresh):
             return shpgeo.Polygon()
         Bs = poly.boundary
         if hasattr(Bs,'geoms'):
-            # may need to fill small holes
-            holes_to_fill = []
-            for linestr in Bs.geoms:
-                pp = shpgeo.Polygon(linestr)
-                if pp.area < area_thresh:
-                    holes_to_fill.append(pp)
-            if len(holes_to_fill) > 0:
-                return poly.union(unary_union(holes_to_fill))
+            holes = shapely.build_area(shapely.get_parts(Bs))
+            areas = shapely.area(holes)
+            small_flags = areas < area_thresh
+            if np.any(small_flags):
+                return poly.union(unary_union(holes[small_flags]))
             else:
                 return poly
         else:
             return poly
     elif hasattr(poly, 'geoms'):
         new_poly_list = []
-        for pp in poly.geoms:
-            pp_updated = polygon_area_filter(pp, area_thresh=area_thresh)
+        subpolys = [p for p in poly.geoms if p.area > 0]
+        Bs = [p.exterior for p in subpolys]
+        areas = shapely.area(shapely.polygons(Bs))
+        large_pps = [p for p, ar in zip(subpolys, areas) if ar > area_thresh]
+        for pp in large_pps:
+            pp_updated = polygon_area_filter(pp, area_thresh=area_thresh, check_exterior=False)
             if not pp_updated.is_empty:
                 new_poly_list.append(pp_updated)
         if len(new_poly_list) > 0:
@@ -319,7 +354,7 @@ def smooth_zigzag(boundary, roi=None, scale=1.0, tol=0.5):
     for lr in boundaries:
         if lr.length == 0:
             continue
-        vertices = get_coordinates(lr)
+        vertices = shapely.get_coordinates(lr)
         if vertices.shape[0] <= 2:
             smoothened.append(lr)
             continue
@@ -397,21 +432,15 @@ def clean_up_small_regions(regions, roi=None, area_thresh=4, buffer=1e-3):
                 small_pieces.extend(list(pp_residue.geoms))
             else:
                 small_pieces.append(pp_residue)
-    for p0 in small_pieces:
-        p0b = p0.buffer(buffer)
-        assigned_label = None
-        max_intersection = 0
-        for lbl, pp in regions_dict.items():
-            if pp.is_empty:
-                continue
-            if not p0b.intersects(pp):
-                continue
-            intersect_area = p0b.intersection(pp).area
-            if intersect_area > max_intersection:
-                assigned_label = lbl
-                max_intersection = intersect_area
-        if assigned_label is not None:
-            regions_dict[assigned_label] = regions_dict[assigned_label].union(p0)
+    small_pieces_buffered = shapely.buffer(small_pieces, buffer)
+    region_labels = list(regions_dict.keys)
+    regions_filtered = [regions_dict[s] for s in region_labels]
+    intersect_regions = shapely.intersection(small_pieces_buffered.reshape(-1,1), regions_filtered)
+    intersect_areas = shapely.area(intersect_regions)
+    for k, pp in enumerate(small_pieces):
+        idx_t = np.argmax(intersect_areas[k,:])
+        if intersect_areas[k, idx_t] > 0:
+            regions_dict[region_labels[idx_t]] = regions_dict[region_labels[idx_t]].union(pp)
     if not orgin_contain_default:
         regions_dict.pop('default')
     if not isinstance(regions, dict):
@@ -467,6 +496,13 @@ def generate_equilat_grid_mask(mask, side_len, anchor_point=None, buffer=None):
     """
     if buffer is None:
         buffer = side_len
+    if isinstance(mask, (tuple, list, np.ndarray)):
+        mask_np = np.array(mask)
+        if mask_np.size == 4: #bbox
+            xmin, ymin, xmax, ymax = mask_np.ravel()
+            mask = shpgeo.box(xmin, ymin, xmax, ymax)
+        else:
+            mask = shpgeo.Polygon(mask_np.reshape(-1, 2))
     if hasattr(mask, 'geoms'):
         # if multiple geometries, filter out ones with 0 areas
         to_keep = []
@@ -485,6 +521,41 @@ def generate_equilat_grid_mask(mask, side_len, anchor_point=None, buffer=None):
     else:
         return np.array((pts.x, pts.y))
     
+
+def find_rotation_for_minimum_rectangle(poly, rounding=0):
+    bbox = shapely.minimum_rotated_rectangle(poly)
+    corner_xy = np.array(bbox.boundary.coords)
+    corner_dxy = np.diff(corner_xy, axis=0)
+    sides = np.sum(corner_dxy**2, axis=-1) ** 0.5
+    if sides[0] > sides[1]:
+        side_vec = corner_dxy[0]
+    else:
+        side_vec = corner_dxy[1]
+    theta = np.arctan2(side_vec[1], side_vec[0])
+    if rounding > 0:
+        delta = rounding * np.pi / 180
+        theta = np.round(theta / delta) * delta
+    if np.abs(theta) > np.pi/2:
+        theta = np.pi + theta
+    return theta
+
+
+def extract_coords_from_geocollections(G, convert_to_numpy=True):
+    pts = []
+    if G.is_empty:
+        return pts
+    elif hasattr(G, 'geoms'):
+        for g in G.geoms:
+            pts.extend(extract_coords_from_geocollections(g, convert_to_numpy=False))
+    else:
+        try:
+            pts = list(G.coords)
+        except (NotImplementedError, AttributeError):
+            if hasattr(G, 'boundary'):
+                pts = extract_coords_from_geocollections(G.boundary, convert_to_numpy=False)
+    if convert_to_numpy:
+        pts = np.asarray(pts).reshape(-1,2)
+    return pts
 
 
 class Geometry:
@@ -507,7 +578,7 @@ class Geometry:
         self._roi = roi
         self._default_region = None
         self._regions = regions
-        self._resolution = kwargs.get('resolution', DEFAULT_RESOLUTION)
+        self._resolution = kwargs.get('resolution', data_resolution())
         self._zorder = kwargs.get('zorder', list(self._regions.keys()))
         self._committed = False
         self._epsilon = kwargs.get('epsilon', const.EPSILON0) # small value used for buffer
@@ -531,7 +602,7 @@ class Geometry:
             scale(float): if image_loader is not a MosaicLoader, use this to
                 define scaling factor.
         """
-        resolution = kwargs.get('resolution', DEFAULT_RESOLUTION)
+        resolution = kwargs.get('resolution', data_resolution())
         oor_label = kwargs.get('oor_label', None)
         roi_erosion = kwargs.get('roi_erosion', 0.5)
         dilate = kwargs.get('dilate', 0.1)
@@ -571,7 +642,7 @@ class Geometry:
     def from_h5(cls, h5name):
         kwargs = {}
         regions = {}
-        with h5py.File(h5name, 'r') as f:
+        with H5File(h5name, 'r') as f:
             if 'resolution' in f:
                 kwargs['resolution'] = f['resolution'][()]
             if 'zorder' in f:
@@ -579,15 +650,15 @@ class Geometry:
             if 'epsilon' in f:
                 kwargs['epsilon'] = f['epsilon'][()]
             if 'roi' in f:
-                roi = wkb.loads(bytes.fromhex(f['roi'][()].decode()))
+                roi = shapely.wkb.loads(bytes.fromhex(f['roi'][()].decode()))
             if 'regions' in f:
                 for rname in f['regions']:
-                    regions[rname] = wkb.loads(bytes.fromhex(f['regions/'+rname][()].decode()))
+                    regions[rname] = shapely.wkb.loads(bytes.fromhex(f['regions/'+rname][()].decode()))
         return cls(roi=roi, regions=regions, **kwargs)
 
 
     def save_to_h5(self, h5name):
-        with h5py.File(h5name, 'w') as f:
+        with H5File(h5name, 'w') as f:
             _ = f.create_dataset('resolution', data=self._resolution)
             _ = f.create_dataset('epsilon', data=self._epsilon)
             if bool(self._zorder):
@@ -624,7 +695,7 @@ class Geometry:
 
 
     def add_regions_from_image(self, image, material_table=None, region_names=None, **kwargs):
-        resolution = kwargs.get('resolution', DEFAULT_RESOLUTION)
+        resolution = kwargs.get('resolution', data_resolution())
         dilate = kwargs.get('dilate', 0.1)
         scale = kwargs.get('scale', 1.0)
         mode = kwargs.get('mode', 'u')
@@ -665,7 +736,7 @@ class Geometry:
 
 
     def modify_roi_from_image(self, image, roi_label=0, **kwargs):
-        resolution = kwargs.get('resolution', DEFAULT_RESOLUTION)
+        resolution = kwargs.get('resolution', data_resolution())
         roi_erosion = kwargs.get('roi_erosion', 0)
         scale = kwargs.get('scale', 1.0)
         mode = kwargs.get('mode', 'r')
@@ -705,28 +776,34 @@ class Geometry:
             if poly_updated.is_empty:
                 self._regions.pop(lbl)
             else:
-                self._regions[lbl] = poly_updated.buffer(0)
+                if not poly_updated.is_valid:
+                    poly_updated = poly_updated.buffer(0)
+                self._regions[lbl] = poly_updated
                 covered_list.append(poly_updated)
                 if lbl != 'default':
                     mask = mask.difference(poly_updated)
         filtered_roi = polygon_area_filter(mask, area_thresh=area_thresh)
         if not filtered_roi.is_empty:
-            self._default_region = filtered_roi.buffer(0)
+            if not filtered_roi.is_valid:
+                filtered_roi = filtered_roi.buffer(0)
+            self._default_region = filtered_roi
         covered = unary_union(covered_list)
         covered_boundary = covered.boundary
         if hasattr(covered_boundary, 'geoms'):
-            # if boundary has multiple line strings, check for holes
-            filled_cover = []
-            for linestr in covered_boundary.geoms:
-                area_sign = shpgeo.LinearRing(linestr).is_ccw
-                if area_sign:
-                    filled_cover.append(shpgeo.Polygon(linestr))
-            holes = unary_union(filled_cover).difference(covered)
+            covered_boundary = shapely.get_parts(covered_boundary)
+            cww_flags = shapely.is_ccw(covered_boundary)
+            hole_bounds = unary_union(covered_boundary[cww_flags])
+            holes = shapely.build_area(hole_bounds).difference(covered)
             if holes.area > 0:
                 if 'exclude' in self._regions:
-                    self._regions['exclude'] = (self._regions['exclude'].union(holes)).buffer(0)
+                    exclude_regions = self._regions['exclude'].union(holes)
+                    if not exclude_regions.is_valid:
+                        exclude_regions = exclude_regions.buffer(0)
+                    self._regions['exclude'] = exclude_regions
                 else:
-                    self._regions['exclude'] = holes.buffer(0)
+                    if not holes.is_valid:
+                        holes = holes.buffer(0)
+                    self._regions['exclude'] = holes
         self._committed = True
 
 
@@ -784,8 +861,7 @@ class Geometry:
         return IOUs
 
 
-
-    def simplify(self, region_tol=1.5, roi_tol=1.5, inplace=True, scale=1.0, method=const.SPATIAL_SIMPLIFY_GROUP, area_thresh=0):
+    def simplify(self, region_tol=1.5, roi_tol=1.5, inplace=True, scale=1.0, method=const.SPATIAL_SIMPLIFY_GEOM_COLLECTION, area_thresh=0):
         """
         simplify regions and roi so they have fewer line segments.
         Kwargs:
@@ -812,8 +888,11 @@ class Geometry:
         elif method == const.SPATIAL_SIMPLIFY_REGION:
             G = self.simplify_by_regions(region_tols, roi_tol=roi_tol,
                 inplace=inplace, scale=scale, area_thresh=area_thresh)
-        else:
+        elif method == const.SPATIAL_SIMPLIFY_GROUP:
             G = self.simplify_by_segment_groups(region_tols, roi_tol=roi_tol,
+                inplace=inplace, scale=scale, area_thresh=area_thresh)
+        else:
+            G = self.simplify_by_geometry_collection(region_tols, roi_tol=roi_tol,
                 inplace=inplace, scale=scale, area_thresh=area_thresh)
         return G
 
@@ -1094,17 +1173,92 @@ class Geometry:
             roi = self._roi.simplify(roi_tol*scale, preserve_topology=True)
             if inplace:
                 self._roi = roi
+        else:
+            roi = self._roi
         epsilon1 = const.EPSILON0 * scale
         if epsilon1 < self._epsilon:
             self._epsilon = epsilon1
-        regions_new = {}
+        if inplace:
+            regions_new = self._regions
+        else:
+            regions_new = {}
         for key, pp in self._regions.items():
             if (region_tols[key] > 0) and (pp is not None):
                 pp_updated = pp.simplify(region_tols[key]*scale, preserve_topology=True)
-                if inplace:
-                    self._regions[key] = pp_updated
-                else:
-                    regions_new[key] = pp_updated
+                regions_new[key] = pp_updated
+        regions_new, _ = clean_up_small_regions(regions_new, roi=roi, area_thresh=area_thresh, buffer=self._epsilon)
+        if inplace:
+            return self
+        else:
+            return Geometry(roi=roi, regions=regions_new,
+                resolution=self._resolution, zorder=self._zorder)
+
+
+    def simplify_by_geometry_collection(self, region_tols, roi_tol=1.5,inplace=True, **kwargs):
+        """
+        simplify regions with shapely built-in `simplify` method of GeometryCollection.
+        should only use one (smallest) region_tols.
+        """
+        scale = kwargs.get('scale', 1.0)
+        area_thresh = kwargs.get('area_thresh', 0)
+        if roi_tol > 0:
+            roi = self._roi.simplify(roi_tol*scale, preserve_topology=True)
+            if inplace:
+                self._roi = roi
+        else:
+            roi = self._roi
+        epsilon1 = const.EPSILON0 * scale
+        if epsilon1 < self._epsilon:
+            self._epsilon = epsilon1
+        tols = [region_tols[lbl] for lbl in self._regions]
+        if len(tols) == 0:
+            tol = 0
+        else:
+            tol = min(tols) * scale
+        covered = shpgeo.Polygon()
+        # expand the regions a bit for tolerance
+        region_expanded = []
+        for lbl in self._zorder[::-1]:
+            if lbl not in self._regions:
+                continue
+            pp = self._regions[lbl]
+            if pp.area <= area_thresh:
+                continue
+            overlap = pp.intersection(covered)
+            if overlap.area > 0:
+                pp_add = overlap.buffer(tol*0.75, join_style=JOIN_STYLE)
+                pp_add = pp_add.intersection(covered.buffer(-self._epsilon, join_style=JOIN_STYLE))
+                pp = pp.union(pp_add)
+            region_expanded.append(pp)
+            covered = covered.union(pp)
+        G = shpgeo.GeometryCollection(region_expanded)
+        G = G.simplify(tolerance=tol, preserve_topology=True)
+        simplified_regions = list(G.geoms)
+        simplified_regions = sorted(simplified_regions, key=lambda g: -g.area)
+        if inplace:
+            regions_new = self._regions
+        else:
+            regions_new = {}
+        included_labels = set()
+        for pp in simplified_regions:
+            ovlp = 0
+            lbl_t = None
+            for lbl in self._regions:
+                if lbl in included_labels:
+                    continue
+                rr = self._regions[lbl]
+                ovlp_area = (rr.intersection(pp)).area
+                union_area = (rr.union(pp)).area
+                iou_rt = ovlp_area / union_area
+                if iou_rt > 0.75:
+                    regions_new[lbl] = pp
+                    included_labels.add(lbl)
+                    break
+                if iou_rt > ovlp:
+                    ovlp = iou_rt
+                    lbl_t = lbl
+            else:
+                regions_new[lbl_t] = pp
         regions_new, _ = clean_up_small_regions(regions_new, roi=roi, area_thresh=area_thresh, buffer=self._epsilon)
         if inplace:
             return self
@@ -1133,7 +1287,7 @@ class Geometry:
         """
         region_tol = kwargs.get('region_tol', 0)
         roi_tol = kwargs.get('roi_tol', 0)
-        method = kwargs.get('method', const.SPATIAL_SIMPLIFY_GROUP)
+        method = kwargs.get('method', const.SPATIAL_SIMPLIFY_GEOM_COLLECTION)
         area_thresh = kwargs.get('area_thresh', 0)
         snap_decimal = kwargs.get('snap_decimal', None)
         scale = kwargs.get('scale', 1.0)
@@ -1184,18 +1338,9 @@ class Geometry:
 
     @staticmethod
     def region_names_from_material_dict(material_dict):
-        if isinstance(material_dict, str):
-            if '.json' in material_dict:
-                MT = material.MaterialTable.from_json(material_dict, stream=False)
-            else:
-                MT = material.MaterialTable.from_json(material_dict, stream=True)
-            material_dict = MT.label_table
-        elif isinstance(material_dict, material.MaterialTable):
-            material_dict = material_dict.label_table
-        elif isinstance(material_dict, dict):
-            pass
-        else:
-            raise TypeError('Invalid material dictionary type.')
+        if not isinstance(material_dict, dict):
+            mt = material.MaterialTable.from_pickleable(material_dict)
+            material_dict = mt.label_table
         region_names = OrderedDict()
         for label, mat in material_dict.items():
             if isinstance(mat, material.Material):

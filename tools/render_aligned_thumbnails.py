@@ -1,29 +1,27 @@
 import argparse
 import cv2
-from concurrent.futures.process import ProcessPoolExecutor
-from concurrent.futures import as_completed
-from multiprocessing import get_context
 from functools import partial
 import numpy as np
 import os
-import glob
 import time
 
-from feabas import common, dal, config
+from feabas.concurrent import submit_to_workers
+from feabas import common, dal, config, storage
 from feabas.mesh import Mesh
 import feabas.constant as const
 from feabas.renderer import MeshRenderer
 
-thumbnail_mip_lvl = config.thumbnail_configs().get('thumbnail_mip_level', 6)
-default_thumbnail_resolution = config.montage_resolution() * (2 ** thumbnail_mip_lvl)
+Nthreads = config.get_numpy_thread()
+cv2.setNumThreads(Nthreads)
+default_thumbnail_resolution = config.thumbnail_resolution()
 
 def render_one_thumbnail(thumbnail_path, mesh_path, out_dir, **kwargs):
     thumbnail_resolution = kwargs.get('thumbnail_resolution', default_thumbnail_resolution)
     bbox = kwargs.get('bbox', None)
     out_resolution = kwargs.get('out_resolution', thumbnail_resolution)
     t0 = time.time()
-    outname = os.path.join(out_dir, os.path.basename(thumbnail_path))
-    if os.path.isfile(outname):
+    outname = storage.join_paths(out_dir, os.path.basename(thumbnail_path))
+    if storage.file_exists(outname):
         return
     M = Mesh.from_h5(mesh_path)
     M.change_resolution(out_resolution)
@@ -84,20 +82,20 @@ if __name__ == '__main__':
     root_dir =  config.get_work_dir()
 
     if args.src_dir.lower() == 'none':
-        src_dir = os.path.join(root_dir, 'thumbnail_align', 'thumbnails')
+        src_dir = storage.join_paths(root_dir, 'thumbnail_align', 'thumbnails')
     else:
         src_dir = args.src_dir
 
     if args.tgt_dir.lower() == 'none':
         if resolution % 1 == 0:
             resolution = int(resolution)
-        tgt_dir = os.path.join(root_dir, 'align', f'aligned_{resolution}nm')
+        tgt_dir = storage.join_paths(root_dir, 'align', f'aligned_{resolution}nm')
     else:
         tgt_dir = args.tgt_dir
-    os.makedirs(tgt_dir, exist_ok=True)
+    storage.makedirs(tgt_dir, exist_ok=True)
 
-    tform_dir = os.path.join(root_dir, 'align', 'tform')
-    tlist = sorted(glob.glob(os.path.join(tform_dir, '*.h5')))
+    tform_dir = storage.join_paths(root_dir, 'align', 'tform')
+    tlist = sorted(storage.list_folder_content(storage.join_paths(tform_dir, '*.h5')))
 
     if len(tlist) == 0:
         print(f'no transformations found in {tform_dir}.')
@@ -107,16 +105,8 @@ if __name__ == '__main__':
     if (xmin is None) or (ymin is None) or (xmax is None) or (ymax is None):
         bbox0 = []
         bfunc = partial(get_bbox_for_one_section, resolution=resolution)
-        if args.worker > 1:
-            jobs = []
-            with ProcessPoolExecutor(max_workers=args.worker, mp_context=get_context('spawn')) as executor:
-                for mname in tlist:
-                    jobs.append(executor.submit(bfunc, mname))
-                for job in as_completed(jobs):
-                    bbox0.append(job.result())
-        else:
-            for mname in tlist:
-                bbox0.append(bfunc(mname))
+        for bbx in submit_to_workers(bfunc, args=[(s,) for s in tlist], num_workers=args.worker):
+            bbox0.append(bbx)
         bbox0 = np.array(bbox0)
         if xmin is None:
             xmin = np.min(bbox0[:,0])
@@ -139,12 +129,12 @@ if __name__ == '__main__':
                           thumbnail_resolution=src_resolution,
                           out_resolution=resolution, bbox=bbox)
     jobs = []
-    imglist = [os.path.join(src_dir, os.path.basename(s).replace('.h5', args.ext)) for s in tlist]
-    with ProcessPoolExecutor(max_workers=args.worker, mp_context=get_context('spawn')) as executor:
-        for tname, mname in zip(tlist, imglist):
-            if not os.path.isfile(mname):
-                continue
-            jobs.append(executor.submit(target_func, mname, tname))
-        for job in as_completed(jobs):
-            job.result()
+    imglist = [storage.join_paths(src_dir, os.path.basename(s).replace('.h5', args.ext)) for s in tlist]
+    args_list = []
+    for tname, mname in zip(tlist, imglist):
+        if not storage.file_exists(mname):
+            continue
+        args_list.append((mname, tname))
+    for _ in submit_to_workers(target_func, args=args_list, num_workers=args.worker):
+        pass
     print('finished.')

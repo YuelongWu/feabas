@@ -1,6 +1,5 @@
 import cv2
 import numpy as np
-import h5py
 import os
 from scipy.fft import rfft, irfft
 from shapely import concave_hull, MultiPoint, intersects_xy
@@ -9,14 +8,19 @@ from shapely.affinity import affine_transform
 from skimage.feature import peak_local_max
 from itertools import combinations
 
-from feabas import common, logging
+from feabas import common, config, logging, storage
 from feabas.spatial import fit_affine, Geometry, scale_coordinates
 from feabas.mesh import Mesh
 from feabas.optimizer import SLM
 import feabas.constant as const
 from feabas.dal import StreamLoader
-from feabas.matcher import section_matcher
+from feabas.matcher import section_matcher, global_translation_matcher
 from feabas.aligner import read_matches_from_h5
+
+
+Nthreads = config.get_numpy_thread()
+cv2.setNumThreads(Nthreads)
+H5File = storage.h5file_class()
 
 
 DEFAULT_FEATURE_SPACING = 15
@@ -249,7 +253,7 @@ class KeyPointMatches:
             return np.ones(self.num_points, dtype=np.int16)
         else:
             return self._class_id0
-        
+
     @property
     def class_id1(self):
         if self._class_id1 is None:
@@ -279,6 +283,7 @@ def prepare_image(img, mask=None, **kwargs):
     extract_settings = kwargs.get('extract_settings', {}).copy()
     mesh_size = kwargs.get('mesh_size', DEFAULT_FEATURE_SPACING * 2)
     scale = kwargs.get('scale', 1.0)
+    resolution = kwargs.get('resolution', config.thumbnail_resolution())
     if isinstance(img, dict):
         out = img
         img = out['image']
@@ -300,12 +305,13 @@ def prepare_image(img, mask=None, **kwargs):
             imght, imgwd = img.shape[:2]
             regions[1] = shpgeo.box(0,0,imgwd, imght)
             mesh = Mesh.from_bbox((0,0,imgwd, imght), cartesian=True,
-                                    mesh_size=mesh_size, uid=uid)
+                                    mesh_size=mesh_size, uid=uid, resolution=resolution/scale)
         else:
             meshes_stg = []
             for lb in np.unique(mask[mask>0]):
                 G0 = Geometry.from_image_mosaic(255 - 255 * (mask == lb).astype(np.uint8),
-                                                region_names={'default':0, 'exclude': 255})
+                                                region_names={'default':0, 'exclude': 255},
+                                                resolution=resolution/scale)
                 G0.simplify(region_tol={'exclude':1.5}, inplace=True)
                 regions[lb] = G0.region_default
                 meshes_stg.append(Mesh.from_PSLG(**G0.PSLG(), mesh_size=mesh_size,
@@ -324,7 +330,7 @@ def prepare_image(img, mask=None, **kwargs):
         kps = extract_LRadon_feature(img, kps, **extract_settings)
         out[scale]['kps'] = kps
     return out
-            
+
 
 
 def match_two_thumbnails_LRadon(img0, img1, mask0=None, mask1=None, **kwargs):
@@ -345,7 +351,7 @@ def match_two_thumbnails_LRadon(img0, img1, mask0=None, mask1=None, **kwargs):
     kps0, kps1 = info0['kps'], info1['kps']
     mesh0.uid = 0.0
     mesh1.uid = 1.0
-    optm = SLM([mesh0, mesh1], stiffness_lambda=1.0)
+    optm = SLM([mesh0, mesh1], stiffness_lambda=0.5)
     optm.divide_disconnected_submeshes(prune_links=False)
     xy0 = []
     xy1 = []
@@ -380,16 +386,16 @@ def match_two_thumbnails_LRadon(img0, img1, mask0=None, mask1=None, **kwargs):
             optm.clear_links()
             optm.add_link_from_coordinates(0.0, 1.0, mtch.xy0, mtch.xy1,
                                            check_duplicates=False,
-                                           weight=np.full(mtch.num_points, 0.05),
+                                           weight=np.full(mtch.num_points, 0.5),
                                            name='staging')
             staging_link = optm.links.copy()
             if (len(settled_link) > 0) and (mtch.num_points < matchnum_thresh):
                 for lnk in settled_link.values():
                     optm.add_link(lnk, check_relevance=False, check_duplicates=False)
-                optm.optimize_affine_cascade(target_gear=const.MESH_GEAR_FIXED)
+                optm.optimize_affine_cascade(target_gear=const.MESH_GEAR_FIXED, svd_clip=None)
                 optm.anneal(gear=(const.MESH_GEAR_FIXED, const.MESH_GEAR_MOVING), mode=const.ANNEAL_COPY_EXACT)
                 optm.clear_equation_terms()
-                optm.optimize_linear(tol=1.0e-5, targt_gear=const.MESH_GEAR_MOVING)
+                optm.optimize_linear(tol=1.0e-5, targt_gear=const.MESH_GEAR_MOVING, precondition='sa', tolerated_perturbation=0.05)
                 valid_num = 0
                 xy0_t_list = []
                 xy1_t_list = []
@@ -484,24 +490,28 @@ def match_two_thumbnails_LRadon(img0, img1, mask0=None, mask1=None, **kwargs):
 def match_two_thumbnails_pmcc(img0, img1, mask0=None, mask1=None, **kwargs):
     sigma = kwargs.pop('sigma', 3)
     scale = kwargs.get('scale', 1.0)
+    txy = kwargs.pop('txy', None)
     info0 = prepare_image(img0, mask=mask0, compute_keypoints=False, **kwargs)[scale]
     mesh0 = info0['mesh'].copy()
     info1 = prepare_image(img1, mask=mask1, compute_keypoints=False, **kwargs)[scale]
     mesh1 = info1['mesh'].copy()
     mesh0.uid = 0.0
     mesh1.uid = 1.0
+    if txy is not None:
+        mesh0.apply_translation((txy[0], txy[-1]), const.MESH_GEAR_FIXED)
     if not 'dog_image' in info0:
         info0['dog_image'] = common.masked_dog_filter(info0['image'], sigma=sigma, mask=info0['mask'])
     if not 'dog_image' in info1:
         info1['dog_image'] = common.masked_dog_filter(info1['image'], sigma=sigma, mask=info1['mask'])
-    loader0 = StreamLoader(info0['dog_image'])
-    loader1 = StreamLoader(info1['dog_image'])
-    xy0, xy1, weight = section_matcher(mesh0, mesh1, loader0, loader1, **kwargs)
+    loader0 = StreamLoader(info0['dog_image'], resolution=mesh0.resolution)
+    loader1 = StreamLoader(info1['dog_image'], resolution=mesh1.resolution)
+    kwargs.setdefault('allow_dwell', 1)
+    xy0, xy1, weight, strain = section_matcher(mesh0, mesh1, loader0, loader1, **kwargs)
     if xy0 is None:
         return None
     xy0 = scale_coordinates(xy0, 1 / scale)
     xy1 = scale_coordinates(xy1, 1 / scale)
-    return common.Match(xy0, xy1, weight)
+    return common.Match(xy0, xy1, weight, strain)
 
 
 
@@ -509,59 +519,84 @@ def _scale_matches(match, scale):
     scale = np.atleast_1d(scale)
     if (match is None) or np.all(scale == 1):
         return match
-    xy0, xy1, weight = match
+    xy0, xy1, weight, strain = match
     xy0 = scale_coordinates(xy0, scale[0])
     xy1 = scale_coordinates(xy1, scale[-1])
-    return common.Match(xy0, xy1, weight)
+    return common.Match(xy0, xy1, weight, strain)
 
 
 
 def align_two_thumbnails(img0, img1, outname, mask0=None, mask1=None, **kwargs):
-    if os.path.isfile(outname):
+    if storage.file_exists(outname):
         return
-    resolution = kwargs.get('resolution')
+    match_mode = kwargs.pop('match_mode', 'feature')
+    resolution = kwargs.get('resolution', config.thumbnail_resolution())
     feature_match_settings = kwargs.get('feature_matching', {}).copy()
     block_match_settings = kwargs.get('block_matching', {}).copy()
     feature_match_dir = kwargs.get('feature_match_dir', None)
     save_feature_match = kwargs.get('save_feature_match', False)
-    logger_info = kwargs.get('logger', None)
-    logger= logging.get_logger(logger_info)
     bname_ext = os.path.basename(outname)
-    bname = bname_ext.replace('.h5', '')
     if feature_match_dir is not None:
-        feature_matchname = os.path.join(feature_match_dir, bname_ext)
+        feature_matchname = storage.join_paths(feature_match_dir, bname_ext)
     else:
         feature_matchname = None
-    if (feature_matchname is not None) and (os.path.isfile(feature_matchname)):
+    if (feature_matchname is not None) and (storage.file_exists(feature_matchname)):
         mtch0 = read_matches_from_h5(feature_matchname, target_resolution=resolution)
+        txy = None
     else:
-        mtch0 = match_two_thumbnails_LRadon(img0, img1, mask0=mask0, mask1=mask1,
-                                            **feature_match_settings)
-        if mtch0 is None:     
-            logger.warning(f'{bname}: fail to find matches.')
-            return 0
-        if save_feature_match:
-            xy0, xy1, weight = mtch0
-            os.makedirs(feature_match_dir, exist_ok=True)
-            with h5py.File(feature_matchname, 'w') as f:
-                f.create_dataset('xy0', data=xy0, compression="gzip")
-                f.create_dataset('xy1', data=xy1, compression="gzip")
-                f.create_dataset('weight', data=weight, compression="gzip")
-                f.create_dataset('resolution', data=resolution)
-    pmcc_scale = np.full(2, block_match_settings.get('scale', 1.0))
-    mtch0 = _scale_matches(mtch0, pmcc_scale)
+        pmcc_scale = np.full(2, block_match_settings.get('scale', 1.0))
+        if match_mode.lower().startswith('f'):
+            mtch0 = match_two_thumbnails_LRadon(img0, img1, mask0=mask0, mask1=mask1,
+                                                **feature_match_settings)
+            if mtch0 is None:
+                return 0
+            if save_feature_match:
+                xy0, xy1, weight, _ = mtch0
+                storage.makedirs(feature_match_dir)
+                with H5File(feature_matchname, 'w') as f:
+                    f.create_dataset('xy0', data=xy0, compression="gzip")
+                    f.create_dataset('xy1', data=xy1, compression="gzip")
+                    f.create_dataset('weight', data=weight, compression="gzip")
+                    f.create_dataset('resolution', data=resolution)
+            txy = None
+            mtch0 = _scale_matches(mtch0, pmcc_scale)
+        else:
+            sigma = block_match_settings.get('sigma', 2.5)
+            conf_thresh = block_match_settings.get('conf_thresh', 2.5)
+            if isinstance(img0, dict):
+                img0t = img0['image']
+                mask0t = img0['mask']
+            else:
+                img0t = img0
+                mask0t = mask0
+            if isinstance(img1, dict):
+                img1t = img1['image']
+                mask1t = img1['mask']
+            else:
+                img1t = img1
+                mask1t = mask1
+            for divide_factor in (6, 10, 20):
+                tx, ty, conf = global_translation_matcher(img0t, img1t, mask0=mask0t, mask1=mask1t,
+                                                            sigma=sigma, conf_thresh=conf_thresh, divide_factor=divide_factor)
+                if conf >= conf_thresh:
+                    break
+            if conf < conf_thresh:
+                return 0
+            txy = (tx * pmcc_scale[-1], ty * pmcc_scale[-1])
+            mtch0 = None
     mtch1 = match_two_thumbnails_pmcc(img0, img1, mask0=mask0, mask1=mask1,
-                                      initial_matches=mtch0, **block_match_settings)
+                                    initial_matches=mtch0, txy = txy,
+                                    **block_match_settings)
     if mtch1 is None:
-        logger.warning(f'{bname}: fail to find matches.')
         return 0
     else:
-        xy0, xy1, weight = mtch1
-        os.makedirs(os.path.dirname(outname), exist_ok=True)
-        with h5py.File(outname, 'w') as f:
+        xy0, xy1, weight, strain = mtch1
+        storage.makedirs(os.path.dirname(outname), exist_ok=True)
+        with H5File(outname, 'w') as f:
             f.create_dataset('xy0', data=xy0, compression="gzip")
             f.create_dataset('xy1', data=xy1, compression="gzip")
             f.create_dataset('weight', data=weight, compression="gzip")
+            f.create_dataset('strain', data=strain)
             f.create_dataset('resolution', data=resolution)
         return xy0.shape[0]
 
@@ -636,14 +671,14 @@ def extract_LRadon_feature(img, kps, offset=None, **kwargs):
         xx = (x1.reshape(-1,1) + dx).astype(np.float32)
         yy = (y1.reshape(-1,1) + np.zeros_like(dx)).astype(np.float32)
         if xx.shape[0] < max_batchsz:
-            des_t = cv2.remap(img_rf, xx, yy, interpolation=cv2.INTER_LINEAR,
+            des_t = common.remap(img_rf, xx, yy, interpolation=cv2.INTER_LINEAR,
                              borderMode=cv2.BORDER_CONSTANT, borderValue=0)
         else:
             des_t_list = []
             for stt_idx in np.arange(0, xx.shape[0], max_batchsz):
                 xx_b = xx[stt_idx:(stt_idx+max_batchsz)]
                 yy_b = yy[stt_idx:(stt_idx+max_batchsz)]
-                des_t_b = cv2.remap(img_rf, xx_b, yy_b, interpolation=cv2.INTER_LINEAR,
+                des_t_b = common.remap(img_rf, xx_b, yy_b, interpolation=cv2.INTER_LINEAR,
                                    borderMode=cv2.BORDER_CONSTANT, borderValue=0)
                 des_t_list.append(des_t_b)
             des_t = np.concatenate(des_t_list, axis=0)
@@ -670,7 +705,7 @@ def match_LRadon_feature(kps0, kps1, D=None, exclude_class=None, **kwargs):
     conf_thresh = kwargs.get('conf_thresh', 0.5)
     to_exclude_class = (exclude_class is not None) and (len(exclude_class) > 0)
     if to_exclude_class:
-        exclude_class = np.array(exclude_class, copy=False).reshape(-1,2)
+        exclude_class = common.numpy_array(exclude_class, copy=False).reshape(-1,2)
     if kps0.num_points > kps1.num_points:
         kps0, kps1 = kps1, kps0
         if D is not None:

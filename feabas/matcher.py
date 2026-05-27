@@ -1,19 +1,22 @@
+from collections import defaultdict
 import cv2
-from concurrent.futures.process import ProcessPoolExecutor
-from concurrent.futures import as_completed
 from functools import partial
-from multiprocessing import get_context
 import numpy as np
 from scipy import fft
 from scipy.fftpack import next_fast_len
+import shapely
 import shapely.geometry as shpgeo
 from shapely.ops import unary_union
 
+from feabas.config import DEFAULT_AVG_DEFORM, data_resolution, section_thickness, get_numpy_thread
+from feabas.concurrent import submit_to_workers
 from feabas.mesh import Mesh
 from feabas.renderer import MeshRenderer
 from feabas import optimizer, dal, common, spatial
 import feabas.constant as const
 
+Nthreads = get_numpy_thread()
+cv2.setNumThreads(Nthreads)
 
 
 def xcorr_fft(img0, img1, conf_mode=const.FFT_CONF_MIRROR, **kwargs):
@@ -144,13 +147,16 @@ def global_translation_matcher(img0, img1, **kwargs):
         img1 = common.masked_dog_filter(img1, sigma, mask=mask1)
     img0_t = np.expand_dims(img0, 0)
     img1_t = np.expand_dims(img1, 0)
+    imgshp0 = img0.shape[-2:]
+    imgshp1 = img1.shape[-2:]
+    imgwd0, imght0, imgwd1, imght1 = imgshp0[1], imgshp0[0], imgshp1[1], imgshp1[0]
     tx, ty, conf = xcorr_fft(img0_t, img1_t, conf_mode=conf_mode, pad=True)
     tx, ty, conf = tx.item(), ty.item(), conf.item()
+    tx = tx + (imgwd1 - imgwd0) / 2
+    ty = ty + (imght1 - imght0) / 2
     if conf > conf_thresh:
         return tx, ty, conf
     # divide the image for another shot (avoid local artifacts)
-    imgshp0 = img0.shape[-2:]
-    imgshp1 = img1.shape[-2:]
     imgshp = np.minimum(imgshp0, imgshp1)
     # find the division that results in most moderate aspect ratio
     if hasattr(divide_factor, '__len__'):
@@ -169,18 +175,46 @@ def global_translation_matcher(img0, img1, **kwargs):
             if rr < ratio:
                 ratio = rr
                 divide_N = (int(r0), int(divide_factor/r0))
-    xmin0, ymin0, xmax0, ymax0 = common.divide_bbox((0, 0, imgshp0[1], imgshp0[0]), min_num_blocks=divide_N)
-    xmin1, ymin1, xmax1, ymax1 = common.divide_bbox((0, 0, imgshp1[1], imgshp1[0]), min_num_blocks=divide_N)
+    xmin0, ymin0, xmax0, ymax0 = common.divide_bbox((0, 0, imgwd0, imght0), min_num_blocks=divide_N)
+    xmin1, ymin1, xmax1, ymax1 = common.divide_bbox((0, 0, imgwd1, imght1), min_num_blocks=divide_N)
     stack0 = []
     stack1 = []
+    offset_x = []
+    offset_y = []
     for k in range(xmin0.size):
-        stack0.append(img0[ymin0[k]:ymax0[k], xmin0[k]:xmax0[k]])
-        stack1.append(img1[ymin1[k]:ymax1[k], xmin1[k]:xmax1[k]])
+        xmx0, xmn0, xmx1, xmn1 = xmax0[k], xmin0[k], xmax1[k], xmin1[k]
+        ymx0, ymn0, ymx1, ymn1 = ymax0[k], ymin0[k], ymax1[k], ymin1[k]
+        wd_b = max(xmx0-xmn0, xmx1-xmn1)
+        ht_b = max(ymx0-ymn0, ymx1-ymn1)
+        pad_x0 = int(np.ceil((wd_b-(xmx0-xmn0))/2))
+        pad_y0 = int(np.ceil((ht_b-(ymx0-ymn0))/2))
+        ypt0 = np.array((ymn0-pad_y0, ymx0+pad_y0))
+        xpt0 = np.array((xmn0-pad_x0, xmx0+pad_x0))
+        ypt0 = (ypt0 - min(ypt0[0], 0) - max(ypt0[1]-imght0, 0)).clip(0, imght0)
+        xpt0 = (xpt0 - min(xpt0[0], 0) - max(xpt0[1]-imgwd0, 0)).clip(0, imgwd0)
+        img0b = img0[ypt0[0]:ypt0[1], xpt0[0]:xpt0[1]]
+        if np.ptp(img0b) == 0:
+            continue
+        pad_x1 = int(np.ceil((wd_b-(xmx1-xmn1))/2))
+        pad_y1 = int(np.ceil((ht_b-(ymx1-ymn1))/2))
+        ypt1 = np.array((ymn1-pad_y1, ymx1+pad_y1))
+        xpt1 = np.array((xmn1-pad_x1, xmx1+pad_x1))
+        ypt1 = (ypt1 - min(ypt1[0], 0) - max(ypt1[1]-imght1, 0)).clip(0, imght1)
+        xpt1 = (xpt1 - min(xpt1[0], 0) - max(xpt1[1]-imgwd1, 0)).clip(0, imgwd1)
+        img1b = img1[ypt1[0]:ypt1[1], xpt1[0]:xpt1[1]]
+        if np.ptp(img1b) == 0:
+            continue
+        stack0.append(img0b)
+        stack1.append(img1b)
+        offset_x.append((np.ptp(xpt1) - np.ptp(xpt0))/2 + xpt1[0] - xpt0[0])
+        offset_y.append((np.ptp(ypt1) - np.ptp(ypt0))/2 + ypt1[0] - ypt0[0])
+    if len(stack0) == 0:
+        return tx, ty, conf
     btx, bty, bconf = xcorr_fft(np.stack(stack0, axis=0), np.stack(stack1, axis=0), conf_mode=conf_mode, pad=True)
-    btx = btx + (xmin1 + xmax1 - xmin0 - xmax0 + imgshp0[1] - imgshp1[1])/2
-    bty = bty + (ymin1 + ymax1 - ymin0 - ymax0 + imgshp0[0] - imgshp1[0])/2
+    btx = btx + np.array(offset_x)
+    bty = bty + np.array(offset_y)
     k_best = np.argmax(bconf)
-    if bconf[k_best] <= conf:
+    if bconf[k_best] >= conf:
         tx = btx[k_best]
         ty = bty[k_best]
         conf = bconf[k_best]
@@ -195,6 +229,7 @@ def stitching_matcher(img0, img1, **kwargs):
     sigma = kwargs.pop('sigma', 2.5)
     mask0 = kwargs.pop('mask0', None)
     mask1 = kwargs.pop('mask1', None)
+    compute_photometric = kwargs.pop('compute_photometric', False)
     coarse_downsample = kwargs.pop('coarse_downsample', 1)
     fine_downsample = kwargs.pop('fine_downsample', 1)
     spacings = kwargs.pop('spacings', None)
@@ -204,7 +239,7 @@ def stitching_matcher(img0, img1, **kwargs):
     min_num_blocks = kwargs.get('min_num_blocks', 2)
     kwargs.setdefault('residue_mode', 'huber')
     kwargs.setdefault('opt_tol', None)
-    
+
     if spacings is None:
         imgshp = np.minimum(img0.shape, img1.shape)
         smx = max(imgshp) * 0.25
@@ -215,7 +250,7 @@ def stitching_matcher(img0, img1, **kwargs):
             Nsp = max(1, round(np.log(smx/smn)/np.log(4)))
             spacings = np.exp(np.linspace(np.log(smn), np.log(smx), num=Nsp, endpoint=True))
     else:
-        spacings = np.array(spacings, copy=False)
+        spacings = common.numpy_array(spacings, copy=False)
     if coarse_downsample != 1:
         img0_g = cv2.resize(img0, None, fx=coarse_downsample, fy=coarse_downsample, interpolation=cv2.INTER_AREA)
         img1_g = cv2.resize(img1, None, fx=coarse_downsample, fy=coarse_downsample, interpolation=cv2.INTER_AREA)
@@ -233,12 +268,51 @@ def stitching_matcher(img0, img1, **kwargs):
         mask0_g = mask0
         mask1_g = mask1
     if sigma > 0:
+        img0_raw = img0_g
+        img1_raw = img1_g
         img0_g = common.masked_dog_filter(img0_g, sigma*coarse_downsample, mask=mask0_g)
         img1_g = common.masked_dog_filter(img1_g, sigma*coarse_downsample, mask=mask1_g)
     tx0, ty0, conf0 = global_translation_matcher(img0_g, img1_g, conf_mode=conf_mode,
         conf_thresh=conf_thresh)
     if conf0 < conf_thresh:
-        return None, None, conf_thresh, None
+        return None, None, conf_thresh, None, None
+    if compute_photometric:
+        txx, tyy = int(tx0), int(ty0)
+        bb0 = (txx, tyy, img0_g.shape[1]+txx, img0_g.shape[0]+tyy)
+        bb1 = (0, 0, img1_g.shape[1], img1_g.shape[0])
+        bb_int, _ = common.intersect_bbox(bb0, bb1)
+        bb_xmin, bb_ymin, bb_xmax, bb_ymax = bb_int
+        indx0 = (slice(bb_ymin-tyy, bb_ymax-tyy), slice(bb_xmin-txx, bb_xmax-txx), Ellipsis)
+        indx1 = (slice(bb_ymin, bb_ymax), slice(bb_xmin, bb_xmax), Ellipsis)
+        if mask0_g is None:
+            mask0_p = np.ones((bb_ymax-bb_ymin, bb_xmax-bb_xmin), dtype=bool)
+        else:
+            mask0_p = mask0_g[indx0]
+        if mask1_g is None:
+            mask1_p = np.ones((bb_ymax-bb_ymin, bb_xmax-bb_xmin), dtype=bool)
+        else:
+            mask1_p = mask1_g[indx1]
+        mask_p = mask0_p & mask1_p
+        if np.sum(mask0_p) > 3:
+            if sigma > 0:
+                im0 = img0_raw[indx0]
+                av0 = np.mean(im0[mask_p])
+                im1 = img1_raw[indx1]
+                av1 = np.mean(im1[mask_p])
+                im0 = img0_g[indx0]
+                std0 = np.mean(np.abs(im0[mask_p]))
+                im1 = img1_g[indx1]
+                std1 = np.mean(np.abs(im1[mask_p]))
+            else:
+                im0 = img0_g[indx0]
+                av0 = np.mean(im0[mask_p])
+                std0 = np.std(im0[mask_p])
+                im1 = img1_g[indx1]
+                av1 = np.mean(im1[mask_p])
+                std1 = np.std(im1[mask_p])
+            phtm = (av0, av1, std0, std1)
+        else:
+            phtm = None
     if fine_downsample == coarse_downsample:
         img0_f = img0_g
         img1_f = img1_g
@@ -264,9 +338,10 @@ def stitching_matcher(img0, img1, **kwargs):
             img1_f = common.masked_dog_filter(img1_f, sigma*fine_downsample, mask=mask1_f)
     tx0 = tx0 * fine_downsample / coarse_downsample
     ty0 = ty0 * fine_downsample / coarse_downsample
+    working_resolution = data_resolution() / fine_downsample
     residue_len = residue_len * fine_downsample
-    img_loader0 = dal.StreamLoader(img0_f, fillval=0)
-    img_loader1 = dal.StreamLoader(img1_f, fillval=0)
+    img_loader0 = dal.StreamLoader(img0_f, fillval=0, resolution=working_resolution)
+    img_loader1 = dal.StreamLoader(img1_f, fillval=0, resolution=working_resolution)
     if np.any(spacings < 1):
         bbox0 = np.array(img_loader0.bounds) + np.tile((tx0, ty0), 2)
         bbox1 = img_loader1.bounds
@@ -278,9 +353,11 @@ def stitching_matcher(img0, img1, **kwargs):
     spacings = spacings * fine_downsample
     min_spacing = np.min(spacings)
     mesh0 = Mesh.from_bbox(img_loader0.bounds, cartesian=True,
-        mesh_size=min_spacing, min_num_blocks=min_num_blocks, uid=0)
+        mesh_size=min_spacing, min_num_blocks=min_num_blocks, uid=0,
+        resolution=img_loader0.resolution)
     mesh1 = Mesh.from_bbox(img_loader1.bounds, cartesian=True,
-        mesh_size=min_spacing, min_num_blocks=min_num_blocks, uid=1)
+        mesh_size=min_spacing, min_num_blocks=min_num_blocks, uid=1,
+        resolution=img_loader1.resolution)
     mesh0.apply_translation((tx0, ty0), const.MESH_GEAR_FIXED)
     mesh0.lock()
     xy0, xy1, weight, strain = iterative_xcorr_matcher_w_mesh(mesh0, mesh1, img_loader0, img_loader1,
@@ -288,7 +365,7 @@ def stitching_matcher(img0, img1, **kwargs):
     if (fine_downsample != 1) and (xy0 is not None):
         xy0 = spatial.scale_coordinates(xy0, 1/fine_downsample)
         xy1 = spatial.scale_coordinates(xy1, 1/fine_downsample)
-    return xy0, xy1, weight, strain
+    return xy0, xy1, weight, strain, phtm
 
 
 def section_matcher(mesh0, mesh1, image_loader0, image_loader1, **kwargs):
@@ -301,23 +378,24 @@ def section_matcher(mesh0, mesh1, image_loader0, image_loader1, **kwargs):
     spacings = kwargs.pop('spacings', [100])
     kwargs.setdefault('sigma', 2.5)
     kwargs.setdefault('batch_size', 100)
-    kwargs.setdefault('continue_on_flip', True)
     kwargs.setdefault('distributor', 'cartesian_region')
     kwargs.setdefault('link_weight_decay', 0.0)
-    stiffness_multiplier_threshold = kwargs.get('stiffness_multiplier_threshold', 0.5)
+    compute_strain = kwargs.pop('compute_strain', False)
+    stiffness_multiplier_threshold = kwargs.get('stiffness_multiplier_threshold', 0.1)
     kwargs.setdefault('render_weight_threshold', 0.1)
+    stiffness_lambda = kwargs.setdefault('stiffness_lambda', 0.5)
     if stiffness_multiplier_threshold > 0:
         idx0 = mesh0.triangle_mask_for_stiffness(stiffness_multiplier_threshold=stiffness_multiplier_threshold)
         mesh0 = mesh0.submesh(idx0)
         idx1 = mesh1.triangle_mask_for_stiffness(stiffness_multiplier_threshold=stiffness_multiplier_threshold)
         mesh1 = mesh1.submesh(idx1)
     if (initial_matches is None) or (mesh0.connected_triangles()[0] == 1 and mesh1.connected_triangles()[0] == 1):
-        xy0, xy1, weight, _ = iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1,
-            spacings=spacings, initial_matches=initial_matches, compute_strain=False,
+        xy0, xy1, weight, strain = iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1,
+            spacings=spacings, initial_matches=initial_matches, compute_strain=compute_strain,
             **kwargs)
     else:
-        opt = optimizer.SLM([mesh0, mesh1], stiffness_lambda=0.2)
-        xy0, xy1, weight = initial_matches
+        opt = optimizer.SLM([mesh0, mesh1], stiffness_lambda=stiffness_lambda)
+        xy0, xy1, weight = initial_matches.xy0, initial_matches.xy1, initial_matches.weight
         opt.add_link_from_coordinates(mesh0.uid, mesh1.uid, xy0, xy1,
             gear=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_INITIAL), weight=weight,
             check_duplicates=False)
@@ -330,9 +408,9 @@ def section_matcher(mesh0, mesh1, image_loader0, image_loader1, **kwargs):
             ini_xy0_t = lnk.xy0(gear=const.MESH_GEAR_INITIAL, use_mask=False, combine=True)
             ini_xy1_t = lnk.xy1(gear=const.MESH_GEAR_INITIAL, use_mask=False, combine=True)
             ini_wt_t = lnk.weight(use_mask=False)
-            ini_mtch_t = (ini_xy0_t, ini_xy1_t, ini_wt_t)
-            xy0_t, xy1_t, wt_t, _ = iterative_xcorr_matcher_w_mesh(msh0_t.copy(), msh1_t.copy(),
-                image_loader0, image_loader1, spacings=spacings, compute_strain=False,
+            ini_mtch_t = common.Match(ini_xy0_t, ini_xy1_t, ini_wt_t)
+            xy0_t, xy1_t, wt_t, strain = iterative_xcorr_matcher_w_mesh(msh0_t.copy(), msh1_t.copy(),
+                image_loader0, image_loader1, spacings=spacings, compute_strain=compute_strain,
                 initial_matches=ini_mtch_t, **kwargs)
             if xy0_t is not None:
                 if (msh0_t.uid - msh1_t.uid) * (mesh0.uid - mesh1.uid) > 0:
@@ -343,11 +421,11 @@ def section_matcher(mesh0, mesh1, image_loader0, image_loader1, **kwargs):
                     xy1.append(xy0_t)
                 weight.append(wt_t)
         if len(xy0) == 0:
-            return None, None, 0
+            return None, None, 0, DEFAULT_AVG_DEFORM
         xy0 = np.concatenate(xy0, axis=0)
         xy1 = np.concatenate(xy1, axis=0)
         weight = np.concatenate(weight, axis=0)
-    return xy0, xy1, weight
+    return xy0, xy1, weight, strain
 
 
 def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, spacings, **kwargs):
@@ -413,7 +491,6 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
     distributor = kwargs.get('distributor', 'cartesian_bbox')
     min_num_blocks = kwargs.get('min_num_blocks', 2)
     min_boundary_distance = kwargs.get('min_boundary_distance', 0)
-    boundary_tolerance = kwargs.get('boundary_tolerance', None)
     shrink_factor = kwargs.get('shrink_factor', 1)
     allow_dwell = kwargs.get('allow_dwell', 0)
     allow_enlarge = kwargs.get('allow_enlarge', False)
@@ -422,13 +499,15 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
     batch_size = kwargs.pop('batch_size', None)
     initial_matches = kwargs.get('initial_matches', None)
     to_pad = kwargs.pop('pad', None)
+    refine_mode = kwargs.get('refine_mode', 2)
     do_subpixel = kwargs.pop('subpixel', None)
     max_spacing_skip = kwargs.get('max_spacing_skip', 0)
-    continue_on_flip = kwargs.get('continue_on_flip', True)
     callback_settings = kwargs.get('callback_settings', {'early_stop_thresh': 0.1, 'chances':10, 'eval_step': 5})
     render_weight_threshold = kwargs.get('render_weight_threshold', 0)
-    if num_workers > 1 and batch_size is not None:
-        batch_size = max(1, batch_size / num_workers)
+    stiffness_lambda = kwargs.pop('stiffness_lambda', 1)
+    affine_approximated_render = kwargs.pop('affine_approximated_render', True)
+    # if num_workers > 1 and batch_size is not None:
+    #     batch_size = max(1, batch_size / num_workers)
     if isinstance(image_loader0, dal.AbstractImageLoader):
         loader_dict0 = image_loader0.init_dict()
     else:
@@ -437,11 +516,26 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
         loader_dict1 = image_loader1.init_dict()
     else:
         loader_dict1 = image_loader1
+    if residue_len < 0:
+        aspect_ratio = section_thickness() / mesh0.resolution
+        residue_len = max(1, abs(residue_len) * aspect_ratio)
+    if isinstance(refine_mode, str):
+        if refine_mode.lower() == 'none':
+            refine_mode = 0
+        elif 'only' in refine_mode.lower():
+            refine_mode = 1
+        else:
+            refine_mode = 2
     # if any spacing value smaller than 1, means they are relative to longer side
-    spacings = np.array(spacings, copy=False)
+    spacings = common.numpy_array(spacings, copy=False)
+    kwargs_opt = {
+        "callback_settings": callback_settings,
+        "check_converge": True
+    }
     linear_system = mesh0.is_linear and mesh1.is_linear
+    one_locked = mesh0.locked or mesh1.locked
     min_block_size_multiplier = 4
-    strain = 0.0
+    strain = DEFAULT_AVG_DEFORM
     invalid_output = (None, None, 0, strain)
     if np.any(spacings < 1):
         bbox0 = mesh0.bbox(gear=const.MESH_GEAR_MOVING)
@@ -453,18 +547,24 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
         ht0 = bbox[3] - bbox[1]
         lside = max(wd0, ht0)
         spacings[spacings < 1] *= lside
-    opt = optimizer.SLM([mesh0, mesh1], stiffness_lambda=0.2)
+    if compute_strain:
+        mesh0_ori, mesh1_ori = mesh0.copy(), mesh1.copy()
+    opt = optimizer.SLM([mesh0, mesh1], stiffness_lambda=stiffness_lambda)
     if initial_matches is not None:
-        xy0, xy1, weight = initial_matches
+        kwargs_opt["tolerated_perturbation"] = 0.1
+        xy0, xy1, weight = initial_matches.xy0, initial_matches.xy1, initial_matches.weight
         opt.add_link_from_coordinates(mesh0.uid, mesh1.uid, xy0, xy1,
             gear=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_INITIAL), weight=weight,
             check_duplicates=False, render_weight_threshold=render_weight_threshold)
-        opt.optimize_affine_cascade(start_gear=const.MESH_GEAR_INITIAL, target_gear=const.MESH_GEAR_FIXED, svd_clip=(1,1))
-        opt.anneal(gear=(const.MESH_GEAR_FIXED, const.MESH_GEAR_MOVING), mode=const.ANNEAL_COPY_EXACT)
+        opt.optimize_affine_cascade(start_gear=const.MESH_GEAR_FIXED, target_gear=const.MESH_GEAR_FIXED, svd_clip=None)
+        opt.anneal(gear=(const.MESH_GEAR_FIXED, const.MESH_GEAR_MOVING), mode=const.ANNEAL_CONNECTED_RIGID)
         if linear_system:
-            opt.optimize_linear(tol=1e-6, batch_num_matches=np.inf, continue_on_flip=continue_on_flip, callback_settings=callback_settings)
+            opt.optimize_linear(tol=1e-6, precondition='smoothed_aggregation', **kwargs_opt)
         else:
-            opt.optimize_Newton_Raphson(max_newtonstep=5, tol=1e-4, batch_num_matches=np.inf, continue_on_flip=continue_on_flip, callback_settings=callback_settings)
+            opt.optimize_Newton_Raphson(max_newtonstep=5, tol=1e-4,  precondition='smoothed_aggregation', **kwargs_opt)
+    else:
+        mesh0.anneal(gear=(const.MESH_GEAR_MOVING, const.MESH_GEAR_FIXED), mode=const.ANNEAL_COPY_EXACT)
+        mesh1.anneal(gear=(const.MESH_GEAR_MOVING, const.MESH_GEAR_FIXED), mode=const.ANNEAL_COPY_EXACT)
     spacings = np.sort(spacings)[::-1]
     sp = np.max(spacings)
     sp_indx = 0
@@ -475,36 +575,41 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
         pad = True
     else:
         pad = to_pad
+    kwargs_opt["tolerated_perturbation"] = 0.5
     while sp_indx < spacings.size:
         if sp == spacings[-1]:
             mnb = min_num_blocks
+            rfm = refine_mode
             if do_subpixel is None:
                 subpixel = True
             else:
                 subpixel = do_subpixel
+            if affine_approximated_render:
+                affine_approx_tol = 0.1
+            else:
+                affine_approx_tol = 0
         else:
             mnb = 1
+            if refine_mode == 2:
+                rfm = 0
+            else:
+                rfm = refine_mode
             if do_subpixel is None:
                 subpixel = False
             else:
                 subpixel = do_subpixel
+            if affine_approximated_render:
+                affine_approx_tol = max(1, 0.02 * sp)
+            else:
+                affine_approx_tol = 0
         if distributor == 'cartesian_bbox':
             bboxes0, bboxes1 = distributor_cartesian_bbox(mesh0, mesh1, sp,
                 min_num_blocks=mnb, shrink_factor=shrink_factor, zorder=True)
-        elif distributor == 'cartesian_region':
-            bboxes0, bboxes1 = distributor_cartesian_region(mesh0, mesh1, sp,
-                min_boundary_distance=min_boundary_distance, shrink_factor=shrink_factor,
-                zorder=True, render_weight_threshold=render_weight_threshold)
-        elif distributor == 'intersect_triangulation':
-            bboxes0, bboxes1 = distributor_intersect_triangulation(mesh0, mesh1, sp,
-                min_boundary_distance=min_boundary_distance, shrink_factor=shrink_factor,
-                zorder=True, render_weight_threshold=render_weight_threshold)
-        elif distributor == 'oneway_triangulation':
-            bboxes0, bboxes1 = distributor_oneway_triangulation(mesh0, mesh1, sp,
-                boundary_tolerance=boundary_tolerance, shrink_factor=shrink_factor,
-                zorder=True, render_weight_threshold=render_weight_threshold)
         else:
-            raise ValueError
+            bboxes0, bboxes1 = distribute_matching_blocks(mesh0, mesh1, sp,
+                dfunc=distributor, refine_mode=rfm,
+                min_boundary_distance=min_boundary_distance, shrink_factor=shrink_factor,
+                zorder=True, render_weight_threshold=render_weight_threshold)
         if bboxes0 is None:
             return invalid_output
         num_blocks = bboxes0.shape[0]
@@ -521,7 +626,8 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
             if num_batchs == 1:
                 xy0, xy1, conf = bboxes_mesh_renderer_matcher(mesh0, mesh1,
                     image_loader0, image_loader1, bboxes0, bboxes1,
-                    batch_size=batch_size, pad=pad, subpixel=subpixel, **kwargs)
+                    batch_size=batch_size, pad=pad, subpixel=subpixel, affine_approx_tol=affine_approx_tol,
+                    **kwargs)
             else:
                 batch_indices = np.linspace(0, num_blocks, num=num_batchs+1, endpoint=True)
                 batch_indices = np.unique(batch_indices.astype(np.int32))
@@ -529,31 +635,31 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
                 batched_bboxes1 = []
                 batched_bboxes_union0 = []
                 batched_bboxes_union1 = []
+                bbox_regions0 = shapely.box(bboxes0[:,0], bboxes0[:,1], bboxes0[:,2], bboxes0[:,3])
+                bbox_regions1 = shapely.box(bboxes1[:,0], bboxes1[:,1], bboxes1[:,2], bboxes1[:,3])
                 for bidx0, bidx1 in zip(batch_indices[:-1], batch_indices[1:]):
                     batched_bboxes0.append(bboxes0[bidx0:bidx1])
                     batched_bboxes1.append(bboxes1[bidx0:bidx1])
-                    batched_bboxes_union0.append(common.bbox_union(bboxes0[bidx0:bidx1]))
-                    batched_bboxes_union1.append(common.bbox_union(bboxes1[bidx0:bidx1]))
-                target_func = partial(bboxes_mesh_renderer_matcher, pad=pad, subpixel=subpixel, **kwargs)
-                submeshes0 = mesh0.submeshes_from_bboxes(batched_bboxes_union0)
-                submeshes1 = mesh1.submeshes_from_bboxes(batched_bboxes_union1)
-                jobs = []
+                    batched_bboxes_union0.append(unary_union(bbox_regions0[bidx0:bidx1]))
+                    batched_bboxes_union1.append(unary_union(bbox_regions1[bidx0:bidx1]))
+                target_func = partial(bboxes_mesh_renderer_matcher, pad=pad, subpixel=subpixel, affine_approx_tol=affine_approx_tol, **kwargs)
+                submeshes0 = mesh0.submeshes_from_regions(batched_bboxes_union0, save_material=False)
+                submeshes1 = mesh1.submeshes_from_regions(batched_bboxes_union1, save_material=False)
                 xy0 = []
                 xy1 = []
                 conf = []
-                with ProcessPoolExecutor(max_workers=num_workers, mp_context=get_context('spawn')) as executor:
-                    for m0_p, m1_p, bboxes0_p, bboxes1_p in zip(submeshes0, submeshes1, batched_bboxes0, batched_bboxes1):
-                        if (m0_p is None) or (m1_p is None):
-                            continue
-                        m0dict = m0_p.get_init_dict(vertex_flags=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING))
-                        m1dict = m1_p.get_init_dict(vertex_flags=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING))
-                        job = executor.submit(target_func, m0dict, m1dict, loader_dict0, loader_dict1, bboxes0_p, bboxes1_p)
-                        jobs.append(job)
-                    for job in as_completed(jobs):
-                        pt0, pt1, cnf = job.result()
-                        xy0.append(pt0)
-                        xy1.append(pt1)
-                        conf.append(cnf)
+                args_list = []
+                for m0_p, m1_p, bboxes0_p, bboxes1_p in zip(submeshes0, submeshes1, batched_bboxes0, batched_bboxes1):
+                    if (m0_p is None) or (m1_p is None):
+                        continue
+                    m0dict = m0_p.get_init_dict()
+                    m1dict = m1_p.get_init_dict()
+                    args_list.append((m0dict, m1dict, loader_dict0, loader_dict1, bboxes0_p, bboxes1_p))
+                for res in submit_to_workers(target_func, args=args_list, num_workers=num_workers):
+                    pt0, pt1, cnf = res
+                    xy0.append(pt0)
+                    xy1.append(pt1)
+                    conf.append(cnf)
                 if len(xy0) == 0:
                     return invalid_output
                 xy0 = np.concatenate(xy0, axis=0)
@@ -562,7 +668,7 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
         else:
             xy0, xy1, conf = bboxes_mesh_renderer_matcher(mesh0, mesh1,
                 image_loader0, image_loader1, bboxes0, bboxes1,
-                batch_size=batch_size, pad=pad, subpixel=subpixel, **kwargs)
+                batch_size=batch_size, pad=pad, subpixel=subpixel, affine_approx_tol=affine_approx_tol, **kwargs)
         if np.all(conf <= conf_thresh):
             if not initialized:
                 return invalid_output
@@ -612,11 +718,16 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
         opt.add_link_from_coordinates(mesh0.uid, mesh1.uid, xy0, xy1,
                         gear=(const.MESH_GEAR_MOVING, const.MESH_GEAR_MOVING), weight=wt,
                         check_duplicates=False, render_weight_threshold=render_weight_threshold)
+        if len(opt.links) == 0:
+            if not initialized:
+                return invalid_output
+            else:
+                break
         if max_dis > 0.1:
             if linear_system:
-                opt.optimize_linear(tol=opt_tol_t, batch_num_matches=np.inf, continue_on_flip=continue_on_flip, callback_settings=callback_settings)
+                opt.optimize_linear(tol=opt_tol_t, **kwargs_opt)
             else:
-                opt.optimize_Newton_Raphson(max_newtonstep=3, tol=opt_tol_t, batch_num_matches=np.inf, continue_on_flip=continue_on_flip, callback_settings=callback_settings)
+                opt.optimize_Newton_Raphson(max_newtonstep=3, tol=opt_tol_t, **kwargs_opt)
             if residue_len > 0:
                 if residue_mode == 'huber':
                     opt.set_link_residue_huber(residue_len)
@@ -624,12 +735,12 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
                     opt.set_link_residue_threshold(residue_len)
                 else:
                     raise ValueError
-                weight_modified, _ = opt.adjust_link_weight_by_residue()
+                weight_modified, _ = opt.adjust_link_weight_by_residue(relax_first=True)
                 if weight_modified and (sp_indx < spacings.size):
                     if linear_system:
-                        opt.optimize_linear(tol=opt_tol_t, batch_num_matches=np.inf, continue_on_flip=continue_on_flip, callback_settings=callback_settings)
+                        opt.optimize_linear(tol=opt_tol_t, **kwargs_opt)
                     else:
-                        opt.optimize_Newton_Raphson(max_newtonstep=3, tol=opt_tol_t, batch_num_matches=np.inf, continue_on_flip=continue_on_flip, callback_settings=callback_settings)
+                        opt.optimize_Newton_Raphson(max_newtonstep=3, tol=opt_tol_t, **kwargs_opt)
         initialized = True
         if (sp_indx < spacings.size) and (sp_indx >= 0):
             sp = spacings[sp_indx]
@@ -640,11 +751,31 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
     xy1 = link.xy1(gear=const.MESH_GEAR_INITIAL, use_mask=True, combine=True)
     weight = link.weight(use_mask=True)
     if compute_strain:
+        opt = optimizer.SLM([mesh0_ori, mesh1_ori], stiffness_lambda=stiffness_lambda, assert_dominance=(not one_locked))
+        opt.add_link_from_coordinates(mesh0_ori.uid, mesh1_ori.uid, xy0, xy1,
+            gear=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_INITIAL), weight=weight,
+            check_duplicates=False, render_weight_threshold=render_weight_threshold)
+        opt.optimize_affine_cascade(start_gear=const.MESH_GEAR_INITIAL, target_gear=const.MESH_GEAR_FIXED, svd_clip=(1,1))
+        opt.anneal(gear=(const.MESH_GEAR_FIXED, const.MESH_GEAR_MOVING), mode=const.ANNEAL_COPY_EXACT)
+        if linear_system:
+            opt.optimize_linear(tol=1e-6, **kwargs_opt)
+        else:
+            opt.optimize_Newton_Raphson(max_newtonstep=5, tol=1e-4, **kwargs_opt)
+        Es0 = 0
+        Es = 0
+        soft_factor_avg = np.mean([m.soft_factor for m in opt.meshes])
         for m in opt.meshes:
-            if not m.locked:
-                ss = np.exp(np.abs(np.log(m.triangle_tform_svd().clip(1e-3, None)))) - 1
-                smx = np.quantile(ss, 0.9, axis=None)
-                strain = max(strain, smx)
+            to_include = (one_locked and (not m.locked)) or ((not one_locked) and (m.soft_factor<=soft_factor_avg))
+            if to_include:
+                v0 = m.vertices(gear=const.MESH_GEAR_FIXED)
+                v1 = m.vertices(gear=const.MESH_GEAR_MOVING)
+                dv = v1 - v0
+                v0 = v0 - np.mean(v0, axis=0, keepdims=True)
+                dv = dv - np.mean(dv, axis=0, keepdims=True)
+                St, _ = m.stiffness_matrix()
+                Es += max(0, St.dot(dv.ravel()).dot(dv.ravel()))
+                Es0 += max(0, St.dot(v0.ravel()).dot(v0.ravel()))
+        strain = (Es / Es0) ** 0.5
     return xy0, xy1, weight, strain
 
 
@@ -657,6 +788,8 @@ def bboxes_mesh_renderer_matcher(mesh0, mesh1, image_loader0, image_loader1, bbo
     pad = kwargs.get('pad', True)
     subpixel = kwargs.get('subpixel', False)
     render_weight_threshold = kwargs.get('render_weight_threshold', 0)
+    mask_range = kwargs.get('mask_range', None)
+    affine_approx_tol = kwargs.get('affine_approx_tol', 0.0)
     if isinstance(mesh0, dict):
         mesh0 = Mesh(**mesh0)
     elif isinstance(mesh0, str):
@@ -670,20 +803,26 @@ def bboxes_mesh_renderer_matcher(mesh0, mesh1, image_loader0, image_loader1, bbo
     if isinstance(image_loader1, (str, dict)):
         image_loader1 = dal.get_loader_from_json(image_loader1)
     num_blocks = bboxes0.shape[0]
+    blksz0 = np.round(common.bbox_sizes(bboxes0))
+    blksz1 = np.round(common.bbox_sizes(bboxes1))
+    szchg = np.nonzero(np.any(np.diff(blksz0, axis=0), axis=-1) | np.any(np.diff(blksz1, axis=0), axis=-1))[0]
+    szchg_id = np.concatenate(([0], szchg+1, [num_blocks]), axis=None)
     if batch_size is None or batch_size >= num_blocks:
-        batched_block_indices0 = [bboxes0]
-        batched_block_indices1 = [bboxes1]
+        batch_indices = szchg_id
     else:
-        num_batchs = int(np.ceil(num_blocks / batch_size))
-        batch_indices = np.linspace(0, num_blocks, num=num_batchs+1, endpoint=True)
+        batch_indices = []
+        for bid0, bid1 in zip(szchg_id[:-1], szchg_id[1:]):
+            num_batchs = max(1, int(np.ceil(bid1-bid0 / batch_size)))
+            batch_indices.append(np.linspace(bid0, bid1, num=num_batchs+1, endpoint=True))
+        batch_indices = np.round(np.concatenate(batch_indices, axis=-1))
         batch_indices = np.unique(batch_indices.astype(np.int32))
-        batched_block_indices0 = []
-        batched_block_indices1 = []
-        for bidx0, bidx1 in zip(batch_indices[:-1], batch_indices[1:]):
-            batched_block_indices0.append(bboxes0[bidx0:bidx1])
-            batched_block_indices1.append(bboxes1[bidx0:bidx1])
-    render0 = MeshRenderer.from_mesh(mesh0, image_loader=image_loader0, geodesic_mask=geodesic_mask, render_weight_threshold=render_weight_threshold)
-    render1 = MeshRenderer.from_mesh(mesh1, image_loader=image_loader1, geodesic_mask=geodesic_mask, render_weight_threshold=render_weight_threshold)
+    batched_block_indices0 = []
+    batched_block_indices1 = []
+    for bidx0, bidx1 in zip(batch_indices[:-1], batch_indices[1:]):
+        batched_block_indices0.append(bboxes0[bidx0:bidx1])
+        batched_block_indices1.append(bboxes1[bidx0:bidx1])
+    render0 = MeshRenderer.from_mesh(mesh0, image_loader=image_loader0, geodesic_mask=geodesic_mask, render_weight_threshold=render_weight_threshold, affine_approx_tol=affine_approx_tol)
+    render1 = MeshRenderer.from_mesh(mesh1, image_loader=image_loader1, geodesic_mask=geodesic_mask, render_weight_threshold=render_weight_threshold, affine_approx_tol=affine_approx_tol)
     if (render0 is None) or (render1 is None):
         xy0 = np.empty((0,2))
         xy1 = np.empty((0,2))
@@ -692,33 +831,20 @@ def bboxes_mesh_renderer_matcher(mesh0, mesh1, image_loader0, image_loader1, bbo
     xy0 = []
     xy1 = []
     conf = []
-    for block_indices0, block_indices1 in zip(batched_block_indices0, batched_block_indices1):
-        stack0 = []
-        stack1 = []
-        xy_ctr0 = []
-        xy_ctr1 = []
-        wt_ratio = []
-        for bbox0, bbox1 in zip(block_indices0, block_indices1):
-            img0 = render0.crop(bbox0, mode=render_mode, log_sigma=sigma, remap_interp=cv2.INTER_LINEAR)
-            if img0 is None:
-                continue
-            img1 = render1.crop(bbox1, mode=render_mode, log_sigma=sigma, remap_interp=cv2.INTER_LINEAR)
-            if img1 is None:
-                continue
-            stack0.append(img0)
-            stack1.append(img1)
-            xy_ctr0.append(((bbox0[0]+bbox0[2]-1)/2, (bbox0[1]+bbox0[3]-1)/2))
-            xy_ctr1.append(((bbox1[0]+bbox1[2]-1)/2, (bbox1[1]+bbox1[3]-1)/2))
-            wd0, ht0 = bbox0[2] - bbox0[0], bbox0[3] - bbox0[1]
-            wd1, ht1 = bbox1[2] - bbox1[0], bbox1[3] - bbox1[1]
-            wt_ratio.append((wd0 / (wd0 + wd1), ht0 / (ht0 + ht1)))
-        if (len(stack0) == 0) or (len(stack1) == 0):
+    for bboxes0_b, bboxes1_b in zip(batched_block_indices0, batched_block_indices1):
+        stack0 = render0.crop_multiple(bboxes0_b, mode=render_mode, log_sigma=sigma, remap_interp=cv2.INTER_LINEAR, mask_range=mask_range)
+        if stack0 is None:
             continue
-        dx, dy, conf_b = xcorr_fft(np.stack(stack0, axis=0), np.stack(stack1, axis=0),
-            conf_mode=conf_mode, pad=pad, subpixel=subpixel)
-        xy_ctr0 = np.array(xy_ctr0)
-        xy_ctr1 = np.array(xy_ctr1)
-        wt_ratio = np.array(wt_ratio)
+        stack1 = render1.crop_multiple(bboxes1_b, mode=render_mode, log_sigma=sigma, remap_interp=cv2.INTER_LINEAR, mask_range=mask_range)
+        if stack1 is None:
+            continue
+        xy_ctr0 = common.bbox_centers(bboxes0_b)
+        xy_ctr1 = common.bbox_centers(bboxes1_b)
+        bsz0 = common.bbox_sizes(bboxes0_b)
+        bsz1 = common.bbox_sizes(bboxes1_b)
+        wt_ratio = bsz0 / (bsz0 + bsz1)
+        wt_ratio = wt_ratio[:,::-1]
+        dx, dy, conf_b = xcorr_fft(stack0, stack1, conf_mode=conf_mode, pad=pad, subpixel=subpixel)
         dxy = np.stack((dx, dy), axis=-1)
         xy0_b = xy_ctr0 - dxy * wt_ratio
         xy1_b = xy_ctr1 + dxy * (1-wt_ratio)
@@ -766,19 +892,63 @@ def distributor_cartesian_bbox(mesh0, mesh1, spacing, **kwargs):
     return bbox0, bbox1
 
 
-def distributor_cartesian_region(mesh0, mesh1, spacing, **kwargs):
+def distribute_matching_blocks(mesh0, mesh1, spacing, dfunc='cartesian_region', **kwargs):
+    """
+    Distribute rectangular blocks for local template matching.
+    Args:
+        mesh0, mesh1 (feabas.mesh.Mesh): the mesh objects of the two sections to
+            be matched.
+        spacing (float): the distances between the neighboring sample blocks for
+            template matcing.
+        dfunc (callable): function that takes in shapely regions and spacing, and
+            produces points for matching.
+    Kwargs:
+        refine_mode: 0-ignore refine flags; 1-refine flags only; 2-composite.
+        gear: gear of the meshes to use.
+        shrink_factor (float): parameter fed into the distributor function. Determines
+            the template-matching block size compared to the spacing.
+        refine_box_exp (float): box size for refinement = spacing * (area_constraint
+            of refine material)^refine_box_exp
+        min_boundary_distance (float): inimum distance allowed from a matching point
+            to the boundary of the meshes
+    """
+    refine_mode = kwargs.get('refine_mode', 2)
     gear = kwargs.get('gear', const.MESH_GEAR_MOVING)
     shrink_factor = kwargs.get('shrink_factor', 1)
+    refine_box_exp = kwargs.get('refine_box_exp', 0.5)
+    min_box_side = kwargs.get('min_box_side', 5)
+    max_box_side = kwargs.get('max_box_side', np.inf)
     min_boundary_distance = kwargs.get('min_boundary_distance', 0)
-    zorder = kwargs.get('zorder', False)
+    zorder = kwargs.get('zorder', True)
     render_weight_threshold = kwargs.get('render_weight_threshold', 0)
+    if isinstance(dfunc, str):
+        if dfunc.lower() == 'cartesian_region':
+            dfunc = _region2grid_cartesian
+        elif dfunc.lower() == 'intersect_triangulation':
+            dfunc = _region2grid_triang
+        else:
+            raise ValueError(f'unsupported distributor type {dfunc}')
+    if isinstance(refine_mode, str):
+        if refine_mode.lower() == 'none':
+            refine_mode = 0
+        elif 'only' in refine_mode.lower():
+            refine_mode = 1
+        else:
+            refine_mode = 2
+    bboxes0 = []
+    bboxes1 = []
     if render_weight_threshold > 0:
         idx0 = mesh0.triangle_mask_for_render(render_weight_threshold=render_weight_threshold)
         mesh0 = mesh0.submesh(idx0)
         idx1 = mesh1.triangle_mask_for_render(render_weight_threshold=render_weight_threshold)
         mesh1 = mesh1.submesh(idx1)
+    regs = defaultdict(list)
     region0 = mesh0.shapely_regions(gear=gear)
     region1 = mesh1.shapely_regions(gear=gear)
+    reg_crx0 = region0.intersection(region1)
+    if reg_crx0.area == 0:
+        bboxes0, bboxes1 = np.empty((0,4)), np.empty((0,4))
+        return bboxes0, bboxes1
     if not hasattr(shrink_factor, '__len__'):
         shrink_factor = (shrink_factor, shrink_factor)
     else:
@@ -786,18 +956,73 @@ def distributor_cartesian_region(mesh0, mesh1, spacing, **kwargs):
             shrink_factor = (max(shrink_factor), min(shrink_factor))
         else:
             shrink_factor = (min(shrink_factor), max(shrink_factor))
-    reg_crx = region0.intersection(region1)
-    if min_boundary_distance > 0:
-        reg_crx = reg_crx.buffer(-min_boundary_distance)
-    if reg_crx.area == 0:
-        return None, None
-    if hasattr(reg_crx, 'geoms'):
-        regions = list(reg_crx.geoms)
+    if refine_mode == 0:
+        if reg_crx0.area > 0:
+            regs[1.0].append(reg_crx0)
     else:
-        regions = [reg_crx]
+        if refine_mode == 2:
+            regs[1.0].append(reg_crx0)
+        meshes  = (mesh0, mesh1)
+        for msh in meshes:
+            mtb = msh.named_material_table
+            mid = msh.material_ids
+            for mnm in mtb:
+                area_factor = mtb[mnm].area_constraint
+                if ('refine' not in mnm) and ((area_factor == 0) or (area_factor >= 1)):
+                    continue
+                tidx = mid == mtb[mnm].uid
+                if np.any(tidx):
+                    region = msh.shapely_regions(gear=gear, tri_mask=tidx)
+                    region = region.intersection(reg_crx0)
+                    if region.area > 0:
+                        regs[area_factor].append(region)
+    covered = shpgeo.Polygon()
+    for area_factor in sorted(list(regs.keys())):
+        spc = spacing * area_factor
+        shrnk0 = area_factor ** (refine_box_exp - 1)
+        region = unary_union(regs[area_factor])
+        area_r = region.area
+        bound_coeff = 1.0
+        if min_boundary_distance > 0:
+            while True:
+                adjust_dis = min_boundary_distance * shrnk0 * bound_coeff
+                reg_crx = reg_crx0.buffer(-adjust_dis).difference(covered)
+                region_crx = reg_crx.intersection(region)
+                if region_crx.area >= 0.5 * area_r:
+                    break
+                bound_coeff *= 0.3 / (1 - region_crx.area/area_r)
+                if bound_coeff < 0.1:
+                    region_crx = reg_crx0.difference(covered).intersection(region)
+        else:
+            region_crx = reg_crx0.difference(covered).intersection(region)
+        covered = covered.union(region)
+        cntrs = dfunc(region_crx, spc, **kwargs)
+        if cntrs is None:
+            continue
+        sides_L = (spc * shrnk0 * np.array(shrink_factor)).clip(min_box_side, max_box_side)
+        blk_hfsz0 = np.ceil(sides_L[0] / 2)
+        blk_hfsz1 = np.ceil(sides_L[1] / 2)
+        bboxes0_a = np.concatenate((cntrs-blk_hfsz0, cntrs+blk_hfsz0), axis=-1)
+        bboxes1_a = np.concatenate((cntrs-blk_hfsz1, cntrs+blk_hfsz1), axis=-1)
+        if zorder:
+            x_rnd = np.round((cntrs[:,0] - cntrs[:,0].min()) / spc)
+            y_rnd = np.round((cntrs[:,1] - cntrs[:,1].min()) / spc)
+            idx = common.z_order(np.stack((x_rnd, y_rnd), axis=-1))
+            bboxes0_a = bboxes0_a[idx]
+            bboxes1_a = bboxes1_a[idx]
+        bboxes0.append(bboxes0_a)
+        bboxes1.append(bboxes1_a)
+    bboxes0 = np.concatenate(bboxes0, axis=0)
+    bboxes1 = np.concatenate(bboxes1, axis=0)
+    return bboxes0, bboxes1
+
+
+def _region2grid_cartesian(region, spacing, **kwargs):
+    if hasattr(region, 'geoms'):
+        regions = list(region.geoms)
+    else:
+        regions = [region]
     cntrs = []
-    blk_hfsz0 = np.ceil(spacing * shrink_factor[0] / 2)
-    blk_hfsz1 = np.ceil(spacing * shrink_factor[1] / 2)
     for reg in regions:
         if reg.area == 0:
             continue
@@ -809,122 +1034,26 @@ def distributor_cartesian_region(mesh0, mesh1, spacing, **kwargs):
         rxx, ryy = np.meshgrid(np.arange(rx_mn, rx_mx, spacing), np.arange(ry_mn, ry_mx, spacing))
         rv = np.stack((rxx.ravel(), ryy.ravel()), axis=-1)
         cntrs.append(shpgeo.MultiPoint(rv).intersection(reg))
+    if len(cntrs) == 0:
+        return None
     cntrs = unary_union(cntrs)
     if hasattr(cntrs, 'geoms'):
-        bcnters = np.array([(p.x, p.y) for p in cntrs.geoms])
+        cntrs_np = np.array([(p.x, p.y) for p in cntrs.geoms])
     else:
-        bcnters = np.array([(cntrs.x, cntrs.y)])
-    bboxes0 = np.concatenate((bcnters-blk_hfsz0, bcnters+blk_hfsz0), axis=-1)
-    bboxes1 = np.concatenate((bcnters-blk_hfsz1, bcnters+blk_hfsz1), axis=-1)
-    if zorder:
-        x_rnd = np.round((bcnters[:,0] - bcnters[:,0].min()) / spacing)
-        y_rnd = np.round((bcnters[:,1] - bcnters[:,1].min()) / spacing)
-        idx = common.z_order(np.stack((x_rnd, y_rnd), axis=-1))
-        bboxes0 = bboxes0[idx]
-        bboxes1 = bboxes1[idx]
-    return bboxes0, bboxes1
+        cntrs_np = np.array([(cntrs.x, cntrs.y)])
+    return cntrs_np
 
 
-def distributor_intersect_triangulation(mesh0, mesh1, spacing, **kwargs):
-    gear = kwargs.get('gear', const.MESH_GEAR_MOVING)
-    shrink_factor = kwargs.get('shrink_factor', 1)
-    min_boundary_distance = kwargs.get('min_boundary_distance', 0)
-    zorder = kwargs.get('zorder', False)
-    render_weight_threshold = kwargs.get('render_weight_threshold', 0)
-    if render_weight_threshold > 0:
-        idx0 = mesh0.triangle_mask_for_render(render_weight_threshold=render_weight_threshold)
-        mesh0 = mesh0.submesh(idx0)
-        idx1 = mesh1.triangle_mask_for_render(render_weight_threshold=render_weight_threshold)
-        mesh1 = mesh1.submesh(idx1)
-    region0 = mesh0.shapely_regions(gear=gear)
-    region1 = mesh1.shapely_regions(gear=gear)
-    reg_crx = region0.intersection(region1)
-    if min_boundary_distance > 0:
-        reg_crx = reg_crx.simplify(min_boundary_distance/3, preserve_topology=True)
-        reg_crx = reg_crx.buffer(-min_boundary_distance, join_style=2)
-        reg_crx = reg_crx.buffer(min_boundary_distance*0.2, join_style=3)
-    if reg_crx.area == 0:
-        return None, None
-    roi = reg_crx
-    G = spatial.Geometry(roi=roi, regions={'default': reg_crx})
-    mshsz = spacing
-    M = Mesh.from_PSLG(**G.PSLG(), mesh_size=mshsz, min_mesh_angle=20)
-    bcnters = M.triangle_centers(cache=False)
-    if not hasattr(shrink_factor, '__len__'):
-        shrink_factor = (shrink_factor, shrink_factor)
-    else:
-        if (region0.area / mesh0.num_triangles) > (region1.area / mesh1.num_triangles):
-            shrink_factor = (max(shrink_factor), min(shrink_factor))
-        else:
-            shrink_factor = (min(shrink_factor), max(shrink_factor))
-    blk_hfsz0 = np.ceil(spacing * shrink_factor[0] / 2)
-    blk_hfsz1 = np.ceil(spacing * shrink_factor[1] / 2)
-    bboxes0 = np.concatenate((bcnters-blk_hfsz0, bcnters+blk_hfsz0), axis=-1)
-    bboxes1 = np.concatenate((bcnters-blk_hfsz1, bcnters+blk_hfsz1), axis=-1)
-    if zorder:
-        x_rnd = np.round((bcnters[:,0] - bcnters[:,0].min()) / spacing)
-        y_rnd = np.round((bcnters[:,1] - bcnters[:,1].min()) / spacing)
-        idx = common.z_order(np.stack((x_rnd, y_rnd), axis=-1))
-        bboxes0 = bboxes0[idx]
-        bboxes1 = bboxes1[idx]
-    return bboxes0, bboxes1
-
-
-
-def distributor_oneway_triangulation(mesh0, mesh1, spacing, **kwargs):
-    gear = kwargs.get('gear', const.MESH_GEAR_MOVING)
-    shrink_factor = kwargs.get('shrink_factor', 1)
-    boundary_tolerance = kwargs.get('boundary_tolerance', None)
-    zorder = kwargs.get('zorder', False)
-    render_weight_threshold = kwargs.get('render_weight_threshold', 0)
-    if render_weight_threshold > 0:
-        idx0 = mesh0.triangle_mask_for_render(render_weight_threshold=render_weight_threshold)
-        mesh0 = mesh0.submesh(idx0)
-        idx1 = mesh1.triangle_mask_for_render(render_weight_threshold=render_weight_threshold)
-        mesh1 = mesh1.submesh(idx1)
-    region0 = mesh0.shapely_regions(gear=gear)
-    region1 = mesh1.shapely_regions(gear=gear)
-    if (region0.area / mesh0.num_triangles) > (region1.area / mesh1.num_triangles):
-        region_r = region1
-        mesh_e = mesh0
-        flipped = True
-    else:
-        region_r = region0
-        mesh_e = mesh1
-        flipped = False
-    roi = region_r
-    G = spatial.Geometry(roi=roi, regions={'default': region_r})
-    mshsz = spacing
-    M = Mesh.from_PSLG(**G.PSLG(), mesh_size=mshsz, min_mesh_angle=20)
-    bcnters0 = M.triangle_centers(cache=False)
-    tid, B = mesh_e.cart2bary(bcnters0, gear, tid=None, extrapolate=True)
-    if boundary_tolerance is None:
-        out_side = np.any(B < 0, axis=-1)
-        bcnters0 = bcnters0[~out_side]
-        bcnters1 = bcnters0
-    else:
-        out_side = np.any(B < 0, axis=-1)
-        Bt = B[out_side].clip(0.01)
-        Bt = Bt / np.sum(Bt, axis=-1, keepdims=True)
-        B[out_side] = Bt
-        bcnters1 =mesh_e.bary2cart(tid, B, gear=gear, offsetting=True)
-        dis = np.sum((bcnters0 - bcnters1) ** 2, axis=-1)
-        tokeep = dis <= boundary_tolerance ** 2
-        bcnters0 = bcnters0[tokeep]
-        bcnters1 = bcnters1[tokeep]
-    if not hasattr(shrink_factor, '__len__'):
-        shrink_factor = (shrink_factor, shrink_factor)
-    blk_hfsz0 = np.ceil(spacing * min(shrink_factor) / 2)
-    blk_hfsz1 = np.ceil(spacing * max(shrink_factor) / 2)
-    bboxes0 = np.concatenate((bcnters0-blk_hfsz0, bcnters0+blk_hfsz0), axis=-1)
-    bboxes1 = np.concatenate((bcnters1-blk_hfsz1, bcnters1+blk_hfsz1), axis=-1)
-    if zorder:
-        x_rnd = np.round((bcnters0[:,0] - bcnters0[:,0].min()) / spacing)
-        y_rnd = np.round((bcnters0[:,1] - bcnters0[:,1].min()) / spacing)
-        idx = common.z_order(np.stack((x_rnd, y_rnd), axis=-1))
-        bboxes0 = bboxes0[idx]
-        bboxes1 = bboxes1[idx]
-    if flipped:
-        return bboxes1, bboxes0
-    else:
-        return bboxes0, bboxes1
+def _region2grid_triang(region, spacing, **kwargs):
+    epsilon = kwargs.get('epsilon', 0.01 * spacing)
+    region = region.simplify(epsilon/2, preserve_topology=True)
+    if region.area == 0:
+        return None
+    # region_b = region.buffer(-epsilon, join_style=2)
+    # region_b = region_b.buffer(epsilon, join_style=3)
+    # if region_b.area > 0.5 * region.area:
+    #     region = region_b
+    G = spatial.Geometry(roi=region, regions={'default': region})
+    M = Mesh.from_PSLG(**G.PSLG(), mesh_size=spacing)
+    cntrs_np = M.initial_vertices
+    return cntrs_np
