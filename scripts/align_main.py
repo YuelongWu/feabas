@@ -321,7 +321,7 @@ if __name__ == '__main__':
         align_config = align_config['rendering']
         mode = 'rendering'
         num_workers = align_config.get('num_workers', 1)
-        num_workers = config.set_numpy_thread_from_num_workers(num_workers)
+        config.set_numpy_thread_from_num_workers(num_workers)
         align_config['num_workers'] = num_workers
     elif args.mode.lower().startswith('o'):
         align_config = align_config['optimization']
@@ -338,7 +338,7 @@ if __name__ == '__main__':
         if parallel_framework == 'slurm':
             config.set_numpy_thread_from_num_workers(1)
         else:
-            num_workers = config.set_numpy_thread_from_num_workers(num_workers)
+            config.set_numpy_thread_from_num_workers(num_workers)
         align_config.setdefault('slide_window', {})
         align_config['slide_window']['num_workers'] = num_workers
     elif args.mode.lower().startswith('ma'):
@@ -346,7 +346,7 @@ if __name__ == '__main__':
         align_config = align_config['matching']
         mode = 'matching'
         num_workers = align_config.get('matcher_config', {}).get('num_workers', 1)
-        num_workers = config.set_numpy_thread_from_num_workers(num_workers)
+        config.set_numpy_thread_from_num_workers(num_workers)
         align_config.setdefault('matcher_config', {})
         align_config['matcher_config']['num_workers'] = num_workers
         mesh_config['num_workers'] = min(num_workers, mesh_config.get('num_workers', num_workers))
@@ -354,7 +354,7 @@ if __name__ == '__main__':
         mesh_config = align_config['meshing']
         mode = 'meshing'
         num_workers = mesh_config.get('num_workers', 1)
-        num_workers = config.set_numpy_thread_from_num_workers(num_workers)
+        config.set_numpy_thread_from_num_workers(num_workers)
         mesh_config['num_workers'] = num_workers
     elif args.mode.lower().startswith('d'):
         min_mip = align_config.get('rendering', {}).get('mip_level', 0)
@@ -366,19 +366,19 @@ if __name__ == '__main__':
         filename_config.update(align_config['downsample'])
         align_config = filename_config
         num_workers = align_config.get('num_workers', 1)
-        num_workers = config.set_numpy_thread_from_num_workers(num_workers)
+        config.set_numpy_thread_from_num_workers(num_workers)
         align_config['num_workers'] = num_workers
     elif args.mode.lower().startswith('tensorstore_r') or args.mode.lower().startswith('tsr'):
         align_config = align_config['tensorstore_rendering']
         mode = 'tensorstore_rendering'
         num_workers = align_config.get('num_workers', 1)
-        num_workers = config.set_numpy_thread_from_num_workers(num_workers)
+        config.set_numpy_thread_from_num_workers(num_workers)
         align_config['num_workers'] = num_workers
     elif  args.mode.lower().startswith('tensorstore_d') or args.mode.lower().startswith('tsd'):
         align_config = align_config['tensorstore_downsample']
         mode = 'tensorstore_downsample'
         num_workers = align_config.get('num_workers', 1)
-        num_workers = config.set_numpy_thread_from_num_workers(num_workers)
+        config.set_numpy_thread_from_num_workers(num_workers)
         align_config['num_workers'] = num_workers
     else:
         raise RuntimeError(f'{args.mode} not supported mode.')
