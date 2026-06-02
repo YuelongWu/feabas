@@ -13,7 +13,7 @@ install_requires = [
     'dill',
     'google-cloud-storage',
     'h5py',
-    'numpy<2',
+    'numpy',
     'opencv-python',
     'psutil',
     'pyamg',
