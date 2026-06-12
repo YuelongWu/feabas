@@ -407,7 +407,7 @@ if __name__ == '__main__':
             raise ValueError(f'{args.mode} not supported mode.')
 
     num_workers = thumbnail_configs.get('num_workers', 1)
-    num_workers = config.set_numpy_thread_from_num_workers(num_workers)
+    config.set_numpy_thread_from_num_workers(num_workers)
     thumbnail_configs['num_workers'] = num_workers
 
 

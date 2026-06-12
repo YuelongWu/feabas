@@ -253,7 +253,7 @@ if __name__ == '__main__':
     else:
         raise ValueError(f'{args.mode} not supported mode.')
     num_workers = stitch_configs.get('num_workers', 1)
-    num_workers = config.set_numpy_thread_from_num_workers(num_workers)
+    config.set_numpy_thread_from_num_workers(num_workers)
     stitch_configs['num_workers'] = num_workers
 
     from feabas.stitcher import Stitcher, MontageRenderer
