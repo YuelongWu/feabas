@@ -8,6 +8,10 @@ FEABAS (Finite-Element Assisted Brain Assembly System) is a Python library power
 If you have any question using this package, feel free to open a [issue](https://github.com/YuelongWu/feabas/issues) or leave me a message on the [discussion page](https://github.com/YuelongWu/feabas/discussions).
 
 
+> [!NOTE]
+> **Now we have a [manuscript](https://www.biorxiv.org/content/10.64898/2026.06.07.730510)!**
+
+
 ## Installation
 
 We used Python 3.12.2 to develop and test the package, but the codebase should be compatible with Python 3.8+. To install FEABAS, you can easily download from [PyPI](https://pypi.org/project/feabas/) with the command:
