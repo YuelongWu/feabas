@@ -147,7 +147,7 @@ class Material:
         tripts_shft1 = np.roll(tripts, 1, axis=-2)
         tri_vec = tripts_shft0 - tripts_shft1
         trinum = tripts.shape[0]
-        areas = np.absolute(np.cross(tri_vec[:,0,:], tri_vec[:,1,:])).reshape(-1,1,1)
+        areas = np.absolute(common.cross2d(tri_vec[:,0,:], tri_vec[:,1,:])).reshape(-1,1,1)
         tri_vec = tri_vec / (areas ** 0.5)
         ty = tri_vec[:, :, 1]
         tx = -tri_vec[:, :, 0]
@@ -197,7 +197,7 @@ class Material:
         tripts_shft1 = np.roll(tripts, 1, axis=-2)
         tri_vec = tripts_shft0 - tripts_shft1
         trinum = tripts.shape[0]
-        areas = np.absolute(np.cross(tri_vec[:,0,:], tri_vec[:,1,:])).reshape(-1,1,1)
+        areas = np.absolute(common.cross2d(tri_vec[:,0,:], tri_vec[:,1,:])).reshape(-1,1,1)
         tri_vec = tri_vec / areas
         B = np.zeros((trinum, 4, 6), dtype=DTYPE)
         t0 = tri_vec[:, :, 1]

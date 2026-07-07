@@ -31,9 +31,12 @@ for (i=0; i<mlist.length; i++) {
 	}
 	// Interact with Big Warp interface, and the user saves (replaces) the csv file
 	// Then close Big Warp, and click "ok" to go to the next match
-	waitForUser("current match", mlist[i]);
-	selectWindow(section_file0);
-	close();
-	selectWindow(section_file1);
-	close();
+	if (isOpen(section_file0)) {
+		selectWindow(section_file0);
+		close();
+	}
+	if (isOpen(section_file1)) {
+		selectWindow(section_file1);
+		close();
+	} 
 }

@@ -14,7 +14,7 @@ import tensorstore as ts
 
 from feabas import common, caching
 from feabas.storage import File, join_paths, list_folder_content, file_exists
-from feabas.config import DEFAULT_RESOLUTION, TS_TIMEOUT, TS_RETRY, get_numpy_thread
+from feabas.config import data_resolution, TS_TIMEOUT, TS_RETRY, get_numpy_thread
 
 Nthreads = get_numpy_thread()
 cv2.setNumThreads(Nthreads)
@@ -157,7 +157,7 @@ class AbstractImageLoader(ABC):
         preprocess_factory = kwargs.get('preprocess', None)
         preprocess_parames = kwargs.get('preprocess_params', {})
         self.update_preprocess_function(preprocess_factory, **preprocess_parames)
-        self.resolution = kwargs.get('resolution', DEFAULT_RESOLUTION)
+        self.resolution = kwargs.get('resolution', data_resolution())
         self._read_counter = 0
         self._tf_lut = kwargs.get('tf_lut', {})
 
@@ -1023,7 +1023,7 @@ class StreamLoader(AbstractImageLoader):
         self._preprocess = kwargs.get('preprocess', None)
         self._inverse = kwargs.get('inverse', False)
         self._default_fillval = kwargs.get('fillval', 0)
-        self.resolution = kwargs.get('resolution', DEFAULT_RESOLUTION)
+        self.resolution = kwargs.get('resolution', data_resolution())
         self.update_preprocess_function(None)
         self.x0 = kwargs.get('x0', 0)
         self.y0 = kwargs.get('y0', 0)

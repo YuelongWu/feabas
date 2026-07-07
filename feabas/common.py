@@ -673,7 +673,7 @@ def signed_area(vertices, triangles) -> np.ndarray:
     tripts = vertices[triangles]
     v0 = tripts[:,1,:] - tripts[:,0,:]
     v1 = tripts[:,2,:] - tripts[:,1,:]
-    return np.cross(v0, v1)
+    return cross2d(v0, v1)
 
 
 def expand_image(img, target_size, slices, fillval=0):
@@ -892,5 +892,5 @@ def numpy_array(obj, copy=False):
             return np.array(obj, copy=None)
 
 
-def damped_lsqr(A, b, damp=None, x0=None, **kwargs):
-    pass
+def cross2d(v0, v1):
+    return (v0[...,0] * v1[...,1] - v0[...,1] * v1[...,0])
