@@ -36,8 +36,8 @@ MATCH_SOFTFACTOR_DOMINANCE = 200 # during matching, assume one mesh is much more
 
 @lru_cache(maxsize=1)
 def parallel_framework():
-    frmwk = general_settings().get('parallel_framework', 'builtin')
-    if frmwk.startswith('pr'):
+    frmwk = general_settings().get('parallel_framework', 'process')
+    if frmwk.startswith('pr') or frmwk.startswith('buil'):
         frmwk = 'process'
     elif frmwk.startswith('th'):
         frmwk = 'thread'
