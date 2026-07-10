@@ -506,7 +506,7 @@ def match_two_thumbnails_pmcc(img0, img1, mask0=None, mask1=None, **kwargs):
     loader0 = StreamLoader(info0['dog_image'], resolution=mesh0.resolution)
     loader1 = StreamLoader(info1['dog_image'], resolution=mesh1.resolution)
     kwargs.setdefault('allow_dwell', 1)
-    xy0, xy1, weight, strain = section_matcher(mesh0, mesh1, loader0, loader1, **kwargs)
+    xy0, xy1, weight, strain = section_matcher(mesh0, mesh1, loader0, loader1, sigma=0.0, **kwargs)
     if xy0 is None:
         return None
     xy0 = scale_coordinates(xy0, 1 / scale)
