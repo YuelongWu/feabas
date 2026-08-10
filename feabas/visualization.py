@@ -8,6 +8,11 @@ import matplotlib.tri
 import numpy as np
 import shapely.geometry as shpgeo
 import feabas.constant as const
+from feabas.common import bbox_intersections
+from feabas.dal import StreamLoader
+from feabas.mesh import Mesh
+from feabas.renderer import MeshRenderer
+from feabas.spatial import fit_affine
 
 def rgb2hex(r,g,b):
     r = min(max(r, 0), 255)
@@ -208,6 +213,84 @@ def plot_geometries(geo_obj, **kwargs):
     else:
         raise TypeError
 
+
+def show_image_pairs(img0=None, img1=None, mesh0=None, mesh1=None, xy0=None, xy1=None, **kwargs):
+    bbox = kwargs.get('bbox', None)
+    gear = kwargs.get('gear', const.MESH_GEAR_MOVING)
+    affine_approx_tol = kwargs.get('affine_approx_tol', 0.1)
+    if img0 is None:
+        show_image = False
+    else:
+        show_image = kwargs.get('show_image', True)
+    if xy0 is None:
+        show_match = False
+    else:
+        show_match = kwargs.get('show_match', True)
+    if mesh0 is None:
+        show_mesh = False
+        if bbox is None:
+            pass
+        if show_image:
+            if isinstance(img0, np.ndarray):
+                img0 = StreamLoader(img0)
+            if isinstance(img1, np.ndarray):
+                img1 = StreamLoader(img1)
+            if xy0 is not None:
+                if bbox is not None:
+                    bbox_t, _ = bbox_intersections(img0.bounds, bbox)
+                else:
+                    bbox_t = img0.bounds
+                M1 = Mesh.from_bbox(img1.bounds, cartesian=True, mesh_size=np.max(img1.bounds), resolution=img1.resolution)
+                A, _ = fit_affine(xy0, xy1, return_rigid=True)
+                M1.apply_affine(A, gear=const.MESH_GEAR_MOVING)
+                R1 = MeshRenderer.from_mesh(M1, image_loader=img1, affine_approx_tol=affine_approx_tol)
+                img0t = img0.crop(bbox_t)
+                img1t = R1.crop(bbox_t)
+                xy0t = xy0
+                xy1t = xy1 @ A[:2,:2] + A[-1,:2]
+            else:
+                bbox_t, _ = bbox_intersections(img0.bounds, img1.bounds)
+                if bbox is not None:
+                    bbox_t, _ = bbox_intersections(bbox, bbox_t)
+                img0t = img0.crop(bbox_t)
+                img1t = img1.crop(bbox_t)
+    else:
+        show_mesh = kwargs.get('show_mesh', True)
+        if bbox is not None:
+            mesh0 = mesh0.submeshes_from_bboxes([bbox], gear=gear)[0]
+            mesh1 = mesh1.submeshes_from_bboxes([bbox], gear=gear)[0]
+        else:
+            bbox, _ =  bbox_intersections(mesh0.bbox(gear=gear), mesh1.bbox(gear=gear))
+        if show_image:
+            if isinstance(img0, np.ndarray):
+                img0 = StreamLoader(img0)
+            if isinstance(img1, np.ndarray):
+                img1 = StreamLoader(img1)
+            R0 = MeshRenderer.from_mesh(mesh0, image_loader=img0, affine_approx_tol=affine_approx_tol)
+            R1 = MeshRenderer.from_mesh(mesh1, image_loader=img1, affine_approx_tol=affine_approx_tol)
+            img0t = R0.crop(bbox)
+            img1t = R1.crop(bbox)
+            mesh0.apply_translation((-bbox[0], -bbox[1]), gear=gear)
+            mesh1.apply_translation((-bbox[0], -bbox[1]), gear=gear)
+        if show_match:
+            tid0, B0 = mesh0.cart2bary(xy0, const.MESH_GEAR_INITIAL, tid=None, extrapolate=False)
+            tid1, B1 = mesh1.cart2bary(xy1, const.MESH_GEAR_INITIAL, tid=None, extrapolate=False)
+            idxt = (tid0 >= 0) & (tid1 >= 0)
+            if not np.any(idxt):
+                show_match = False
+            else:
+                xy0t = mesh0.bary2cart(tid0[idxt], B0[idxt], gear, offsetting=True)
+                xy1t = mesh1.bary2cart(tid1[idxt], B1[idxt], gear, offsetting=True)
+    if show_image:
+        img_ov = np.stack((img0t, img1t, img0t), axis=-1)
+        plt.imshow(img_ov)
+    if show_mesh:
+        plot_mesh(mesh0, gear=const.MESH_GEAR_MOVING, colors='r')
+        plot_mesh(mesh1, gear=const.MESH_GEAR_MOVING, colors='b')
+    if show_match:
+        plt.plot((xy0t[:,0], xy1t[:,0]), (xy0t[:,1], xy1t[:,1]), 'k:')
+        plt.plot(xy0t[:,0], xy0t[:,1], 'm.')
+        plt.plot(xy1t[:,0], xy1t[:,1], 'g.')
 
 
 # from descartes:
