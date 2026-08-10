@@ -894,3 +894,23 @@ def numpy_array(obj, copy=False):
 
 def cross2d(v0, v1):
     return (v0[...,0] * v1[...,1] - v0[...,1] * v1[...,0])
+
+
+def find_newly_created_island(M, tri_mask, island_threshold=0):
+    island_mask = np.zeros(M.num_triangles, dtype=bool)
+    if island_threshold > 0:
+        _, T_conn0 = M.connected_triangles()
+        N_conn, T_conn_t = M.connected_triangles(tri_mask=tri_mask)
+        T_conn = -1 * np.ones_like(T_conn0)
+        T_conn[tri_mask] = T_conn_t
+        S = M.triangle_areas()
+        S_sum = np.sum(S)
+        for n in range(N_conn):
+            idx = T_conn == n
+            if np.sum(S[idx]) > S_sum * island_threshold:
+                continue
+            lbl0 = T_conn0[idx][0]
+            idx0 = T_conn0 == lbl0
+            if not np.array_equal(idx, idx0):
+                island_mask[idx] = True
+    return island_mask

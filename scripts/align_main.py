@@ -16,7 +16,7 @@ os.environ["OPENCV_IO_MAX_IMAGE_PIXELS"] = str(pow(2,40)) # for large masks in m
 def generate_mesh_from_mask(mask_names, outname, **kwargs):
     if storage.file_exists(outname):
         return
-    from feabas import material, dal, mesh, optimizer
+    from feabas import common, material, dal, mesh, optimizer
     import numpy as np
     material_table = kwargs.pop('material_table', material.MaterialTable())
     target_resolution = kwargs.pop('target_resolution', config.montage_resolution())
@@ -57,6 +57,7 @@ def generate_mesh_from_mask(mask_names, outname, **kwargs):
         ss_s = M.triangle_tform_deform(gear=sgears)
         tmask = ss_s > np.max(ss_t)
         if np.any(tmask):
+            tmask = tmask | common.find_newly_created_island(M, ~tmask, island_threshold=1e-3)
             optimizer.relax_mesh(M, free_triangles=tmask, gear=sgears)
     mshname = os.path.splitext(os.path.basename(mask_name))[0]
     M.save_to_h5(outname, save_material=True, override_dict={'name': mshname})

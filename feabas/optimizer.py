@@ -2154,13 +2154,15 @@ def relax_mesh(M, free_vertices=None, free_triangles=None, **kwargs):
     return modified
 
 
-def relax_mesh_most_deformed(M, gear=(const.MESH_GEAR_FIXED, const.MESH_GEAR_MOVING), deform_cutoff=config.MAXIMUM_DEFORM_ALLOWED, iqr=0):
+def relax_mesh_most_deformed(M, gear=(const.MESH_GEAR_FIXED, const.MESH_GEAR_MOVING), deform_cutoff=config.MAXIMUM_DEFORM_ALLOWED, iqr=0, island_trheshold=1e-3):
     modified = False
     sa = M.triangle_area_deform(gear=gear).reshape(-1,1)
     if deform_cutoff < 0: # check flip only
         tmask = Mesh.svds_to_deform(sa) >= 1
         if not np.any(tmask):
             return modified
+        if island_trheshold > 0:
+            tmask = tmask | common.find_newly_created_island(M, ~tmask, island_threshold=island_trheshold)
         tid = M.triangles[tmask]
         vid = np.unique(tid)
         modified = relax_mesh(M, free_vertices=vid, gear=gear)
@@ -2177,6 +2179,8 @@ def relax_mesh_most_deformed(M, gear=(const.MESH_GEAR_FIXED, const.MESH_GEAR_MOV
             thresh_iqr = np.max(qq) + iqr * np.ptp(qq)
             thresh_t = min(thresh_t, thresh_iqr)
         tmask = defm > max(thresh_t, 1.0e-3)
+        if island_trheshold > 0:
+            tmask = tmask | common.find_newly_created_island(M, ~tmask, island_threshold=island_trheshold)
         if not np.any(tmask):
             return modified
         tid = M.triangles[tmask]
