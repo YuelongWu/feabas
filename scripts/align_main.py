@@ -55,7 +55,9 @@ def generate_mesh_from_mask(mask_names, outname, **kwargs):
         M = mesh.transform_mesh(M, Mt, gears=sgears, tgears=tgears)
         ss_t = Mt.triangle_tform_deform(gear=tgears)
         ss_s = M.triangle_tform_deform(gear=sgears)
-        tmask = ss_s > np.max(ss_t)
+        qtls = np.quantile(ss_t, [0.1, 0.9])
+        thresh = qtls[-1] + 3 * np.ptp(qtls)
+        tmask = ss_s > thresh
         if np.any(tmask):
             tmask = tmask | common.find_newly_created_island(M, ~tmask, island_threshold=1e-3)
             optimizer.relax_mesh(M, free_triangles=tmask, gear=sgears)
