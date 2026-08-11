@@ -99,7 +99,8 @@ def find_contours(mask):
         _, contours, hierarchy = cv2.findContours(mask, cv2.RETR_CCOMP, approx_mode)
     else:
         contours, hierarchy = cv2.findContours(mask, cv2.RETR_CCOMP, approx_mode)
-    contours = _pad_concave_corner(contours)
+    # contours = _pad_concave_corner(contours)
+    contours = [ct.squeeze() for ct in contours]
     return contours, hierarchy
 
 
