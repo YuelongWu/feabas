@@ -165,11 +165,11 @@ def render_one_section(tform_name, out_prefix, meta_name=None, **kwargs):
     mask_dir = kwargs.pop('mask_dir', None)
     tfname = kwargs.pop('tfname', None)
     num_workers = kwargs.get('num_workers', 1)
-    loader_settings = kwargs.get('loader_settings', {})
+    loader_settings = kwargs.pop('loader_settings', {})
     if loader_settings.get('cache_size', None) is not None:
         loader_settings = loader_settings.copy()
         loader_settings['cache_size'] = loader_settings['cache_size'] // num_workers
-    renderer = MontageRenderer.from_h5(tform_name, loader_settings=loader_settings)
+    renderer = MontageRenderer.from_h5(tform_name, loader_settings=loader_settings, **kwargs)
     if tfname is not None:
         renderer.add_transfer_functions(tfname)
     mask_out = storage.join_paths(mask_dir, os.path.basename(tform_name).replace('.h5','.png'))

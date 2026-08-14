@@ -1308,6 +1308,7 @@ class MontageRenderer:
     """
     def __init__(self, imgpaths, mesh_info, tile_sizes, **kwargs):
         self.resolution = kwargs.get('resolution', data_resolution())
+        self._source_resolution = kwargs.get('source_resolution', self.resolution)
         self._loader_settings = kwargs.get('loader_settings', {}).copy()
         self._connected_subsystem = kwargs.get('connected_subsystem', None)
         if bool(kwargs.get('root_dir', None)):
@@ -1330,21 +1331,31 @@ class MontageRenderer:
     def from_stitcher(cls, stitcher, gear=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING), **kwargs):
         if stitcher.meshes is None:
             raise RuntimeError('stitcher meshes not initializad.')
+        scale = kwargs.pop('scale', 1.0)
+        resolution = kwargs.pop('resolution', None)
+        source_resolution = stitcher.resolution
+        if resolution is not None:
+            scale = source_resolution / resolution
+        else:
+            resolution = source_resolution / scale
         root_dir = stitcher.imgrootdir
         imgpaths = stitcher.imgrelpaths
-        tile_sizes = stitcher.tile_sizes
+        tile_sizes = np.round(stitcher.tile_sizes * scale).astype(stitcher.tile_sizes.dtype)
         connected_subsystem = stitcher.connected_subsystem
-        resolution = stitcher.resolution
         brightness_contrast_adjust = stitcher._brightness_contrast_adjust
         mesh_info = []
         for M in stitcher.meshes:
+            resolution0 = M.resolution
+            M.change_resolution(resolution)
             v0 = M.vertices_w_offset(gear=gear[0])
             v1 = M.vertices(gear=gear[1])
             offset = M.offset(gear=gear[1])
             T = M.triangles
             mesh_info.append(Mesh_Info(v1, offset, T, v0))
+            M.change_resolution(resolution0)
         return cls(imgpaths, mesh_info, tile_sizes, root_dir=root_dir,
                    connected_subsystem=connected_subsystem, resolution=resolution,
+                   source_resolution=source_resolution,
                    brightness_contrast_adjust=brightness_contrast_adjust, **kwargs)
 
 
@@ -1373,6 +1384,7 @@ class MontageRenderer:
         kwargs['root_dir'] = self.imgrootdir
         kwargs['loader_settings'] = self._loader_settings
         kwargs['resolution'] = self.resolution
+        kwargs['source_resolution'] = self._source_resolution
         return args, kwargs
 
 
@@ -1425,20 +1437,17 @@ class MontageRenderer:
             clip_lrtb (tuple): the left, right, top, bottom pixels in a source
                 tile to be excluded (in case there are e.g consistent distortion
                 at the begininig of the scan).
-            scale (float): scale factor of the output image.
         refer to feabas.common.render_by_subregions for other kwargs
         """
         blend = kwargs.pop('blend', 'LINEAR')
         maskout_val = kwargs.pop('maskout_val', None)
         clip_ltrb = kwargs.pop('clip_lrtb', (0,0,0,0))
-        scale = kwargs.pop('scale', 1)
         fillval = kwargs.get('fillval', self.image_loader.default_fillval)
         dtype_out = kwargs.get('dtype_out', self.image_loader.dtype)
         affine_tolerance = kwargs.get('affine_tolerance', 0.2)
         inverse = self.image_loader._inverse
         sigma = 2.5 # sigma for pyramid generation.
         weight_eps = 1e-3
-        bbox = scale_coordinates(bbox, 1/scale)
         hits = list(self.mesh_tree.intersection(bbox, objects=True))
         if len(hits) == 0:
             return None
@@ -1457,8 +1466,8 @@ class MontageRenderer:
         y_min0 = bbox[1]
         ht0 = round(bbox[3] - y_min0)
         wd0 = round(bbox[2] - x_min0)
-        x0 = np.arange(x_min0, x_min0+wd0, 1/scale)
-        y0 = np.arange(y_min0, y_min0+ht0, 1/scale)
+        x0 = np.arange(x_min0, x_min0+wd0)
+        y0 = np.arange(y_min0, y_min0+ht0)
         image_hp = None
         image_lp = None
         weight_sum = None
@@ -1585,12 +1594,6 @@ class MontageRenderer:
             use_tensorstore = False
             rendered = {}
         num_chunks = 0
-        scale = kwargs.get('scale', 1.0)
-        if scale > 2/3:
-            self.image_loader._preprocess = None
-        else:
-            ksz = round(1/scale)
-            self.image_loader._preprocess = partial(cv2.blur, ksize=(ksz, ksz))
         if not use_tensorstore: # render as image tiles
             for bbox, filename in zip(bboxes, filenames):
                 if storage.file_exists(filename):
@@ -1641,21 +1644,18 @@ class MontageRenderer:
         e.g. pattern: Section001_tr{ROW_IND}_tc{COL_IND}.png
         """
         driver = kwargs.get('driver', 'image')
-        scale = kwargs.get('scale', 1)
         filename_settings = kwargs.get('filename_settings', {})
         pattern = filename_settings.get('pattern', 'tr{ROW_IND}_tc{COL_IND}.png')
         use_jpeg_compression = (pattern.lower().endswith('.jpg')) or (pattern.lower().endswith('.jpeg'))
         pad_to_tile_size = kwargs.get('pad_to_tile_size', use_jpeg_compression)
         checkpoint_file = kwargs.get('checkpoint_file', None)
-        resolution = self.resolution / scale
+        resolution = self.resolution
         if not hasattr(tile_size, '__len__'):
             tile_ht, tile_wd = tile_size, tile_size
         else:
             tile_ht, tile_wd = tile_size[0], tile_size[-1]
         read_chunk_size = kwargs.get('read_chunk_size', (max(256, tile_ht//16), max(256, tile_wd//16)))
         bounds = self.bounds
-        if scale != 1:
-            bounds = scale_coordinates(bounds, scale)
         montage_wd = int(np.ceil(bounds[2]))
         montage_ht = int(np.ceil(bounds[3]))
         Ncol = int(np.ceil(montage_wd / tile_wd))
@@ -1779,11 +1779,7 @@ class MontageRenderer:
             bboxes = np.zeros(Nx*Ny, dtype=bool)
         hits = []
         for kb, bbox in enumerate(bboxes0):
-            if scale != 1:
-                bbox_hit = scale_coordinates(bbox, 1/scale)
-            else:
-                bbox_hit = bbox
-            hit = list(self.mesh_tree.intersection(bbox_hit, objects=False))
+            hit = list(self.mesh_tree.intersection(bbox, objects=False))
             if len(hit) == 0:
                 continue
             hits.append(hit)
@@ -1928,6 +1924,7 @@ class MontageRenderer:
                 tile_size = self._tile_sizes[0]
                 self._image_loader = StaticImageLoader(self.imgrelpaths,
                     root_dir=self.imgrootdir, tile_size=tile_size,
+                    resolution=self.resolution, source_resolution=self._source_resolution,
                     **self._loader_settings)
             else:
                 xy_min = np.zeros_like(self._tile_sizes)
@@ -1935,6 +1932,7 @@ class MontageRenderer:
                 bboxes = np.concatenate((xy_min, xy_max), axis=-1)
                 self._image_loader = StaticImageLoader(self.imgrelpaths,
                     bboxes=bboxes, root_dir=self.imgrootdir,
+                    resolution=self.resolution, source_resolution=self._source_resolution,
                     **self._loader_settings)
         return self._image_loader
 
@@ -1980,7 +1978,6 @@ class MontageRenderer:
     def render_one_section(self, out_prefix, meta_name=None, **kwargs):
         num_workers = kwargs.get('num_workers', 1)
         tile_size = kwargs.pop('tile_size', [4096, 4096])
-        scale = kwargs.pop('scale', 1.0)
         resolution = kwargs.pop('resolution', None)
         render_settings = kwargs.get('render_settings', {}).copy()
         driver = kwargs.get('driver', 'image')
@@ -1993,14 +1990,9 @@ class MontageRenderer:
                 checkpoint_file = os.path.splitext(meta_name)[0] + '.h5'
         else:
             checkpoint_file = None
-        if resolution is not None:
-            scale = self.resolution / resolution
-        else:
-            resolution = self.resolution / scale
-        render_settings['scale'] = scale
         out_prefix = out_prefix.replace('\\', '/')
         render_series = self.plan_render_series(tile_size, prefix=out_prefix,
-            scale=scale, checkpoint_file=checkpoint_file, **kwargs)
+            checkpoint_file=checkpoint_file, **kwargs)
         if use_tensorstore:
             checkpoints = render_series[0]
             out_spec = render_series[1].copy()

@@ -160,6 +160,7 @@ class AbstractImageLoader(ABC):
         self.resolution = kwargs.get('resolution', data_resolution())
         self._read_counter = 0
         self._tf_lut = kwargs.get('tf_lut', {})
+        self._source_resolution = kwargs.get('source_resolution', self.resolution)
 
 
     def clear_cache(self, instant_gc=False):
@@ -308,6 +309,7 @@ class AbstractImageLoader(ABC):
         cache_settings = kwargs.get('cache_settings', True)
         out = {}
         out['resolution'] = self.resolution
+        out['source_resolution'] = self._source_resolution
         if output_controls:
             if self._dtype is not None:
                 out['dtype'] = np.dtype(self._dtype).str
@@ -359,6 +361,8 @@ class AbstractImageLoader(ABC):
         settings = {}
         if 'resolution' in json_obj:
             settings['resolution'] = json_obj['resolution']
+        if 'source_resolution' in json_obj:
+            settings['source_resolution'] = json_obj['source_resolution']
         if 'dtype' in json_obj:
             settings['dtype'] = np.dtype(json_obj['dtype'])
         if 'number_of_channels' in json_obj:
@@ -442,6 +446,15 @@ class AbstractImageLoader(ABC):
             img = common.inverse_image(img, dtype)
         if (img.dtype == np.uint16) and (np.dtype(dtype) == np.uint8):
             img = img / 255
+        if self._source_resolution != self.resolution:
+            scale = self._source_resolution / self.resolution
+            if scale < 1:
+                interp = cv2.INTER_AREA
+            else:
+                interp = cv2.INTER_CUBIC
+            h, w = img.shape[:2]
+            new_h, new_w = int(np.round(h * scale)), int(np.round(w * scale))
+            img = cv2.resize(img, (new_w, new_h), interpolation=interp)
         return img.astype(dtype, copy=False)
 
 
