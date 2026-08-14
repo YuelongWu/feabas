@@ -591,19 +591,19 @@ class Stitcher:
                 else:
                     mask1 = None
                 xy0, xy1, weight, strain, phtm = stitching_matcher(img0, img1, mask0=mask0, mask1=mask1, **matcher_config)
+                if index_mapper is not None:
+                    idx0 = index_mapper[idx0]
+                    idx1 = index_mapper[idx1]
+                if phtm is not None:
+                    brightness_contrast[(idx0, idx1)] = phtm
                 if xy0 is None:
                     continue
                 offset0 = bbox_ov0[:2] - bbox0[:2]
                 offset1 = bbox_ov1[:2] - bbox1[:2]
                 xy0 = xy0 + offset0
                 xy1 = xy1 + offset1
-                if index_mapper is not None:
-                    idx0 = index_mapper[idx0]
-                    idx1 = index_mapper[idx1]
                 matches[(idx0, idx1)] = (xy0, xy1, weight)
                 strains[(idx0, idx1)] = strain
-                if phtm is not None:
-                    brightness_contrast[(idx0, idx1)] = phtm
             except Exception as err:
                 err_count += 1
                 if not err_raised:
@@ -1152,7 +1152,17 @@ class Stitcher:
             bc_keys = np.array(list(self.match_brightness_contrast.keys()))
             bc_vals = np.array(list(self.match_brightness_contrast.values()))
             midx0, midx1 = bc_keys[:,0], bc_keys[:,1]
-            av0, av1, std0, std1 = bc_vals[:,0], bc_vals[:,1], bc_vals[:,2], bc_vals[:,3]
+            av0, av1, std0, std1, wt = bc_vals[:,0], bc_vals[:,1], bc_vals[:,2], bc_vals[:,3], bc_vals[:,4]
+            wt = wt / np.mean(wt)
+            W = sparse.diags(wt)
+            midx_b = np.concatenate((midx0, midx1), axis=None)
+            av_b = np.concatenate((av0, av1), axis=None)
+            wt_b = np.concatenate((wt, wt), axis=None)
+            av_img = np.bincount(midx_b, weights=av_b * wt_b, minlength=self.num_tiles)
+            wt_img = np.bincount(midx_b, weights=wt_b, minlength=self.num_tiles)
+            av_img = av_img / wt_img.clip(np.min(wt), None)
+            av_img0 = av_img[midx0]
+            av_img1 = av_img[midx1]
             num_matches = bc_keys.shape[0]
             idx0 = np.repeat(np.arange(num_matches), 2)
             idx1 = bc_keys.ravel()
@@ -1160,27 +1170,30 @@ class Stitcher:
             A = sparse.csr_matrix((v, (idx0, idx1)), shape=(num_matches, self.num_tiles))
             bc = np.log(std1) - np.log(std0)
             bc = bc.clip(np.log(1/max_contrast_ratio), np.log(max_contrast_ratio))
+            ATWA = (A.T) @ W @ A
+            ATW = (A.T) @ W
             if groupings is not None:
                 g_u, groupings = np.unique(groupings, return_inverse=True)
                 s_m = sparse.csr_matrix((np.ones_like(groupings), 
                         (np.arange(self.num_tiles), groupings)),
                         shape=(self.num_tiles, g_u.size))
-                A_g = (s_m.T) @ (A.T) @ A @ s_m + damp * (s_m.T) @ s_m
-                bc_g = s_m.T @ (A.T).dot(bc)
+                A_g = (s_m.T) @ ATWA @ s_m + damp * (s_m.T) @ s_m
+                bc_g = s_m.T @ ATW.dot(bc)
                 lc_g = splinalg.lsqr(A_g, bc_g)[0]
                 lc0 = s_m @ lc_g
                 explc0 = np.exp(lc0)
-                bb_g = s_m.T @ (A.T).dot(explc0[midx1]*av1 - explc0[midx0]*av0)
+                bb_g = s_m.T @ ATW.dot(explc0[midx1]*(av1 - av_img1) - explc0[midx0]*(av0 - av_img0) + av_img1 - av_img0)
                 lb_g = splinalg.lsqr(A_g, bb_g)[0]
                 lb0 = s_m @ lb_g
             else:
                 lc0 = None
                 lb0 = None
-            lc = splinalg.lsqr(A, bc, damp=damp, x0=lc0)[0]
+            lc = splinalg.lsqr(ATWA, ATW.dot(bc), damp=damp, x0=lc0)[0]
             explc = np.exp(lc)
-            bb = explc[midx1]*av1 - explc[midx0]*av0
-            lb = splinalg.lsqr(A, bb, damp=damp, x0=lb0)[0]
-            self._brightness_contrast_adjust = {'brightness': lb, 'contrast': explc}
+            bb = explc[midx1]*(av1 - av_img1) + av_img1 - explc[midx0]*(av0 - av_img0) - av_img0
+            lb = splinalg.lsqr(ATWA, ATW.dot(bb), damp=damp, x0=lb0)[0]
+            lb_abs = lb + (1 - explc) * av_img
+            self._brightness_contrast_adjust = {'brightness': lb_abs, 'contrast': explc}
 
 
 
@@ -1573,10 +1586,10 @@ class MontageRenderer:
             rendered = {}
         num_chunks = 0
         scale = kwargs.get('scale', 1.0)
-        if scale > 0.33:
+        if scale > 2/3:
             self.image_loader._preprocess = None
         else:
-            ksz = round(0.5/scale) * 2 - 1
+            ksz = round(1/scale)
             self.image_loader._preprocess = partial(cv2.blur, ksize=(ksz, ksz))
         if not use_tensorstore: # render as image tiles
             for bbox, filename in zip(bboxes, filenames):

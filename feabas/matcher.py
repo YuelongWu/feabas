@@ -267,51 +267,49 @@ def stitching_matcher(img0, img1, **kwargs):
         img1_g = img1
         mask0_g = mask0
         mask1_g = mask1
+    img0_raw = img0_g
+    img1_raw = img1_g
     if sigma > 0:
-        img0_raw = img0_g
-        img1_raw = img1_g
         img0_g = common.masked_dog_filter(img0_g, sigma*coarse_downsample, mask=mask0_g)
         img1_g = common.masked_dog_filter(img1_g, sigma*coarse_downsample, mask=mask1_g)
     tx0, ty0, conf0 = global_translation_matcher(img0_g, img1_g, conf_mode=conf_mode,
         conf_thresh=conf_thresh)
-    if conf0 < conf_thresh:
-        return None, None, conf_thresh, None, None
     phtm = None
     if compute_photometric:
-        txx, tyy = int(tx0), int(ty0)
-        bb0 = (txx, tyy, img0_g.shape[1]+txx, img0_g.shape[0]+tyy)
-        bb1 = (0, 0, img1_g.shape[1], img1_g.shape[0])
-        bb_int, _ = common.intersect_bbox(bb0, bb1)
-        bb_xmin, bb_ymin, bb_xmax, bb_ymax = bb_int
-        indx0 = (slice(bb_ymin-tyy, bb_ymax-tyy), slice(bb_xmin-txx, bb_xmax-txx), Ellipsis)
-        indx1 = (slice(bb_ymin, bb_ymax), slice(bb_xmin, bb_xmax), Ellipsis)
-        if mask0_g is None:
-            mask0_p = np.ones((bb_ymax-bb_ymin, bb_xmax-bb_xmin), dtype=bool)
+        if conf0 < conf_thresh:
+            indx0 = (slice(None), slice(None), Ellipsis)
+            indx1 = (slice(None), slice(None), Ellipsis)
+            area = 0.1 # if no match found, lower the weight to 10%
         else:
-            mask0_p = mask0_g[indx0]
-        if mask1_g is None:
-            mask1_p = np.ones((bb_ymax-bb_ymin, bb_xmax-bb_xmin), dtype=bool)
-        else:
-            mask1_p = mask1_g[indx1]
-        mask_p = mask0_p & mask1_p
-        if np.sum(mask0_p) > 3:
-            if sigma > 0:
-                im0 = img0_raw[indx0]
-                av0 = np.mean(im0[mask_p])
-                im1 = img1_raw[indx1]
-                av1 = np.mean(im1[mask_p])
-                im0 = img0_g[indx0]
-                std0 = np.mean(np.abs(im0[mask_p]))
-                im1 = img1_g[indx1]
-                std1 = np.mean(np.abs(im1[mask_p]))
-            else:
-                im0 = img0_g[indx0]
-                av0 = np.mean(im0[mask_p])
-                std0 = np.std(im0[mask_p])
-                im1 = img1_g[indx1]
-                av1 = np.mean(im1[mask_p])
-                std1 = np.std(im1[mask_p])
-            phtm = (av0, av1, std0, std1)
+            txx, tyy = int(tx0), int(ty0)
+            bb0 = (txx, tyy, img0_g.shape[1]+txx, img0_g.shape[0]+tyy)
+            bb1 = (0, 0, img1_g.shape[1], img1_g.shape[0])
+            bb_int, _ = common.intersect_bbox(bb0, bb1)
+            bb_xmin, bb_ymin, bb_xmax, bb_ymax = bb_int
+            indx0 = (slice(bb_ymin-tyy, bb_ymax-tyy), slice(bb_xmin-txx, bb_xmax-txx), Ellipsis)
+            indx1 = (slice(bb_ymin, bb_ymax), slice(bb_xmin, bb_xmax), Ellipsis)
+            area = 1
+        im0 = img0_raw[indx0]
+        im1 = img1_raw[indx1]
+        area = area * im0.size
+        mask_p = np.ones_like(im0, dtype=bool)
+        if mask0_g is not None:
+            mask_p = mask_p & mask0_g[indx0]
+        if mask1_g is not None:
+            mask_p = mask_p & mask1_g[indx1]
+        ds_scl = 1/max(2, min(16 * coarse_downsample, (im0.size / 100)**0.5))
+        mask_p = cv2.resize(mask_p.astype(np.float32), None, fx=1/ds_scl, fy=1/ds_scl, interpolation=cv2.INTER_AREA)
+        if np.sum(mask_p) > 4:
+            mask_p = mask_p / np.sum(mask_p)
+            im0 = cv2.resize(im0.astype(np.float32), None, fx=1/ds_scl, fy=1/ds_scl, interpolation=cv2.INTER_AREA)
+            im1 = cv2.resize(im1.astype(np.float32), None, fx=1/ds_scl, fy=1/ds_scl, interpolation=cv2.INTER_AREA)
+            av0 = np.sum(im0 * mask_p)
+            av1 = np.sum(im1 * mask_p)
+            std0 = np.sum((im0 - av0)**2 * mask_p) ** 0.5
+            std1 = np.sum((im1 - av1)**2 * mask_p) ** 0.5
+            phtm = (av0, av1, std0, std1, area)
+    if conf0 < conf_thresh:
+        return None, None, conf_thresh, None, phtm
     if fine_downsample == coarse_downsample:
         img0_f = img0_g
         img1_f = img1_g
