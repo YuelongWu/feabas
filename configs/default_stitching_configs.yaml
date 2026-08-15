@@ -79,6 +79,7 @@ rendering:
         dtype: null # can be uint8, uint16 etc. to use the src dtype, set to null 
     render_settings:
         blend: PYRAMID  # options: LINEAR, NEAREST, PYRAMID, MAX, MIN, NONE
+        stride: 1   # subsampling rate of the deformation field to speed things up at the cost of accuracy.
     filename_settings:  # see stitcher.MontageRenderer.plan_render_series for details
         pattern: _tr{ROW_IND}-tc{COL_IND}.png
         one_based: true # zero-based or one-based row/colume indexing

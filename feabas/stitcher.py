@@ -1445,6 +1445,7 @@ class MontageRenderer:
         fillval = kwargs.get('fillval', self.image_loader.default_fillval)
         dtype_out = kwargs.get('dtype_out', self.image_loader.dtype)
         affine_tolerance = kwargs.get('affine_tolerance', 0.2)
+        stride = kwargs.get('stride', 1)
         inverse = self.image_loader._inverse
         sigma = 2.5 # sigma for pyramid generation.
         weight_eps = 1e-3
@@ -1482,7 +1483,13 @@ class MontageRenderer:
             slc_y = slice(np.min(msk_y), np.max(msk_y)+1, None)
             x_msh = x0[slc_x]
             y_msh = y0[slc_y]
-            xx, yy = np.meshgrid(x_msh, y_msh)
+            if stride != 1:
+                x_msh_s = np.linspace(x_msh.min(), x_msh.max(), max(2, int(x_msh.size/stride)))
+                y_msh_s = np.linspace(y_msh.min(), y_msh.max(), max(2, int(y_msh.size/stride)))
+            else:
+                x_msh_s = x_msh
+                y_msh_s = y_msh
+            xx, yy = np.meshgrid(x_msh_s, y_msh_s)
             offset = self._mesh_info[indx].moving_offsets.ravel()
             xxt = xx - offset[0]
             yyt = yy - offset[1]
@@ -1500,8 +1507,15 @@ class MontageRenderer:
                 if np.all(mask, axis=None):
                     continue
                 map_y = y_interp(xxt, yyt)
-                x_field = np.nan_to_num(map_x.data, nan=-1, copy=False)
-                y_field = np.nan_to_num(map_y.data, nan=-1, copy=False)
+                x_field = map_x.data
+                y_field = map_y.data
+            if stride != 1:
+                M = np.float32([[x_msh.size/x_msh_s.size,0,0],[0, y_msh.size/y_msh_s.size,0]])
+                x_field = cv2.warpAffine(x_field, M, (x_msh.size, y_msh.size), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+                y_field = cv2.warpAffine(y_field, M, (x_msh.size, y_msh.size), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+            if np.any(np.isnan(x_field)):
+                x_field = np.nan_to_num(x_field, nan=-1, copy=False)
+                y_field = np.nan_to_num(y_field, nan=-1, copy=False)
             tile_ht, tile_wd = self.tile_size(indx)
             weight = np.minimum.reduce([x_field - clip_ltrb[0] + 0.5,
                                     - x_field + tile_wd - clip_ltrb[2] - 0.5,

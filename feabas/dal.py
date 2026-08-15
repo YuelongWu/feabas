@@ -309,7 +309,8 @@ class AbstractImageLoader(ABC):
         cache_settings = kwargs.get('cache_settings', True)
         out = {}
         out['resolution'] = self.resolution
-        out['source_resolution'] = self._source_resolution
+        if hasattr(self, '_source_resolution'):
+            out['source_resolution'] = self._source_resolution
         if output_controls:
             if self._dtype is not None:
                 out['dtype'] = np.dtype(self._dtype).str
