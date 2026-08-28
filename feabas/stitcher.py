@@ -1144,17 +1144,20 @@ class Stitcher:
             gc.collect()
 
 
-    def equalize_brightness_contrast(self, groupings=None, **kwargs):
+    def equalize_brightness_contrast(self, **kwargs):
         # xj_new = aj * xj + bj
         max_contrast_ratio = kwargs.get('max_contrast_ratio', 4)
-        damp = kwargs.get('damp', 0.77)
+        damp = kwargs.get('damp', 1.0)
         if len(self.match_brightness_contrast) > 0:
             bc_keys = np.array(list(self.match_brightness_contrast.keys()))
             bc_vals = np.array(list(self.match_brightness_contrast.values()))
             midx0, midx1 = bc_keys[:,0], bc_keys[:,1]
-            av0, av1, std0, std1, wt = bc_vals[:,0], bc_vals[:,1], bc_vals[:,2], bc_vals[:,3], bc_vals[:,4]
-            wt = wt / np.mean(wt)
-            W = sparse.diags(wt)
+            av0, av1, std0, std1 = bc_vals[:,0], bc_vals[:,1], bc_vals[:,2], bc_vals[:,3]
+            if bc_vals.shape[1] > 4:
+                wt = bc_vals[:,4]
+                wt = wt / np.mean(wt)
+            else:
+                wt = np.ones_like(bc_vals, shape=bc_vals.shape[0])
             midx_b = np.concatenate((midx0, midx1), axis=None)
             av_b = np.concatenate((av0, av1), axis=None)
             wt_b = np.concatenate((wt, wt), axis=None)
@@ -1164,37 +1167,46 @@ class Stitcher:
             av_img0 = av_img[midx0]
             av_img1 = av_img[midx1]
             num_matches = bc_keys.shape[0]
+            num_tiles = self.num_tiles
             idx0 = np.repeat(np.arange(num_matches), 2)
             idx1 = bc_keys.ravel()
-            v = np.tile([1, -1], num_matches)
-            A = sparse.csr_matrix((v, (idx0, idx1)), shape=(num_matches, self.num_tiles))
+            v0 = np.tile([1, -1], num_matches)
+            A0 = sparse.csr_matrix((v0, (idx0, idx1)), shape=(num_matches, num_tiles))
             bc = np.log(std1) - np.log(std0)
             bc = bc.clip(np.log(1/max_contrast_ratio), np.log(max_contrast_ratio))
-            ATWA = (A.T) @ W @ A
-            ATW = (A.T) @ W
-            if groupings is not None:
-                g_u, groupings = np.unique(groupings, return_inverse=True)
-                s_m = sparse.csr_matrix((np.ones_like(groupings), 
-                        (np.arange(self.num_tiles), groupings)),
-                        shape=(self.num_tiles, g_u.size))
-                A_g = (s_m.T) @ ATWA @ s_m + damp * (s_m.T) @ s_m
-                bc_g = s_m.T @ ATW.dot(bc)
-                lc_g = splinalg.lsqr(A_g, bc_g)[0]
-                lc0 = s_m @ lc_g
-                explc0 = np.exp(lc0)
-                bb_g = s_m.T @ ATW.dot(explc0[midx1]*(av1 - av_img1) - explc0[midx0]*(av0 - av_img0) + av_img1 - av_img0)
-                lb_g = splinalg.lsqr(A_g, bb_g)[0]
-                lb0 = s_m @ lb_g
-            else:
-                lc0 = None
-                lb0 = None
-            lc = splinalg.lsqr(ATWA, ATW.dot(bc), damp=damp, x0=lc0)[0]
-            explc = np.exp(lc)
-            bb = explc[midx1]*(av1 - av_img1) + av_img1 - explc[midx0]*(av0 - av_img0) - av_img0
-            lb = splinalg.lsqr(ATWA, ATW.dot(bb), damp=damp, x0=lb0)[0]
-            lb_abs = lb + (1 - explc) * av_img
-            self._brightness_contrast_adjust = {'brightness': lb_abs, 'contrast': explc}
-
+            target_std_a = np.std(bc) * 0.707 / damp
+            target_std_b = np.std(av0 - av1) * 0.707 / damp
+            wt_std = np.minimum(std0, std1)
+            wt_std = wt_std / np.mean(wt_std)
+            W0 = sparse.diags((wt * wt_std) ** 0.5)
+            g_c = np.std((A0.T @ W0).dot(bc)) / target_std_a
+            for _ in range(5):
+                lc = splinalg.lsqr(W0 @ A0, W0.dot(bc), damp=g_c)[0]
+                g_c = g_c * np.std(lc) / target_std_a
+            a0 = np.exp(lc)
+            av0_c = av0 - av_img0
+            av1_c = av1 - av_img1
+            v1 = np.stack((av0_c, -av1_c), axis=-1).ravel()           
+            A1 = sparse.csr_matrix((v1, (idx0, idx1)), shape=(num_matches, num_tiles))
+            W = sparse.diags(wt ** 0.5)
+            bb = av_img1 - av_img0
+            WA0 = W @ A0
+            WA1 = W @ A1
+            a = a0
+            g_b = np.std(WA0.T.dot(bb)) / target_std_b
+            g_a = np.std(WA1.T.dot(bb)) / target_std_a
+            for _ in range(10):
+                bb0 = bb - A1.dot(a)
+                b = splinalg.lsqr(WA0, W.dot(bb0), damp=g_b)[0]
+                bb1 = bb - A0.dot(b)
+                a = splinalg.lsqr(WA1, W.dot(bb1), damp=g_a, x0=a0)[0]
+                a = a / np.median(a)
+                b = b - np.median(b)
+                g_b = g_b * np.std(b) / target_std_b
+                g_a = g_a * np.std(a) / target_std_a
+            b = b + (1-a) * av_img
+            b = b - np.mean(b)
+            self._brightness_contrast_adjust = {'brightness': b, 'contrast': a}
 
 
   ## ----------------------------- properties ------------------------------ ##
