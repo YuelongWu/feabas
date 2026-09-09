@@ -159,7 +159,7 @@ if __name__ == '__main__':
     BBOXES_IN = []
     ZS_OUT = []
     flag_files = storage.list_folder_content(storage.join_paths(flag_dir, '*.flg'))
-    for bbox in bboxes_2d:
+    for bbox in bboxes_2d[sel_indx]:
         flg_name = storage.join_paths(flag_dir, f'{bbox[0]}_{bbox[1]}.flg')
         if storage.file_exists(flg_name, use_cache=True):
             continue
@@ -167,7 +167,7 @@ if __name__ == '__main__':
             BBOXES_IN.append((bbox[0], bbox[1], zz[0], bbox[2], bbox[3], zz[1]))
             ZS_OUT.append((zz[2], zz[3]))
     num_chunks = len(BBOXES_IN)
-    chunk_per_job = (num_chunks / (num_workers * args.step))
+    chunk_per_job = (num_chunks / num_workers)
     if chunk_per_job >= n_zchunk:
         chunk_per_job = round((chunk_per_job / n_zchunk)**0.5) * n_zchunk
     else:
@@ -175,7 +175,6 @@ if __name__ == '__main__':
     args_list = []
     for k in range(0, num_chunks, chunk_per_job):
         args_list.append([BBOXES_IN[k:(k+chunk_per_job)], ZS_OUT[k:(k+chunk_per_job)]])
-    args_list = args_list[sel_indx]
     
     cnt = defaultdict(int)
     tfunc = partial(flatten_single_chunks, src_loader=src_spec, ito_loader=ito_spec, out_writer=out_spec, ito_scale=ito_scale, write_batch=args.write_batch)
