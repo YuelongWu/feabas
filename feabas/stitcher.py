@@ -1172,10 +1172,10 @@ class Stitcher:
             idx1 = bc_keys.ravel()
             v0 = np.tile([1, -1], num_matches)
             A0 = sparse.csr_matrix((v0, (idx0, idx1)), shape=(num_matches, num_tiles))
-            bc = np.log(std1) - np.log(std0)
+            bc = np.log(std1.clip(1e-6, None)) - np.log(std0.clip(1e-6, None))
             bc = bc.clip(np.log(1/max_contrast_ratio), np.log(max_contrast_ratio))
-            target_std_a = np.std(bc) * 0.707 / damp
-            target_std_b = np.std(av0 - av1) * 0.707 / damp
+            target_std_a = np.std(bc).clip(1e-6, None) * 0.707 / damp
+            target_std_b = np.std(av0 - av1).clip(1e-6, None) * 0.707 / damp
             wt_std = np.minimum(std0, std1)
             wt_std = wt_std / np.mean(wt_std)
             W0 = sparse.diags((wt * wt_std) ** 0.5)
