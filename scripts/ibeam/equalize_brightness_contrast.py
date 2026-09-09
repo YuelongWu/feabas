@@ -220,8 +220,9 @@ def optimize_main():
     storage.makedirs(tform_dir, exist_ok=True)
     if not np.any(ref_flag):
         ref_flag[-1] = 1
-    while not np.all(ref_flag):
         dis = distance_transform_edt(~ref_flag)
+        dis[-1] = 1
+    while not np.all(ref_flag):
         to_optimize = (dis > 0) & (dis<=(block_size+buffer_size))
         z_list = z_all[to_optimize]
         if np.all(dis<=(block_size + buffer_size)):
@@ -232,13 +233,14 @@ def optimize_main():
             save_list = z_all[to_save]
             ref_flag = ref_flag | to_save
         optimize_sections(z_list, tform_dir, match_dir, save_list=save_list)
+        dis = distance_transform_edt(~ref_flag)
     print('finished')
 
 
 def optimize_sections(z_list, outdir, matchdir, save_list=None, **kwargs):
     damp = kwargs.get('damp', 1.0)
     smooth_factor = kwargs.get('smooth_factor', 1.0)
-    num_iter = kwargs.get('num_iter', 3)
+    num_iter = kwargs.get('num_iter', 5)
     ref_files = sorted(storage.list_folder_content(storage.join_paths(outdir, '*.h5')))
     z_ref = {int(os.path.basename(s).replace('.h5', '')):s for s in ref_files}
     z_to_opt = [z for z in z_list if z not in z_ref]
@@ -374,7 +376,7 @@ def optimize_sections(z_list, outdir, matchdir, save_list=None, **kwargs):
     for _ in range(num_iter):
         cc = splinalg.lsqr(A_comp, np.concatenate((np.zeros(A_sm.shape[0], dtype=np.float32), W.dot(dd_a))), damp=damp, x0=cc)[0]
     # brightness
-    x_z = splinalg.lsqr(WA_data @ sel_M, W.dot(mm_a), damp=damp*dof0)[0]
+    x_z = splinalg.lsqr(WA_data @ sel_M, W.dot(mm_a), damp=damp*dof0**0.5)[0]
     bb = sel_M @ x_z
     for _ in range(num_iter):
         bb = splinalg.lsqr(A_comp, np.concatenate((np.zeros(A_sm.shape[0], dtype=np.float32), W.dot(mm_a))), damp=damp, x0=bb)[0]
@@ -419,6 +421,8 @@ def render_main(sel_indx=None, use_clahe=False):
     out_spec.update({"open": True, "create": True, "delete_existing": False})
     out_writer = dal.TensorStoreWriter.from_json_spec(out_spec)
     out_spec = out_writer.spec
+    with storage.File(flag_file, 'w') as f:
+        json.dump({mip: out_spec}, f)
     X0, Y0, Z0, X1, Y1, Z1 = out_writer.write_grids
     if sel_indx is not None:
         Z0, Z1 = Z0[sel_indx], Z1[sel_indx]
@@ -559,5 +563,6 @@ if __name__ == '__main__':
     elif args.mode == 'opt':
         optimize_main()
     elif args.mode == 'render':
+        flag_file = storage.join_paths(align_dir, 'histeq'+args.postfix+'.json')
         render_main(sel_indx, use_clahe=args.clahe)
 
