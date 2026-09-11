@@ -108,7 +108,7 @@ if __name__ == '__main__':
     args = parse_args()
 
     src_mip = 0
-    ito_mip = 3
+    ito_mip = 1
     out_z_resolution = 22
 
     sel_indx = slice(args.start, args.stop, args.step)
