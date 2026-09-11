@@ -53,7 +53,7 @@ def get_ito_mask_for_xy_chunk(bbox, z_info, src_spec, out_spec):
             mask = dilation(mask, disk(4))
             cls_sz = (dimension_cutoff / (resolution0 * ds))
             if cls_sz > 4:
-                mask_ds = cv2.resize(mask.astype(np.float32), None, fx=3/cls_sz, fy=3/cls_sz, interpolation=cv2.INTER_AREA) > 0.5
+                mask_ds = cv2.resize(mask.astype(np.float32), None, fx=4/cls_sz, fy=4/cls_sz, interpolation=cv2.INTER_AREA) > 0.5
                 mask_ds_cls = closing(mask_ds, disk(4))
                 mask_cls = cv2.resize(mask_ds_cls.astype(np.float32), mask.shape, interpolation=cv2.INTER_LINEAR) > 0.5
                 mask = mask | mask_cls
