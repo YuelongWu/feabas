@@ -23,7 +23,7 @@ def get_ito_mask_for_xy_chunk(bbox, z_info, src_spec, out_spec):
     out_writer = dal.TensorStoreWriter.from_json_spec(out_spec)
     resolution0 = src_loader.resolution
     ds = out_writer.resolution / src_loader.resolution
-    dimension_cutoff = 1024
+    dimension_cutoff = 512
     xmin, ymin, xmax, ymax = bbox
     if z_info is None:
         _, _, Z0, _, _, Z1 = out_writer.write_grids

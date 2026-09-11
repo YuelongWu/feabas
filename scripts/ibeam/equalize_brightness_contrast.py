@@ -14,7 +14,7 @@ import cv2
 import numpy as np
 from scipy import sparse
 import scipy.sparse.linalg as splinalg
-from scipy.ndimage import distance_transform_edt, map_coordinates
+from scipy.ndimage import distance_transform_edt, map_coordinates, grey_dilation, grey_erosion
 from math import ceil, floor
 
 from feabas import dal
@@ -163,13 +163,24 @@ def _tfunc_match_2d_bboxes(ind_x, ind_y, z0, z1s, vol_spec, ito_spec, read_size,
                 continue
             m0 = np.mean(img0_t, axis=None)
             m1 = np.mean(img1_t, axis=None)
-            idx_upp = (img0_t >= m0) & (img1_t >= m1)
-            idx_low = (img0_t <= m0) & (img1_t <= m1)
-            wt = 2 * (np.sum(idx_upp) * np.sum(idx_low))**0.5 / (patch_size**2)
+            tt0 = grey_dilation(img0_t, size=(3,)) - grey_erosion(img0_t, size=(3,))
+            tt1 = grey_dilation(img1_t, size=(3,)) - grey_erosion(img1_t, size=(3,))
+            idx_tt = (tt0 > np.mean(tt0)) & (tt1 > np.mean(tt1))
+            if not np.any(idx_tt):
+                continue
+            d0 = np.mean(tt0[idx_tt])
+            d1 = np.mean(tt1[idx_tt])
+            corr = np.sum((img0_t - m0) * (img1_t - m1)) / ((np.std(img0_t)*np.std(img1_t)).clip(1e-3,None))
+            wt = np.mean(valid_t, axis=None) * (max(0, corr) ** 0.5)
             if wt == 0:
                 continue
-            d0 = np.mean(img0_t[idx_upp]) - np.mean(img0_t[idx_low])
-            d1 = np.mean(img1_t[idx_upp]) - np.mean(img1_t[idx_low])
+            # idx_upp = (img0_t >= m0) & (img1_t >= m1)
+            # idx_low = (img0_t <= m0) & (img1_t <= m1)
+            # wt = 2 * (np.sum(idx_upp) * np.sum(idx_low))**0.5 / (patch_size**2)
+            # if wt == 0:
+            #     continue
+            # d0 = np.mean(img0_t[idx_upp]) - np.mean(img0_t[idx_low])
+            # d1 = np.mean(img1_t[idx_upp]) - np.mean(img1_t[idx_low])
             if out[(z0, z1)] is None:
                 out[(z0, z1)] = np.zeros((5, N_blk), dtype=np.float32)
             out[(z0, z1)][:,k] = [m0, m1, d0, d1, wt]
