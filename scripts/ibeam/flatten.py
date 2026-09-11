@@ -117,7 +117,7 @@ if __name__ == '__main__':
     src_spec_file = storage.join_paths(align_dir, 'histeq'+args.postfix+'.json')
     ito_spec_file = storage.join_paths(align_dir, 'ITO_mask'+args.postfix+'.json')
     z_info_file = storage.join_paths(align_dir, 'flatten_map.txt')
-    flag_dir = storage.join_paths(align_dir, 'flattern_flags')
+    flag_dir = storage.join_paths(align_dir, 'flattern_flags'+args.postfix)
 
     with storage.File(src_spec_file, 'r') as f:
         src_mips_spec = json.load(f)

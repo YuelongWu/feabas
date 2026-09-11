@@ -384,6 +384,8 @@ def optimize_sections(z_list, outdir, matchdir, save_list=None, **kwargs):
         zk = z_lut[z]
         if zk < 0:
             continue
+        if z not in local_avg:
+            continue
         log_a = cc[(zk*dof0):((zk+1)*dof0)].reshape(shp0)
         b = bb[(zk*dof0):((zk+1)*dof0)].reshape(shp0)
         m = local_avg[z][0]

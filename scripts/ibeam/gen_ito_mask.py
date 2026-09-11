@@ -7,10 +7,12 @@ from feabas import config, storage
 from feabas.concurrent import submit_to_workers
 num_workers = 30
 
+import cv2
 from feabas import dal
 from functools import partial
 from math import floor, ceil
 import numpy as np
+from scipy.ndimage import gaussian_filter
 from skimage.morphology import reconstruction, dilation, disk
 import time
 
@@ -19,6 +21,9 @@ def get_ito_mask_for_xy_chunk(bbox, z_info, src_spec, out_spec):
     thresholds = (10, 25)
     src_loader = dal.TensorStoreLoader.from_json_spec(src_spec)
     out_writer = dal.TensorStoreWriter.from_json_spec(out_spec)
+    resolution0 = src_loader.dataset.schema.to_json()['dimension_units'][0][0]
+    ds = max(1, 32 / resolution0)
+    dimension_cutoff = 3000
     xmin, ymin, xmax, ymax = bbox
     if z_info is None:
         _, _, Z0, _, _, Z1 = out_writer.write_grids
@@ -37,9 +42,23 @@ def get_ito_mask_for_xy_chunk(bbox, z_info, src_spec, out_spec):
         for z in range(block_dp):
             img = block[:,:,z]
             mask_l = img < thresholds[0]
+            if not np.any(mask_l):
+                ito_blk[:,:,z] = 1
             mask_h = img < thresholds[-1]
+            shp0 = mask_l.shape
+            if ds != 1:
+                mask_l = cv2.resize(mask_l.astype(np.float16), None, fx=1/ds, fy=1/ds, interpolation=cv2.INTER_AREA) > 0
+                mask_h = cv2.resize(mask_h.astype(np.float16), None, fx=1/ds, fy=1/ds, interpolation=cv2.INTER_AREA) > 0
             mask = reconstruction(mask_l, mask_h) > 0
-            mask = ~dilation(mask, disk(2))
+            if dimension_cutoff > 0:
+                scl_c = resolution0 * ds / dimension_cutoff
+                mask_ds = cv2.resize(mask.astype(np.float16), None, fx=scl_c, fy=scl_c, interpolation=cv2.INTER_AREA)
+                mask_ds_us = cv2.resize(mask_ds, mask.shape, interpolation=cv2.INTER_LINEAR)
+                mask = mask & (mask_ds_us > 0.5)
+            mask = dilation(mask, disk(2))
+            if ds != 1:
+                mask = cv2.resize(mask.astype(np.float16), shp0, interpolation=cv2.INTER_LINEAR) > 0.2
+            mask = ~mask
             if z < z_int:
                 ito_blk[:,:,z] = mask
             else:
@@ -51,7 +70,7 @@ def get_ito_mask_for_xy_chunk(bbox, z_info, src_spec, out_spec):
 
 
 def threshold_main(sel_indx=None, post_fix=''):
-    mip_high = 3
+    mip_high = 1
     root_dir = config.get_work_dir()
     align_dir = storage.join_paths(root_dir, 'align')
     ts_spec_file = storage.join_paths(align_dir, 'ts_spec'+post_fix+'.json')
