@@ -233,6 +233,8 @@ def optimize_main():
         ref_flag[-1] = 1
         dis = distance_transform_edt(~ref_flag)
         dis[-1] = 1
+    else:
+        dis = distance_transform_edt(~ref_flag)
     while not np.all(ref_flag):
         to_optimize = (dis > 0) & (dis<=(block_size+buffer_size))
         z_list = z_all[to_optimize]
