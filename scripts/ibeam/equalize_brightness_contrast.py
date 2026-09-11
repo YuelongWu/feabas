@@ -170,7 +170,7 @@ def _tfunc_match_2d_bboxes(ind_x, ind_y, z0, z1s, vol_spec, ito_spec, read_size,
                 continue
             d0 = np.mean(tt0[idx_tt])
             d1 = np.mean(tt1[idx_tt])
-            corr = np.sum((img0_t - m0) * (img1_t - m1)) / ((np.std(img0_t)*np.std(img1_t)).clip(1e-3,None))
+            corr = np.mean((img0_t - m0) * (img1_t - m1)) / ((np.std(img0_t)*np.std(img1_t)).clip(1e-3,None))
             wt = np.mean(valid_t, axis=None) * (max(0, corr) ** 0.5)
             if wt == 0:
                 continue
