@@ -23,7 +23,7 @@ def get_ito_mask_for_xy_chunk(bbox, z_info, src_spec, out_spec):
     out_writer = dal.TensorStoreWriter.from_json_spec(out_spec)
     resolution0 = src_loader.dataset.schema.to_json()['dimension_units'][0][0]
     ds = max(1, 32 / resolution0)
-    dimension_cutoff = 1000
+    dimension_cutoff = 512
     xmin, ymin, xmax, ymax = bbox
     if z_info is None:
         _, _, Z0, _, _, Z1 = out_writer.write_grids
@@ -50,7 +50,6 @@ def get_ito_mask_for_xy_chunk(bbox, z_info, src_spec, out_spec):
                 mask_l = cv2.resize(mask_l.astype(np.float32), None, fx=1/ds, fy=1/ds, interpolation=cv2.INTER_AREA) > 0
                 mask_h = cv2.resize(mask_h.astype(np.float32), None, fx=1/ds, fy=1/ds, interpolation=cv2.INTER_AREA) > 0.5
             mask = reconstruction(mask_l & mask_h, mask_h) > 0
-            mask = dilation(mask, disk(4))
             mask = ~mask
             cls_sz = (dimension_cutoff / (resolution0 * ds))
             if cls_sz > 4:
@@ -61,6 +60,7 @@ def get_ito_mask_for_xy_chunk(bbox, z_info, src_spec, out_spec):
             elif cls_sz >= 1:
                 mask_op = opening(mask, disk(round(cls_sz)))
                 mask = reconstruction(mask_op & mask, mask) > 0
+            mask = ~dilation(~mask, disk(4))
             if ds != 1:
                 mask = cv2.resize(mask.astype(np.float32), shp0, interpolation=cv2.INTER_LINEAR) > 0.8
             if z < z_int:
