@@ -13,7 +13,7 @@ from functools import partial
 from math import floor, ceil
 import numpy as np
 from scipy.ndimage import gaussian_filter
-from skimage.morphology import reconstruction, dilation, closing, disk
+from skimage.morphology import reconstruction, dilation, opening, disk
 import time
 
 
@@ -52,16 +52,17 @@ def get_ito_mask_for_xy_chunk(bbox, z_info, src_spec, out_spec):
             mask = reconstruction(mask_l & mask_h, mask_h) > 0
             mask = dilation(mask, disk(4))
             cls_sz = (dimension_cutoff / (resolution0 * ds))
+            mask = ~mask
             if cls_sz > 4:
                 mask_ds = cv2.resize(mask.astype(np.float32), None, fx=4/cls_sz, fy=4/cls_sz, interpolation=cv2.INTER_AREA) > 0.5
-                mask_ds_cls = closing(mask_ds, disk(4))
-                mask_cls = cv2.resize(mask_ds_cls.astype(np.float32), mask.shape, interpolation=cv2.INTER_LINEAR) > 0.5
-                mask = mask | mask_cls
+                mask_ds_op = opening(mask_ds, disk(4))
+                mask_op = cv2.resize(mask_ds_op.astype(np.float32), mask.shape, interpolation=cv2.INTER_LINEAR) > 0.5
+                mask = reconstruction(mask_ds_op & mask, mask) > 0
             elif cls_sz >= 1:
-                mask = closing(mask, disk(round(cls_sz)))
+                mask_op = opening(mask, disk(round(cls_sz)))
+                mask = reconstruction(mask_op & mask, mask) > 0
             if ds != 1:
-                mask = cv2.resize(mask.astype(np.float32), shp0, interpolation=cv2.INTER_LINEAR) > 0.2
-            mask = ~mask
+                mask = cv2.resize(mask.astype(np.float32), shp0, interpolation=cv2.INTER_LINEAR) < 0.8
             if z < z_int:
                 ito_blk[:,:,z] = mask
             else:
