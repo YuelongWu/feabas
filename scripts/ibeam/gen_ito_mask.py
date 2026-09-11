@@ -57,7 +57,7 @@ def get_ito_mask_for_xy_chunk(bbox, z_info, src_spec, out_spec):
                 mask_ds = cv2.resize(mask.astype(np.float32), None, fx=4/cls_sz, fy=4/cls_sz, interpolation=cv2.INTER_AREA) > 0.5
                 mask_ds_op = opening(mask_ds, disk(4))
                 mask_op = cv2.resize(mask_ds_op.astype(np.float32), mask.shape, interpolation=cv2.INTER_LINEAR) > 0.5
-                mask = reconstruction(mask_ds_op & mask, mask) > 0
+                mask = reconstruction(mask_op & mask, mask) > 0
             elif cls_sz >= 1:
                 mask_op = opening(mask, disk(round(cls_sz)))
                 mask = reconstruction(mask_op & mask, mask) > 0
