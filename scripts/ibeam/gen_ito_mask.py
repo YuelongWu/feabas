@@ -18,12 +18,12 @@ import time
 
 
 def get_ito_mask_for_xy_chunk(bbox, z_info, src_spec, out_spec):
-    thresholds = (5, 20)
+    thresholds = (10, 25)
     src_loader = dal.TensorStoreLoader.from_json_spec(src_spec)
     out_writer = dal.TensorStoreWriter.from_json_spec(out_spec)
     resolution0 = src_loader.dataset.schema.to_json()['dimension_units'][0][0]
     ds = max(1, 32 / resolution0)
-    dimension_cutoff = 512
+    dimension_cutoff = 1024
     xmin, ymin, xmax, ymax = bbox
     if z_info is None:
         _, _, Z0, _, _, Z1 = out_writer.write_grids
