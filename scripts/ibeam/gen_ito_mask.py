@@ -35,7 +35,7 @@ def get_ito_mask_for_xy_chunk(bbox, z_info, src_spec, out_spec):
         block = src_loader.get_chunk(bbox_3d_src)
         if (block is None) or (block.size == 0):
             continue
-        block = block.reshape(block.shapep[:3])
+        block = block.reshape(block.shape[:3])
         out_wd, out_ht, out_dp = xmax - xmin, ymax - ymin, zmax - zmin
         ito_blk = np.zeros_like((out_wd, out_ht, out_dp), dtype=bool)
         previous_mask = np.ones((out_wd, out_ht), dtype=bool)
