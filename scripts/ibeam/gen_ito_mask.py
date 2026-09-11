@@ -111,6 +111,12 @@ def threshold_main(sel_indx=None, post_fix=''):
         dsp_schema = dsp_data.schema.to_json()
         out_schema["dimension_units"] = dsp_schema["dimension_units"]
         out_schema["domain"] = dsp_schema["domain"]
+        chunk_layout = out_schema["chunk_layout"]
+        write_shape = chunk_layout["write_chunk"].pop("shape")
+        read_shape = chunk_layout["read_chunk"].pop("shape")
+        chunk_layout["write_chunk"]["shape_soft_constraint"] = write_shape
+        chunk_layout["read_chunk"]["shape_soft_constraint"] = read_shape
+        out_schema["chunk_layout"] = chunk_layout
     out_spec = {"driver": "neuroglancer_precomputed", "kvstore": out_ts_dir}
     out_schema["chunk_layout"].update({"codec_chunk": {"shape": [8, 8, 8, 1]}})
     out_schema["codec"] = ({"driver": "neuroglancer_precomputed", "encoding": "compressed_segmentation"})
