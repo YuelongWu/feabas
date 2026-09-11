@@ -18,11 +18,11 @@ import time
 
 
 def get_ito_mask_for_xy_chunk(bbox, z_info, src_spec, out_spec):
-    thresholds = (10, 25)
+    thresholds = (10, 30)
     src_loader = dal.TensorStoreLoader.from_json_spec(src_spec)
     out_writer = dal.TensorStoreWriter.from_json_spec(out_spec)
-    resolution0 = src_loader.dataset.schema.to_json()['dimension_units'][0][0]
-    ds = max(1, 32 / resolution0)
+    resolution0 = src_loader.resolution
+    ds = out_writer.resolution / src_loader.resolution
     dimension_cutoff = 1024
     xmin, ymin, xmax, ymax = bbox
     if z_info is None:
@@ -31,24 +31,24 @@ def get_ito_mask_for_xy_chunk(bbox, z_info, src_spec, out_spec):
     for zs in z_info:
         zmin, z_int, zmax = zs
         bbox_3d = (xmin, ymin, zmin, xmax, ymax, zmax)
-        block = src_loader.get_chunk(bbox_3d)
+        bbox_3d_src = (int(xmin*ds), int(ymin*ds), zmin, int(xmax*ds), int(ymax*ds), zmax)
+        block = src_loader.get_chunk(bbox_3d_src)
         if (block is None) or (block.size == 0):
             continue
-        block_wd, block_ht, block_dp = block.shape[:3]
-        block = block.reshape(block_wd, block_ht, block_dp)
-        ito_blk = np.zeros_like(block, dtype=bool)
-        previous_mask = np.ones((block_wd, block_ht), dtype=bool)
+        block = block.reshape(block.shapep[:3])
+        out_wd, out_ht, out_dp = xmax - xmin, ymax - ymin, zmax - zmin
+        ito_blk = np.zeros_like((out_wd, out_ht, out_dp), dtype=bool)
+        previous_mask = np.ones((out_wd, out_ht), dtype=bool)
         z_int = z_int - zmin
-        for z in range(block_dp):
+        for z in range(out_dp):
             img = block[:,:,z]
             mask_l = img < thresholds[0]
             if not np.any(mask_l):
                 ito_blk[:,:,z] = 1
             mask_h = img < thresholds[-1]
-            shp0 = mask_l.shape
             if ds != 1:
-                mask_l = cv2.resize(mask_l.astype(np.float32), None, fx=1/ds, fy=1/ds, interpolation=cv2.INTER_AREA) > 0
-                mask_h = cv2.resize(mask_h.astype(np.float32), None, fx=1/ds, fy=1/ds, interpolation=cv2.INTER_AREA) > 0.5
+                mask_l = cv2.resize(mask_l.astype(np.float32), (out_wd, out_ht), interpolation=cv2.INTER_AREA) > 0
+                mask_h = cv2.resize(mask_h.astype(np.float32), (out_wd, out_ht), interpolation=cv2.INTER_AREA) > 0.5
             mask = reconstruction(mask_l & mask_h, mask_h) > 0
             mask = ~mask
             cls_sz = (dimension_cutoff / (resolution0 * ds))
@@ -60,9 +60,7 @@ def get_ito_mask_for_xy_chunk(bbox, z_info, src_spec, out_spec):
             elif cls_sz >= 1:
                 mask_op = opening(mask, disk(round(cls_sz)))
                 mask = reconstruction(mask_op & mask, mask) > 0
-            mask = ~dilation(~mask, disk(4))
-            if ds != 1:
-                mask = cv2.resize(mask.astype(np.float32), shp0, interpolation=cv2.INTER_LINEAR) > 0.8
+            mask = ~dilation(~mask, disk(2))
             if z < z_int:
                 ito_blk[:,:,z] = mask
             else:
@@ -74,7 +72,9 @@ def get_ito_mask_for_xy_chunk(bbox, z_info, src_spec, out_spec):
 
 
 def threshold_main(sel_indx=None, post_fix=''):
-    mip_high = 1
+    mip_src = 1
+    mip_out = 3
+    downsample_factor = 2 ** (mip_out - mip_src)
     root_dir = config.get_work_dir()
     align_dir = storage.join_paths(root_dir, 'align')
     ts_spec_file = storage.join_paths(align_dir, 'ts_spec'+post_fix+'.json')
@@ -95,15 +95,24 @@ def threshold_main(sel_indx=None, post_fix=''):
     flag_dir = storage.join_paths(align_dir, f'ITO_mask{post_fix}.json')
 
     t0 = time.time()
-    src_spec = rendered_mips_spec[mip_high]
+    src_spec = rendered_mips_spec[mip_src]
     src_loader = dal.TensorStoreLoader.from_json_spec(src_spec)
     src_data = src_loader.dataset
-    src_schema = src_data.schema.to_json()
-
+    out_schema = copy.deepcopy(src_data.schema.to_json())
+    if downsample_factor != 1:
+        dsp_spec = {
+            "driver": "downsample",
+            "downsample_factors": [downsample_factor, downsample_factor, 1, 1],
+            "downsample_method": 'mean',
+            "base": src_loader.spec
+        }
+        dsp_loader = dal.TensorStoreLoader.from_json_spec(dsp_spec)
+        dsp_data = dsp_loader.dataset
+        dsp_schema = dsp_data.schema.to_json()
+        out_schema["dimension_units"] = dsp_schema["dimension_units"]
+        out_schema["domain"] = dsp_schema["domain"]
     out_spec = {"driver": "neuroglancer_precomputed", "kvstore": out_ts_dir}
-    out_schema = copy.deepcopy(src_schema)
     out_schema["chunk_layout"].update({"codec_chunk": {"shape": [8, 8, 8, 1]}})
-    out_schema["codec"]
     out_schema["codec"] = ({"driver": "neuroglancer_precomputed", "encoding": "compressed_segmentation"})
     out_schema["dtype"] = "uint32"
     out_spec["schema"] = out_schema
@@ -111,7 +120,7 @@ def threshold_main(sel_indx=None, post_fix=''):
 
     out_writer = dal.TensorStoreWriter.from_json_spec(out_spec)
     with storage.File(flag_dir, 'w') as f:
-        json.dump({mip_high: out_writer.spec},f)
+        json.dump({mip_out: out_writer.spec},f)
 
     X0, Y0, _, X1, Y1, _ = out_writer.write_grids
     xm0, ym0 = np.meshgrid(X0, Y0)
