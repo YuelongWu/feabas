@@ -249,7 +249,7 @@ def optimize_main():
 
 
 def optimize_sections(z_list, outdir, matchdir, save_list=None, **kwargs):
-    damp = kwargs.get('damp', 1.0)
+    damp = kwargs.get('damp', 0.5)
     smooth_factor = kwargs.get('smooth_factor', 1.0)
     num_iter = kwargs.get('num_iter', 5)
     ref_files = sorted(storage.list_folder_content(storage.join_paths(outdir, '*.h5')))
@@ -382,7 +382,7 @@ def optimize_sections(z_list, outdir, matchdir, save_list=None, **kwargs):
     WA_data = W @ A_data
     A_comp = sparse.vstack((smooth_factor*A_sm, WA_data), format='csr', dtype=np.float32)
     # contrast
-    x_z = splinalg.lsqr(WA_data @ sel_M, W.dot(dd_a), damp=damp*dof0)[0]
+    x_z = splinalg.lsqr(WA_data @ sel_M, W.dot(dd_a), damp=damp*dof0**0.5)[0]
     cc = sel_M @ x_z
     for _ in range(num_iter):
         cc = splinalg.lsqr(A_comp, np.concatenate((np.zeros(A_sm.shape[0], dtype=np.float32), W.dot(dd_a))), damp=damp, x0=cc)[0]
