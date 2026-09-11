@@ -47,17 +47,17 @@ def get_ito_mask_for_xy_chunk(bbox, z_info, src_spec, out_spec):
             mask_h = img < thresholds[-1]
             shp0 = mask_l.shape
             if ds != 1:
-                mask_l = cv2.resize(mask_l.astype(np.float16), None, fx=1/ds, fy=1/ds, interpolation=cv2.INTER_AREA) > 0
-                mask_h = cv2.resize(mask_h.astype(np.float16), None, fx=1/ds, fy=1/ds, interpolation=cv2.INTER_AREA) > 0
+                mask_l = cv2.resize(mask_l.astype(np.float32), None, fx=1/ds, fy=1/ds, interpolation=cv2.INTER_AREA) > 0
+                mask_h = cv2.resize(mask_h.astype(np.float32), None, fx=1/ds, fy=1/ds, interpolation=cv2.INTER_AREA) > 0
             mask = reconstruction(mask_l, mask_h) > 0
             if dimension_cutoff > 0:
                 scl_c = resolution0 * ds / dimension_cutoff
-                mask_ds = cv2.resize(mask.astype(np.float16), None, fx=scl_c, fy=scl_c, interpolation=cv2.INTER_AREA)
+                mask_ds = cv2.resize(mask.astype(np.float32), None, fx=scl_c, fy=scl_c, interpolation=cv2.INTER_AREA)
                 mask_ds_us = cv2.resize(mask_ds, mask.shape, interpolation=cv2.INTER_LINEAR)
                 mask = mask & (mask_ds_us > 0.5)
             mask = dilation(mask, disk(2))
             if ds != 1:
-                mask = cv2.resize(mask.astype(np.float16), shp0, interpolation=cv2.INTER_LINEAR) > 0.2
+                mask = cv2.resize(mask.astype(np.float32), shp0, interpolation=cv2.INTER_LINEAR) > 0.2
             mask = ~mask
             if z < z_int:
                 ito_blk[:,:,z] = mask
