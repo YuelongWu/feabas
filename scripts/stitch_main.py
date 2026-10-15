@@ -240,6 +240,13 @@ if __name__ == '__main__':
         driver = stitch_configs.get('driver', 'image')
         if driver == 'image':
             image_outdir = storage.join_paths(image_outdir, 'mip0')
+        # Rendering allocates many tile-sized (>32 MB) temporaries. By default glibc mmaps and
+        # munmaps each of them, so every allocation page-faults and gets zeroed by the kernel
+        # (~18% sys time with 64 workers). Keep them on the heap instead; inherited by the
+        # spawned workers. Values already set in the environment take precedence.
+        os.environ.setdefault('MALLOC_MMAP_MAX_', '0')
+        os.environ.setdefault('MALLOC_TRIM_THRESHOLD_', str(64 * 1024**3))
+        os.environ.setdefault('MALLOC_TOP_PAD_', str(256 * 1024**2))
     elif args.mode.lower().startswith('o'):
         stitch_configs = stitch_configs['optimization']
         mode = 'optimization'

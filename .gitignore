@@ -55,3 +55,12 @@ ipython_config.py
 debug/
 work_dir/
 temp/
+
+### My liege! ###
+CLAUDE.md
+CLAUDE.local.md
+.claude/
+AGENTS.md
+AGENTS.override.md
+.codex/
+*.codex

@@ -31,6 +31,21 @@ H5File = storage.h5file_class()
 TOLERATED_PERTURBATION = 0.1
 MARGIN_RATIO_SWITCH = 2
 
+
+def _gaussian_blur(img, sigma, truncate=4.0):
+    """
+    2D gaussian blur of img (H x W [x C]), each channel independently. same
+    kernel and border handling as scipy.ndimage.gaussian_filter(mode='reflect'),
+    but uses OpenCV, which is ~10x faster for float32.
+    """
+    if (img.ndim > 2) and (img.shape[-1] > 4):
+        sigmas = [sigma, sigma] + [0]*(img.ndim-2)
+        return gaussian_filter(img, sigma=sigmas, truncate=truncate)
+    ksz = 2 * int(truncate * sigma + 0.5) + 1
+    return cv2.GaussianBlur(np.ascontiguousarray(img), (ksz, ksz), sigma, sigmaY=sigma,
+                            borderType=cv2.BORDER_REFLECT)
+
+
 class Stitcher:
     """
     Class to handle everything related to 2d stitching.
@@ -1449,6 +1464,8 @@ class MontageRenderer:
             clip_lrtb (tuple): the left, right, top, bottom pixels in a source
                 tile to be excluded (in case there are e.g consistent distortion
                 at the begininig of the scan).
+            stride (int): evaluate the deformation field every `stride` pixels
+                and bilinearly interpolate in between to save time.
         refer to feabas.common.render_by_subregions for other kwargs
         """
         blend = kwargs.pop('blend', 'LINEAR')
@@ -1457,7 +1474,7 @@ class MontageRenderer:
         fillval = kwargs.get('fillval', self.image_loader.default_fillval)
         dtype_out = kwargs.get('dtype_out', self.image_loader.dtype)
         affine_tolerance = kwargs.get('affine_tolerance', 0.2)
-        stride = kwargs.get('stride', 1)
+        stride = max(1, int(round(kwargs.get('stride', 1))))
         inverse = self.image_loader._inverse
         sigma = 2.5 # sigma for pyramid generation.
         weight_eps = 1e-3
@@ -1495,44 +1512,48 @@ class MontageRenderer:
             slc_y = slice(np.min(msk_y), np.max(msk_y)+1, None)
             x_msh = x0[slc_x]
             y_msh = y0[slc_y]
-            if stride != 1:
-                x_msh_s = np.linspace(x_msh.min(), x_msh.max(), max(2, int(x_msh.size/stride)))
-                y_msh_s = np.linspace(y_msh.min(), y_msh.max(), max(2, int(y_msh.size/stride)))
-            else:
-                x_msh_s = x_msh
-                y_msh_s = y_msh
-            xx, yy = np.meshgrid(x_msh_s, y_msh_s)
             offset = self._mesh_info[indx].moving_offsets.ravel()
-            xxt = xx - offset[0]
-            yyt = yy - offset[1]
-            field_generated = False
-            if affine_tolerance > 0:
-                A, t, res = self.affine_approximators[indx]
-                if res < affine_tolerance:
-                    x_field = xxt * A[0,0] + yyt * A[1,0] + t[0]
-                    y_field = xxt * A[0,1] + yyt * A[1,1] + t[1]
-                    field_generated = True
-            if not field_generated:
-                x_interp, y_interp = self.interpolators[indx]
-                map_x = x_interp(xxt, yyt)
-                mask = map_x.mask
-                if np.all(mask, axis=None):
+            if stride > 1:
+                x_field, y_field = self._subsampled_field(indx, x_msh - offset[0], y_msh - offset[1],
+                                                          stride, affine_tolerance)
+                if x_field is None:
                     continue
-                map_y = y_interp(xxt, yyt)
-                x_field = map_x.data
-                y_field = map_y.data
-            if stride != 1:
-                M = np.float32([[x_msh.size/x_msh_s.size,0,0],[0, y_msh.size/y_msh_s.size,0]])
-                x_field = cv2.warpAffine(x_field, M, (x_msh.size, y_msh.size), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
-                y_field = cv2.warpAffine(y_field, M, (x_msh.size, y_msh.size), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
-            if np.any(np.isnan(x_field)):
-                x_field = np.nan_to_num(x_field, nan=-1, copy=False)
-                y_field = np.nan_to_num(y_field, nan=-1, copy=False)
-            tile_ht, tile_wd = self.tile_size(indx)
-            weight = np.minimum.reduce([x_field - clip_ltrb[0] + 0.5,
-                                    - x_field + tile_wd - clip_ltrb[2] - 0.5,
-                                    y_field - clip_ltrb[1] + 0.5,
-                                    - y_field + tile_ht - clip_ltrb[3] - 0.5])
+            else:
+                xx, yy = np.meshgrid(x_msh, y_msh)
+                xxt = xx - offset[0]
+                yyt = yy - offset[1]
+                field_generated = False
+                if affine_tolerance > 0:
+                    A, t, res = self.affine_approximators[indx]
+                    if res < affine_tolerance:
+                        x_field = xxt * A[0,0] + yyt * A[1,0] + t[0]
+                        y_field = xxt * A[0,1] + yyt * A[1,1] + t[1]
+                        field_generated = True
+                if not field_generated:
+                    x_interp, y_interp = self.interpolators[indx]
+                    map_x = x_interp(xxt, yyt)
+                    mask = map_x.mask
+                    if np.all(mask, axis=None):
+                        continue
+                    map_y = y_interp(xxt, yyt)
+                    x_field = map_x.data
+                    y_field = map_y.data
+                if np.any(np.isnan(x_field)):
+                    x_field = np.nan_to_num(x_field, nan=-1, copy=False)
+                    y_field = np.nan_to_num(y_field, nan=-1, copy=False)
+            # distance to the source tile border. tile sizes are numpy integers, which
+            # would promote a float32 field to float64: use python scalars, and one
+            # scratch buffer instead of a temporary per term.
+            tile_ht, tile_wd = (float(s) for s in self.tile_size(indx))
+            weight = x_field - clip_ltrb[0] + 0.5
+            wtmp = np.subtract(tile_wd - clip_ltrb[2] - 0.5, x_field)
+            np.minimum(weight, wtmp, out=weight)
+            np.subtract(y_field, clip_ltrb[1], out=wtmp)
+            wtmp += 0.5
+            np.minimum(weight, wtmp, out=weight)
+            np.subtract(tile_ht - clip_ltrb[3] - 0.5, y_field, out=wtmp)
+            np.minimum(weight, wtmp, out=weight)
+            del wtmp
             mask = weight > 0
             if not np.any(mask, axis=None):
                 continue
@@ -1557,40 +1578,44 @@ class MontageRenderer:
             weight = weight.clip(0, None).astype(np.float32)
             if len(imgshp) > 2:
                 weight = np.stack((weight, )*imgt.shape[-1], axis=-1)
+            # accumulate in place on the overlap region only (outside of it the source
+            # contributes zero weight), instead of expanding every term to the full tile.
+            slc = (slc_y, slc_x)
             if image_hp is None:
-                image_hp = np.zeros_like(expand_image(imgt))
+                full_shape = (y0.size, x0.size) + imgshp[2:]
+                image_hp = np.zeros(full_shape, dtype=imgt.dtype)
                 image_lp = np.zeros_like(image_hp)
-                weight_sum = np.zeros_like(expand_image(weight))
+                weight_sum = np.zeros(full_shape, dtype=weight.dtype)
                 weight_max = np.zeros_like(weight_sum)
                 if blend == 'MAX':
-                    image_hp = image_hp - np.inf
+                    image_hp -= np.inf
                 elif blend == 'MIN':
-                    image_hp = image_hp + np.inf
-            weight_sum += expand_image(weight)
+                    image_hp += np.inf
+            weight_sum[slc] += weight
             if blend == 'LINEAR':
-                image_hp = expand_image(imgt * weight) + image_hp
+                image_hp[slc] += imgt * weight
             elif blend == 'NEAREST':
-                maskb = expand_image(weight) > weight_max
-                image_hp[maskb] = expand_image(imgt)[maskb]
-                weight_max[maskb] = expand_image(weight)[maskb]
+                maskb = weight > weight_max[slc]
+                image_hp[slc][maskb] = imgt[maskb]
+                weight_max[slc][maskb] = weight[maskb]
             elif blend == 'PYRAMID':
-                sigmas = [sigma, sigma] + [0]*(len(imgshp)-2)
-                imgt_f = gaussian_filter(imgt, sigma=sigmas)
-                imgt_h = imgt - imgt_f
-                image_lp = expand_image(imgt_f * weight) + image_lp
-                maskb = expand_image(weight) > weight_max
-                image_hp[maskb] = expand_image(imgt_h)[maskb]
-                weight_max[maskb] = expand_image(weight)[maskb]
+                imgt_f = _gaussian_blur(imgt, sigma)
+                maskb = weight > weight_max[slc]
+                np.copyto(image_hp[slc], imgt - imgt_f, where=maskb)  # high-pass part, nearest blending
+                np.maximum(weight_max[slc], weight, out=weight_max[slc])
+                imgt_f *= weight
+                image_lp[slc] += imgt_f
             elif blend == 'MAX':
-                maskb = expand_image(weight > 0)
-                image_hp[maskb] = np.maximum(image_hp[maskb], expand_image(imgt)[maskb])
+                maskb = weight > 0
+                image_hp_v = image_hp[slc]  # view
+                image_hp_v[maskb] = np.maximum(image_hp_v[maskb], imgt[maskb])
             elif blend == 'MIN':
                 maskb = expand_image(weight > 0)
                 maskb = cv2.erode(maskb.astype(np.uint8), np.ones((3,3)))>0
                 image_hp[maskb] = np.minimum(image_hp[maskb], expand_image(imgt)[maskb])
             elif blend == 'NONE':
-                maskb = expand_image(weight > 0)
-                image_hp[maskb] = expand_image(imgt)[maskb]
+                maskb = weight > 0
+                image_hp[slc][maskb] = imgt[maskb]
             else:
                 raise ValueError(f'unsupported blending mode {blend}')
         if image_hp is None:
@@ -1610,6 +1635,44 @@ class MontageRenderer:
         if np.all(img_out == fillval, axis=None):
             return None
         return img_out
+
+
+    def _subsampled_field(self, indx, xt, yt, stride, affine_tolerance):
+        """
+        deformation field of source tile indx at output coordinates (relative to
+        the mesh offset) xt (columns) by yt (rows), evaluated every `stride`
+        pixels and bilinearly upsampled to full resolution. Samples just outside
+        the mesh are extrapolated so the grid cells crossing the mesh boundary
+        stay valid. Returns float32 (x_field, y_field) with -1 where undefined,
+        or (None, None) if no sample is inside the mesh.
+        """
+        cols = common.stride_grid(xt.size, stride)
+        rows = common.stride_grid(yt.size, stride)
+        xx, yy = np.meshgrid(xt[cols], yt[rows])
+        A, t, res = self.affine_approximators[indx]
+        has_nan = False
+        if (affine_tolerance > 0) and (res < affine_tolerance):
+            x_s = xx * A[0,0] + yy * A[1,0] + t[0]
+            y_s = xx * A[0,1] + yy * A[1,1] + t[1]
+        else:
+            x_interp, y_interp = self.interpolators[indx]
+            x_s = x_interp(xx, yy)
+            if np.all(x_s.mask, axis=None):
+                return None, None
+            x_s = np.ma.filled(x_s, np.nan)
+            y_s = np.ma.filled(y_interp(xx, yy), np.nan)
+            invalid = np.isnan(x_s) | np.isnan(y_s)
+            if np.any(invalid):
+                common.extrapolate_field_border(x_s, y_s, xx, yy, A, invalid=invalid)
+                has_nan = np.any(np.isnan(x_s))
+        x_field = common.upsample_grid_field(x_s, rows, cols)
+        y_field = common.upsample_grid_field(y_s, rows, cols)
+        if has_nan:
+            # same as np.nan_to_num(nan=-1) (the fields are finite elsewhere), but one
+            # pass instead of separate isnan/isposinf/isneginf passes
+            x_field[np.isnan(x_field)] = -1
+            y_field[np.isnan(y_field)] = -1
+        return x_field, y_field
 
 
     def render_series_to_file(self, bboxes, filenames, **kwargs):
@@ -2035,7 +2098,7 @@ class MontageRenderer:
                 storage.makedirs(os.path.dirname(mask_out), exist_ok=True)
                 common.imwrite(mask_out, rendered_mask)
         bboxes_list, filenames_list, hits_list = self.divide_render_jobs(render_series,
-            num_workers=num_workers, max_tile_per_job=20)
+            num_workers=num_workers, max_tile_per_job=kwargs.get('max_tile_per_job', 20))
         if not use_tensorstore:
             metadata = {}
         target_func = partial(MontageRenderer.subprocess_render_montages, **render_settings)

@@ -66,6 +66,7 @@ rendering:
     out_dir: null # directory to save the stitched images. if set to null, default to working_directory/stitched_sections
     driver: neuroglancer_precomputed   # image(PNG tiles), neuroglancer_precomputed, zarr(not tested), n5(not tested) 
     num_workers: 15
+    max_tile_per_job: 20    # maximum number of output tiles per rendering job. larger jobs re-read fewer source tiles (neighbouring output tiles share sources), but need a larger loader cache_size to benefit; null for no limit
     tile_size: [4096, 4096] # output tile size
     read_chunk_size: [256, 256] # for sharded precomputed format
     pad_to_tile_size: true  # pad the border images to make uniform tile size
@@ -79,7 +80,7 @@ rendering:
         dtype: null # can be uint8, uint16 etc. to use the src dtype, set to null 
     render_settings:
         blend: PYRAMID  # options: LINEAR, NEAREST, PYRAMID, MAX, MIN, NONE
-        stride: 1   # subsampling rate of the deformation field to speed things up at the cost of accuracy.
+        stride: 1   # (integer) evaluate the deformation field every this many pixels and interpolate bilinearly in between, to speed things up at the cost of accuracy.
     filename_settings:  # see stitcher.MontageRenderer.plan_render_series for details
         pattern: _tr{ROW_IND}-tc{COL_IND}.png
         one_based: true # zero-based or one-based row/colume indexing

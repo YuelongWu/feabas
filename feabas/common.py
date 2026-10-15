@@ -295,23 +295,32 @@ def render_by_subregions(map_x, map_y, mask, img_loader, fileid=None,  **kwargs)
         sel_idx = to_render[seed_idx0, seed_idx1]
         seed_indices = seed_indices[sel_idx]
     multichannel = False
+    # if the whole field spans less than mx_dis, every distance check below passes
+    # and the subregion mask is simply to_render: skip building the full-size mask.
+    within_dis = ((np.ptp(map_x) < mx_dis[-1]) and (np.ptp(map_y) < mx_dis[0]))
     while np.any(to_render, axis=None):
-        if seed_indices.size > 0:
-            sel_idx = to_render[seed_indices[:,0], seed_indices[:,1]]
-            seed_indices = seed_indices[sel_idx]
-            indx0_sel = seed_indices[0, 0]
-            indx1_sel = seed_indices[0, 1]
+        if within_dis:
+            # one pass covers everything: no need to look for a seed pixel
+            mskt = to_render
         else:
-            indx0, indx1 = np.nonzero(to_render)
-            indx0_sel = indx0[indx0.size//2]
-            indx1_sel = indx1[indx1.size//2]
-        xx0 = map_x[indx0_sel, indx1_sel]
-        yy0 = map_y[indx0_sel, indx1_sel]
-        mskt = (np.abs(map_x - xx0) < mx_dis[-1]) & (np.abs(map_y - yy0) < mx_dis[0]) & to_render
-        xmin = np.floor(map_x[mskt].min()) - 4 # Lanczos 8x8 kernel
-        xmax = np.ceil(map_x[mskt].max()) + 4
-        ymin = np.floor(map_y[mskt].min()) - 4
-        ymax = np.ceil(map_y[mskt].max()) + 4
+            if seed_indices.size > 0:
+                sel_idx = to_render[seed_indices[:,0], seed_indices[:,1]]
+                seed_indices = seed_indices[sel_idx]
+                indx0_sel = seed_indices[0, 0]
+                indx1_sel = seed_indices[0, 1]
+            else:
+                indx0, indx1 = np.nonzero(to_render)
+                indx0_sel = indx0[indx0.size//2]
+                indx1_sel = indx1[indx1.size//2]
+            xx0 = map_x[indx0_sel, indx1_sel]
+            yy0 = map_y[indx0_sel, indx1_sel]
+            mskt = (np.abs(map_x - xx0) < mx_dis[-1]) & (np.abs(map_y - yy0) < mx_dis[0]) & to_render
+        map_x_sel = map_x[mskt]
+        map_y_sel = map_y[mskt]
+        xmin = np.floor(map_x_sel.min()) - 4 # Lanczos 8x8 kernel
+        xmax = np.ceil(map_x_sel.max()) + 4
+        ymin = np.floor(map_y_sel.min()) - 4
+        ymax = np.ceil(map_y_sel.max()) + 4
         bbox = (int(xmin), int(ymin), int(xmax), int(ymax))
         if fileid is None:
             img0 = img_loader.crop(bbox, **kwargs)
@@ -327,9 +336,10 @@ def render_by_subregions(map_x, map_y, mask, img_loader, fileid=None,  **kwargs)
             multichannel = True
         cover_ratio = np.sum(mskt) / mskt.size
         if cover_ratio > 0.25:
+            del map_x_sel, map_y_sel
             map_xt = map_x - xmin
             map_yt = map_y - ymin
-            imgtt = remap(img0, map_xt.astype(np.float32), map_yt.astype(np.float32),
+            imgtt = remap(img0, map_xt.astype(np.float32, copy=False), map_yt.astype(np.float32, copy=False),
                 interpolation=rintp, borderMode=cv2.BORDER_CONSTANT, borderValue=fillval)
             if multichannel:
                 mskt3 = np.stack((mskt, )*num_channel, axis=-1)
@@ -338,8 +348,8 @@ def render_by_subregions(map_x, map_y, mask, img_loader, fileid=None,  **kwargs)
             else:
                 imgt[mskt] = imgtt[mskt]
         else:
-            map_xt = map_x[mskt] - xmin
-            map_yt = map_y[mskt] - ymin
+            map_xt = map_x_sel - xmin
+            map_yt = map_y_sel - ymin
             imgtt = remap(img0, map_xt, map_yt, interpolation=rintp, borderMode=cv2.BORDER_CONSTANT, borderValue=fillval)
             if multichannel:
                 mskt3 = np.stack((mskt, )*imgtt.shape[-1], axis=-1)
@@ -682,6 +692,96 @@ def expand_image(img, target_size, slices, fillval=0):
     img_out = np.full_like(img, fillval, shape=target_size)
     img_out[slices[0], slices[1], ...] = img
     return img_out
+
+
+def stride_grid(n, stride):
+    """
+    integer sample positions 0, stride, 2*stride, ... along an axis of length
+    n, always including the last position n-1.
+    """
+    idx = np.arange(0, n, max(1, int(stride)))
+    if idx[-1] != n - 1:
+        idx = np.append(idx, n - 1)
+    return idx
+
+
+def _lerp_rows(f, idx, dtype):
+    """
+    linearly interpolate the rows of f, sampled at the increasing integer row
+    positions idx (idx[0] == 0), to every row up to idx[-1].
+    """
+    f = f.astype(dtype, copy=False)
+    out = np.empty((idx[-1] + 1,) + f.shape[1:], dtype=dtype)
+    if idx.size == 1:
+        out[:] = f
+        return out
+    df = np.diff(f, axis=0)
+    gaps = np.diff(idx)
+    s = gaps[0]
+    nonuniform = np.nonzero(gaps != s)[0]
+    K = nonuniform[0] if nonuniform.size else gaps.size  # leading intervals of length s
+    blk = out[:K*s].reshape((K, s) + f.shape[1:])
+    wr = (np.arange(s) / s).astype(dtype).reshape((1, s) + (1,) * (f.ndim - 1))
+    np.multiply(df[:K, None], wr, out=blk)
+    blk += f[:K, None]
+    for k in range(K, gaps.size):
+        r0, r1 = idx[k], idx[k+1]
+        wr = (np.arange(r1 - r0) / (r1 - r0)).astype(dtype).reshape((-1,) + (1,) * (f.ndim - 1))
+        np.multiply(df[k][None], wr, out=out[r0:r1])
+        out[r0:r1] += f[k]
+    out[idx] = f   # exact at the samples, also next to NaN samples
+    return out
+
+
+def upsample_grid_field(field, rows, cols, dtype=np.float32):
+    """
+    bilinearly interpolate a 2D field sampled at integer positions on a
+    rectilinear grid (rows x cols, increasing, starting from 0) to every pixel
+    of (rows[-1]+1, cols[-1]+1). Exact at the sample points; unlike
+    cv2.warpAffine/remap, no 1/32 sub-pixel quantization. NaN samples only
+    invalidate the pixels of the grid cells they belong to.
+    """
+    g = _lerp_rows(np.asarray(field).T, cols, dtype).T  # along columns, on the sampled rows (small)
+    return _lerp_rows(np.ascontiguousarray(g), rows, dtype)
+
+
+def extrapolate_field_border(field_x, field_y, xx, yy, A, invalid=None):
+    """
+    fill the invalid (NaN) samples of a gridded deformation field that border
+    valid ones, by extrapolating from each valid 8-neighbour with the Jacobian
+    A of an affine approximation of the field ([field_x, field_y] = [x, y] @ A + t),
+    and averaging. Keeps the grid cells straddling the mesh boundary valid when
+    the sub-sampled field is upsampled. Modifies field_x, field_y in place.
+    """
+    if invalid is None:
+        invalid = np.isnan(field_x) | np.isnan(field_y)
+    valid = ~invalid
+    nr, nc = field_x.shape
+    sx = np.zeros(field_x.shape)
+    sy = np.zeros(field_x.shape)
+    cnt = np.zeros(field_x.shape, dtype=np.int32)
+    for di in (-1, 0, 1):
+        for dj in (-1, 0, 1):
+            if di == 0 and dj == 0:
+                continue
+            r0, r1 = max(0, -di), nr - max(0, di)
+            c0, c1 = max(0, -dj), nc - max(0, dj)
+            if (r1 <= r0) or (c1 <= c0):
+                continue
+            tsl = (slice(r0, r1), slice(c0, c1))   # samples to fill
+            nsl = (slice(r0 + di, r1 + di), slice(c0 + dj, c1 + dj))   # their neighbours
+            sel = invalid[tsl] & valid[nsl]
+            if not np.any(sel):
+                continue
+            dx = (xx[tsl] - xx[nsl])[sel]
+            dy = (yy[tsl] - yy[nsl])[sel]
+            sx[tsl][sel] += field_x[nsl][sel] + dx * A[0,0] + dy * A[1,0]
+            sy[tsl][sel] += field_y[nsl][sel] + dx * A[0,1] + dy * A[1,1]
+            cnt[tsl][sel] += 1
+    fill = cnt > 0
+    field_x[fill] = sx[fill] / cnt[fill]
+    field_y[fill] = sy[fill] / cnt[fill]
+    return field_x, field_y
 
 
 def bbox_centers(bboxes):

@@ -11,6 +11,7 @@ If you have any question using this package, feel free to open a [issue](https:/
 > [!NOTE]
 > **Now we have a [manuscript](https://www.biorxiv.org/content/10.64898/2026.06.07.730510)!**
 
+**On this branch it is no longer hand-crafted artisan code. ALL HAIL OUR AI OVERLORDS!**
 
 ## Installation
 
