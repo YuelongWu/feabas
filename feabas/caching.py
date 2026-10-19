@@ -5,8 +5,10 @@ import sys
 import numpy as np
 
 def getsizeof(data):
+    """size of data in MiB"""
     if isinstance(data, np.ndarray):
-        bt = sys.getsizeof(data) / (1024**2)
+        # sys.getsizeof leaves out the buffer of views (e.g. full-image slices)
+        bt = data.nbytes / (1024**2)
     elif isinstance(data, (list, tuple)):
         bt = 0.0
         for d in data:
@@ -190,6 +192,10 @@ class CacheNull:
         errmsg = "fail to access data from empty cache"
         raise NotImplementedError(errmsg)
 
+    def peek(self, key):
+        """Access an item without counting it as a use"""
+        return self[key]
+
     def __len__(self):
         """Current number of items in the cache"""
         return 0
@@ -218,25 +224,20 @@ class CacheNull:
         """remove an item by policy specific to the cache type."""
         pass
 
-    def trim(self):
-        """remove items so that the data does not exceed its capacity"""
-        if len(self) == 0:
-            return
-        trimmed = False
+    def trim(self, extra_items=0, extra_bytes=0):
+        """
+        remove items so that the data does not exceed its capacity. extra_items
+        and extra_bytes reserve room for an item about to be added, so that it
+        is not itself the one evicted.
+        Evicted nodes are unlinked, so their data are freed by reference counting
+        without a (slow) gc.collect.
+        """
         if self._maxlen is not None:
-            while len(self) >= self._maxlen:
-                if len(self) == 0:
-                    break
+            while (len(self) > 0) and (len(self) + extra_items > self._maxlen):
                 self._evict_item_by_policy()
-                trimmed = True
         if self._maxbytes is not None:
-            while  self.total_bytes >= self._maxbytes:
-                if len(self) == 0:
-                    break
+            while (len(self) > 0) and (self.total_bytes + extra_bytes > self._maxbytes):
                 self._evict_item_by_policy()
-                trimmed = True
-        if trimmed:
-            gc.collect()
 
 
 class CacheFIFO(CacheNull):
@@ -284,11 +285,11 @@ class CacheFIFO(CacheNull):
         if (self._maxlen) == 0 or (key in self._keys):
             return
         dtsz = getsizeof(data)
-        if (self._maxbytes is None) or (dtsz < self._maxbytes):
+        if (self._maxbytes is None) or (dtsz <= self._maxbytes):
+            self.trim(extra_items=1, extra_bytes=dtsz)
             self._keys.append(key)
             self._vals.append(data)
             self._bytes.append(dtsz)
-        self.trim()
 
 
     def __iter__(self):
@@ -386,6 +387,14 @@ class CacheLRU(CacheNull):
             raise KeyError(errmsg)
 
 
+    def peek(self, key):
+        if key in self._cached_nodes:
+            return self._cached_nodes[key].data
+        else:
+            errmsg = "fail to access data with key {} from cached.".format(key)
+            raise KeyError(errmsg)
+
+
     def __len__(self):
         return len(self._cached_nodes)
 
@@ -399,12 +408,12 @@ class CacheLRU(CacheNull):
         if (self._maxlen == 0) or (self._maxbytes == 0) or (key in self._cached_nodes):
             return
         dtsz = getsizeof(data)
-        if (self._maxbytes is None) or (dtsz < self._maxbytes):
+        if (self._maxbytes is None) or (dtsz <= self._maxbytes):
+            self.trim(extra_items=1, extra_bytes=dtsz)
             data_node = Node(key, data)
             self._cache_list.insert_tail(data_node)
             self._cached_nodes[key] = data_node
             self._bytes[key] = dtsz
-        self.trim()
 
 
     def __iter__(self):
@@ -516,6 +525,14 @@ class CacheLFU(CacheNull):
             raise KeyError(errmsg)
 
 
+    def peek(self, key):
+        if key in self._cached_nodes:
+            return self._cached_nodes[key].data
+        else:
+            errmsg = "fail to access data with key {} from cached.".format(key)
+            raise KeyError(errmsg)
+
+
     def __len__(self):
         return len(self._cached_nodes)
 
@@ -528,11 +545,13 @@ class CacheLFU(CacheNull):
     def __setitem__(self, key, data):
         if (self._maxlen == 0) or (self._maxbytes == 0) or (key in self._cached_nodes):
             return
-        if (self._freq_list.head is None) or (self._freq_list.head.data != 0):
-            self._freq_list.insert_head((None, 0))
-            self._freq_list.head.pointer = DoublyLinkedList()
         dtsz = getsizeof(data)
-        if (self._maxbytes is None) or (dtsz < self._maxbytes):
+        if (self._maxbytes is None) or (dtsz <= self._maxbytes):
+            # make room first: otherwise LFU would evict the new (least used) item
+            self.trim(extra_items=1, extra_bytes=dtsz)
+            if (self._freq_list.head is None) or (self._freq_list.head.data != 0):
+                self._freq_list.insert_head((None, 0))
+                self._freq_list.head.pointer = DoublyLinkedList()
             data_node = Node(key, data)
             freq_node = self._freq_list.head
             data_node.pointer = freq_node
@@ -540,7 +559,6 @@ class CacheLFU(CacheNull):
             cache_list.insert_tail(data_node)
             self._cached_nodes[key] = data_node
             self._bytes[key] = dtsz
-        self.trim()
 
 
     def __iter__(self):

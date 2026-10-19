@@ -1,5 +1,6 @@
 from abc import ABC
 from collections import OrderedDict
+import copy
 from functools import partial
 import gc
 import json
@@ -28,7 +29,8 @@ cv2.setNumThreads(Nthreads)
 #    x0, y0 (int): x, y coordinates of top-left conrer of image bounding box
 # Returns:
 #    divider: dict[block_id] = [xmin, ymin, xmax, ymax]
-# Tiles with tile_id <=0 will not be cached. (DynamicImageLoader._cache_block)
+# Blocks with tile_id <=0 (e.g. the interior with _tile_divider_border) are only
+# cached once a crop needs them (AbstractImageLoader._cache_image).
 
 def _tile_divider_blank(imght, imgwd, x0=0, y0=0):
     """Cache image as a whole without division."""
@@ -83,6 +85,11 @@ def _tile_divider_block(imght, imgwd, x0=0, y0=0, cache_block_size=0):
     return divider
 
 
+def _bboxes_overlap(bbox0, bbox1):
+    """whether two bboxes share a positive area (touching edges don't count)"""
+    return (bbox0[0] < bbox1[2]) and (bbox1[0] < bbox0[2]) and (bbox0[1] < bbox1[3]) and (bbox1[1] < bbox0[3])
+
+
 ##------------------------------ image loaders -------------------------------##
 
 def get_loader_from_json(json_info, loader_type=None, **kwargs):
@@ -128,7 +135,8 @@ class AbstractImageLoader(ABC):
         apply_CLAHE(bool): whether to apply CLAHE on output images.
         inverse(bool): whether to invert images.
         fillval(scalar): fill value for missing data.
-        cache_size(int): length of image cache.
+        cache_size(int): length of image cache (number of images). None for no
+            limit; default 0 (no cache), or None if cache_capacity is given.
         cache_capacity(float): capacity of image cache in MiB.
         cache_border_margin(int)/cache_block_size(int): the border width
             for _tile_divider_border caching, or the square block size for
@@ -148,12 +156,14 @@ class AbstractImageLoader(ABC):
         self._CLAHE = cv2.createCLAHE(clipLimit=clahe_clip_limit, tileGridSize=(8,8))
         self._inverse = kwargs.get('inverse', False)
         self._default_fillval = kwargs.get('fillval', 0)
-        self._cache_size = kwargs.get('cache_size', 0)
         self._cache_capacity = kwargs.get('cache_capacity', None)
-        self._use_cache = (self._cache_size is None) or (self._cache_size > 0)
-        self._init_tile_divider(**kwargs)
+        # no item limit if only the capacity is given
+        self._cache_size = kwargs.get('cache_size', None if self._cache_capacity else 0)
         self._cache_type = kwargs.get('cache_type', 'mfu')
         self._cache = caching.generate_cache(self._cache_type, maxlen=self._cache_size, maxbytes=self._cache_capacity)
+        # generate_cache returns a CacheNull (stores nothing) for zero size/capacity or type 'none'
+        self._use_cache = type(self._cache) is not caching.CacheNull
+        self._init_tile_divider(**kwargs)
         preprocess_factory = kwargs.get('preprocess', None)
         preprocess_parames = kwargs.get('preprocess_params', {})
         self.update_preprocess_function(preprocess_factory, **preprocess_parames)
@@ -169,6 +179,8 @@ class AbstractImageLoader(ABC):
 
 
     def update_preprocess_function(self, preprocess_factory, **preprocess_parames):
+        if hasattr(self, '_preprocess'):
+            self.clear_cache()  # cached images were preprocessed with the old function
         self._preprocess_factory = preprocess_factory
         self._preprocess_parames = preprocess_parames
         self._preprocess = common.str_to_func(preprocess_factory, **preprocess_parames)
@@ -222,16 +234,39 @@ class AbstractImageLoader(ABC):
             yield (blkid, blkbbox, None)
 
 
+    def _read_settings_overridden(self, **kwargs):
+        """whether kwargs change how images are read: cached images can't be used"""
+        for key, attr in (('apply_CLAHE', '_apply_CLAHE'), ('inverse', '_inverse'),
+                          ('dtype', '_dtype'), ('number_of_channels', '_number_of_channels')):
+            if key not in kwargs:
+                continue
+            val, val0 = kwargs[key], getattr(self, attr)
+            if (val is None) or (val0 is None):
+                if (val is None) != (val0 is None):
+                    return True
+            elif key == 'dtype':
+                if np.dtype(val) != np.dtype(val0):
+                    return True
+            elif val != val0:
+                return True
+        return False
+
+
     def _crop_from_one_image(self, bbox, imgpath, return_empty=False, return_index=False, **kwargs):
         fillval = kwargs.get('fillval', self._default_fillval)
         dtype = kwargs.get('dtype', self.dtype)
         number_of_channels = kwargs.get('number_of_channels', self.number_of_channels)
-        if (not self._use_cache) or (imgpath not in self._cache):
+        if (not self._use_cache) or self._read_settings_overridden(**kwargs):
+            imgout = self._crop_from_one_image_without_cache(bbox, imgpath, return_empty=return_empty,
+                return_index=return_index, use_cache=False, **kwargs)
+        elif imgpath not in self._cache:
             imgout = self._crop_from_one_image_without_cache(bbox, imgpath, return_empty=return_empty, return_index=return_index, **kwargs)
         else:
             # find the intersection between crop bbox and cached block bboxes
             bbox_img = self._get_image_bbox(imgpath)
             hits = self._get_image_hits(imgpath, bbox)
+            # the only lookup that counts as a use of the cached entry
+            cache_dict = self._get_cached_dict(imgpath) if hits else None
             if not hits:
                 # no overlap, return trivial results based on output control
                 if return_empty and not return_index:
@@ -252,7 +287,7 @@ class AbstractImageLoader(ABC):
                     imgout = None, None
                 else:
                     imgout = None
-            elif any(item not in self._get_cached_dict(imgpath) for item in hits):
+            elif any(item not in cache_dict for item in hits):
                 # has missing blocks from cache, need to read image anyway
                 imgout = self._crop_from_one_image_without_cache(bbox, imgpath, return_empty=return_empty, return_index=return_index, **kwargs)
             else:
@@ -269,7 +304,6 @@ class AbstractImageLoader(ABC):
                 else:
                     bbox_partial = bbox
                 initialized = False
-                cache_dict = self._get_cached_dict(imgpath)
                 for blkid, blkbbox in hits.items():
                     blkbbox = [int(s) for s in blkbbox]
                     blk = cache_dict[blkid]
@@ -292,15 +326,15 @@ class AbstractImageLoader(ABC):
         return imgout
 
 
-    def _crop_from_one_image_without_cache(self, bbox, imgpath, return_empty=False, return_index=False, **kwargs):
+    def _crop_from_one_image_without_cache(self, bbox, imgpath, return_empty=False, return_index=False, use_cache=True, **kwargs):
         # directly crop the image without checking the cache first
         fillval = kwargs.get('fillval', self._default_fillval)
         img = self._read_image(imgpath, **kwargs)
-        bbox_img = self._get_image_bbox(imgpath)
+        bbox_img = self._get_image_bbox(imgpath, img=img)
         imgout = common.crop_image_from_bbox(img, bbox_img, bbox, return_index=return_index,
             return_empty=return_empty, fillval=fillval)
-        if self._use_cache:
-            self._cache_image(imgpath, img=img, **kwargs)
+        if self._use_cache and use_cache:
+            self._cache_image(imgpath, img=img, crop_bbox=bbox, **kwargs)
         return imgout
 
 
@@ -333,6 +367,8 @@ class AbstractImageLoader(ABC):
                     out['preprocess_params'] = preprocess_params
         if cache_settings:
             out['cache_size'] = self._cache_size
+            if self._cache_capacity is not None:
+                out['cache_capacity'] = self._cache_capacity
             out['cache_type'] = self._cache_type
             if self._tile_divider_type == 'border':
                 out['cache_border_margin'] = self._cache_border_margin
@@ -382,6 +418,8 @@ class AbstractImageLoader(ABC):
             settings['preprocess_params'] = json_obj['preprocess_params']
         if 'cache_size' in json_obj:
             settings['cache_size'] = json_obj['cache_size']
+        if 'cache_capacity' in json_obj:
+            settings['cache_capacity'] = json_obj['cache_capacity']
         if 'cache_type' in json_obj:
             settings['cache_type'] = json_obj['cache_type']
         if 'cache_border_margin' in json_obj:
@@ -469,7 +507,7 @@ class AbstractImageLoader(ABC):
         pass
 
 
-    def _get_image_bbox(self, imgpath):
+    def _get_image_bbox(self, imgpath, img=None):
         """image_bbox get function used in self._crop_from_one_image"""
         pass
 
@@ -483,7 +521,7 @@ class AbstractImageLoader(ABC):
         # hits[blkid] = bbox
         cached_block_rtree = self._get_image_cached_block_rtree(imgpath)
         hit_list = list(cached_block_rtree.intersection(bbox, objects=True))
-        hits ={item.id: item.bbox for item in hit_list}
+        hits = {item.id: item.bbox for item in hit_list if _bboxes_overlap(item.bbox, bbox)}
         return hits
 
 
@@ -551,13 +589,14 @@ class DynamicImageLoader(AbstractImageLoader):
         return cls(**settings)
 
 
-    def _cache_image(self, imgpath, img=None, **kwargs):
+    def _cache_image(self, imgpath, img=None, crop_bbox=None, **kwargs):
         # self._cache[imgpath] = ((0, 0, imgwd, imght), cache_dict{blkid: tile})
+        # blocks with id <= 0 are only cached if they overlap crop_bbox
         if not self._use_cache:
             return
-        if imgpath in self._cache:
-            cache_dict = self._cache[imgpath]
-            bbox_img = cache_dict[0]
+        cached = imgpath in self._cache
+        if cached:
+            bbox_img, cache_dict = self._cache.peek(imgpath)
             x0, y0, x1, y1 = bbox_img
             imgwd = x1 - x0
             imght = y1 - y0
@@ -576,16 +615,22 @@ class DynamicImageLoader(AbstractImageLoader):
         divider = self._tile_divider(imght, imgwd, x0=x0, y0=y0)
         new_cache = False
         for bid, blkbbox in divider.items():
-            if (bid > 0) and (bid not in cache_dict):
-                if img is None:
-                    img = self._read_image(imgpath, **kwargs)
-                blk = img[blkbbox[1]:blkbbox[3], blkbbox[0]:blkbbox[2],...]
-                if blk.size != img.size:
-                    blk = blk.copy()
-                cache_dict[bid] = blk
-                new_cache = True
+            if bid in cache_dict:
+                continue
+            if (bid <= 0) and ((crop_bbox is None) or (not _bboxes_overlap(blkbbox, crop_bbox))):
+                continue
+            if img is None:
+                img = self._read_image(imgpath, **kwargs)
+            blk = img[blkbbox[1]:blkbbox[3], blkbbox[0]:blkbbox[2],...]
+            if blk.size != img.size:
+                blk = blk.copy()
+            cache_dict[bid] = blk
+            new_cache = True
         if new_cache:
-            self._cache[imgpath] = ((0, 0, imgwd,imght), cache_dict)
+            if cached:
+                self._cache.update_item(imgpath, ((0, 0, imgwd,imght), cache_dict))    # recount its size
+            else:
+                self._cache[imgpath] = ((0, 0, imgwd,imght), cache_dict)
 
 
     def _get_cached_dict(self, imgpath):
@@ -596,11 +641,12 @@ class DynamicImageLoader(AbstractImageLoader):
             return self._cache[imgpath][1]
 
 
-    def _get_image_bbox(self, imgpath):
+    def _get_image_bbox(self, imgpath, img=None):
         if imgpath in self._cache:
-            return self._cache[imgpath][0]
+            return self._cache.peek(imgpath)[0]
         else:
-            img = self._read_image(imgpath)
+            if img is None:
+                img = self._read_image(imgpath)
             imght = img.shape[0]
             imgwd = img.shape[1]
             return (0,0, imgwd, imght)
@@ -688,7 +734,9 @@ class StaticImageLoader(AbstractImageLoader):
                 if 'bbox' in f:
                     bboxes.append(f['bbox'])
                 else:
-                    bboxes = False
+                    bboxes_included = False
+        if not bboxes_included:
+            bboxes = None
         return cls(filepaths=filepaths, bboxes=bboxes, **settings)
 
 
@@ -712,7 +760,8 @@ class StaticImageLoader(AbstractImageLoader):
                 f.write(line+'\n')
 
 
-    def _cache_image(self, fileid, img=None, **kwargs):
+    def _cache_image(self, fileid, img=None, crop_bbox=None, **kwargs):
+        # blocks with id <= 0 are only cached if they overlap crop_bbox
         if not self._use_cache:
             return
         if isinstance(fileid, str):
@@ -721,23 +770,35 @@ class StaticImageLoader(AbstractImageLoader):
             if fileid == -1:
                 image_not_in_list = '{} not in the image loader list'.format(filepath)
                 raise KeyError(image_not_in_list)
-        if fileid in self._cache:
-            cache_dict = self._cache[fileid]
+        cached = fileid in self._cache
+        if cached:
+            cache_dict = self._cache.peek(fileid)
         else:
             cache_dict = {}
+        if crop_bbox is not None:
+            # divider blocks are relative to the image's top-left corner
+            xmin_img, ymin_img = self._get_image_bbox(fileid)[:2]
+            crop_bbox = (crop_bbox[0]-xmin_img, crop_bbox[1]-ymin_img,
+                crop_bbox[2]-xmin_img, crop_bbox[3]-ymin_img)
         new_cache = False
         divider = self.divider(fileid)
         for bid, blkbbox in divider.items():
-            if (bid > 0) and (bid not in cache_dict):
-                if img is None:
-                    img = self._read_image(fileid, **kwargs)
-                blk = img[blkbbox[1]:blkbbox[3], blkbbox[0]:blkbbox[2],...]
-                if blk.size != img.size:
-                    blk = blk.copy()
-                cache_dict[bid] = blk
-                new_cache = True
+            if bid in cache_dict:
+                continue
+            if (bid <= 0) and ((crop_bbox is None) or (not _bboxes_overlap(blkbbox, crop_bbox))):
+                continue
+            if img is None:
+                img = self._read_image(fileid, **kwargs)
+            blk = img[blkbbox[1]:blkbbox[3], blkbbox[0]:blkbbox[2],...]
+            if blk.size != img.size:
+                blk = blk.copy()
+            cache_dict[bid] = blk
+            new_cache = True
         if new_cache:
-            self._cache[fileid] = cache_dict
+            if cached:
+                self._cache.update_item(fileid, cache_dict)    # recount its size
+            else:
+                self._cache[fileid] = cache_dict
 
 
     def _export_dict(self, output_controls=True, cache_settings=True, image_list=True):
@@ -759,7 +820,7 @@ class StaticImageLoader(AbstractImageLoader):
             return self._cache[fileid]
 
 
-    def _get_image_bbox(self, fileid):
+    def _get_image_bbox(self, fileid, img=None):
         if isinstance(fileid, str):
             filepath = fileid
             fileid = self.fileid_lookup(filepath)
@@ -785,6 +846,8 @@ class StaticImageLoader(AbstractImageLoader):
         hits = {}
         for item in hit_list:
             bbox_hit = item.bbox
+            if not _bboxes_overlap(bbox_hit, bbox_normalized):
+                continue
             bbox_out = (bbox_hit[0]+xmin_img, bbox_hit[1]+ymin_img,
                 bbox_hit[2]+xmin_img, bbox_hit[3]+ymin_img)
             hits[item.id] = bbox_out
@@ -944,16 +1007,8 @@ class MosaicLoader(StaticImageLoader):
 
 
     def _init_rtrees(self):
+        # the per-tile cached block rtrees are built lazily by _get_image_cached_block_rtree
         self._file_rtree = index.Index(self._file_rtree_generator(), interleaved=True)
-        self._cache_block_rtree = {}
-        for bbox in self._file_bboxes:
-            # normalize file bounding box to reduce number of trees needed
-            imgwd = bbox[2] - bbox[0]
-            imght = bbox[3] - bbox[1]
-            box_normalized = (0, 0, imgwd, imght)
-            if box_normalized not in self._cache_block_rtree:
-                self._cache_block_rtree[box_normalized] = index.Index(
-                    self._cached_block_rtree_generator(box_normalized), interleaved=True)
 
 
     @staticmethod
@@ -1034,11 +1089,11 @@ class StreamLoader(AbstractImageLoader):
             self._src_number_of_channels = img.shape[-1]
         self._number_of_channels = kwargs.get('number_of_channels', max(1, self._src_number_of_channels))
         self._clahe_img = None
-        self._preprocess = kwargs.get('preprocess', None)
+        self._clahe_clip_limit = kwargs.get('CLAHE_cliplimit', 2.0)
         self._inverse = kwargs.get('inverse', False)
         self._default_fillval = kwargs.get('fillval', 0)
         self.resolution = kwargs.get('resolution', data_resolution())
-        self.update_preprocess_function(None)
+        self.update_preprocess_function(kwargs.get('preprocess', None), **kwargs.get('preprocess_params', {}))
         self.x0 = kwargs.get('x0', 0)
         self.y0 = kwargs.get('y0', 0)
         self._tf_lut = {}
@@ -1067,13 +1122,13 @@ class StreamLoader(AbstractImageLoader):
     @property
     def clahe_img(self):
         if self._clahe_img is None:
-            clahe_filter = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
-            if len(self.img.shape) > 2:
-                img = cv2.cvtColor(self.img, cv2.COLOR_RGB2Lab)
+            clahe_filter = cv2.createCLAHE(clipLimit=self._clahe_clip_limit, tileGridSize=(8,8))
+            if len(self._img.shape) > 2:
+                img = cv2.cvtColor(self._img, cv2.COLOR_RGB2Lab)
                 img[:,:,0] = clahe_filter.apply(img[:,:,0])
                 self._clahe_img = cv2.cvtColor(img, cv2.COLOR_Lab2RGB)
             else:
-                self._clahe_img = clahe_filter.apply(self.img)
+                self._clahe_img = clahe_filter.apply(self._img)
         return self._clahe_img
 
 
@@ -1167,11 +1222,47 @@ def get_tensorstore_spec(metafile, mip=None, **kwargs):
         return ds_spec
 
 
+# TensorStore chunk caches. All the loaders in a process that ask for the same cache
+# capacity share one cache pool, so the capacity is a per-process (= per worker) budget.
+# Opened volumes are also kept (most recent _TS_MAX_HANDLES), so that tasks running one
+# after another in a worker reuse the chunks cached by the earlier ones without
+# revalidating them. This assumes the sources are not modified while a process reads them.
+_TS_CONTEXTS = {}
+_TS_HANDLES = OrderedDict()
+_TS_MAX_HANDLES = 32
+
+
+def _ts_cache_context(cache_capacity):
+    """shared tensorstore context with a cache pool of cache_capacity MiB"""
+    ctx = _TS_CONTEXTS.get(cache_capacity, None)
+    if ctx is None:
+        ctx = ts.Context({'cache_pool': {'total_bytes_limit': round(cache_capacity * 1024**2)}})
+        _TS_CONTEXTS[cache_capacity] = ctx
+    return ctx
+
+
+def release_tensorstore_handles():
+    """drop the tensorstore volumes kept open for reuse (their cached chunks are freed)"""
+    _TS_HANDLES.clear()
+
+
 class TensorStoreLoader(AbstractImageLoader):
     """
     Loader class for image saved by tensorstore. Mirrors the APIs of MosaicLoader.
+    Its image cache is TensorStore's chunk cache, shared by all the loaders in the
+    process with the same capacity: cache_capacity in MiB, or cache_size in
+    4k x 4k 8-bit tiles. None or 0: no cache.
     """
+    _reuse_handles = True
+
     def __init__(self, dataset=None, **kwargs):
+        cache_capacity = kwargs.pop('cache_capacity', None)
+        cache_size = kwargs.pop('cache_size', None)
+        if (cache_capacity == 0) or (cache_size == 0):
+            cache_capacity = None   # as for the other loaders, 0 disables the cache
+        elif (cache_capacity is None) and (cache_size is not None):
+            cache_capacity = cache_size * 16
+        self._ts_cache_capacity = cache_capacity
         super().__init__(**kwargs)
         if dataset is None:
             self._spec = kwargs.get('spec')
@@ -1193,40 +1284,68 @@ class TensorStoreLoader(AbstractImageLoader):
 
     @classmethod
     def from_json_spec(cls, js_spec, **kwargs):
-        if kwargs.get('cache_capacity', None) is not None:
-            total_bytes_limit = round(kwargs['cache_capacity'] * 1_000_000)
-        elif kwargs.get('cache_size', None) is not None:
-            # assume 4k tiles
-            total_bytes_limit = round(kwargs['cache_size'] * 4096 * 4096)
-        else:
-            total_bytes_limit = -1
-        if total_bytes_limit >= 0:
-            cntx = {'cache_pool': {'total_bytes_limit': total_bytes_limit}}
-            js_spec = js_spec.copy()
+        has_inline_pool = False
+        crnt_lvl = js_spec
+        while isinstance(crnt_lvl, dict):
+            has_inline_pool = has_inline_pool or ('cache_pool' in crnt_lvl.get('context', {}))
+            crnt_lvl = crnt_lvl.get('base', None)
+        if has_inline_pool:
+            # older specs carry the cache pool inline: use the shared one instead
+            js_spec = copy.deepcopy(js_spec)    # don't modify the caller's (nested) spec
             crnt_lvl = js_spec
-            while 'base' in crnt_lvl:
-                crnt_lvl = crnt_lvl['base']
-            crnt_lvl.update({'context': cntx, 'recheck_cached_data': 'open'})
+            while isinstance(crnt_lvl, dict):
+                ctx = crnt_lvl.get('context', {})
+                ctx.pop('cache_pool', None)
+                if ('context' in crnt_lvl) and (not ctx):
+                    crnt_lvl.pop('context')
+                crnt_lvl.pop('recheck_cached_data', None)
+                crnt_lvl = crnt_lvl.get('base', None)
         if js_spec['driver'] in ('neuroglancer_precomputed', 'n5'):
             kwargs['fillval'] = 0
-        return cls(spec=js_spec)
+        for key in ('spec', 'dataset'):
+            kwargs.pop(key, None)
+        return cls(spec=js_spec, **kwargs)
 
 
     def _export_dict(self, **kwargs):
+        kwargs['cache_settings'] = False
         out = super()._settings_dict(**kwargs)
         out['json_spec'] = self._spec
+        if self._ts_cache_capacity is not None:
+            out['cache_capacity'] = self._ts_cache_capacity
         return out
 
 
-    def reconnect(self):
+    def reconnect(self, reuse=True):
+        """(re)open the volume. reuse=False forces a new connection (e.g. after a timeout)."""
+        cache_capacity = self._ts_cache_capacity
+        spec, context, key = self._spec, None, None
+        if cache_capacity is not None:
+            if self._reuse_handles:
+                key = (json.dumps(self._spec, sort_keys=True), cache_capacity)
+                if reuse and (key in _TS_HANDLES):
+                    _TS_HANDLES.move_to_end(key)
+                    self.dataset = _TS_HANDLES[key]
+                    return
+            # chunks cached after opening are trusted for the lifetime of the handle
+            spec = copy.deepcopy(spec)
+            crnt_lvl = spec
+            while 'base' in crnt_lvl:
+                crnt_lvl = crnt_lvl['base']
+            crnt_lvl['recheck_cached_data'] = 'open'
+            context = _ts_cache_context(cache_capacity)
         for _ in range(TS_RETRY+1):
             try:
-                self.dataset = ts.open(self._spec).result(timeout=TS_TIMEOUT)
+                self.dataset = ts.open(spec, context=context).result(timeout=TS_TIMEOUT)
                 break
             except TimeoutError:
                 pass
         else:
             raise TimeoutError
+        if key is not None:
+            _TS_HANDLES[key] = self.dataset
+            while len(_TS_HANDLES) > _TS_MAX_HANDLES:
+                _TS_HANDLES.popitem(last=False)
 
 
     def crop(self, bbox, return_empty=False, **kwargs):
@@ -1252,7 +1371,7 @@ class TensorStoreLoader(AbstractImageLoader):
                 img_crp = slc_crp.read().result(timeout=TS_TIMEOUT)
                 break
             except TimeoutError:
-                self.reconnect()
+                self.reconnect(reuse=False)
         else:
             raise TimeoutError
         if np.all(img_crp == fillval) and (not return_empty):
@@ -1275,7 +1394,7 @@ class TensorStoreLoader(AbstractImageLoader):
         if self._preprocess is not None:
             img_crp = self._preprocess(img_crp)
         if inverse:
-            img = common.inverse_image(img, dtype)
+            img_crp = common.inverse_image(img_crp, dtype)
         outht = bbox[3] - bbox[1]
         outwd = bbox[2] - bbox[0]
         outsz = [outht, outwd] + list(img_crp.shape)[2:]
@@ -1308,7 +1427,7 @@ class TensorStoreLoader(AbstractImageLoader):
                         block[loc0[0]:loc1[0], loc0[1]:loc1[1], loc0[2]:loc1[2], ...] = ptch
                 break
             except TimeoutError:
-                self.reconnect()
+                self.reconnect(reuse=False)
         else:
             raise TimeoutError
         if (not return_empty) and ((block.size == 0) or np.all(block == fillval)):
@@ -1383,6 +1502,7 @@ class TensorStoreWriter(TensorStoreLoader):
     Writer class for TensorStore Volume. Handles cropping/padding when the
     bounding box not aligned to the grid. Also handles timeout retry,
     """
+    _reuse_handles = False
     def write_single_chunk(self, bbox, img, **kwargs):
         ts_retry = kwargs.get('ts_retry', TS_RETRY)
         txn = kwargs.get('txn', None)
@@ -1434,7 +1554,7 @@ class TensorStoreWriter(TensorStoreLoader):
                     updated = True
                 break
             except TimeoutError:
-                self.reconnect()
+                self.reconnect(reuse=False)
         else:
             raise TimeoutError
         return updated
@@ -1453,7 +1573,7 @@ class TensorStoreWriter(TensorStoreLoader):
                     if not txn.aborted:
                         break
                 except TimeoutError:
-                    self.reconnect()
+                    self.reconnect(reuse=False)
             else:
                 raise TimeoutError
 

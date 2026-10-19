@@ -1062,8 +1062,8 @@ class VolumeRenderer:
         if max_tile_per_job is not None:
             num_tile_per_job = min(num_tile_per_job, max_tile_per_job)
         if cache_capacity is not None:
-            chunk_mb = np.prod(self.writer.write_chunk_shape[:2]) * self.writer.number_of_channels / (1024 ** 2)
-            max_chunk_per_proc = max(1, cache_capacity / (chunk_mb * num_workers))
+            # cache_capacity: output buffer per worker (MiB)
+            max_chunk_per_proc = max(1, cache_capacity / chunk_mb)
             num_tile_per_job = min(num_tile_per_job, max_chunk_per_proc)
         N_jobs = max(1, round(num_tiles / num_tile_per_job))
         indices_tile = np.round(np.linspace(0, num_tiles, num=N_jobs+1, endpoint=True))
@@ -1123,6 +1123,7 @@ class VolumeRenderer:
             checkpoint_file = storage.join_paths(self.checkpoint_dir, flag_name + '.h5')
             render_seriers, checkpoints = self.plan_one_slab(z_ind=z_ind, num_workers=num_workers, flag_name=flag_name, max_tile_per_job=max_tile_per_job, cache_capacity=cache_capacity)
             if len(render_seriers) == 0:
+        chunk_mb = np.prod(self.writer.write_chunk_shape[:2]) * self.writer.number_of_channels / (1024 ** 2)
                 continue
             morton_LUT = {s['task_id']: s['morton_indx'] for s in render_seriers}
             if cache_capacity is None:
@@ -1390,7 +1391,8 @@ def subprocess_render_partial_ts_slab(loaders, meshes, morton_indx, out_ts, **kw
     offset = kwargs.pop('offset', np.zeros((1,2), dtype=np.int64))
     flags0 = kwargs.pop('flags', {})
     flags = {}
-    loaders = {int(z): VolumeRenderer._get_loader(ldr, mip=mip) for z, ldr in loaders.items()}
+    cache_config = {k: loader_config[k] for k in ('cache_size', 'cache_capacity') if k in loader_config}
+    loaders = {int(z): VolumeRenderer._get_loader(ldr, mip=mip, **cache_config) for z, ldr in loaders.items()}
     meshes = {int(z): VolumeRenderer._get_mesh(msh) for z, msh in meshes.items()}
     zindx = []
     renderers = {}

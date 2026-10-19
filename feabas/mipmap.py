@@ -551,13 +551,12 @@ def mip_one_level_tensorstore_3d(src_spec, mipup=1, **kwargs):
     chunk_shape = out_writer.write_chunk_shape
     chunk_mb = np.prod(chunk_shape) * np.prod(downsample_factors)/ (1024**2)
     if cache_capacity is not None:
-        cache_capacity_per_worker = cache_capacity / num_workers
-        chunk_per_job = max(1, cache_capacity_per_worker / chunk_mb)
+        # cache_capacity (MiB, per worker): source cache and job size
+        chunk_per_job = max(1, cache_capacity / chunk_mb)
         if cache_size is not None:
             chunk_per_job = min(cache_size, chunk_per_job)
         max_tasks_per_child = 1
     else:
-        cache_capacity_per_worker = None
         chunk_per_job = min(20, max(1, round(Nx*Ny*len(zind_to_render)/num_workers)))
         if cache_size is not None:
             chunk_per_job = min(cache_size, chunk_per_job)
@@ -608,7 +607,7 @@ def mip_one_level_tensorstore_3d(src_spec, mipup=1, **kwargs):
                 "src_spec": dsp_spec,
                 "out_spec": out_spec,
                 "task_id": task_id,
-                "cache_capacity": cache_capacity_per_worker
+                "cache_capacity": cache_capacity
             }
             tasks.append(bkwargs)
             task_id += 1

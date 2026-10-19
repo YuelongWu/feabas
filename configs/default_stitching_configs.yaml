@@ -7,7 +7,7 @@ matching:   # see stitcher.Stitcher.subprocess_match_list_of_overlaps for detail
     margin: 100             # extra width of image to include during match to accommondate inaccurate stage movement
     num_overlaps_per_job: 180   # maximum number of matches assigned to each multiprocessing subprocess each time
     loader_config:  # see dal.AbstractImageLoader for details
-        cache_size: 150     # total number of images allowed to cache in RAM
+        cache_capacity: 2048    # RAM (MiB) per worker to cache source tiles. optional cache_size: max number of tiles per worker
     matcher_config: # see matcher.stitching_matcher for details
         spacings: null   # the spacing between grid points. null to decide dynamically
         conf_thresh: 0.33   # cross-correlations with confidence value smaller than this will be rejected
@@ -66,13 +66,13 @@ rendering:
     out_dir: null # directory to save the stitched images. if set to null, default to working_directory/stitched_sections
     driver: neuroglancer_precomputed   # image(PNG tiles), neuroglancer_precomputed, zarr(not tested), n5(not tested) 
     num_workers: 15
-    max_tile_per_job: 20    # maximum number of output tiles per rendering job. larger jobs re-read fewer source tiles (neighbouring output tiles share sources), but need a larger loader cache_size to benefit; null for no limit
+    max_tile_per_job: 20    # maximum number of output tiles per rendering job. larger jobs re-read fewer source tiles (neighbouring output tiles share sources), but need a larger loader cache to benefit; null for no limit
     tile_size: [4096, 4096] # output tile size
     read_chunk_size: [256, 256] # for sharded precomputed format
     pad_to_tile_size: true  # pad the border images to make uniform tile size
     resolution: null    # if null, use the intrinsic image resolution; otherwise scale to this resolution
     loader_settings: # see dal.AbstractImageLoader for details
-        cache_size: 150
+        cache_capacity: 2048    # RAM (MiB) per worker to cache source tiles: ~55 tiles cover a render job of 20 output tiles. optional cache_size: max number of tiles per worker (x4^mip at mip>0)
         apply_CLAHE: true      # whether to apply CLAHE
         CLAHE_cliplimit: 2.0   # counterintuitively, probably need larger value for 16-bit
         inverse: true          # whether to invert the grayscale
