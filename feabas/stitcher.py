@@ -1401,7 +1401,7 @@ class MontageRenderer:
 
 
     def clear_cache(self, instant_gc=False):
-        self._interpolants = None
+        self._interpolators = None
         self._rtree = None
         if self._image_loader is not None:
             self._image_loader.clear_cache(instant_gc=False)
@@ -2004,7 +2004,7 @@ class MontageRenderer:
     def render_one_section(self, out_prefix, meta_name=None, **kwargs):
         num_workers = kwargs.get('num_workers', 1)
         tile_size = kwargs.pop('tile_size', [4096, 4096])
-        resolution = kwargs.pop('resolution', None)
+        resolution = kwargs.pop('resolution', self.resolution)
         render_settings = kwargs.get('render_settings', {}).copy()
         driver = kwargs.get('driver', 'image')
         mask_out = kwargs.get('mask_out', None)

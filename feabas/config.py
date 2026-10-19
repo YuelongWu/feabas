@@ -68,7 +68,7 @@ def get_log_dir():
 
 def merge_config(default_config, additional_config):
     for k, v in additional_config.items():
-        if isinstance(v, dict) and (k in default_config):
+        if isinstance(v, dict) and isinstance(default_config.get(k, None), dict):
             merge_config(default_config[k], v)
         else:
             default_config[k] = v

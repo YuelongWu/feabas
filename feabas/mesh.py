@@ -126,7 +126,7 @@ def config_cache(gear):
                         if not np.all(tri_mask0):
                             masked_operation = True
             if (not masked_operation) and (kwargs.get('vtx_mask', None) is not None):
-                vtx_mask = common.numpy_array(vtx_mask, copy=False)
+                vtx_mask = common.numpy_array(kwargs['vtx_mask'], copy=False)
                 if vtx_mask.dtype == bool:
                     if not np.all(vtx_mask):
                         masked_operation = True
@@ -1016,7 +1016,7 @@ class Mesh:
                         continue
                     len12 = np.sum((initial_vertices[vidx[k1]] - initial_vertices[vidx[k2]]) ** 2)
                     len01 = np.sum((initial_vertices[vidx[k0]] - initial_vertices[vidx[k1]]) ** 2)
-                    len20 = np.sum((initial_vertices[vidx[k1]] - initial_vertices[vidx[k0]]) ** 2)
+                    len20 = np.sum((initial_vertices[vidx[k2]] - initial_vertices[vidx[k0]]) ** 2)
                     if (k0, k1) in mid_idx:
                         if len12 > len01:
                             new_triangles.append([vid0, mid_idx[(k0, k1)], mid_idx[(k2, k1)]])
@@ -1766,7 +1766,7 @@ class Mesh:
         """
         if tri_mask is not None:
             vtx_mask = np.zeros(self.num_vertices, dtype=bool)
-            vtx_idx = np.unique(tri_mask, axis=None)
+            vtx_idx = np.unique(self.triangles[tri_mask])
             vtx_mask[vtx_idx] = True
         else:
             vtx_mask = None
@@ -1980,6 +1980,8 @@ class Mesh:
         v0 = self.vertices(gear=gear[0])
         v1 = self.vertices(gear=gear[-1])
         T = self.triangles
+        if tri_mask is not None:
+            T = T[tri_mask]
         area0 = common.signed_area(v0, T)
         area1 = common.signed_area(v1, T)
         return area1 / area0
@@ -2643,7 +2645,7 @@ class Mesh:
                 if len(collisions_list) > 0:
                     collisions = np.concatenate(collisions_list, axis=0)
                     collisions = np.sort(collisions, axis=-1)
-                    collisions = np.unique(collisions, axis=-1)
+                    collisions = np.unique(collisions, axis=0)
         return collisions
 
 

@@ -1,5 +1,6 @@
 from abc import ABC
 from collections import OrderedDict
+import copy
 from functools import partial
 import gc
 import json
@@ -333,6 +334,8 @@ class AbstractImageLoader(ABC):
                     out['preprocess_params'] = preprocess_params
         if cache_settings:
             out['cache_size'] = self._cache_size
+            if self._cache_capacity is not None:
+                out['cache_capacity'] = self._cache_capacity
             out['cache_type'] = self._cache_type
             if self._tile_divider_type == 'border':
                 out['cache_border_margin'] = self._cache_border_margin
@@ -382,6 +385,8 @@ class AbstractImageLoader(ABC):
             settings['preprocess_params'] = json_obj['preprocess_params']
         if 'cache_size' in json_obj:
             settings['cache_size'] = json_obj['cache_size']
+        if 'cache_capacity' in json_obj:
+            settings['cache_capacity'] = json_obj['cache_capacity']
         if 'cache_type' in json_obj:
             settings['cache_type'] = json_obj['cache_type']
         if 'cache_border_margin' in json_obj:
@@ -556,8 +561,7 @@ class DynamicImageLoader(AbstractImageLoader):
         if not self._use_cache:
             return
         if imgpath in self._cache:
-            cache_dict = self._cache[imgpath]
-            bbox_img = cache_dict[0]
+            bbox_img, cache_dict = self._cache[imgpath]
             x0, y0, x1, y1 = bbox_img
             imgwd = x1 - x0
             imght = y1 - y0
@@ -688,7 +692,9 @@ class StaticImageLoader(AbstractImageLoader):
                 if 'bbox' in f:
                     bboxes.append(f['bbox'])
                 else:
-                    bboxes = False
+                    bboxes_included = False
+        if not bboxes_included:
+            bboxes = None
         return cls(filepaths=filepaths, bboxes=bboxes, **settings)
 
 
@@ -1034,11 +1040,11 @@ class StreamLoader(AbstractImageLoader):
             self._src_number_of_channels = img.shape[-1]
         self._number_of_channels = kwargs.get('number_of_channels', max(1, self._src_number_of_channels))
         self._clahe_img = None
-        self._preprocess = kwargs.get('preprocess', None)
+        self._clahe_clip_limit = kwargs.get('CLAHE_cliplimit', 2.0)
         self._inverse = kwargs.get('inverse', False)
         self._default_fillval = kwargs.get('fillval', 0)
         self.resolution = kwargs.get('resolution', data_resolution())
-        self.update_preprocess_function(None)
+        self.update_preprocess_function(kwargs.get('preprocess', None), **kwargs.get('preprocess_params', {}))
         self.x0 = kwargs.get('x0', 0)
         self.y0 = kwargs.get('y0', 0)
         self._tf_lut = {}
@@ -1067,13 +1073,13 @@ class StreamLoader(AbstractImageLoader):
     @property
     def clahe_img(self):
         if self._clahe_img is None:
-            clahe_filter = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
-            if len(self.img.shape) > 2:
-                img = cv2.cvtColor(self.img, cv2.COLOR_RGB2Lab)
+            clahe_filter = cv2.createCLAHE(clipLimit=self._clahe_clip_limit, tileGridSize=(8,8))
+            if len(self._img.shape) > 2:
+                img = cv2.cvtColor(self._img, cv2.COLOR_RGB2Lab)
                 img[:,:,0] = clahe_filter.apply(img[:,:,0])
                 self._clahe_img = cv2.cvtColor(img, cv2.COLOR_Lab2RGB)
             else:
-                self._clahe_img = clahe_filter.apply(self.img)
+                self._clahe_img = clahe_filter.apply(self._img)
         return self._clahe_img
 
 
@@ -1194,7 +1200,7 @@ class TensorStoreLoader(AbstractImageLoader):
     @classmethod
     def from_json_spec(cls, js_spec, **kwargs):
         if kwargs.get('cache_capacity', None) is not None:
-            total_bytes_limit = round(kwargs['cache_capacity'] * 1_000_000)
+            total_bytes_limit = round(kwargs['cache_capacity'] * 1024**2)
         elif kwargs.get('cache_size', None) is not None:
             # assume 4k tiles
             total_bytes_limit = round(kwargs['cache_size'] * 4096 * 4096)
@@ -1202,14 +1208,16 @@ class TensorStoreLoader(AbstractImageLoader):
             total_bytes_limit = -1
         if total_bytes_limit >= 0:
             cntx = {'cache_pool': {'total_bytes_limit': total_bytes_limit}}
-            js_spec = js_spec.copy()
+            js_spec = copy.deepcopy(js_spec)
             crnt_lvl = js_spec
             while 'base' in crnt_lvl:
                 crnt_lvl = crnt_lvl['base']
             crnt_lvl.update({'context': cntx, 'recheck_cached_data': 'open'})
         if js_spec['driver'] in ('neuroglancer_precomputed', 'n5'):
             kwargs['fillval'] = 0
-        return cls(spec=js_spec)
+        for key in ('spec', 'cache_capacity', 'cache_size'):
+            kwargs.pop(key, None)
+        return cls(spec=js_spec, **kwargs)
 
 
     def _export_dict(self, **kwargs):
@@ -1275,7 +1283,7 @@ class TensorStoreLoader(AbstractImageLoader):
         if self._preprocess is not None:
             img_crp = self._preprocess(img_crp)
         if inverse:
-            img = common.inverse_image(img, dtype)
+            img_crp = common.inverse_image(img_crp, dtype)
         outht = bbox[3] - bbox[1]
         outwd = bbox[2] - bbox[0]
         outsz = [outht, outwd] + list(img_crp.shape)[2:]

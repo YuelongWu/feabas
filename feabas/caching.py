@@ -6,7 +6,10 @@ import numpy as np
 
 def getsizeof(data):
     if isinstance(data, np.ndarray):
-        bt = sys.getsizeof(data) / (1024**2)
+        if data.base is None:
+            bt = sys.getsizeof(data)
+        else: 
+            bt = sys.getsizeof(data.base) / (1024**2)
     elif isinstance(data, (list, tuple)):
         bt = 0.0
         for d in data:
