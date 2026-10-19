@@ -74,7 +74,7 @@ def match_section_from_initial_matches(match_name, meshes, loaders, out_dir, con
         raise TypeError('configuration type not supported.')
     match_name_delimiter = conf.get('match_name_delimiter', '__to__')
     working_mip_level = conf.get('working_mip_level', 0)
-    resolution = config.montage_resolution() * (2 ** working_mip_level)
+    resolution = config.mip0_resolution() * (2 ** working_mip_level)
     loader_config = conf.get('loader_config', {}).copy()
     matcher_config = conf.get('matcher_config', {}).copy()
     secnames = os.path.splitext(os.path.basename(match_name))[0].split(match_name_delimiter)
@@ -221,7 +221,7 @@ class Stack:
         mesh_cache = kwargs.get('mesh_cache', {})
         link_cache = kwargs.get('link_cache', {})
         self._mip_level = kwargs.get('mip_level', 0)
-        self._resolution = config.montage_resolution() * (2 ** self._mip_level)
+        self._resolution = config.mip0_resolution() * (2 ** self._mip_level)
         self._mesh_cache = OrderedDict()
         self._mesh_cache.update(mesh_cache)
         self._link_cache = OrderedDict()
@@ -724,7 +724,7 @@ class Stack:
                     for m in optm.meshes:
                         m.soft_factor = min(2, (avg_deform / mesh_strains.get(m.uid, avg_deform)) ** mesh_soft_power) # make mesh with high matching distortion softer
             if 'callback_settings' in elastic_params:
-                elastic_params['callback_settings'].setdefault('early_stop_thresh', config.montage_resolution() / self._resolution)
+                elastic_params['callback_settings'].setdefault('early_stop_thresh', config.mip0_resolution() / self._resolution)
             cost = optm.optimize_elastic(target_gear=target_gear, **elastic_params)
             if (residue_mode is not None) and (residue_len > 0):
                 if residue_mode == 'huber':

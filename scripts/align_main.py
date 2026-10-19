@@ -1,6 +1,6 @@
 from collections import defaultdict
 import argparse
-from functools import partial
+from functools import lru_cache, partial
 import json
 import math
 import os
@@ -19,7 +19,7 @@ def generate_mesh_from_mask(mask_names, outname, **kwargs):
     from feabas import common, material, dal, mesh, optimizer
     import numpy as np
     material_table = kwargs.pop('material_table', material.MaterialTable())
-    target_resolution = kwargs.pop('target_resolution', config.montage_resolution())
+    target_resolution = kwargs.pop('target_resolution', config.mip0_resolution())
     mesh_size = kwargs.pop('mesh_size', 600)
     logger_info = kwargs.pop('logger', None)
     initial_tform = kwargs.pop('initial_tform', None)
@@ -45,7 +45,7 @@ def generate_mesh_from_mask(mask_names, outname, **kwargs):
     if loader is None:
         logger.warning(f'{secname}: mask does not exist.')
         return
-    mesh_size = mesh_size * config.montage_resolution() / src_resolution
+    mesh_size = mesh_size * config.mip0_resolution() / src_resolution
     M = mesh.mesh_from_mask(loader, mesh_size=mesh_size, material_table=material_table, resolution=src_resolution, **kwargs)
     M.change_resolution(target_resolution)
     if initial_tform is not None:
@@ -77,7 +77,7 @@ def generate_mesh_main(match_list=None):
     secnames = set([s for pp in match_names for s in pp])
     alt_mask_dir = mesh_config.get('mask_dir', None)
     alt_mask_mip_level = mesh_config.get('mask_mip_level', 4)
-    alt_mask_resolution = config.montage_resolution() * (2 ** alt_mask_mip_level)
+    alt_mask_resolution = config.mip0_resolution() * (2 ** alt_mask_mip_level)
     if alt_mask_dir is None:
         alt_mask_dir = storage.join_paths(align_dir, 'material_masks')
     material_table = config.material_table()
@@ -125,6 +125,11 @@ def match_main(match_list):
         tname = os.path.basename(mname).replace('.h5', '')
         logger.info(f'start {tname}')
         secnames = os.path.splitext(os.path.basename(mname))[0].split(match_name_delimiter)
+        missing = [s for s in secnames if not stitched_level_available(s, working_mip_level)]
+        if len(missing) > 0:
+            logger.error(f'{tname}: no stitched images at mip{working_mip_level} (or finer for tensorstore) for {missing}. '
+                         'Run `python scripts/stitch_main.py --mode rendering` to render them.')
+            continue
         if stitch_render_driver == 'image':
             loaders = [get_image_loader(storage.join_paths(stitched_image_dir, s), **loader_config) for s in secnames]
         else:
@@ -196,7 +201,7 @@ def offset_bbox_main():
             logger.info(f'section {sname} already rendered: transformation not performed')
             return
     bbox_union = None
-    bfunc = partial(_get_bbox_for_one_section, resolution=config.montage_resolution())
+    bfunc = partial(_get_bbox_for_one_section, resolution=config.mip0_resolution())
     for bbox in submit_to_workers(bfunc, args=[(s,) for s in tform_list], num_workers=num_workers):
         if bbox_union is None:
             bbox_union = bbox
@@ -212,14 +217,129 @@ def offset_bbox_main():
     return canvas_bbox
 
 
+@lru_cache(maxsize=None)
+def rendered_stitched_mips(secname):
+    """stitched levels of a section (read once per process: not changed by alignment)."""
+    if config.stitch_configs().get('rendering', {}).get('driver', 'image') == 'image':
+        return tuple(mipmap.stitched_mips(secname, img_dir=config.stitch_render_dir()))
+    return tuple(mipmap.stitched_mips(secname, meta_dir=stitch_spec_dir))
+
+
+def stitched_level_available(secname, mip, exact=False):
+    """
+    whether the stitched images of a section are rendered at mip level `mip`.
+    For tensorstore, unless exact, a finer level also works (downsampled on
+    the fly).
+    """
+    rendered = rendered_stitched_mips(secname)
+    if config.stitch_configs().get('rendering', {}).get('driver', 'image') == 'image':
+        if mip in rendered:
+            return True
+        if exact:
+            return False
+        # the image loader also reads tiles without metadata (e.g. from other tools)
+        sec_dir = storage.join_paths(config.stitch_render_dir(), 'mip'+str(mip), secname)
+        return any(len(storage.list_folder_content(storage.join_paths(sec_dir, '*.' + ext))) > 0
+                   for ext in ('png', 'jpg', 'tif', 'bmp'))
+    if exact:
+        return mip in rendered
+    return any(m <= mip for m in rendered)
+
+
+def check_stitch_up_to_date(secnames, logger=None):
+    """
+    warn if the stitched images of a section used for alignment matching were
+    rendered from a previous version of its stitching transformation:
+    alignment was then computed on a different stitching than the one applied
+    when rendering the aligned section from the raw tiles. secnames: a
+    section name or a list of them (checked concurrently). Return the
+    sections that are not up to date.
+    """
+    if isinstance(secnames, str):
+        secnames = [secnames]
+    working_mip = config.align_configs().get('matching', {}).get('working_mip_level', 0)
+    record_files = {s: storage.join_paths(root_dir, 'stitch', 'provenance', s + '.json') for s in secnames}
+    records = provenance.load_all(list(record_files.values()))
+    recorded = {}
+    for s in secnames:
+        rendered = [m for m in rendered_stitched_mips(s) if m <= working_mip]
+        if len(rendered) > 0:
+            fp = records[record_files[s]].get(str(max(rendered)), None)
+            if fp is not None:  # None: rendered by an older version
+                recorded[s] = fp
+    snames = list(recorded)
+    current = storage.map_io(lambda s: provenance.tform_fingerprint(storage.join_paths(stitch_tform_dir, s + '.h5')), snames)
+    stale = [s for s, fp in zip(snames, current) if fp != recorded[s]]
+    for s in stale:
+        logging.get_logger(logger).warning(f'{s}: the stitched images used for alignment were rendered '
+                                           'from a previous version of the stitching transformation.')
+    return stale
+
+
+def get_section_source(secname, mip, stitch_source='auto', loader_config=None):
+    """
+    image source to render an aligned section at mip level `mip`:
+        - the stitched images, if rendered at that level (unless stitch_source
+            is 'tiles'), as an image loader for image tiles, or the tensorstore
+            spec file. With 'auto', only if the level is final output (or if
+            stitching uses the same settings for the final output and the
+            matching levels);
+        - otherwise (unless stitch_source is 'stitched'), the raw tiles, as a
+            feabas.stitcher.montage_source_spec: the stitching deformation is
+            then composed with the alignment one and the raw tiles are only
+            resampled once. Tile preprocessing (CLAHE, inverse, transfer
+            functions) and blending follow the stitching final_rendering
+            configs (merged over rendering).
+    Return None if no source is available.
+    """
+    stitch_source = str(stitch_source).lower()
+    if stitch_source not in ('auto', 'stitched', 'tiles'):
+        raise ValueError(f'unsupported stitch_source {stitch_source}')
+    stitch_render_config = config.stitch_render_configs(final=True)
+    if loader_config is None:
+        loader_config = {}
+    if stitch_source == 'auto':
+        use_stitched = (not config.separate_final_stitch_render()) or config.is_final_stitch_mip(mip)
+    else:
+        use_stitched = stitch_source == 'stitched'
+    if use_stitched and stitched_level_available(secname, mip, exact=True):
+        if stitch_render_config.get('driver', 'image') == 'image':
+            stitched_image_dir = storage.join_paths(config.stitch_render_dir(), 'mip'+str(mip))
+            return get_image_loader(storage.join_paths(stitched_image_dir, secname), **loader_config)
+        else:
+            return storage.join_paths(stitch_spec_dir, secname + '.json')
+    if stitch_source == 'stitched':
+        return None
+    tform_name = storage.join_paths(stitch_tform_dir, secname + '.h5')
+    if not storage.file_exists(tform_name):
+        return None
+    loader_settings = dict(stitch_render_config.get('loader_settings', {}))
+    if loader_settings.get('cache_size', None) is not None:
+        # same as stitching rendering: downsampled tiles are 4^-mip smaller, but more are needed
+        cache_scale = 4 ** min(mip, 3)
+        loader_settings['cache_size'] = loader_settings['cache_size'] * cache_scale
+    if loader_config.get('fillval', None) is not None:
+        loader_settings['fillval'] = loader_config['fillval']
+    render_settings = dict(stitch_render_config.get('render_settings', {}))
+    tf_json = storage.join_paths(stitch_histeq_dir, secname + '.json')
+    if not storage.file_exists(tf_json):
+        tf_json = None
+    resolution = config.mip0_resolution() * (2 ** mip)
+    return montage_source_spec(tform_name, resolution, loader_settings=loader_settings,
+                               render_settings=render_settings, tf_json=tf_json)
+
+
 def render_one_section(h5name, z_prefix='', **kwargs):
     logger_info = kwargs.pop('logger', None)
     logger = logging.get_logger(logger_info)
     mip_level = kwargs.pop('mip_level', 0)
     offset = kwargs.pop('offset', None)
+    if kwargs.get('canvas_bbox', None) is not None:
+        # given at mip0, like for tensorstore
+        kwargs['canvas_bbox'] = [s / (2 ** mip_level) for s in kwargs['canvas_bbox']]
     secname = os.path.splitext(os.path.basename(h5name))[0]
     outdir = storage.join_paths(render_dir, 'mip'+str(mip_level), z_prefix+secname)
-    resolution = config.montage_resolution() * (2 ** mip_level)
+    resolution = config.mip0_resolution() * (2 ** mip_level)
     meta_name = storage.join_paths(outdir, 'metadata.txt')
     if storage.file_exists(meta_name, use_cache=True):
         return None
@@ -228,21 +348,21 @@ def render_one_section(h5name, z_prefix='', **kwargs):
     stitch_config = config.stitch_configs().get('rendering', {})
     loader_config = kwargs.pop('loader_config', {}).copy()
     loader_config.update({key: val for key, val in stitch_config.items() if key in ('pattern', 'one_based', 'fillval')})
-    stitch_render_dir = config.stitch_render_dir()
-    stitched_image_dir = storage.join_paths(stitch_render_dir, 'mip'+str(mip_level))
     loader_config['resolution'] = resolution
-    if stitch_config.get('driver', 'image') == 'image':
-        loader = get_image_loader(storage.join_paths(stitched_image_dir, secname), **loader_config)
-        if loader is None:
-            return 0
-    else:
-        stitch_dir = storage.join_paths(root_dir, 'stitch')
-        loader_dir = storage.join_paths(stitch_dir, 'ts_specs', secname + '.json')
-        loader = VolumeRenderer._get_loader(loader_dir, mip=mip_level, **loader_config)
+    stitch_source = kwargs.pop('stitch_source', 'auto')
+    loader = get_section_source(secname, mip_level, stitch_source=stitch_source, loader_config=loader_config)
+    if isinstance(loader, str):
+        loader = VolumeRenderer._get_loader(loader, mip=mip_level, **loader_config)
+    if loader is None:
+        logger.error(f'{secname}: no stitched images at mip{mip_level} or stitching transformation found.')
+        return 0
+    if isinstance(loader, dict):
+        logger.info(f'{secname}: render from the raw tiles')
+        check_stitch_up_to_date(secname, logger=logger_info)
     M = Mesh.from_h5(h5name, locked=False)
     M.change_resolution(resolution)
     if offset is not None:
-        M.apply_translation(offset * config.montage_resolution()/resolution, gear=const.MESH_GEAR_MOVING)
+        M.apply_translation(offset * config.mip0_resolution()/resolution, gear=const.MESH_GEAR_MOVING)
     prefix = storage.join_paths(outdir, secname)
     rendered = render_whole_mesh(M, loader, prefix, **kwargs)
     fnames = sorted(list(rendered.keys()))
@@ -318,7 +438,7 @@ if __name__ == '__main__':
 
     align_config = config.align_configs()
     if args.mode.lower().startswith('r'):
-        align_config = align_config['rendering']
+        align_config = config.align_render_configs('tiles')
         mode = 'rendering'
         num_workers = align_config.get('num_workers', 1)
         config.set_numpy_thread_from_num_workers(num_workers)
@@ -357,25 +477,27 @@ if __name__ == '__main__':
         config.set_numpy_thread_from_num_workers(num_workers)
         mesh_config['num_workers'] = num_workers
     elif args.mode.lower().startswith('d'):
-        min_mip = align_config.get('rendering', {}).get('mip_level', 0)
+        render_config = config.align_render_configs('tiles')
+        min_mip = render_config.get('mip_level', 0)
         mode = 'downsample'
-        render_config = align_config.get('rendering', {})
         filename_config = {key:val for key, val in render_config.items() if key in ('pattern', 'one_based', 'tile_size')}
         if render_config.get('loader_config', {}).get('fillval', None) is not None:
             filename_config['fillval'] = render_config['loader_config']['fillval']
-        filename_config.update(align_config['downsample'])
+        filename_config.update(config.align_downsample_configs('tiles'))
         align_config = filename_config
         num_workers = align_config.get('num_workers', 1)
         config.set_numpy_thread_from_num_workers(num_workers)
         align_config['num_workers'] = num_workers
     elif args.mode.lower().startswith('tensorstore_r') or args.mode.lower().startswith('tsr'):
-        align_config = align_config['tensorstore_rendering']
+        align_config = config.align_render_configs('tensorstore')
         mode = 'tensorstore_rendering'
         num_workers = align_config.get('num_workers', 1)
         config.set_numpy_thread_from_num_workers(num_workers)
         align_config['num_workers'] = num_workers
     elif  args.mode.lower().startswith('tensorstore_d') or args.mode.lower().startswith('tsd'):
-        align_config = align_config['tensorstore_downsample']
+        align_config = config.align_downsample_configs('tensorstore')
+        for key in ('max_mip', 'format'):   # already accounted for in mip_levels and jpeg_compression
+            align_config.pop(key, None)
         mode = 'tensorstore_downsample'
         num_workers = align_config.get('num_workers', 1)
         config.set_numpy_thread_from_num_workers(num_workers)
@@ -389,6 +511,8 @@ if __name__ == '__main__':
     from feabas.mipmap import get_image_loader, mip_map_one_section, mip_one_level_tensorstore_3d
     from feabas.aligner import match_section_from_initial_matches
     from feabas.renderer import render_whole_mesh, VolumeRenderer
+    from feabas.stitcher import montage_source_spec
+    from feabas import mipmap, provenance
     import numpy as np
 
     align_dir = storage.join_paths(root_dir, 'align')
@@ -408,6 +532,9 @@ if __name__ == '__main__':
     rendered_mask_file = storage.join_paths(align_dir, 'mask.png')
     ts_spec_file = storage.join_paths(align_dir, 'ts_spec.json')
     ts_mip_flagdir = storage.join_paths(align_dir, 'mipmap_flags')
+    stitch_spec_dir = storage.join_paths(root_dir, 'stitch', 'ts_specs')
+    stitch_tform_dir = storage.join_paths(root_dir, 'stitch', 'tform')
+    stitch_histeq_dir = storage.join_paths(root_dir, 'stitch', 'hist_tf')
     thumbnail_configs = config.thumbnail_configs()
     match_name_delimiter = thumbnail_configs.get('alignment', {}).get('match_name_delimiter', '__to__')
 
@@ -499,10 +626,17 @@ if __name__ == '__main__':
         tform_list, z_indx = common.rearrange_section_order(tform_list, section_order_file)
         if (args.filter is not None) and len(tform_list) > 0:
             z_indx = z_indx - np.min(z_indx)
-        stitch_dir = storage.join_paths(root_dir, 'stitch')
-        loader_dir = storage.join_paths(stitch_dir, 'ts_specs')
-        loader_list = [storage.join_paths(loader_dir, os.path.basename(s).replace('.h5', '.json')) for s in tform_list]
-        resolution = config.montage_resolution() * (2 ** mip_level)
+        stitch_source = align_config.pop('stitch_source', 'auto')
+        secnames = [os.path.basename(s).replace('.h5', '') for s in tform_list]
+        loader_list = storage.map_io(partial(get_section_source, mip=mip_level, stitch_source=stitch_source,
+                                             loader_config=align_config.get('loader_config', {})),
+                                     secnames)
+        num_from_tiles = sum(isinstance(ldr, dict) for ldr in loader_list)
+        check_stitch_up_to_date([s for s, ldr in zip(secnames, loader_list) if isinstance(ldr, dict)],
+                                logger=logger_info[0])
+        if num_from_tiles > 0:
+            logger.info(f'{num_from_tiles}/{len(loader_list)} sections rendered from the raw tiles')
+        resolution = config.mip0_resolution() * (2 ** mip_level)
         vol_renderer = VolumeRenderer(tform_list, loader_list, tensorstore_render_dir,
                                       z_indx=z_indx, resolution=resolution,
                                       flag_dir=ts_flag_dir, **align_config)

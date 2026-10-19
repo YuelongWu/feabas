@@ -24,7 +24,7 @@ from feabas.optimizer import SLM, relax_mesh_most_deformed
 from feabas import common, caching, storage, logging
 from feabas.spatial import scale_coordinates, fit_affine
 import feabas.constant as const
-from feabas.config import SECTION_THICKNESS, data_resolution, CHECKPOINT_TIME_INTERVAL, MAXIMUM_DEFORM_ALLOWED, get_numpy_thread
+from feabas.config import SECTION_THICKNESS, data_resolution, mip0_resolution, CHECKPOINT_TIME_INTERVAL, MAXIMUM_DEFORM_ALLOWED, get_numpy_thread
 
 Nthreads = get_numpy_thread()
 cv2.setNumThreads(Nthreads)
@@ -45,6 +45,144 @@ def _gaussian_blur(img, sigma, truncate=4.0):
     ksz = 2 * int(truncate * sigma + 0.5) + 1
     return cv2.GaussianBlur(np.ascontiguousarray(img), (ksz, ksz), sigma, sigmaY=sigma,
                             borderType=cv2.BORDER_REFLECT)
+
+
+class _LazyList:
+    """
+    read-only list whose element k is computed by factory(k) on first access.
+    """
+    def __init__(self, length, factory):
+        self._items = [None] * length
+        self._factory = factory
+
+    def __len__(self):
+        return len(self._items)
+
+    def __getitem__(self, k):
+        item = self._items[k]
+        if item is None:
+            item = self._factory(k)
+            self._items[k] = item
+        return item
+
+    def __iter__(self):
+        for k in range(len(self._items)):
+            yield self[k]
+
+
+class _MontageBlender:
+    """
+    accumulate the source tiles rendered by MontageRenderer into one output
+    image of out_shape (H x W), blended according to `blend` (see
+    MontageRenderer.crop; None means a single source, placed as is).
+    """
+    SIGMA = 2.5 # sigma for pyramid generation.
+    WEIGHT_EPS = 1e-3
+
+    def __init__(self, blend, out_shape, fillval, dtype_out, maskout_val=None):
+        self.blend = blend
+        self.out_shape = tuple(out_shape)
+        self.fillval = fillval
+        self.dtype_out = dtype_out
+        self.maskout_val = maskout_val
+        self.image_hp = None
+        self.image_lp = None
+        self.weight_sum = None
+        self.weight_max = None
+
+
+    def add(self, slc, imgt, weight):
+        """
+        add one source tile covering the output sub-window slc (rows, cols),
+        with its distance-to-border weight. Return True if no more sources
+        should be added.
+        """
+        blend = self.blend
+        expand_image = partial(common.expand_image, target_size=self.out_shape, slices=slc)
+        if blend is None:
+            self.image_hp = expand_image(imgt)
+            self.weight_sum = expand_image(weight)
+            return True
+        maskout_val = self.maskout_val
+        if (maskout_val is not None) and (imgt is not None):
+            mask_backgrnd = imgt == maskout_val
+            if mask_backgrnd.ndim > 2:
+                mask_backgrnd = np.all(mask_backgrnd, axis=tuple(range(2, mask_backgrnd.ndim)))
+            if np.any(mask_backgrnd) and (not np.all(mask_backgrnd)):
+                dist_mask = distance_transform_cdt(~mask_backgrnd)
+                weight = np.minimum(weight, dist_mask-1)
+        if not np.issubdtype(imgt.dtype, np.floating):
+            imgt = imgt.astype(np.float32, copy=False)
+        imgshp = imgt.shape
+        weight = weight.clip(0, None).astype(np.float32)
+        if len(imgshp) > 2:
+            weight = np.stack((weight, )*imgt.shape[-1], axis=-1)
+        # accumulate in place on the overlap region only (outside of it the source
+        # contributes zero weight), instead of expanding every term to the full tile.
+        if self.image_hp is None:
+            full_shape = self.out_shape + imgshp[2:]
+            self.image_hp = np.zeros(full_shape, dtype=imgt.dtype)
+            self.image_lp = np.zeros_like(self.image_hp)
+            self.weight_sum = np.zeros(full_shape, dtype=weight.dtype)
+            self.weight_max = np.zeros_like(self.weight_sum)
+            if blend == 'MAX':
+                self.image_hp -= np.inf
+            elif blend == 'MIN':
+                self.image_hp += np.inf
+        image_hp, image_lp = self.image_hp, self.image_lp
+        weight_sum, weight_max = self.weight_sum, self.weight_max
+        weight_sum[slc] += weight
+        if blend == 'LINEAR':
+            image_hp[slc] += imgt * weight
+        elif blend == 'NEAREST':
+            maskb = weight > weight_max[slc]
+            image_hp[slc][maskb] = imgt[maskb]
+            weight_max[slc][maskb] = weight[maskb]
+        elif blend == 'PYRAMID':
+            imgt_f = _gaussian_blur(imgt, self.SIGMA)
+            maskb = weight > weight_max[slc]
+            np.copyto(image_hp[slc], imgt - imgt_f, where=maskb)  # high-pass part, nearest blending
+            np.maximum(weight_max[slc], weight, out=weight_max[slc])
+            imgt_f *= weight
+            image_lp[slc] += imgt_f
+        elif blend == 'MAX':
+            maskb = weight > 0
+            image_hp_v = image_hp[slc]  # view
+            image_hp_v[maskb] = np.maximum(image_hp_v[maskb], imgt[maskb])
+        elif blend == 'MIN':
+            maskb = expand_image(weight > 0)
+            maskb = cv2.erode(maskb.astype(np.uint8), np.ones((3,3)))>0
+            image_hp[maskb] = np.minimum(image_hp[maskb], expand_image(imgt)[maskb])
+        elif blend == 'NONE':
+            maskb = weight > 0
+            image_hp[slc][maskb] = imgt[maskb]
+        else:
+            raise ValueError(f'unsupported blending mode {blend}')
+        return False
+
+
+    def result(self):
+        blend = self.blend
+        image_hp, weight_sum = self.image_hp, self.weight_sum
+        fillval, dtype_out = self.fillval, self.dtype_out
+        weight_eps = self.WEIGHT_EPS
+        if image_hp is None:
+            return None
+        if blend == 'LINEAR':
+            img_out = image_hp / weight_sum.clip(weight_eps, None)
+        elif blend == 'PYRAMID':
+            image_lp = self.image_lp / weight_sum.clip(weight_eps, None)
+            img_out = image_lp + image_hp
+        else:
+            img_out = image_hp
+        img_out[weight_sum <= weight_eps] = fillval
+        if np.issubdtype(dtype_out, np.integer):
+            iinfo = np.iinfo(dtype_out)
+            img_out = img_out.clip(iinfo.min, iinfo.max)
+        img_out = img_out.astype(dtype_out, copy=False)
+        if np.all(img_out == fillval, axis=None):
+            return None
+        return img_out
 
 
 class Stitcher:
@@ -188,6 +326,9 @@ class Stitcher:
                         prefix = 'moving_vertices/' + str(k)
                         v = m.vertices(gear=const.MESH_GEAR_MOVING)
                         create_dataset(prefix, data=v)
+                # identifies this transformation, so that later stages can tell whether
+                # their outputs were made from it (see feabas.provenance)
+                f.attrs['tform_id'] = uuid.uuid4().hex
                 if self._brightness_contrast_adjust is not None:
                     brightness = self._brightness_contrast_adjust['brightness']
                     contrast = self._brightness_contrast_adjust['contrast']
@@ -326,9 +467,6 @@ class Stitcher:
 
     def _flip_height_width(self):
         self.average_tile_size = self.average_tile_size[::-1]
-                # identifies this transformation, so that later stages can tell whether
-                # their outputs were made from it (see feabas.provenance)
-                f.attrs['tform_id'] = uuid.uuid4().hex
         init_offset = self._init_bboxes[...,:2]
         self._init_bboxes[...,2:] = init_offset + self.tile_sizes.reshape(init_offset.shape)
         self.tile_sizes = np.flip(self.tile_sizes, axis=-1)
@@ -1345,6 +1483,7 @@ class MontageRenderer:
             self.imgrootdir = os.path.dirname(os.path.commonprefix(imgpaths))
             self.imgrelpaths = [os.path.relpath(s, self.imgrootdir) for s in imgpaths]
         self._brightness_contrast_adjust = kwargs.get('brightness_contrast_adjust', None)
+        self._render_settings = kwargs.get('render_settings', {}).copy()  # default settings for crop_from_field
         self._tile_sizes = tile_sizes.reshape(-1,2)
         self._identical_tile_size = np.all(np.ptp(self._tile_sizes, axis=0) == 0)
         self._mesh_info = mesh_info
@@ -1409,10 +1548,57 @@ class MontageRenderer:
         args = [imgpaths, mesh_info, tile_size]
         kwargs = {}
         kwargs['root_dir'] = self.imgrootdir
-        kwargs['loader_settings'] = self._loader_settings
+        kwargs['loader_settings'] = self._resolved_loader_settings()
         kwargs['resolution'] = self.resolution
         kwargs['source_resolution'] = self._source_resolution
+        if len(self._render_settings) > 0:
+            kwargs['render_settings'] = self._render_settings
         return args, kwargs
+
+
+    def init_dict(self, selected=None):
+        """
+        picklable description of the montage (or of the tiles in selected) to
+        be used as an image source in feabas.renderer subprocesses.
+        """
+        args, kwargs = self.init_args(selected=selected)
+        return {'ImageLoaderType': 'MontageRenderer', 'args': args, 'kwargs': kwargs}
+
+
+    @classmethod
+    def from_init_dict(cls, init_dict):
+        return cls(*init_dict['args'], **init_dict['kwargs'])
+
+
+    @classmethod
+    def from_source_spec(cls, spec):
+        """
+        build the montage described by a spec from montage_source_spec, to be
+        used as the image source when rendering aligned sections directly
+        from the raw tiles.
+        """
+        M = cls.from_h5(spec['tform'], resolution=spec['resolution'],
+                        loader_settings=spec.get('loader_settings', {}),
+                        render_settings=spec.get('render_settings', {}))
+        if spec.get('tf_json', None) is not None:
+            M.add_transfer_functions(spec['tf_json'])
+        return M
+
+
+    def tiles_in_bbox(self, bbox):
+        """indices of the tiles intersecting a bounding box in montage space."""
+        return sorted(self.mesh_tree.intersection(tuple(bbox), objects=False))
+
+
+    def _resolved_loader_settings(self):
+        if self._brightness_contrast_adjust is not None:
+            tf_lut0 = {'__TYPE__': 'BRIGHTNESS_CONTRAST_ADJUST'}
+            adj_b = self._brightness_contrast_adjust['brightness']
+            adj_c = self._brightness_contrast_adjust['contrast']
+            tf_lut0.update({os.path.basename(mn): (bc, cc) for mn, bc, cc in zip(self.imgrelpaths, adj_b, adj_c)})
+            self._loader_settings.setdefault('tf_lut', tf_lut0)
+            self._brightness_contrast_adjust = None
+        return self._loader_settings
 
 
     def clear_cache(self, instant_gc=False):
@@ -1448,6 +1634,25 @@ class MontageRenderer:
         self.image_loader.inverse_on()
 
 
+    def _blend_mode(self, blend, maskout_val, num_hits):
+        """
+        effective blending mode and masked-out value, accounting for a single
+        source tile and for inverted grayscale.
+        """
+        if num_hits == 1:
+            blend = None
+        if isinstance(blend, str):
+            blend = blend.upper()
+        if self.image_loader._inverse:
+            if blend == 'MIN':
+                blend = 'MAX'
+            elif blend == 'MAX':
+                blend = 'MIN'
+            if maskout_val is not None:
+                maskout_val = common.inverse_image(maskout_val)
+        return blend, maskout_val
+
+
     def crop(self, bbox, **kwargs):
         """
         crop out the tile defined by the bounding box in output space, blend the
@@ -1461,8 +1666,8 @@ class MontageRenderer:
             MIN: find the minimum value
             NONE: no blending, simply place the src tiles.
         kwargs:
-            clip_lrtb (tuple): the left, right, top, bottom pixels in a source
-                tile to be excluded (in case there are e.g consistent distortion
+            clip_lrtb (tuple): the left, right, top, bottom pixels (at mip0)
+                in a source tile to be excluded (in case there are e.g consistent distortion
                 at the begininig of the scan).
             stride (int): evaluate the deformation field every `stride` pixels
                 and bilinearly interpolate in between to save time.
@@ -1475,33 +1680,17 @@ class MontageRenderer:
         dtype_out = kwargs.get('dtype_out', self.image_loader.dtype)
         affine_tolerance = kwargs.get('affine_tolerance', 0.2)
         stride = max(1, int(round(kwargs.get('stride', 1))))
-        inverse = self.image_loader._inverse
-        sigma = 2.5 # sigma for pyramid generation.
-        weight_eps = 1e-3
         hits = list(self.mesh_tree.intersection(bbox, objects=True))
         if len(hits) == 0:
             return None
-        elif len(hits) == 1:
-            blend = None
-        if isinstance(blend, str):
-            blend = blend.upper()
-        if inverse:
-            if blend == 'MIN':
-                blend = 'MAX'
-            elif blend == 'MAX':
-                blend = 'MIN'
-            if maskout_val is not None:
-                maskout_val = common.inverse_image(maskout_val)
+        blend, maskout_val = self._blend_mode(blend, maskout_val, len(hits))
         x_min0 = bbox[0]
         y_min0 = bbox[1]
         ht0 = round(bbox[3] - y_min0)
         wd0 = round(bbox[2] - x_min0)
         x0 = np.arange(x_min0, x_min0+wd0)
         y0 = np.arange(y_min0, y_min0+ht0)
-        image_hp = None
-        image_lp = None
-        weight_sum = None
-        weight_max = None
+        blender = _MontageBlender(blend, (y0.size, x0.size), fillval, dtype_out, maskout_val=maskout_val)
         for hit in hits:
             indx = hit.id
             bbox_mesh = common.bbox_enlarge(hit.bbox, 2)
@@ -1541,100 +1730,16 @@ class MontageRenderer:
                 if np.any(np.isnan(x_field)):
                     x_field = np.nan_to_num(x_field, nan=-1, copy=False)
                     y_field = np.nan_to_num(y_field, nan=-1, copy=False)
-            # distance to the source tile border. tile sizes are numpy integers, which
-            # would promote a float32 field to float64: use python scalars, and one
-            # scratch buffer instead of a temporary per term.
-            tile_ht, tile_wd = (float(s) for s in self.tile_size(indx))
-            weight = x_field - clip_ltrb[0] + 0.5
-            wtmp = np.subtract(tile_wd - clip_ltrb[2] - 0.5, x_field)
-            np.minimum(weight, wtmp, out=weight)
-            np.subtract(y_field, clip_ltrb[1], out=wtmp)
-            wtmp += 0.5
-            np.minimum(weight, wtmp, out=weight)
-            np.subtract(tile_ht - clip_ltrb[3] - 0.5, y_field, out=wtmp)
-            np.minimum(weight, wtmp, out=weight)
-            del wtmp
+            weight = self._border_weight(indx, x_field, y_field, clip_ltrb)
             mask = weight > 0
             if not np.any(mask, axis=None):
                 continue
-            expand_image = partial(common.expand_image, target_size=(y0.size, x0.size), slices=(slc_y, slc_x))
             imgt = common.render_by_subregions(x_field, y_field, mask, self.image_loader, fileid=indx, **kwargs)
             if imgt is None:
                 continue
-            if blend is None:
-                image_hp = expand_image(imgt)
-                weight_sum = expand_image(weight)
+            if blender.add((slc_y, slc_x), imgt, weight):
                 break
-            if (maskout_val is not None) and (imgt is not None):
-                mask_backgrnd = imgt == maskout_val
-                if mask_backgrnd.ndim > 2:
-                    mask_backgrnd = np.all(mask_backgrnd, axis=tuple(range(2, mask_backgrnd.ndim)))
-                if np.any(mask_backgrnd) and (not np.all(mask_backgrnd)):
-                    dist_mask = distance_transform_cdt(~mask_backgrnd)
-                    weight = np.minimum(weight, dist_mask-1)
-            if not np.issubdtype(imgt.dtype, np.floating):
-                imgt = imgt.astype(np.float32, copy=False)
-            imgshp = imgt.shape
-            weight = weight.clip(0, None).astype(np.float32)
-            if len(imgshp) > 2:
-                weight = np.stack((weight, )*imgt.shape[-1], axis=-1)
-            # accumulate in place on the overlap region only (outside of it the source
-            # contributes zero weight), instead of expanding every term to the full tile.
-            slc = (slc_y, slc_x)
-            if image_hp is None:
-                full_shape = (y0.size, x0.size) + imgshp[2:]
-                image_hp = np.zeros(full_shape, dtype=imgt.dtype)
-                image_lp = np.zeros_like(image_hp)
-                weight_sum = np.zeros(full_shape, dtype=weight.dtype)
-                weight_max = np.zeros_like(weight_sum)
-                if blend == 'MAX':
-                    image_hp -= np.inf
-                elif blend == 'MIN':
-                    image_hp += np.inf
-            weight_sum[slc] += weight
-            if blend == 'LINEAR':
-                image_hp[slc] += imgt * weight
-            elif blend == 'NEAREST':
-                maskb = weight > weight_max[slc]
-                image_hp[slc][maskb] = imgt[maskb]
-                weight_max[slc][maskb] = weight[maskb]
-            elif blend == 'PYRAMID':
-                imgt_f = _gaussian_blur(imgt, sigma)
-                maskb = weight > weight_max[slc]
-                np.copyto(image_hp[slc], imgt - imgt_f, where=maskb)  # high-pass part, nearest blending
-                np.maximum(weight_max[slc], weight, out=weight_max[slc])
-                imgt_f *= weight
-                image_lp[slc] += imgt_f
-            elif blend == 'MAX':
-                maskb = weight > 0
-                image_hp_v = image_hp[slc]  # view
-                image_hp_v[maskb] = np.maximum(image_hp_v[maskb], imgt[maskb])
-            elif blend == 'MIN':
-                maskb = expand_image(weight > 0)
-                maskb = cv2.erode(maskb.astype(np.uint8), np.ones((3,3)))>0
-                image_hp[maskb] = np.minimum(image_hp[maskb], expand_image(imgt)[maskb])
-            elif blend == 'NONE':
-                maskb = weight > 0
-                image_hp[slc][maskb] = imgt[maskb]
-            else:
-                raise ValueError(f'unsupported blending mode {blend}')
-        if image_hp is None:
-            return None
-        if blend == 'LINEAR':
-            img_out = image_hp / weight_sum.clip(weight_eps, None)
-        elif blend == 'PYRAMID':
-            image_lp = image_lp / weight_sum.clip(weight_eps, None)
-            img_out = image_lp + image_hp
-        else:
-            img_out = image_hp
-        img_out[weight_sum <= weight_eps] = fillval
-        if np.issubdtype(dtype_out, np.integer):
-            iinfo = np.iinfo(dtype_out)
-            img_out = img_out.clip(iinfo.min, iinfo.max)
-        img_out = img_out.astype(dtype_out, copy=False)
-        if np.all(img_out == fillval, axis=None):
-            return None
-        return img_out
+        return blender.result()
 
 
     def _subsampled_field(self, indx, xt, yt, stride, affine_tolerance):
@@ -1673,6 +1778,169 @@ class MontageRenderer:
             x_field[np.isnan(x_field)] = -1
             y_field[np.isnan(y_field)] = -1
         return x_field, y_field
+
+
+    def _border_weight(self, indx, x_field, y_field, clip_ltrb):
+        """
+        distance of the source coordinates to the border of source tile indx
+        (non-positive outside of the tile).
+        """
+        # tile sizes are numpy integers, which would promote a float32 field to
+        # float64: use python scalars, and one scratch buffer instead of a
+        # temporary per term.
+        tile_ht, tile_wd = (float(s) for s in self.tile_size(indx))
+        if any(clip_ltrb):
+            # given in mip0 pixels, so that it crops the same part of the tiles at any mip level
+            clip_scale = mip0_resolution() / self.resolution
+            clip_ltrb = [c * clip_scale for c in clip_ltrb]
+        weight = x_field - clip_ltrb[0] + 0.5
+        wtmp = np.subtract(tile_wd - clip_ltrb[2] - 0.5, x_field)
+        np.minimum(weight, wtmp, out=weight)
+        np.subtract(y_field, clip_ltrb[1], out=wtmp)
+        wtmp += 0.5
+        np.minimum(weight, wtmp, out=weight)
+        np.subtract(tile_ht - clip_ltrb[3] - 0.5, y_field, out=wtmp)
+        np.minimum(weight, wtmp, out=weight)
+        return weight
+
+
+    def _field_at_points(self, indx, xt, yt, affine_tolerance):
+        """
+        source coordinates in tile indx of the montage points (xt, yt), given
+        relative to the mesh offset. NaN where outside of the tile mesh; None
+        if no point is inside.
+        """
+        A, t, res = self.affine_approximators[indx]
+        if (affine_tolerance > 0) and (res < affine_tolerance):
+            x_s = xt * A[0,0] + yt * A[1,0] + t[0]
+            y_s = xt * A[0,1] + yt * A[1,1] + t[1]
+        else:
+            x_interp, y_interp = self.interpolators[indx]
+            x_s = x_interp(xt, yt)
+            if np.all(x_s.mask, axis=None):
+                return None, None
+            x_s = np.ma.filled(x_s, np.nan)
+            y_s = np.ma.filled(y_interp(xt, yt), np.nan)
+        return x_s, y_s
+
+
+    def _subsampled_field_at(self, indx, xt, yt, valid, stride, affine_tolerance):
+        """
+        same as _field_at_points, but the montage points (xt, yt) are given on
+        an output grid (H x W) and the field is only evaluated every `stride`
+        output pixels, then bilinearly upsampled. valid masks the output pixels
+        that have montage coordinates. Samples just outside the tile mesh (or
+        the valid region) are extrapolated so that the grid cells crossing the
+        boundary stay valid. Returns (None, None) if no sample is valid.
+        """
+        rows = common.stride_grid(xt.shape[0], stride)
+        cols = common.stride_grid(xt.shape[1], stride)
+        grid = np.ix_(rows, cols)
+        x_s, y_s = self._field_at_points(indx, xt[grid], yt[grid], affine_tolerance)
+        if x_s is None:
+            return None, None
+        x_s = np.array(x_s, dtype=np.float64)
+        y_s = np.array(y_s, dtype=np.float64)
+        invalid = np.isnan(x_s) | np.isnan(y_s) | (~valid[grid])
+        num_valid = invalid.size - np.count_nonzero(invalid)
+        if num_valid < 3:
+            return None, None
+        has_nan = False
+        if np.any(invalid):
+            x_s[invalid] = np.nan
+            y_s[invalid] = np.nan
+            # extrapolate in output grid coordinates, with the Jacobian of the
+            # (composed) field with respect to the output pixels.
+            gx, gy = np.meshgrid(cols.astype(np.float64), rows.astype(np.float64))
+            vld = ~invalid
+            P = np.stack((gx[vld], gy[vld], np.ones(num_valid)), axis=-1)
+            M = np.linalg.lstsq(P, np.stack((x_s[vld], y_s[vld]), axis=-1), rcond=None)[0]
+            common.extrapolate_field_border(x_s, y_s, gx, gy, M[:2], invalid=invalid)
+            has_nan = np.any(np.isnan(x_s))
+        x_field = common.upsample_grid_field(x_s, rows, cols)
+        y_field = common.upsample_grid_field(y_s, rows, cols)
+        if has_nan:
+            x_field[np.isnan(x_field)] = -1
+            y_field[np.isnan(y_field)] = -1
+        return x_field, y_field
+
+
+    def crop_from_field(self, x_field, y_field, mask=None, **kwargs):
+        """
+        render the montage at arbitrary montage coordinates: output pixel (i, j)
+        takes the montage value at (x_field[i,j], y_field[i,j]). Used to render
+        the aligned images directly from the raw tiles, with the alignment
+        deformation (output -> montage, e.g. from MeshRenderer.crop_field)
+        composed with the stitching one (montage -> source tiles), so that the
+        source tiles are only resampled once.
+        Args:
+            x_field, y_field (H x W ndarray): montage coordinates at
+                self.resolution.
+            mask (H x W ndarray of bool): output pixels to render. Default to
+                all.
+        Kwargs:
+            the render settings given at construction (blend, stride,
+            maskout_val, clip_lrtb, affine_tolerance, refer to crop) are used,
+            overridden by those in kwargs. Other kwargs are passed to
+            common.render_by_subregions.
+        """
+        kwargs = {**self._render_settings, **kwargs}
+        blend = kwargs.pop('blend', 'LINEAR')
+        maskout_val = kwargs.pop('maskout_val', None)
+        clip_ltrb = kwargs.pop('clip_lrtb', (0,0,0,0))
+        affine_tolerance = kwargs.pop('affine_tolerance', 0.2)
+        stride = max(1, int(round(kwargs.pop('stride', 1))))
+        fillval = kwargs.get('fillval', self.image_loader.default_fillval)
+        dtype_out = kwargs.get('dtype_out', self.image_loader.dtype)
+        if mask is None:
+            mask = np.ones(x_field.shape, dtype=bool)
+        if not np.any(mask, axis=None):
+            return None
+        x_valid = x_field[mask]
+        y_valid = y_field[mask]
+        field_bbox = (x_valid.min(), y_valid.min(), x_valid.max(), y_valid.max())
+        del x_valid, y_valid
+        hits = list(self.mesh_tree.intersection(field_bbox, objects=True))
+        if len(hits) == 0:
+            return None
+        blend, maskout_val = self._blend_mode(blend, maskout_val, len(hits))
+        blender = _MontageBlender(blend, x_field.shape[:2], fillval, dtype_out, maskout_val=maskout_val)
+        for hit in hits:
+            indx = hit.id
+            bbox_mesh = common.bbox_enlarge(hit.bbox, 2)
+            inside = (x_field >= bbox_mesh[0]) & (x_field <= bbox_mesh[2])
+            inside &= (y_field >= bbox_mesh[1]) & (y_field <= bbox_mesh[3])
+            inside &= mask
+            rr = np.flatnonzero(np.any(inside, axis=1))
+            if rr.size == 0:
+                continue
+            cc = np.flatnonzero(np.any(inside, axis=0))
+            slc = (slice(rr[0], rr[-1]+1), slice(cc[0], cc[-1]+1))
+            inside = inside[slc]
+            offset = self._mesh_info[indx].moving_offsets.ravel()
+            xt = x_field[slc] - offset[0]
+            yt = y_field[slc] - offset[1]
+            x_s = None
+            if stride > 1:
+                x_s, y_s = self._subsampled_field_at(indx, xt, yt, inside, stride, affine_tolerance)
+            if x_s is None:
+                x_s, y_s = self._field_at_points(indx, xt, yt, affine_tolerance)
+                if x_s is None:
+                    continue
+            outside = ~inside
+            outside |= np.isnan(x_s) | np.isnan(y_s)
+            x_s[outside] = -1
+            y_s[outside] = -1
+            weight = self._border_weight(indx, x_s, y_s, clip_ltrb)
+            mask_t = weight > 0
+            if not np.any(mask_t, axis=None):
+                continue
+            imgt = common.render_by_subregions(x_s, y_s, mask_t, self.image_loader, fileid=indx, **kwargs)
+            if imgt is None:
+                continue
+            if blender.add(slc, imgt, weight):
+                break
+        return blender.result()
 
 
     def render_series_to_file(self, bboxes, filenames, **kwargs):
@@ -1733,6 +2001,8 @@ class MontageRenderer:
         e.g. pattern: Section001_tr{ROW_IND}_tc{COL_IND}.png
         """
         driver = kwargs.get('driver', 'image')
+        mip = kwargs.get('mip', 0)
+        keep_existing = kwargs.get('keep_existing', False) # other mip levels exist in the tensorstore volume
         filename_settings = kwargs.get('filename_settings', {})
         pattern = filename_settings.get('pattern', 'tr{ROW_IND}_tc{COL_IND}.png')
         use_jpeg_compression = (pattern.lower().endswith('.jpg')) or (pattern.lower().endswith('.jpeg'))
@@ -1797,7 +2067,7 @@ class MontageRenderer:
             if driver == 'zarr':
                 filenames = {
                     "driver": "zarr",
-                    "kvstore": prefix + '0/',
+                    "kvstore": prefix + str(mip) + '/',
                     "key_encoding": ".",
                     "metadata": {
                         "zarr_format": 2,
@@ -1812,7 +2082,7 @@ class MontageRenderer:
             elif driver == 'n5':
                 filenames = {
                     "driver": "n5",
-                    "kvstore": prefix + 's0/',
+                    "kvstore": prefix + 's' + str(mip) + '/',
                     "metadata": {
                         "compression": {"type": "gzip"}
                     },
@@ -1854,6 +2124,11 @@ class MontageRenderer:
             if (checkpoint_file is not None) and storage.file_exists(checkpoint_file):
                 with H5File(checkpoint_file, 'r') as f:
                     checkpoint_flag = f['to_render'][()]
+                filenames.update({'open': True, 'create': True, 'delete_existing': False})
+            elif keep_existing and (driver == 'neuroglancer_precomputed'):
+                # all the scales share one volume, and delete_existing would wipe
+                # the other ones: add (or overwrite) this scale in place instead.
+                checkpoint_flag = True
                 filenames.update({'open': True, 'create': True, 'delete_existing': False})
             else:
                 checkpoint_flag = True
@@ -1973,42 +2248,44 @@ class MontageRenderer:
         return self._rtree
 
 
+    def _tile_interpolator(self, indx):
+        msh = self._mesh_info[indx]
+        v1, T, v0 = msh.moving_vertices, msh.triangles, msh.fixed_vertices
+        mattri = matplotlib.tri.Triangulation(v1[:,0], v1[:,1], triangles=T)
+        xinterp = matplotlib.tri.LinearTriInterpolator(mattri, v0[:,0])
+        yinterp = matplotlib.tri.LinearTriInterpolator(mattri, v0[:,1])
+        return xinterp, yinterp
+
+
+    def _tile_affine_approximator(self, indx):
+        msh = self._mesh_info[indx]
+        v1, v0 = msh.moving_vertices, msh.fixed_vertices
+        A_a = fit_affine(v0, v1)
+        A = A_a[:2,:2]
+        t = A_a[-1,:2]
+        res = np.max(np.sum((v0 - v1 @ A - t)**2, axis=-1)) ** 0.5
+        return A, t, res
+
+
     @property
     def interpolators(self):
+        # built per tile on first access: a render job only touches a few tiles.
         if self._interpolators is None:
-            self._interpolators = []
-            for msh in self._mesh_info:
-                v1, T, v0 = msh.moving_vertices, msh.triangles, msh.fixed_vertices
-                mattri = matplotlib.tri.Triangulation(v1[:,0], v1[:,1], triangles=T)
-                xinterp = matplotlib.tri.LinearTriInterpolator(mattri, v0[:,0])
-                yinterp = matplotlib.tri.LinearTriInterpolator(mattri, v0[:,1])
-                self._interpolators.append((xinterp, yinterp))
+            self._interpolators = _LazyList(len(self._mesh_info), self._tile_interpolator)
         return self._interpolators
 
 
     @property
     def affine_approximators(self):
         if self._affine_approximators is None:
-            self._affine_approximators = []
-            for msh in self._mesh_info:
-                v1, v0 = msh.moving_vertices, msh.fixed_vertices
-                A_a = fit_affine(v0, v1)
-                A = A_a[:2,:2]
-                t = A_a[-1,:2]
-                res = np.max(np.sum((v0 - v1 @ A - t)**2, axis=-1)) ** 0.5
-                self._affine_approximators.append((A, t, res))
+            self._affine_approximators = _LazyList(len(self._mesh_info), self._tile_affine_approximator)
         return self._affine_approximators
 
 
     @property
     def image_loader(self):
         if self._image_loader is None:
-            if self._brightness_contrast_adjust is not None:
-                tf_lut0 = {'__TYPE__': 'BRIGHTNESS_CONTRAST_ADJUST'}
-                adj_b = self._brightness_contrast_adjust['brightness']
-                adj_c = self._brightness_contrast_adjust['contrast']
-                tf_lut0.update({os.path.basename(mn): (bc, cc) for mn, bc, cc in zip(self.imgrelpaths, adj_b, adj_c)})
-                self._loader_settings.setdefault('tf_lut', tf_lut0)
+            self._resolved_loader_settings()
             if self._identical_tile_size:
                 tile_size = self._tile_sizes[0]
                 self._image_loader = StaticImageLoader(self.imgrelpaths,
@@ -2065,23 +2342,43 @@ class MontageRenderer:
 
 
     def render_one_section(self, out_prefix, meta_name=None, **kwargs):
+        """
+        render the montage at self.resolution, as mip level `mip`.
+        For image tiles, meta_name is the metadata file of this mip level. For
+        tensorstore, meta_name is the json file of the section listing the
+        specs of all the rendered mip levels ({mip: spec}): the new level is
+        added to it, and other levels already in the volume are kept.
+        """
         num_workers = kwargs.get('num_workers', 1)
         tile_size = kwargs.pop('tile_size', [4096, 4096])
-        resolution = kwargs.pop('resolution', None)
+        kwargs.pop('resolution', None)
+        mip = kwargs.pop('mip', 0)
         render_settings = kwargs.get('render_settings', {}).copy()
         driver = kwargs.get('driver', 'image')
         mask_out = kwargs.get('mask_out', None)
         use_tensorstore = driver != 'image'
+        rendered_specs = {}
         if meta_name is not None:
-            if storage.file_exists(meta_name):
+            if use_tensorstore:
+                if storage.file_exists(meta_name):
+                    with storage.File(meta_name, 'r') as f:
+                        rendered_specs = {int(m): spec for m, spec in json.load(f).items()}
+                if mip in rendered_specs:
+                    return 0
+                if mip == 0:
+                    checkpoint_file = os.path.splitext(meta_name)[0] + '.h5'
+                else:
+                    checkpoint_file = os.path.splitext(meta_name)[0] + f'_mip{mip}.h5'
+            elif storage.file_exists(meta_name):
                 return 0
             else:
-                checkpoint_file = os.path.splitext(meta_name)[0] + '.h5'
+                checkpoint_file = None
         else:
             checkpoint_file = None
         out_prefix = out_prefix.replace('\\', '/')
         render_series = self.plan_render_series(tile_size, prefix=out_prefix,
-            checkpoint_file=checkpoint_file, **kwargs)
+            checkpoint_file=checkpoint_file, mip=mip,
+            keep_existing=(len(rendered_specs) > 0), **kwargs)
         if use_tensorstore:
             checkpoints = render_series[0]
             out_spec = render_series[1].copy()
@@ -2126,8 +2423,13 @@ class MontageRenderer:
         if meta_name is not None:
             if use_tensorstore:
                 if not np.any(checkpoints):
+                    if storage.file_exists(meta_name):
+                        # pick up levels added since the start (e.g. by downsampling)
+                        with storage.File(meta_name, 'r') as f:
+                            rendered_specs.update({int(m): spec for m, spec in json.load(f).items()})
+                    rendered_specs[mip] = writer.spec
                     with storage.File(meta_name, 'w') as f:
-                        json.dump({0: writer.spec}, f)
+                        json.dump({m: rendered_specs[m] for m in sorted(rendered_specs)}, f)
                     storage.remove_file(checkpoint_file)
             else:
                 if len(metadata) > 0:
@@ -2135,6 +2437,25 @@ class MontageRenderer:
                     bboxes = []
                     for fname in fnames:
                         bboxes.append(metadata[fname])
-                    out_loader = StaticImageLoader(fnames, bboxes=bboxes, resolution=resolution)
+                    out_loader = StaticImageLoader(fnames, bboxes=bboxes, resolution=self.resolution)
                     out_loader.to_coordinate_file(meta_name)
         return num_chunks
+
+
+def montage_source_spec(tform_name, resolution, loader_settings=None, render_settings=None, tf_json=None):
+    """
+    lightweight (json-able) description of a stitched section to be rendered
+    from its raw tiles: the stitching transformation file, the resolution
+    to render at, the image loader settings (CLAHE, inverse...), the blending
+    settings and the optional transfer function file, all as in the stitching
+    rendering stage. Resolved by MontageRenderer.from_source_spec.
+    """
+    return {'ImageLoaderType': 'MontageSource', 'tform': tform_name, 'resolution': resolution,
+            'loader_settings': {} if loader_settings is None else dict(loader_settings),
+            'render_settings': {} if render_settings is None else dict(render_settings),
+            'tf_json': tf_json}
+
+
+def is_montage_source(ldr):
+    return isinstance(ldr, MontageRenderer) or (isinstance(ldr, dict) and
+        (ldr.get('ImageLoaderType', None) in ('MontageSource', 'MontageRenderer')))

@@ -49,7 +49,7 @@ if __name__ == '__main__':
         print(f'No meshes found in {tform_dir}')
         exit()
     makedirs(out_dir, exist_ok=True)
-    resolution0 = config.montage_resolution() * 2**(mip0)
+    resolution0 = config.mip0_resolution() * 2**(mip0)
 
     print('finding transformations')
     rfunc = partial(get_convex_hull, resolution=resolution0)

@@ -1,4 +1,5 @@
 import argparse
+from collections import defaultdict
 from functools import partial
 import json
 import os
@@ -9,23 +10,36 @@ from feabas import config, logging, storage
 
 
 def generate_stitched_mipmaps(img_dir, max_mip, **kwargs):
-    min_mip = kwargs.pop('min_mip', 0)
+    kwargs.pop('min_mip', None)
+    needed_mip = kwargs.pop('needed_mip', 0)    # finest level needed downstream
     num_workers = kwargs.pop('num_workers', 1)
     parallel_within_section = kwargs.pop('parallel_within_section', True)
     logger_info = kwargs.get('logger', None)
     logger = logging.get_logger(logger_info)
-    meta_list = sorted(storage.list_folder_content(storage.join_paths(img_dir, 'mip'+str(min_mip), '**', 'metadata.txt'), recursive=True))
-    meta_list = meta_list[arg_indx]
-    secnames = [os.path.basename(os.path.dirname(s)) for s in meta_list]
+    # sections may have been rendered at different mip levels: start each one
+    # from the coarsest level available that is still at least as fine as
+    # needed (e.g. not from a full-resolution final output if lower levels exist).
+    rendered = defaultdict(list)
+    for m in range(max_mip + 1):
+        meta_list = storage.list_folder_content(storage.join_paths(img_dir, 'mip'+str(m), '*', 'metadata.txt'), recursive=True)
+        for s in meta_list:
+            rendered[os.path.basename(os.path.dirname(s))].append(m)
+    min_mips = {}
+    for sname, mips in rendered.items():
+        finer = [m for m in mips if m <= needed_mip]
+        min_mips[sname] = max(finer) if len(finer) > 0 else min(mips)
+    secnames = sorted(min_mips)[arg_indx]
     update_status = {}
     if parallel_within_section or (num_workers == 1):
         for sname in secnames:
-            res = mip_map_one_section(sname, img_dir, max_mip, num_workers=num_workers, **kwargs)
+            res = mip_map_one_section(sname, img_dir, max_mip, num_workers=num_workers, min_mip=min_mips[sname],
+                                      provenance_file=stitch_record_file(sname), **kwargs)
             update_status.update(res)
     else:
         target_func = partial(mip_map_one_section, img_dir=img_dir,
                                 max_mip=max_mip, num_workers=1, **kwargs)
-        for res in submit_to_workers(target_func, args=[(s,) for s in secnames], num_workers=num_workers):
+        kwargs_list = [{'min_mip': min_mips[s], 'provenance_file': stitch_record_file(s)} for s in secnames]
+        for res in submit_to_workers(target_func, args=[(s,) for s in secnames], kwargs=kwargs_list, num_workers=num_workers):
             update_status.update(res)
     logger.info('mipmapping generated.')
     return update_status
@@ -40,6 +54,12 @@ def generate_stitched_mipmaps_tensorstore(meta_dir, tgt_mips, **kwargs):
     meta_list = sorted(storage.list_folder_content(storage.join_paths(meta_dir,'*.json')))
     meta_list = meta_list[arg_indx]
     update_status = {}
+    # skip the sections with all the target levels in one concurrent pass
+    sec_list = [os.path.basename(s).replace('.json', '') for s in meta_list]
+    rendered = storage.map_io(partial(mipmap.stitched_mips, meta_dir=meta_dir), sec_list)
+    complete = [all(m in r for m in tgt_mips) for r in rendered]
+    update_status.update({sname: False for sname, c in zip(sec_list, complete) if c})
+    meta_list = [s for s, c in zip(meta_list, complete) if not c]
     if parallel_within_section or num_workers == 1:
         for metafile in meta_list:
             mask_file = storage.join_paths(mask_dir, os.path.basename(metafile).replace('.json','.png'))
@@ -57,26 +77,6 @@ def generate_stitched_mipmaps_tensorstore(meta_dir, tgt_mips, **kwargs):
     return update_status
 
 
-def generate_thumbnails(src_dir, out_dir, seclist=None, **kwargs):
-    num_workers = kwargs.pop('num_workers', 1)
-    logger_info = kwargs.pop('logger', None)
-    logger = logging.get_logger(logger_info)
-    meta_list = sorted(storage.list_folder_content(storage.join_paths(src_dir, '**', 'metadata.txt'), recursive=True))
-    meta_list = meta_list[arg_indx]
-    secnames = [os.path.basename(os.path.dirname(s)) for s in meta_list]
-    target_func = partial(mipmap.create_thumbnail, **kwargs)
-    storage.makedirs(out_dir)
-    updated = {}
-    args_list = []
-    kwargs_list = []
-    for sname in secnames:
-        outname = storage.join_paths(out_dir, sname + '.' + thumbnail_format)
-        if seclist is None:
-            if storage.file_exists(outname, use_cache=True):
-                continue
-            else:
-                updated[sname] = True
-        else:
 def stitch_record_file(sname):
     return storage.join_paths(root_dir, 'stitch', 'provenance', sname + '.json')
 
@@ -131,6 +131,26 @@ def record_thumbnail_sources(seclist, source_fps, thumb_records):
     storage.map_io(lambda f: provenance.update(f, {}, record=thumb_records[f]), to_write)
 
 
+def generate_thumbnails(src_dir, out_dir, seclist=None, **kwargs):
+    num_workers = kwargs.pop('num_workers', 1)
+    logger_info = kwargs.pop('logger', None)
+    logger = logging.get_logger(logger_info)
+    meta_list = sorted(storage.list_folder_content(storage.join_paths(src_dir, '**', 'metadata.txt'), recursive=True))
+    meta_list = meta_list[arg_indx]
+    secnames = [os.path.basename(os.path.dirname(s)) for s in meta_list]
+    target_func = partial(mipmap.create_thumbnail, **kwargs)
+    storage.makedirs(out_dir)
+    updated = {}
+    args_list = []
+    kwargs_list = []
+    for sname in secnames:
+        outname = storage.join_paths(out_dir, sname + '.' + thumbnail_format)
+        if seclist is None:
+            if storage.file_exists(outname, use_cache=True):
+                continue
+            else:
+                updated[sname] = True
+        else:
             if sname not in seclist:
                 continue
             elif (seclist[sname]) or (not storage.file_exists(outname, use_cache=True)):
@@ -398,7 +418,7 @@ def render_one_aligned_thumbnail(tform_name, thumbnail_dir, out_dir, **kwargs):
     thumbnail_configs = config.thumbnail_configs()
     if src_resolution is None:
         thumbnail_mip_lvl = thumbnail_configs.get('thumbnail_mip_level', 6)
-        src_resolution = config.montage_resolution() * (2 ** thumbnail_mip_lvl)
+        src_resolution = config.mip0_resolution() * (2 ** thumbnail_mip_lvl)
     thumbnail_format = thumbnail_configs.get('downsample',{}).get('thumbnail_format', 'png')
     out_resolution = kwargs.get('out_resolution', src_resolution)
     bbox = kwargs.get('bbox', None)
@@ -517,7 +537,8 @@ if __name__ == '__main__':
             thumbnail_configs.setdefault('pattern', pattern)
             thumbnail_configs.setdefault('one_based', one_based)
             thumbnail_configs.setdefault('fillval', fillval)
-            slist = generate_stitched_mipmaps(src_dir0, max_mip, **thumbnail_configs)
+            needed_mip = min(align_mip, config.thumbnail_source_mip())
+            slist = generate_stitched_mipmaps(src_dir0, max_mip, needed_mip=needed_mip, **thumbnail_configs)
             if thumbnail_configs.get('thumbnail_highpass', True):
                 src_mip = max(0, thumbnail_mip_lvl-2)
                 highpass_inter_mip_lvl = thumbnail_configs.get('highpass_inter_mip_lvl', src_mip)
@@ -535,6 +556,10 @@ if __name__ == '__main__':
                 highpass = False
             thumbnail_configs.setdefault('downsample', downsample)
             thumbnail_configs.setdefault('highpass', highpass)
+            thumb_src_mip = int(os.path.basename(src_dir.rstrip('/'))[3:])
+            source_fps = thumbnail_source_fingerprints(slist, thumb_src_mip, img_dir=src_dir0)
+            thumb_records = provenance.load_all([thumbnail_record_file(s) for s in slist])
+            slist = mark_stale_thumbnails(slist, source_fps, thumb_records, logger=logger_info[0])
             slist = generate_thumbnails(src_dir, img_dir, seclist=slist, **thumbnail_configs)
         else:
             stitch_dir = storage.join_paths(root_dir, 'stitch')
@@ -556,17 +581,17 @@ if __name__ == '__main__':
             else:
                 highpass = False
                 tgt_mips.append(thumbnail_mip_lvl)
-            thumb_src_mip = int(os.path.basename(src_dir.rstrip('/'))[3:])
-            source_fps = thumbnail_source_fingerprints(slist, thumb_src_mip, img_dir=src_dir0)
-            thumb_records = provenance.load_all([thumbnail_record_file(s) for s in slist])
-            slist = mark_stale_thumbnails(slist, source_fps, thumb_records, logger=logger_info[0])
                 downsample = 1
             slist = generate_stitched_mipmaps_tensorstore(src_dir, tgt_mips, mask_dir=render_mask_dir, **thumbnail_configs)
+            source_fps = thumbnail_source_fingerprints(slist, tgt_mips[-1], meta_dir=src_dir)
+            thumb_records = provenance.load_all([thumbnail_record_file(s) for s in slist])
+            slist = mark_stale_thumbnails(slist, source_fps, thumb_records, logger=logger_info[0])
             thumbnail_configs.setdefault('highpass', highpass)
             thumbnail_configs.setdefault('mip', thumbnail_mip_lvl)
             slist = generate_thumbnails_tensorstore(src_dir, img_dir, seclist=slist, **thumbnail_configs)
         generate_thumbnail_masks(stitch_tform_dir, mat_mask_dir, seclist=slist, resolution=thumbnail_resolution,
                                  img_dir=img_dir, **thumbnail_configs)
+        record_thumbnail_sources(slist, source_fps, thumb_records)
         logger.info('finished.')
         logging.terminate_logger(*logger_info)
     else:
@@ -583,15 +608,11 @@ if __name__ == '__main__':
             storage.makedirs(manual_dir)
             thumbnail_configs['logger'] = logger_info[0]
             thumbnail_configs.setdefault('resolution', thumbnail_resolution)
-            source_fps = thumbnail_source_fingerprints(slist, tgt_mips[-1], meta_dir=src_dir)
-            thumb_records = provenance.load_all([thumbnail_record_file(s) for s in slist])
-            slist = mark_stale_thumbnails(slist, source_fps, thumb_records, logger=logger_info[0])
             thumbnail_configs.setdefault('feature_match_dir', feature_match_dir)
             region_labels = []
             for _, mat in material_table:
                 if mat.enable_mesh and (mat._stiffness_multiplier > 0.1) and (mat.mask_label is not None):
                     region_labels.append(mat.mask_label)
-        record_thumbnail_sources(slist, source_fps, thumb_records)
             thumbnail_configs.setdefault('region_labels', region_labels)
             pairnames = []
             processed = []

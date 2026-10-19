@@ -90,7 +90,7 @@ if __name__ == '__main__':
     thumbnail_align_configs = thumbnail_configs.get('alignment', {})
     delimiter = thumbnail_align_configs.get('match_name_delimiter', '__to__')
     thumb_mip = thumbnail_configs.get('thumbnail_mip_level', 6)
-    thumb_res = config.montage_resolution() * (2 ** thumb_mip)
+    thumb_res = config.mip0_resolution() * (2 ** thumb_mip)
     ext = '.png'
 
     match_list0 = []
