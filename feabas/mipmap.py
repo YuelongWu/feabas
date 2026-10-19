@@ -12,7 +12,7 @@ import time
 
 from feabas.concurrent import submit_to_workers
 from feabas.dal import MosaicLoader, get_tensorstore_spec
-from feabas import common, logging, dal, storage
+from feabas import common, logging, dal, storage, provenance
 from feabas.spatial import Geometry
 from feabas.mesh import Mesh
 from feabas.renderer import render_whole_mesh, MeshRenderer
@@ -21,6 +21,7 @@ from feabas.config import CHECKPOINT_TIME_INTERVAL, get_numpy_thread
 Nthreads = get_numpy_thread()
 cv2.setNumThreads(Nthreads)
 H5File = storage.h5file_class()
+MAX_STITCH_MIP = 12
 
 def get_image_loader(src_dir, **kwargs):
     ext = kwargs.pop('input_formats', ('png', 'jpg', 'tif', 'bmp'))
@@ -128,9 +129,47 @@ def mip_one_level(src_dir, out_dir, **kwargs):
     return len(rendered)
 
 
+def stitched_mips(sec_name, img_dir=None, meta_dir=None, mips=None):
+    """
+    mip levels at which a stitched section has been rendered. For image tiles,
+    a level counts once img_dir/mip{k}/sec_name/metadata.txt exists (only the
+    levels in mips are probed, if given); for tensorstore, the levels are the
+    keys of meta_dir/sec_name.json.
+    """
+    found = set()
+    if meta_dir is not None:
+        spec = storage.read_json(storage.join_paths(meta_dir, sec_name + '.json'), default={})
+        found.update(int(m) for m in spec)
+    if img_dir is not None:
+        # probe each level rather than globbing: works the same on GCS, where a
+        # wildcard listing would have to walk every tile of every section.
+        candidates = range(MAX_STITCH_MIP + 1) if mips is None else mips
+        for m in candidates:
+            if storage.file_exists(storage.join_paths(img_dir, 'mip'+str(m), sec_name, 'metadata.txt')):
+                found.add(m)
+    return sorted(found)
+
+
+def stitched_source_mip(sec_name, mip, img_dir=None, meta_dir=None):
+    """
+    the stitched level that level `mip` of a section is (or would be)
+    generated from: the coarsest rendered level at least as fine as mip.
+    None if there is none. For image tiles, probes from mip downwards and
+    stops at the first level found.
+    """
+    if meta_dir is not None:
+        finer = [m for m in stitched_mips(sec_name, meta_dir=meta_dir) if m <= mip]
+        return max(finer) if len(finer) > 0 else None
+    for m in range(mip, -1, -1):
+        if len(stitched_mips(sec_name, img_dir=img_dir, mips=[m])) > 0:
+            return m
+    return None
+
+
 def mip_map_one_section(sec_name, img_dir, max_mip, **kwargs):
     ext_out = kwargs.pop('format', 'jpg')
     logger_info = kwargs.get('logger', None)
+    provenance_file = kwargs.pop('provenance_file', None)
     logger = logging.get_logger(logger_info)
     t0 = time.time()
     num_tiles = []
@@ -147,6 +186,7 @@ def mip_map_one_section(sec_name, img_dir, max_mip, **kwargs):
             if n_tile > 0:
                 updated = True
             num_tiles.append(abs(n_tile))
+                provenance.inherit_level(provenance_file, m, m+1)
     except TimeoutError:
         logger.error(f'{sec_name}: Tensorstore timed out.')
         updated = False
@@ -232,6 +272,7 @@ def generate_target_tensorstore_scale(metafile, mip=None, **kwargs):
 
 def generate_tensorstore_scales(metafile, mips, **kwargs):
     logger_info = kwargs.get('logger', None)
+    provenance_file = kwargs.pop('provenance_file', None)
     t0 = time.time()
     logger = logging.get_logger(logger_info)
     mips = np.sort(mips)
@@ -242,11 +283,15 @@ def generate_tensorstore_scales(metafile, mips, **kwargs):
         if err_raised:
             break
         if specs is not None:
+        rendered = stitched_mips(sec_name, meta_dir=os.path.dirname(metafile))
             updated = True
     if updated:
         logger.info(f'{sec_name}: {(time.time()-t0)/60} min')
     return {sec_name: updated}
 
+            finer = [m for m in rendered if m < mip]
+            if len(finer) > 0:
+                provenance.inherit_level(provenance_file, max(finer), mip)
 
 
 def create_thumbnail_tensorstore(metafile, mip, outname=None, highpass=True, **kwargs):

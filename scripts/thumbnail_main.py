@@ -43,11 +43,14 @@ def generate_stitched_mipmaps_tensorstore(meta_dir, tgt_mips, **kwargs):
     if parallel_within_section or num_workers == 1:
         for metafile in meta_list:
             mask_file = storage.join_paths(mask_dir, os.path.basename(metafile).replace('.json','.png'))
-            s = mipmap.generate_tensorstore_scales(metafile, tgt_mips, num_workers=num_workers, mask_file=mask_file, **kwargs)
+            s = mipmap.generate_tensorstore_scales(metafile, tgt_mips, num_workers=num_workers, mask_file=mask_file,
+                                                   provenance_file=stitch_record_file(os.path.basename(metafile).replace('.json', '')),
+                                                   **kwargs)
             update_status.update(s)
     else:
         target_func = partial(mipmap.generate_tensorstore_scales, mips=tgt_mips, **kwargs)
-        kwarg_list = [{'mask_file': storage.join_paths(mask_dir, os.path.basename(s).replace('.json','.png'))} for s in meta_list]
+        kwarg_list = [{'mask_file': storage.join_paths(mask_dir, os.path.basename(s).replace('.json','.png')),
+                       'provenance_file': stitch_record_file(os.path.basename(s).replace('.json', ''))} for s in meta_list]
         for res in submit_to_workers(target_func, args=[(s,) for s in meta_list], kwargs=kwarg_list, num_workers=num_workers):
             update_status.update(res)
     logger.info('mipmapping generated.')
@@ -74,6 +77,60 @@ def generate_thumbnails(src_dir, out_dir, seclist=None, **kwargs):
             else:
                 updated[sname] = True
         else:
+def stitch_record_file(sname):
+    return storage.join_paths(root_dir, 'stitch', 'provenance', sname + '.json')
+
+
+def thumbnail_record_file(sname):
+    return storage.join_paths(thumbnail_dir, 'provenance', sname + '.json')
+
+
+def thumbnail_source_fingerprints(secnames, src_mip, img_dir=None, meta_dir=None):
+    """
+    {section: fingerprint of the stitching transformation its thumbnail source
+    was rendered from}: that of the coarsest stitched level at least as fine
+    as src_mip (None if unknown). Reads concurrently, and on GCS the stitch
+    records come from one listing.
+    """
+    secnames = list(secnames)
+    src_mips = storage.map_io(partial(mipmap.stitched_source_mip, mip=src_mip, img_dir=img_dir,
+                                      meta_dir=meta_dir), secnames)
+    records = provenance.load_all([stitch_record_file(s) for s in secnames])
+    return {s: (None if m is None else records[stitch_record_file(s)].get(str(m), None))
+            for s, m in zip(secnames, src_mips)}
+
+
+def mark_stale_thumbnails(seclist, source_fps, thumb_records, logger=None):
+    """
+    also flag as updated the sections whose thumbnail was generated from
+    stitched images rendered with a different stitching transformation than
+    the current stitched images: the stitching stage, which now produces the
+    levels the thumbnails are generated from, may have re-rendered them.
+    """
+    logger = logging.get_logger(logger)
+    for sname, updated in seclist.items():
+        if updated:
+            continue
+        src_fp = source_fps.get(sname, None)
+        thumb_fp = thumb_records[thumbnail_record_file(sname)].get('source', None)
+        if (src_fp is not None) and (thumb_fp is not None) and (src_fp != thumb_fp):
+            logger.info(f'{sname}: stitched images re-rendered since the thumbnail, regenerate.')
+            seclist[sname] = True
+    return seclist
+
+
+def record_thumbnail_sources(seclist, source_fps, thumb_records):
+    # thumbnails without a record (from older versions) adopt the current source
+    to_write = []
+    for sname in seclist:
+        src_fp = source_fps.get(sname, None)
+        record_file = thumbnail_record_file(sname)
+        if (src_fp is not None) and (thumb_records[record_file].get('source', None) != src_fp):
+            to_write.append(record_file)
+            thumb_records[record_file] = dict(thumb_records[record_file], source=src_fp)
+    storage.map_io(lambda f: provenance.update(f, {}, record=thumb_records[f]), to_write)
+
+
             if sname not in seclist:
                 continue
             elif (seclist[sname]) or (not storage.file_exists(outname, use_cache=True)):
@@ -411,7 +468,7 @@ if __name__ == '__main__':
     thumbnail_configs['num_workers'] = num_workers
 
 
-    from feabas import mipmap, common, constant
+    from feabas import mipmap, common, constant, provenance
     from feabas.aligner import apply_transform_normalization, get_convex_hull, Aligner
     from feabas.mipmap import mip_map_one_section
     from feabas.spatial import find_rotation_for_minimum_rectangle
@@ -499,6 +556,10 @@ if __name__ == '__main__':
             else:
                 highpass = False
                 tgt_mips.append(thumbnail_mip_lvl)
+            thumb_src_mip = int(os.path.basename(src_dir.rstrip('/'))[3:])
+            source_fps = thumbnail_source_fingerprints(slist, thumb_src_mip, img_dir=src_dir0)
+            thumb_records = provenance.load_all([thumbnail_record_file(s) for s in slist])
+            slist = mark_stale_thumbnails(slist, source_fps, thumb_records, logger=logger_info[0])
                 downsample = 1
             slist = generate_stitched_mipmaps_tensorstore(src_dir, tgt_mips, mask_dir=render_mask_dir, **thumbnail_configs)
             thumbnail_configs.setdefault('highpass', highpass)
@@ -522,11 +583,15 @@ if __name__ == '__main__':
             storage.makedirs(manual_dir)
             thumbnail_configs['logger'] = logger_info[0]
             thumbnail_configs.setdefault('resolution', thumbnail_resolution)
+            source_fps = thumbnail_source_fingerprints(slist, tgt_mips[-1], meta_dir=src_dir)
+            thumb_records = provenance.load_all([thumbnail_record_file(s) for s in slist])
+            slist = mark_stale_thumbnails(slist, source_fps, thumb_records, logger=logger_info[0])
             thumbnail_configs.setdefault('feature_match_dir', feature_match_dir)
             region_labels = []
             for _, mat in material_table:
                 if mat.enable_mesh and (mat._stiffness_multiplier > 0.1) and (mat.mask_label is not None):
                     region_labels.append(mat.mask_label)
+        record_thumbnail_sources(slist, source_fps, thumb_records)
             thumbnail_configs.setdefault('region_labels', region_labels)
             pairnames = []
             processed = []
