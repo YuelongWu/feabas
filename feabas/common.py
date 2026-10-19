@@ -69,15 +69,12 @@ def imread(path, **kwargs):
 def imwrite(path, image):
     if path.startswith('gs://'):
         ext = os.path.splitext(path)[-1]
-        tmpname = hex(os.getpid())[2:] + '_' + hex(id(path))[2:] + ext
-        os.makedirs(storage.LOCAL_TEMP_FOLDER, exist_ok=True)
-        local_name = os.path.join(storage.LOCAL_TEMP_FOLDER, tmpname)
-        cv2.imwrite(local_name, image)
-        bucket, relpath = storage.GCP_parse_object_name(path)
-        bucket = storage.GCP_client().get_bucket(bucket)
-        blob = bucket.blob(relpath)
-        blob.upload_from_filename(local_name)
-        os.remove(local_name)
+        local_name = storage.local_temp_file(suffix=ext)
+        try:
+            if cv2.imwrite(local_name, image):
+                storage.GCP_get_blob(path).upload_from_filename(local_name)
+        finally:
+            os.remove(local_name)
     else:
         if path.startswith('file://'):
             path = path.replace('file://', '')

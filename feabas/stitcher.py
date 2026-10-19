@@ -14,6 +14,7 @@ import scipy.sparse.csgraph as csgraph
 import scipy.sparse.linalg as splinalg
 import tensorstore as ts
 import time
+import uuid
 
 from feabas.concurrent import submit_to_workers
 from feabas.dal import StaticImageLoader, TensorStoreWriter
@@ -325,6 +326,9 @@ class Stitcher:
 
     def _flip_height_width(self):
         self.average_tile_size = self.average_tile_size[::-1]
+                # identifies this transformation, so that later stages can tell whether
+                # their outputs were made from it (see feabas.provenance)
+                f.attrs['tform_id'] = uuid.uuid4().hex
         init_offset = self._init_bboxes[...,:2]
         self._init_bboxes[...,2:] = init_offset + self.tile_sizes.reshape(init_offset.shape)
         self.tile_sizes = np.flip(self.tile_sizes, axis=-1)
