@@ -10,7 +10,7 @@ meshing:
 matching:
     working_mip_level: 2  # resolution at which to do the matchin
     loader_config:
-        cache_size: 60  # total number of source images allowed to cache in RAM
+        cache_capacity: 2048  # RAM (MiB) per worker to cache the stitched images, shared by the two sections of a match. optional cache_size: max number of images per worker
     matcher_config:
         num_workers: 15
         batch_size: 100 # number of cropped regions to do fft at the same time

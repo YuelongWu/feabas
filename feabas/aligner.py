@@ -78,10 +78,11 @@ def match_section_from_initial_matches(match_name, meshes, loaders, out_dir, con
     loader_config = conf.get('loader_config', {}).copy()
     matcher_config = conf.get('matcher_config', {}).copy()
     secnames = os.path.splitext(os.path.basename(match_name))[0].split(match_name_delimiter)
-    if 'cache_size' in loader_config and loader_config['cache_size'] is not None:
-        loader_config['cache_size'] = loader_config['cache_size'] // (2 * matcher_config.get('num_workers',1))
-    if 'cache_capacity' in loader_config and loader_config['cache_capacity'] is not None:
-        loader_config['cache_capacity'] = loader_config['cache_capacity'] // (2 * matcher_config.get('num_workers',1))
+    # the cache budget is per worker, shared by the loaders of the two sections
+    if loader_config.get('cache_size', None) is not None:
+        loader_config['cache_size'] = max(1, loader_config['cache_size'] // 2)
+    if loader_config.get('cache_capacity', None) is not None:
+        loader_config['cache_capacity'] = loader_config['cache_capacity'] / 2
     if isinstance(meshes, str):
         meshes = (storage.join_paths(meshes, secnames[0]+'.h5'), storage.join_paths(meshes, secnames[1]+'.h5'))
     if isinstance(meshes, (tuple, list)):

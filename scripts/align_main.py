@@ -261,9 +261,6 @@ def render_main(tform_list, z_prefix=None):
     align_config['logger'] = logger_info[0]
     logger = logging.get_logger(logger_info[0])
     num_workers = align_config.get('num_workers', 1)
-    cache_size = align_config.get('loader_config', {}).get('cache_size', None)
-    if (cache_size is not None) and (num_workers > 1):
-        align_config['loader_config']['cache_size'] = cache_size // num_workers
     if isinstance(canvas_file, dict) or storage.file_exists(canvas_file):
         canvas_bbox = common.get_canvas_bbox(canvas_file, target_mip=0)
         offset = -np.array(canvas_bbox[:2])

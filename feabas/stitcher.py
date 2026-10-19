@@ -358,10 +358,6 @@ class Stitcher:
         logger_info = kwargs.get('logger', None)
         second_chance = kwargs.pop('second_chance', self.meshes is None)
         logger = logging.get_logger(logger_info)
-        if bool(loader_config.get('cache_size', None)) and (num_workers > 1):
-            loader_config['cache_size'] = int(np.ceil(loader_config['cache_size'] / num_workers))
-        if bool(loader_config.get('cache_capacity', None)) and (num_workers > 1):
-            loader_config['cache_capacity'] = loader_config['cache_capacity'] / num_workers
         loader_config['number_of_channels'] = 1 # only gray-scale matching are supported
         if self.meshes is not None:
             self.refine_stage_positions()
