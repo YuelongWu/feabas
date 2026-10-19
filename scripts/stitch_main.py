@@ -7,6 +7,8 @@ import feabas
 from feabas.concurrent import submit_to_workers
 from feabas import config, logging, storage
 
+MAX_CACHE_SCALE_MIP = 3 # stop growing the tile count of the render cache with the mip level beyond this
+
 
 def match_one_section(coordname, outname, **kwargs):
     logger_info = kwargs.get('logger', None)
@@ -160,11 +162,15 @@ def optmization_main(match_list, out_dir, **kwargs):
 def render_one_section(tform_name, out_prefix, meta_name=None, **kwargs):
     mask_dir = kwargs.pop('mask_dir', None)
     tfname = kwargs.pop('tfname', None)
-    num_workers = kwargs.get('num_workers', 1)
+    mip = kwargs.get('mip', 0)
     loader_settings = kwargs.pop('loader_settings', {})
     if loader_settings.get('cache_size', None) is not None:
         loader_settings = loader_settings.copy()
-        loader_settings['cache_size'] = loader_settings['cache_size'] // num_workers
+        # cache_size (per worker) counts source tiles: at mip k a downsampled tile takes
+        # 4^-k the memory, while each output tile covers ~4^k more of them.
+        cache_scale = 4 ** min(mip, MAX_CACHE_SCALE_MIP)
+        loader_settings['cache_size'] = loader_settings['cache_size'] * cache_scale
+    kwargs['resolution'] = config.mip0_resolution() * (2 ** mip)
     renderer = MontageRenderer.from_h5(tform_name, loader_settings=loader_settings, **kwargs)
     if tfname is not None:
         renderer.add_transfer_functions(tfname)
@@ -173,41 +179,137 @@ def render_one_section(tform_name, out_prefix, meta_name=None, **kwargs):
     return num_chunks
 
 
+def downsample_one_section(sec_name, src_mip, tgt_mip, out_dir, **kwargs):
+    """generate stitched mip level tgt_mip from the rendered level src_mip."""
+    driver = kwargs.get('driver', 'image')
+    num_workers = kwargs.get('num_workers', 1)
+    logger_info = kwargs.get('logger', None)
+    provenance_file = kwargs.get('provenance_file', None)
+    ds_format = config.thumbnail_configs().get('downsample', {}).get('format', 'jpg')
+    if driver == 'image':
+        filename_settings = kwargs.get('filename_settings', {})
+        mip_kwargs = {'pattern': filename_settings.get('pattern', '_tr{ROW_IND}-tc{COL_IND}.png'),
+                      'one_based': filename_settings.get('one_based', True),
+                      'fillval': kwargs.get('loader_settings', {}).get('fillval', 0)}
+        res = mipmap.mip_map_one_section(sec_name, out_dir, tgt_mip, min_mip=src_mip, num_workers=num_workers,
+                                         format=ds_format, logger=logger_info, provenance_file=provenance_file,
+                                         **mip_kwargs)
+    else:
+        meta_name = storage.join_paths(kwargs['meta_dir'], sec_name + '.json')
+        mask_file = storage.join_paths(kwargs.get('mask_dir', None), sec_name + '.png')
+        res = mipmap.generate_tensorstore_scales(meta_name, [tgt_mip], num_workers=num_workers, format=ds_format,
+                                                 mask_file=mask_file, logger=logger_info,
+                                                 provenance_file=provenance_file)
+    return res.get(sec_name, False)
+
+
+def plan_section_mips(requested, rendered, level_class=None):
+    """
+    split the requested mip levels not rendered yet into the ones to render
+    from the raw tiles, and the ones to downsample (as {mip: source mip}) from
+    a finer level, either already rendered or rendered before. If level_class
+    is given (mip -> class), only downsample from a level of the same class,
+    e.g. keep the matching levels from being derived from the final output
+    when they are rendered with different settings.
+    """
+    if level_class is None:
+        level_class = lambda m: None
+    available = set(rendered)
+    to_render, to_downsample = [], {}
+    for m in sorted(set(requested) - available):
+        finer = [s for s in available if (s < m) and (level_class(s) == level_class(m))]
+        if len(finer) > 0:
+            to_downsample[m] = max(finer)
+        else:
+            to_render.append(m)
+        available.add(m)
+    return to_render, to_downsample
+
+
 def render_main(tform_list, out_dir, **kwargs):
     logger_info = logging.initialize_main_logger(logger_name='stitch_rendering', mp=False)
     logger = logger_info[0]
     driver = kwargs.get('driver', 'image')
     histeq_dir = kwargs.pop('histeq_dir', None)
+    provenance_dir = kwargs.pop('provenance_dir', None)
+    mip_levels = kwargs.pop('mip_levels', [0])
+    # settings of the final (full-resolution) output levels, if different
+    final_kwargs = kwargs.pop('final_settings', None)
     use_tensorstore = driver != 'image'
     if use_tensorstore:
         meta_dir = kwargs['meta_dir']
         storage.makedirs(meta_dir)
-    for tname in tform_list:
-        t0 = time.time()
-        sec_name = os.path.basename(tname).replace('.h5', '')
+    if final_kwargs is None:
+        level_class = None
+        settings_of = lambda m: kwargs
+    else:
+        level_class = config.is_final_stitch_mip
+        settings_of = lambda m: final_kwargs if config.is_final_stitch_mip(m) else kwargs
+        final_mips = [m for m in mip_levels if config.is_final_stitch_mip(m)]
+        if len(final_mips) > 0:
+            logger.info(f'final_rendering settings used for mip levels {final_mips}')
+    logger.info(f'stitched mip levels to render: {mip_levels}')
+    # what is already there, for all the sections at once (concurrent reads)
+    sec_names = [os.path.basename(tname).replace('.h5', '') for tname in tform_list]
+    if use_tensorstore:
+        rendered_list = storage.map_io(partial(mipmap.stitched_mips, meta_dir=meta_dir), sec_names)
+    else:
+        rendered_list = storage.map_io(partial(mipmap.stitched_mips, img_dir=out_dir), sec_names)
+    record_files = [storage.join_paths(provenance_dir, s + '.json') for s in sec_names]
+    record_list = provenance.load_all(record_files)
+    has_record = [any(record_list[f].get(str(m), None) is not None for m in r)
+                  for f, r in zip(record_files, rendered_list)]
+    storage.map_io(provenance.tform_fingerprint, [t for t, h in zip(tform_list, has_record) if h])  # cached
+    for tname, sec_name, rendered, record_file in zip(tform_list, sec_names, rendered_list, record_files):
+        records = record_list[record_file]
+        recorded = [m for m in rendered if records.get(str(m), None) is not None]
+        if len(recorded) > 0:
+            fingerprint = provenance.tform_fingerprint(tname)
+            stale = [m for m in recorded if records[str(m)] != fingerprint]
+            if len(stale) > 0:
+                logger.warning(f'{sec_name}: stitched mip{stale} rendered from a previous version of the '
+                               'stitching transformation. Delete them to re-render.')
+        to_render, to_downsample = plan_section_mips(mip_levels, rendered, level_class=level_class)
+        if (len(to_render) == 0) and (len(to_downsample) == 0):
+            continue
         tfname = storage.join_paths(histeq_dir, sec_name+'.json')
         if not storage.file_exists(tfname):
             tfname = None
-        try:
-            sec_outdir = storage.join_paths(out_dir, sec_name)
-            if use_tensorstore:
-                meta_name = storage.join_paths(meta_dir, sec_name+'.json')
-            else:
-                meta_name = storage.join_paths(sec_outdir, 'metadata.txt')
-            if storage.file_exists(meta_name, use_cache=True):
-                continue
-            logger.info(f'{sec_name}: start')
-            if use_tensorstore:
-                out_prefix = sec_outdir
-            else:
-                storage.makedirs(sec_outdir)
-                out_prefix = storage.join_paths(sec_outdir, sec_name)
-            num_rendered = render_one_section(tname, out_prefix, meta_name=meta_name, tfname=tfname, **kwargs)
-            logger.info(f'{sec_name}: {num_rendered} tiles | {(time.time()-t0)/60} min')
-        except TimeoutError:
-            logger.error(f'{sec_name}: Tensorstore timed out.')
-        except Exception as err:
-            logger.error(f'{sec_name}: {err}')
+        for mip in to_render:
+            t0 = time.time()
+            try:
+                if use_tensorstore:
+                    meta_name = storage.join_paths(meta_dir, sec_name+'.json')
+                    out_prefix = storage.join_paths(out_dir, sec_name)
+                else:
+                    sec_outdir = storage.join_paths(out_dir, 'mip'+str(mip), sec_name)
+                    meta_name = storage.join_paths(sec_outdir, 'metadata.txt')
+                    storage.makedirs(sec_outdir)
+                    out_prefix = storage.join_paths(sec_outdir, sec_name)
+                logger.info(f'{sec_name}: start mip{mip}')
+                num_rendered = render_one_section(tname, out_prefix, meta_name=meta_name, tfname=tfname, mip=mip, **settings_of(mip))
+                if use_tensorstore:
+                    completed = mip in mipmap.stitched_mips(sec_name, meta_dir=meta_dir)
+                else:
+                    completed = storage.file_exists(meta_name)
+                if completed:
+                    provenance.update(record_file, {mip: provenance.tform_fingerprint(tname)})
+                logger.info(f'{sec_name}: mip{mip} {num_rendered} tiles | {(time.time()-t0)/60} min')
+            except TimeoutError:
+                logger.error(f'{sec_name}: Tensorstore timed out.')
+            except Exception as err:
+                logger.error(f'{sec_name}: {err}')
+        for mip, src_mip in to_downsample.items():
+            t0 = time.time()
+            try:
+                updated = downsample_one_section(sec_name, src_mip, mip, out_dir, logger=logger,
+                                                 provenance_file=record_file, **settings_of(mip))
+                if updated:
+                    logger.info(f'{sec_name}: mip{mip} downsampled from mip{src_mip} | {(time.time()-t0)/60} min')
+            except TimeoutError:
+                logger.error(f'{sec_name}: Tensorstore timed out.')
+            except Exception as err:
+                logger.error(f'{sec_name}: {err}')
     logger.info('finished.')
     logging.terminate_logger(*logger_info)
 
@@ -220,6 +322,11 @@ def parse_args(args=None):
     parser.add_argument("--step", metavar="step", type=int, default=1)
     parser.add_argument("--stop", metavar="stop", type=int, default=0)
     parser.add_argument("--reverse",  action='store_true')
+    parser.add_argument("--mips", metavar="mips", type=str, default=None,
+                        help="rendering: comma-separated stitched mip levels to render, overriding "
+                             "rendering: mip_levels in the config (default: the levels needed by "
+                             "thumbnail generation and alignment matching)")
+    parser.add_argument("--full", action='store_true', help="rendering: same as --mips 0")
     return parser.parse_args(args)
 
 
@@ -230,16 +337,20 @@ if __name__ == '__main__':
 
     stitch_configs = config.stitch_configs()
     if args.mode.lower().startswith('r'):
-        maskout_val = stitch_configs.get('matching', {}).get('maskout_val', None)
-        stitch_configs = stitch_configs['rendering']
-        if maskout_val is not None:
-            stitch_configs['render_settings'].setdefault('maskout_val', maskout_val)
+        stitch_configs = config.stitch_render_configs(final=False)
         mode = 'rendering'
         image_outdir = config.stitch_render_dir()
-        stitch_configs.pop('out_dir', '')
-        driver = stitch_configs.get('driver', 'image')
-        if driver == 'image':
-            image_outdir = storage.join_paths(image_outdir, 'mip0')
+        mip_override = '0' if args.full else args.mips
+        mip_levels = config.stitch_render_mips(mip_override)
+        if config.separate_final_stitch_render():
+            final_settings = config.stitch_render_configs(final=True)
+        else:
+            final_settings = None
+        for conf in (stitch_configs, final_settings):
+            if conf is not None:
+                conf.pop('out_dir', '')
+                conf.pop('mip_levels', None)
+        stitch_configs['mip_levels'] = mip_levels
         # Rendering allocates many tile-sized (>32 MB) temporaries. By default glibc mmaps and
         # munmaps each of them, so every allocation page-faults and gets zeroed by the kernel
         # (~18% sys time with 64 workers). Keep them on the heap instead; inherited by the
@@ -260,6 +371,7 @@ if __name__ == '__main__':
     stitch_configs['num_workers'] = num_workers
 
     from feabas.stitcher import Stitcher, MontageRenderer
+    from feabas import mipmap, provenance
 
     stitch_dir = storage.join_paths(root_dir, 'stitch')
     coord_dir = storage.join_paths(stitch_dir, 'stitch_coord')
@@ -281,7 +393,12 @@ if __name__ == '__main__':
         if args.reverse:
             tform_list = tform_list[::-1]
         stitch_configs.setdefault('meta_dir', render_meta_dir)
-        render_main(tform_list, image_outdir, mask_dir=render_mask_dir, histeq_dir=histeq_dir, **stitch_configs)
+        if final_settings is not None:
+            final_settings.update({'meta_dir': stitch_configs['meta_dir'], 'mask_dir': render_mask_dir,
+                                   'num_workers': final_settings.get('num_workers', num_workers)})
+            stitch_configs['final_settings'] = final_settings
+        render_main(tform_list, image_outdir, mask_dir=render_mask_dir, histeq_dir=histeq_dir,
+                    provenance_dir=storage.join_paths(stitch_dir, 'provenance'), **stitch_configs)
     elif mode == 'optimization':
         match_list = sorted(storage.list_folder_content(storage.join_paths(match_dir, '*.h5')))
         if len(args.filter) > 0:

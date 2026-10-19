@@ -168,14 +168,15 @@ def stitched_source_mip(sec_name, mip, img_dir=None, meta_dir=None):
 
 def mip_map_one_section(sec_name, img_dir, max_mip, **kwargs):
     ext_out = kwargs.pop('format', 'jpg')
-    logger_info = kwargs.get('logger', None)
+    min_mip = kwargs.pop('min_mip', 0)
     provenance_file = kwargs.pop('provenance_file', None)
+    logger_info = kwargs.get('logger', None)
     logger = logging.get_logger(logger_info)
     t0 = time.time()
     num_tiles = []
     updated = False
     try:
-        for m in range(max_mip):
+        for m in range(min_mip, max_mip):
             src_dir = storage.join_paths(img_dir, 'mip'+str(m), sec_name)
             out_dir = storage.join_paths(img_dir, 'mip'+str(m+1), sec_name)
             n_tile = mip_one_level(src_dir, out_dir, output_format=ext_out,
@@ -185,8 +186,8 @@ def mip_map_one_section(sec_name, img_dir, max_mip, **kwargs):
                 break
             if n_tile > 0:
                 updated = True
-            num_tiles.append(abs(n_tile))
                 provenance.inherit_level(provenance_file, m, m+1)
+            num_tiles.append(abs(n_tile))
     except TimeoutError:
         logger.error(f'{sec_name}: Tensorstore timed out.')
         updated = False
@@ -271,27 +272,30 @@ def generate_target_tensorstore_scale(metafile, mip=None, **kwargs):
 
 
 def generate_tensorstore_scales(metafile, mips, **kwargs):
-    logger_info = kwargs.get('logger', None)
     provenance_file = kwargs.pop('provenance_file', None)
+    logger_info = kwargs.get('logger', None)
     t0 = time.time()
     logger = logging.get_logger(logger_info)
     mips = np.sort(mips)
     sec_name = os.path.basename(metafile).replace('.json', '')
     updated = False
+    existing = stitched_mips(sec_name, meta_dir=os.path.dirname(metafile))
+    if all(int(m) in existing for m in mips):
+        return {sec_name: updated}  # all there: one read
     for mip in mips:
+        rendered = stitched_mips(sec_name, meta_dir=os.path.dirname(metafile))
         err_raised, specs = generate_target_tensorstore_scale(metafile, mip=mip, **kwargs)
         if err_raised:
             break
         if specs is not None:
-        rendered = stitched_mips(sec_name, meta_dir=os.path.dirname(metafile))
             updated = True
+            finer = [m for m in rendered if m < mip]
+            if len(finer) > 0:
+                provenance.inherit_level(provenance_file, max(finer), mip)
     if updated:
         logger.info(f'{sec_name}: {(time.time()-t0)/60} min')
     return {sec_name: updated}
 
-            finer = [m for m in rendered if m < mip]
-            if len(finer) > 0:
-                provenance.inherit_level(provenance_file, max(finer), mip)
 
 
 def create_thumbnail_tensorstore(metafile, mip, outname=None, highpass=True, **kwargs):

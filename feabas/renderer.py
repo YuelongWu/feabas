@@ -15,9 +15,54 @@ from feabas.concurrent import submit_to_workers
 import feabas.constant as const
 from feabas.mesh import Mesh
 from feabas import common, spatial, dal, logging, storage
-from feabas.config import DEFAULT_RESOLUTION, SECTION_THICKNESS, montage_resolution, TS_TIMEOUT, CHECKPOINT_TIME_INTERVAL
+from feabas.config import DEFAULT_RESOLUTION, SECTION_THICKNESS, mip0_resolution, TS_TIMEOUT, CHECKPOINT_TIME_INTERVAL
 
 H5File = storage.h5file_class()
+# kwargs of MeshRenderer.crop forwarded to a montage image source; its blending
+# settings come from the stitching configuration instead.
+MONTAGE_SOURCE_KWARGS = ('remap_interp', 'fillval', 'dtype_out')
+# when rendering tensorstore slabs from montage sources, a task keeps its whole
+# output in memory: cap its size (in MiB) if cache_capacity is not set.
+MONTAGE_TASK_BUFFER_MB = 2048
+
+
+def get_image_source(ldr, **kwargs):
+    """
+    resolve an image source: an image loader (or its json/dict description),
+    or a montage of raw tiles: feabas.stitcher.MontageRenderer, its init_dict,
+    or a montage_source_spec.
+    """
+    if ldr is None:
+        return None
+    if isinstance(ldr, dict) and (ldr.get('ImageLoaderType', None) in ('MontageSource', 'MontageRenderer')):
+        from feabas.stitcher import MontageRenderer
+        if ldr['ImageLoaderType'] == 'MontageSource':
+            return MontageRenderer.from_source_spec(ldr)
+        else:
+            return MontageRenderer.from_init_dict(ldr)
+    if isinstance(ldr, dal.AbstractImageLoader) or hasattr(ldr, 'crop_from_field'):
+        return ldr
+    return dal.get_loader_from_json(ldr, **kwargs)
+
+
+def montage_job_source(montage, msh, margin=16):
+    """
+    description of the part of a montage source covered by the initial
+    (stitched) coordinates of a (sub)mesh, to send to a render subprocess.
+    None if no tile is covered.
+    """
+    bbox = msh.bbox(gear=const.MESH_GEAR_INITIAL, offsetting=True)
+    bbox = spatial.scale_coordinates(bbox.reshape(2, 2), msh.resolution / montage.resolution).ravel()
+    hits = montage.tiles_in_bbox(common.bbox_enlarge(bbox, margin))
+    if len(hits) == 0:
+        return None
+    return montage.init_dict(selected=hits)
+
+
+def is_montage_spec(ldr):
+    """whether an image source is a montage of raw tiles (or its description)."""
+    return hasattr(ldr, 'crop_from_field') or (isinstance(ldr, dict) and
+        (ldr.get('ImageLoaderType', None) in ('MontageSource', 'MontageRenderer')))
 
 class MeshRenderer:
     """
@@ -577,7 +622,13 @@ class MeshRenderer:
             scale = self.resolution / image_loader.resolution
             x_field = spatial.scale_coordinates(x_field, scale)
             y_field = spatial.scale_coordinates(y_field, scale)
-        imgt = common.render_by_subregions(x_field, y_field, mask, image_loader, **kwargs) # H x W X C
+        if hasattr(image_loader, 'crop_from_field'):
+            # montage of raw tiles (feabas.stitcher.MontageRenderer): compose with the
+            # stitching deformation and sample the source tiles directly.
+            src_kwargs = {k: kwargs[k] for k in MONTAGE_SOURCE_KWARGS if k in kwargs}
+            imgt = image_loader.crop_from_field(x_field, y_field, mask, **src_kwargs)
+        else:
+            imgt = common.render_by_subregions(x_field, y_field, mask, image_loader, **kwargs) # H x W X C
         if (log_sigma > 0) and (imgt is not None):
             if imgt.ndim == 3:
                 imgt = np.moveaxis(imgt, -1, 0) # C x H x W
@@ -694,6 +745,9 @@ def render_whole_mesh(mesh, image_loader, prefix, **kwargs):
     if 'weight_params' in kwargs and isinstance(kwargs['weight_params'], str):
         kwargs['weight_params'] = const.TRIFINDER_MODE_LIST.index(kwargs['weight_params'])
     keywords = ['{ROW_IND}', '{COL_IND}', '{X_MIN}', '{Y_MIN}', '{X_MAX}', '{Y_MAX}']
+    image_loader = get_image_source(image_loader)
+    # a montage of raw tiles is sent to each job restricted to the tiles it needs
+    montage = image_loader if hasattr(image_loader, 'crop_from_field') else None
     resolution = image_loader.resolution
     mesh.change_resolution(resolution / scale)
     kwargs.setdefault('target_resolution', resolution / scale)
@@ -766,7 +820,7 @@ def render_whole_mesh(mesh, image_loader, prefix, **kwargs):
             "dtype": np.dtype(dtype).name,
             "rank" : 4
         }
-        mip_level_str = str(int(np.log(mesh.resolution/montage_resolution())/np.log(2)))
+        mip_level_str = str(int(np.log(mesh.resolution/mip0_resolution())/np.log(2)))
         if driver == 'zarr':
             ts_specs = {
                 "driver": "zarr",
@@ -836,7 +890,12 @@ def render_whole_mesh(mesh, image_loader, prefix, **kwargs):
         target_func = partial(subprocess_render_mesh_tiles, image_loader, **kwargs)
     else:
         target_func = partial(subprocess_render_mesh_tiles, image_loader, outnames=ts_specs, **kwargs)
-    if (num_workers > 1) and (num_tiles > 1):
+    use_pool = (num_workers > 1) and (num_tiles > 1)
+    if use_pool and (montage is not None):
+        if driver != 'image':
+            raise NotImplementedError('rendering montage sources with render_whole_mesh only supports image tiles.')
+        target_func = partial(subprocess_render_mesh_tiles, **kwargs)
+    if use_pool:
         num_tile_per_job = max(1, int((num_tiles // num_workers)**0.5))
         if max_tile_per_job is not None:
             num_tile_per_job = min(num_tile_per_job, max_tile_per_job)
@@ -869,7 +928,11 @@ def render_whole_mesh(mesh, image_loader, prefix, **kwargs):
                 continue
             msh_dict = msh.get_init_dict(save_material=True, vertex_flags=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING), filter_material=False)
             bbox = bboxes_list[k]
-            if driver == 'image':
+            if montage is not None:
+                job_source = montage_job_source(montage, msh)
+                if job_source is not None:
+                    args_list.append((job_source, msh_dict, bbox, filenames_list[k]))
+            elif driver == 'image':
                 fnames = filenames_list[k]
                 args_list.append((msh_dict, bbox, fnames))
             else:
@@ -891,8 +954,7 @@ def render_whole_mesh(mesh, image_loader, prefix, **kwargs):
 def subprocess_render_mesh_tiles(imgloader, mesh, bboxes, outnames, **kwargs):
     target_resolution = kwargs.pop('target_resolution')
     bboxes_out = kwargs.pop('bboxes_out', bboxes)
-    if isinstance(imgloader, (str, dict)):
-        imgloader = dal.get_loader_from_json(imgloader)
+    imgloader = get_image_source(imgloader)
     if isinstance(mesh, str):
         M = Mesh.from_h5(mesh)
     elif isinstance(mesh, dict):
@@ -995,8 +1057,8 @@ class VolumeRenderer:
             default_offset =  np.zeros((1,2), dtype=np.int64)
         self._offset = kwargs.get('out_offset', default_offset.astype(np.int64))
         self._ts_verified = False
-        self.resolution = kwargs.get('resolution', montage_resolution())
-        self.mip = int(np.log2(self.resolution / montage_resolution()))
+        self.resolution = kwargs.get('resolution', mip0_resolution())
+        self.mip = int(np.log2(self.resolution / mip0_resolution()))
         self._number_of_channels = kwargs.get('number_of_channels', None)
         self._dtype = kwargs.get('dtype', None)
         self._chunk_shape = kwargs.get('chunk_shape', (1024, 1024, 16))
@@ -1061,10 +1123,15 @@ class VolumeRenderer:
         num_tile_per_job = max(1, num_tiles // num_workers)
         if max_tile_per_job is not None:
             num_tile_per_job = min(num_tile_per_job, max_tile_per_job)
+        chunk_mb = np.prod(self.writer.write_chunk_shape[:2]) * self.writer.number_of_channels / (1024 ** 2)
         if cache_capacity is not None:
             # cache_capacity: output buffer per worker (MiB)
             max_chunk_per_proc = max(1, cache_capacity / chunk_mb)
             num_tile_per_job = min(num_tile_per_job, max_chunk_per_proc)
+        has_montage = any(is_montage_spec(ldr) for ldr in loaders.values())
+        if has_montage and (cache_capacity is None):
+            # tasks rendering from montage sources hold their whole output in memory
+            num_tile_per_job = min(num_tile_per_job, max(1, MONTAGE_TASK_BUFFER_MB / chunk_mb))
         N_jobs = max(1, round(num_tiles / num_tile_per_job))
         indices_tile = np.round(np.linspace(0, num_tiles, num=N_jobs+1, endpoint=True))
         indices_chunk = np.searchsorted(hit_counts_acc, indices_tile, side='left')
@@ -1093,14 +1160,25 @@ class VolumeRenderer:
             task_id = task_id + 1
             render_seriers.append(bkw)
             bboxes_unions.append(unary_union(bbox_regions[idx0:idx1]))
+        if has_montage:
+            for bkw in render_seriers:
+                bkw['loaders'] = dict(loaders)
         for z, mesh in full_meshes.items():
             submeshes = mesh.submeshes_from_regions(bboxes_unions, save_material=None, buffer=b_dilate)
+            if is_montage_spec(loaders[z]):
+                # each task only receives the raw tiles its part of the section needs
+                montage = VolumeRenderer._get_loader(loaders[z])
+            else:
+                montage = None
             for msh, bkw in zip(submeshes, render_seriers):
                 if msh is None:
                     bkw['meshes'][z] = None
                 else:
                     msh_dict = msh.get_init_dict(save_material=True, vertex_flags=(const.MESH_GEAR_INITIAL, const.MESH_GEAR_MOVING), filter_material=False)
                     bkw['meshes'][z] = msh_dict
+                if montage is not None:
+                    bkw['loaders'][z] = None if msh is None else montage_job_source(montage, msh)
+            del montage
         return render_seriers, check_points
 
 
@@ -1123,7 +1201,6 @@ class VolumeRenderer:
             checkpoint_file = storage.join_paths(self.checkpoint_dir, flag_name + '.h5')
             render_seriers, checkpoints = self.plan_one_slab(z_ind=z_ind, num_workers=num_workers, flag_name=flag_name, max_tile_per_job=max_tile_per_job, cache_capacity=cache_capacity)
             if len(render_seriers) == 0:
-        chunk_mb = np.prod(self.writer.write_chunk_shape[:2]) * self.writer.number_of_channels / (1024 ** 2)
                 continue
             morton_LUT = {s['task_id']: s['morton_indx'] for s in render_seriers}
             if cache_capacity is None:
@@ -1371,10 +1448,12 @@ class VolumeRenderer:
 
     @staticmethod
     def _get_loader(ldr, **kwargs):
-        if isinstance(ldr, dal.AbstractImageLoader):
+        if isinstance(ldr, dal.AbstractImageLoader) or hasattr(ldr, 'crop_from_field'):
             loader = ldr
         elif ldr is None:
             loader = None
+        elif is_montage_spec(ldr):
+            loader = get_image_source(ldr)
         else:
             try:
                 loader = dal.get_loader_from_json(ldr, **kwargs)
@@ -1425,32 +1504,36 @@ def subprocess_render_partial_ts_slab(loaders, meshes, morton_indx, out_ts, **kw
     id_x, id_y = writer.morton_xy_grid(morton_indx)
     bboxes_out = writer.grid_indices_to_bboxes(id_x, id_y)
     bboxes = bboxes_out - np.tile(offset, 2).reshape(1, 4)
-    for kb in range(len(bboxes)):
-        bbox, bbox_out = bboxes[kb], bboxes_out[kb]
-        updated = False
-        imgs = []
-        bbox_3d = []
-        flags_b = []
-        for z in zindx:
-            try:    # http error may crash the program
-                if (z in flags) and (not flags[z][kb]):
-                    continue
-                rndr = renderers[z]
-                if rndr is None:
-                    continue
-                imgt = rndr.crop(bbox, **kwargs)
-                if (imgt is not None) and np.any(imgt != fillval, axis=None):
-                    imgt = np.swapaxes(imgt, 0, 1).copy()
-                    imgs.append(imgt)
-                    bbox_3d.append([*bbox_out[:2], z, *bbox_out[2:], z+1])
-                    updated = True
-                flags_b.append(z)
-            except Exception as err:
-                if isinstance(err, TimeoutError):
-                    err_str = err_str + f'\tz={z} Tensorstore timed out.\n'
-                else:
-                    err_str = err_str + f'\tz={z} {err}\n'
-        if updated:
+
+    def render_chunk(z, kb):
+        # returns (image or None, whether the chunk is done for z)
+        nonlocal err_str
+        try:    # http error may crash the program
+            if (z in flags) and (not flags[z][kb]):
+                return None, False
+            rndr = renderers[z]
+            if rndr is None:
+                return None, False
+            imgt = rndr.crop(bboxes[kb], **kwargs)
+            if (imgt is not None) and np.any(imgt != fillval, axis=None):
+                imgt = np.swapaxes(imgt, 0, 1).copy()
+            else:
+                imgt = None
+            return imgt, True
+        except Exception as err:
+            if isinstance(err, TimeoutError):
+                err_str = err_str + f'\tz={z} Tensorstore timed out.\n'
+            else:
+                err_str = err_str + f'\tz={z} {err}\n'
+            return None, False
+
+    def commit_chunk(kb, rendered):
+        # rendered: list of (z, image or None); returns False if the commit failed
+        nonlocal err_str
+        imgs = [img for _, img in rendered if img is not None]
+        bbox_out = bboxes_out[kb]
+        bbox_3d = [[*bbox_out[:2], z, *bbox_out[2:], z+1] for z, img in rendered if img is not None]
+        if len(imgs) > 0:
             try:
                 writer.write_chunks_w_transaction(bboxes=bbox_3d, imgs=imgs)
             except Exception as err:
@@ -1458,10 +1541,38 @@ def subprocess_render_partial_ts_slab(loaders, meshes, morton_indx, out_ts, **kw
                     err_str = err_str + f'\tcommit error: Tensorstore timed out.\n'
                 else:
                     err_str = err_str + f'\tcommit error: {err}\n'
+                return False
+            for z, _ in rendered:
+                flags[z][kb] = False
+        return True
+
+    if any(is_montage_spec(loaders[z]) for z in zindx):
+        # montage sources keep a cache of raw tiles each: render one section at a
+        # time (releasing its cache before the next), then commit chunk by chunk.
+        rendered = [[] for _ in range(len(bboxes))]
+        for z in zindx:
+            for kb in range(len(bboxes)):
+                imgt, done = render_chunk(z, kb)
+                if done:
+                    rendered[kb].append((z, imgt))
+            renderers[z] = None
+            ldr = loaders.pop(z)
+            if hasattr(ldr, 'clear_cache'):
+                ldr.clear_cache()
+            del ldr
+        for kb in range(len(bboxes)):
+            if not commit_chunk(kb, rendered[kb]):
                 break
-            else:
-                for z in flags_b:
-                    flags[z][kb] = False
+            rendered[kb] = None
+    else:
+        for kb in range(len(bboxes)):
+            rendered_kb = []
+            for z in zindx:
+                imgt, done = render_chunk(z, kb)
+                if done:
+                    rendered_kb.append((z, imgt))
+            if not commit_chunk(kb, rendered_kb):
+                break
     for z in zindx:
         val = flags[z]
         if not np.any(val):
