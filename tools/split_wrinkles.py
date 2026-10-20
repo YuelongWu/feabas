@@ -29,8 +29,8 @@ def split_wrinkle_for_one_section(tname):
     if not np.any(cid):
         return
     M.incise_region(cid)
-    tid = M._material_ids==mid
-    M._material_ids[tid] = mid_new
+    tid = M.material_ids == mid
+    M.set_material_ids(mid_new, tri_mask=tid)
     M.anneal(gear=(constant.MESH_GEAR_INITIAL, constant.MESH_GEAR_STAGING), mode=constant.ANNEAL_COPY_EXACT)
     M.anneal(gear=(constant.MESH_GEAR_FIXED, constant.MESH_GEAR_STAGING), mode=constant.ANNEAL_CONNECTED_AFFINE)
     relax_mesh(M, free_triangles=tid, gear=(constant.MESH_GEAR_STAGING, constant.MESH_GEAR_FIXED), tolerated_perturbation=0.1)

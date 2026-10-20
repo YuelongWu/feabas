@@ -3,6 +3,7 @@ import copy
 import cv2
 import gc
 import h5py
+import hashlib
 import inspect
 import matplotlib.tri
 import numpy as np
@@ -57,6 +58,19 @@ def gear_str_to_constant(gear_str):
     return gear_const
 
 
+_CACHE_KEY_EXCLUDED_ARGS = ('gear', 'tri_mask', 'vtx_mask', 'assign_value', 'inner_cache')
+
+def _same_arg_value(val, default):
+    if val is default:
+        return True
+    if type(val) is not type(default):
+        return False
+    try:
+        return bool(val == default)
+    except (TypeError, ValueError):
+        return False
+
+
 def config_cache(gear):
     """
     The decorator that determines the caching behaviour of the Mesh properties.
@@ -79,9 +93,18 @@ def config_cache(gear):
     no_compute: if set to True, only probe if there exists cached value. If not,
         directly return None without compute. Otherwise return cached value.
         default to False.
+    Other keyword arguments (except gear, tri_mask, vtx_mask and inner_cache)
+    that differ from the function's defaults are part of the caching key, so
+    calls with different arguments do not share a cached value. A call with an
+    unhashable non-default argument is not cached.
+    With cache=False, a value already cached for the same arguments is still
+    returned (unless force_update); only the new result is not stored.
     """
     def config_cache_wrap(func):
         prop_name0 = func.__name__
+        params = inspect.signature(func).parameters
+        arg_defaults = {nm: p.default for nm, p in params.items()
+                        if p.default is not inspect.Parameter.empty}
         def decorated(self, cache=None, force_update=False, no_compute=False, **kwargs):
             if 'assign_value' in kwargs:
                 force_update = True
@@ -93,17 +116,7 @@ def config_cache(gear):
                 if 'gear' in kwargs:
                     cgear = kwargs['gear']
                 else:
-                    if not hasattr(inspect, 'getargspec'):
-                        argspec =  inspect.getfullargspec(func)
-                    else:
-                        argspec = inspect.getargspec(func)
-                    nd = len(argspec.args) - len(argspec.defaults)
-                    kwnm = argspec.args[nd:]
-                    if 'gear' in kwnm:
-                        cindx = kwnm.index('gear')
-                        cgear = argspec.defaults[cindx]
-                    else:
-                        cgear = self._current_gear
+                    cgear = arg_defaults.get('gear', self._current_gear)
             else:
                 cgear = gear
             if cgear is None:
@@ -126,7 +139,7 @@ def config_cache(gear):
                         if not np.all(tri_mask0):
                             masked_operation = True
             if (not masked_operation) and (kwargs.get('vtx_mask', None) is not None):
-                vtx_mask = common.numpy_array(vtx_mask, copy=False)
+                vtx_mask = common.numpy_array(kwargs['vtx_mask'], copy=False)
                 if vtx_mask.dtype == bool:
                     if not np.all(vtx_mask):
                         masked_operation = True
@@ -138,6 +151,20 @@ def config_cache(gear):
                         vtx_mask0[vtx_mask] = True
                         if not np.all(vtx_mask0):
                             masked_operation = True
+            arg_key = []
+            for nm in sorted(kwargs):
+                if nm in _CACHE_KEY_EXCLUDED_ARGS:
+                    continue
+                val = kwargs[nm]
+                if nm in arg_defaults and _same_arg_value(val, arg_defaults[nm]):
+                    continue
+                try:
+                    hash(val)
+                except TypeError:
+                    masked_operation = True
+                    break
+                arg_key.append((nm, val))
+            arg_key = tuple(arg_key)
             if masked_operation:
                 # if contain masked triangles or vertices, don't cache
                 cache = False
@@ -145,6 +172,10 @@ def config_cache(gear):
             if isinstance(cache, bool):
                 sgear = gear_constant_to_str(cgear)
                 prop_name = '_cached_' + prop_name0 + '_G_' + sgear
+                if arg_key:
+                    # stable across processes, fixed length, no special characters
+                    arg_hash = hashlib.blake2b(repr(arg_key).encode(), digest_size=8).hexdigest()
+                    prop_name = prop_name + '_K_' + arg_hash
                 if cache:  # save to self as an attribute
                     if not force_update and hasattr(self, prop_name):
                         # if already cached, use that
@@ -175,7 +206,7 @@ def config_cache(gear):
             else:
                 cache_key = self.caching_keys(gear=cgear)
                 if isinstance(cache, caching.CacheNull):
-                    key = (*cache_key, prop_name0)
+                    key = (*cache_key, prop_name0, *arg_key)
                     if not force_update and (key in cache):
                         prop = cache[key]
                         if prop is not None:
@@ -190,7 +221,7 @@ def config_cache(gear):
                     return prop
                 elif isinstance(cache, dict):
                     cache_obj = cache[prop_name0]
-                    key = cache_key
+                    key = (*cache_key, *arg_key)
                     if not force_update and (key in cache_obj):
                         prop = cache_obj[key]
                         if prop is not None:
@@ -1016,7 +1047,7 @@ class Mesh:
                         continue
                     len12 = np.sum((initial_vertices[vidx[k1]] - initial_vertices[vidx[k2]]) ** 2)
                     len01 = np.sum((initial_vertices[vidx[k0]] - initial_vertices[vidx[k1]]) ** 2)
-                    len20 = np.sum((initial_vertices[vidx[k1]] - initial_vertices[vidx[k0]]) ** 2)
+                    len20 = np.sum((initial_vertices[vidx[k2]] - initial_vertices[vidx[k0]]) ** 2)
                     if (k0, k1) in mid_idx:
                         if len12 > len01:
                             new_triangles.append([vid0, mid_idx[(k0, k1)], mid_idx[(k2, k1)]])
@@ -1099,6 +1130,23 @@ class Mesh:
             stiffness0[tri_mask] = stiffness
             self._stiffness_multiplier = stiffness0
         self._update_caching_keys(gear=const.MESH_GEAR_INITIAL)
+        self.clear_cached_attr()
+
+
+    def set_material_ids(self, material_ids, tri_mask=None):
+        """
+        Set the material ids of the triangles. If tri_mask provided, only change
+        a subset.
+        """
+        if tri_mask is None:
+            mids = np.broadcast_to(material_ids, (self.num_triangles,))
+        else:
+            mids = self.material_ids.copy()
+            mids[tri_mask] = material_ids
+        self._material_ids = np.array(mids, dtype=self.material_ids.dtype)
+        self._reset_topology_caches()
+        self._update_caching_keys(gear=const.MESH_GEAR_INITIAL)
+        self.clear_cached_attr()
 
 
     def set_stiffness_multiplier_from_image(self, img, gear=const.MESH_GEAR_INITIAL, scale=1.0, tri_mask=None, composite=False):
@@ -1180,9 +1228,7 @@ class Mesh:
                         self._material_table.add_material(m_name_new, mat_new)
                     stiffness_multiplier[tidx] = stiffness_multiplier[tidx] * modifier
                     self._material_ids[tidx] = uid_new
-            self._material_type_summary = None
-            self._linearity = None
-            self._linear_triangle_mask = None
+            self._reset_topology_caches()
             self.set_stiffness_multiplier(stiffness_multiplier)
 
 
@@ -1462,7 +1508,16 @@ class Mesh:
             gc.collect()
 
 
+    def _reset_topology_caches(self):
+        """reset caches that depend on the triangles and their materials."""
+        self._material_type_summary = None
+        self._linearity = None
+        self._linear_triangle_mask = None
+
+
     def _vertices_changed(self, gear):
+        if gear == const.MESH_GEAR_INITIAL:
+            self._reset_topology_caches()
         self._update_caching_keys(gear=gear)
         self.clear_cached_attr(gear=gear)
         self.modified_in_current_session = True
@@ -1766,7 +1821,7 @@ class Mesh:
         """
         if tri_mask is not None:
             vtx_mask = np.zeros(self.num_vertices, dtype=bool)
-            vtx_idx = np.unique(tri_mask, axis=None)
+            vtx_idx = np.unique(self.triangles[tri_mask], axis=None)
             vtx_mask[vtx_idx] = True
         else:
             vtx_mask = None
@@ -1980,6 +2035,8 @@ class Mesh:
         v0 = self.vertices(gear=gear[0])
         v1 = self.vertices(gear=gear[-1])
         T = self.triangles
+        if tri_mask is not None:
+            T = T[tri_mask]
         area0 = common.signed_area(v0, T)
         area1 = common.signed_area(v1, T)
         return area1 / area0
@@ -2498,7 +2555,7 @@ class Mesh:
         elif tri_mask.dtype == bool:
             tids = np.nonzero(tri_mask)[0]
         else:
-            tids = np.sort(tri_mask)
+            tids = tri_mask  # bboxes come in the order of tri_mask
         for k, bbox in enumerate(self.triangle_bboxes(gear=gear, tri_mask=tri_mask)):
             yield (k, bbox, tids[k])
 
@@ -2643,7 +2700,7 @@ class Mesh:
                 if len(collisions_list) > 0:
                     collisions = np.concatenate(collisions_list, axis=0)
                     collisions = np.sort(collisions, axis=-1)
-                    collisions = np.unique(collisions, axis=-1)
+                    collisions = np.unique(collisions, axis=0)
         return collisions
 
 
