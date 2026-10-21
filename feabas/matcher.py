@@ -11,7 +11,7 @@ from shapely.ops import unary_union
 from feabas.config import DEFAULT_AVG_DEFORM, data_resolution, section_thickness, get_numpy_thread
 from feabas.concurrent import submit_to_workers
 from feabas.mesh import Mesh
-from feabas.renderer import MeshRenderer
+from feabas.renderer import MeshRenderer, render_submeshes_from_regions
 from feabas import optimizer, dal, common, spatial
 import feabas.constant as const
 
@@ -640,8 +640,9 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
                     batched_bboxes_union0.append(unary_union(bbox_regions0[bidx0:bidx1]))
                     batched_bboxes_union1.append(unary_union(bbox_regions1[bidx0:bidx1]))
                 target_func = partial(bboxes_mesh_renderer_matcher, pad=pad, subpixel=subpixel, affine_approx_tol=affine_approx_tol, **kwargs)
-                submeshes0 = mesh0.submeshes_from_regions(batched_bboxes_union0, save_material=False)
-                submeshes1 = mesh1.submeshes_from_regions(batched_bboxes_union1, save_material=False)
+                render_kw = {'render_weight_threshold': render_weight_threshold}
+                submeshes0 = render_submeshes_from_regions(mesh0, batched_bboxes_union0, save_material=False, **render_kw)
+                submeshes1 = render_submeshes_from_regions(mesh1, batched_bboxes_union1, save_material=False, **render_kw)
                 xy0 = []
                 xy1 = []
                 conf = []

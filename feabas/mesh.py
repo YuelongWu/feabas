@@ -287,11 +287,20 @@ class Mesh:
             material_ids = np.full(tri_num, default_mat.uid, dtype=np.int8)
         indx = np.argsort(material_ids, axis=None, kind='stable')
         self._stiffness_multiplier = kwargs.get('stiffness_multiplier', None)
+        # bit k of cut_edges[t]: edge (T[t,k], T[t,(k+1)%3]) is not a real boundary,
+        # but was cut when dividing a mesh into submeshes for parallel processing.
+        cut_edges = kwargs.get('cut_edges', None)
         if np.any(indx!=np.arange(indx.size)):
             triangles = triangles[indx]
             material_ids = material_ids[indx]
             if isinstance(self._stiffness_multiplier, np.ndarray):
                 self._stiffness_multiplier = self._stiffness_multiplier[indx]
+            if cut_edges is not None:
+                cut_edges = cut_edges[indx]
+        self._cut_edges = cut_edges
+        # real-boundary segments (S x 2 x 2, INITIAL gear, not offset) beyond the cut
+        # edges, nearest to them in the parent mesh. Used by INNERMOST rendering.
+        self._boundary_seeds = kwargs.get('boundary_seeds', None)
         self.triangles = triangles
         self._material_ids = material_ids
         self._resolution = kwargs.get('resolution', data_resolution())
@@ -591,6 +600,10 @@ class Mesh:
         init_dict['triangles'] = self.triangles
         if self._stiffness_multiplier is not None:
             init_dict['stiffness_multiplier'] = self._stiffness_multiplier
+        if self._cut_edges is not None:
+            init_dict['cut_edges'] = self._cut_edges
+        if self._boundary_seeds is not None:
+            init_dict['boundary_seeds'] = self._boundary_seeds
         filter_material = kwargs.pop('filter_material', True)
         if save_material:
             init_dict['material_ids'] = self._material_ids
@@ -626,9 +639,13 @@ class Mesh:
         return vindx, T
 
 
-    def submesh(self, tri_mask, save_material=True, append_name=False, **kwargs):
+    def submesh(self, tri_mask, save_material=True, append_name=False, mark_cuts=False, **kwargs):
         """
         return a subset of the mesh with tri_mask as the triangle mask.
+        Kwargs:
+            mark_cuts (bool): flag the edges shared with triangles left out as
+                cut edges (not real boundaries). Used when a mesh is divided
+                into submeshes only to distribute work.
         """
         if Mesh._masked_all(tri_mask):
             return self
@@ -639,10 +656,18 @@ class Mesh:
         for vkey in vtx_keys:
             if init_dict.get(vkey, None) is not None:
                 init_dict[vkey] = init_dict[vkey][vindx]
-        tri_keys = ['material_ids', 'stiffness_multiplier']
+        tri_keys = ['material_ids', 'stiffness_multiplier', 'cut_edges']
         for tkey in tri_keys:
             if isinstance(init_dict.get(tkey, None), np.ndarray):
                 init_dict[tkey] = init_dict[tkey][tri_mask]
+        if mark_cuts:
+            sel = common.indices_to_bool_mask(tri_mask, size=self.num_triangles)
+            nbr = self.edge_neighbors()[tri_mask]   # same row order as new_triangles
+            is_cut = (nbr >= 0) & ~sel[np.maximum(nbr, 0)]
+            cut_bits = (is_cut.astype(np.uint8) << np.arange(3, dtype=np.uint8)).sum(axis=-1, dtype=np.uint8)
+            if init_dict.get('cut_edges', None) is not None:
+                cut_bits = cut_bits | init_dict['cut_edges']
+            init_dict['cut_edges'] = cut_bits
         if ('token' not in kwargs) and ('token' in init_dict):
             # do not copy the token from the parent
             init_dict.pop('token')
@@ -861,6 +886,10 @@ class Mesh:
         out = self.get_init_dict(save_material=save_material, vertex_flags=vertex_flags, **override_dict)
         if ('token' in out) and (not 'token' in override_dict):
             out.pop('token') # hash not conistent between runs, no point to save
+        for key in ('cut_edges', 'boundary_seeds'):
+            # only meaningful for a submesh dispatched to a worker
+            if key not in override_dict:
+                out.pop(key, None)
         if (len(prefix) > 0) and prefix[-1] != '/':
             prefix = prefix + '/'
         if isinstance(fname, h5py.File):
@@ -949,6 +978,8 @@ class Mesh:
         init_dict.update({'vertices': vtx, 'triangles': T, 'initial_offset': self.offset(gear=gear)})
         init_dict['soft_factor'] = self.soft_factor * soft_factor
         init_dict.pop('stiffness_multiplier', None)
+        init_dict.pop('cut_edges', None)
+        init_dict.pop('boundary_seeds', None)
         init_dict.pop('token')
         return self.__class__(**init_dict)
 
@@ -974,6 +1005,8 @@ class Mesh:
                 self._stiffness_multiplier = self._stiffness_multiplier[tidx]
             if isinstance(self._material_ids, np.ndarray):
                 self._material_ids = self._material_ids[tidx]
+            if self._cut_edges is not None:
+                self._cut_edges = self._cut_edges[tidx]
             self._vertices_changed(gear=const.MESH_GEAR_INITIAL)
 
 
@@ -1084,6 +1117,7 @@ class Mesh:
             self.triangles = triangles
             self._stiffness_multiplier = stiffness_multiplier
             self._material_ids = material_ids
+            self._cut_edges = None
         self.delete_orphaned_vertices()
         self._vertices_changed(gear=const.MESH_GEAR_INITIAL)
         return self
@@ -1100,6 +1134,8 @@ class Mesh:
             if self._vertices[gear] is not None:
                 self.set_vertices(spatial.scale_coordinates(self.vertices(gear=gear), scale), gear=gear)
                 self._offsets[gear] = scale * self._offsets[gear]
+        if self._boundary_seeds is not None:
+            self._boundary_seeds = spatial.scale_coordinates(self._boundary_seeds.reshape(-1, 2), scale).reshape(-1, 2, 2)
         self.locked = locked
         self._resolution = resolution
         self._epsilon = self._epsilon * scale
@@ -1689,10 +1725,46 @@ class Mesh:
         else:
             T = self.triangles[tri_mask]
         edges = Mesh.triangle2edge(T, directional=True)
-        _, indx, cnt = np.unique(np.sort(edges, axis=-1), axis=0, return_index=True, return_counts=True)
+        # 1-D edge keys sort in the same (min, max) order as a row-wise unique
+        keys = Mesh._edge_keys(edges, self.num_vertices)
+        _, indx, cnt = np.unique(keys, return_index=True, return_counts=True)
         indx = indx[cnt == 1]
         tid = indx % T.shape[0]
         return edges[indx], tid
+
+
+    @staticmethod
+    def _edge_keys(edges, num_vertices):
+        """undirected edges as int64 keys min * num_vertices + max"""
+        lo = np.minimum(edges[..., 0], edges[..., 1]).astype(np.int64)
+        hi = np.maximum(edges[..., 0], edges[..., 1]).astype(np.int64)
+        return lo * num_vertices + hi
+
+
+    def cut_segments(self):
+        """edges (K x 2 vertex indices) flagged as cut when this submesh was made."""
+        if self._cut_edges is None:
+            return np.empty((0, 2), dtype=self.triangles.dtype)
+        T = self.triangles
+        segs = [T[(self._cut_edges >> k) & 1 > 0][:, [k, (k+1) % 3]] for k in range(3)]
+        return np.concatenate(segs, axis=0)
+
+
+    @config_cache(const.MESH_GEAR_INITIAL)
+    def edge_neighbors(self):
+        """
+        NT x 3 array: the triangle across edge (T[t,k], T[t,(k+1)%3]), -1 if
+        the edge is on the border.
+        """
+        nt = self.num_triangles
+        keys = Mesh._edge_keys(Mesh.triangle2edge(self.triangles, directional=True), self.num_vertices)
+        order = np.argsort(keys, kind='stable')
+        ks = keys[order]
+        nbr = np.full(keys.size, -1, dtype=np.int64)
+        pair = np.nonzero(ks[1:] == ks[:-1])[0]
+        nbr[order[pair]] = order[pair + 1] % nt
+        nbr[order[pair + 1]] = order[pair] % nt
+        return nbr.reshape(3, nt).T
 
 
     @config_cache(const.MESH_GEAR_INITIAL)

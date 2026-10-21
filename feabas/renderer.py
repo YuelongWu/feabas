@@ -59,6 +59,66 @@ def montage_job_source(montage, msh, margin=16):
     return montage.init_dict(selected=hits)
 
 
+def _weight_params_code(weight_params):
+    if isinstance(weight_params, str):
+        return const.TRIFINDER_MODE_LIST.index(weight_params.upper())
+    return weight_params
+
+
+def render_boundary_segments(mesh, render_weight_threshold=0, include_flipped=False):
+    """
+    real boundary of the rendered part of a mesh, as segments (S x 2 x 2) in
+    MESH_GEAR_INITIAL (not offset): the borders of the triangles that would be
+    rendered, flipped triangles (in MESH_GEAR_MOVING) left out unless
+    include_flipped.
+    """
+    tri_mask = mesh.triangle_mask_for_render(render_weight_threshold=render_weight_threshold)
+    if (not include_flipped) and mesh.vertices_initialized(gear=const.MESH_GEAR_MOVING):
+        T = mesh.triangles
+        A0 = common.signed_area(mesh.vertices(gear=const.MESH_GEAR_INITIAL), T)
+        A1 = common.signed_area(mesh.vertices(gear=const.MESH_GEAR_MOVING), T)
+        tri_mask = tri_mask & ((A0 * A1) > 0)
+    if not np.any(tri_mask):
+        return np.empty((0, 2, 2), dtype=np.float64)
+    segs = mesh.segments(tri_mask=tri_mask)
+    return mesh.vertices(gear=const.MESH_GEAR_INITIAL)[segs]
+
+
+def render_submeshes_from_regions(mesh, regions, save_material=None, buffer=0, **kwargs):
+    """
+    divide a mesh into submeshes for rendering jobs (same as
+    Mesh.submeshes_from_regions). With INNERMOST collision resolution, the edges
+    cut by the division are flagged, and each submesh gets the real-boundary
+    segments of the whole mesh nearest to its cut edges, so that the distances
+    to the boundary computed in a worker do not depend on the division.
+    kwargs are the MeshRenderer.from_mesh settings used in the workers.
+    """
+    weight_params = _weight_params_code(kwargs.get('weight_params', const.MESH_TRIFINDER_INNERMOST))
+    innermost = weight_params == const.MESH_TRIFINDER_INNERMOST
+    submeshes = mesh.submeshes_from_regions(regions, save_material=save_material,
+                                            buffer=buffer, mark_cuts=innermost)
+    if not innermost:
+        return submeshes
+    seg_xy = None
+    for msh in submeshes:
+        if (msh is None) or (msh._cut_edges is None) or (not np.any(msh._cut_edges)):
+            continue
+        if seg_xy is None:
+            seg_xy = render_boundary_segments(mesh,
+                render_weight_threshold=kwargs.get('render_weight_threshold', 0),
+                include_flipped=kwargs.get('include_flipped', False))
+            if seg_xy.shape[0] == 0:
+                break
+            seg_tree = shapely.STRtree(shapely.linestrings(seg_xy))
+        cut_segs = msh.cut_segments()
+        v0 = msh.vertices(gear=const.MESH_GEAR_INITIAL)
+        # probe from the cut vertices and the cut-edge midpoints
+        probes = np.concatenate((v0[np.unique(cut_segs)], v0[cut_segs].mean(axis=1)), axis=0)
+        _, sidx = seg_tree.query_nearest(shapely.points(probes), all_matches=False)
+        msh._boundary_seeds = seg_xy[np.unique(sidx)]
+    return submeshes
+
+
 def is_montage_spec(ldr):
     """whether an image source is a montage of raw tiles (or its description)."""
     return hasattr(ldr, 'crop_from_field') or (isinstance(ldr, dict) and
@@ -156,7 +216,9 @@ class MeshRenderer:
         weight_generator = []
         collision_region = []
         weight_multiplier = []
-        for mattri, tidx, vidx, region in zip(mattri_list, tidx_list, vidx_list, region_tree.geometries):
+        if weight_params == const.MESH_TRIFINDER_INNERMOST:
+            innermost_distance = cls._innermost_distance_func(srcmesh)
+        for mattri, tidx, vidx in zip(mattri_list, tidx_list, vidx_list):
             v0 = vertices_img[vidx]
             xinterp = matplotlib.tri.LinearTriInterpolator(mattri, v0[:,0])
             yinterp = matplotlib.tri.LinearTriInterpolator(mattri, v0[:,1])
@@ -170,20 +232,18 @@ class MeshRenderer:
                     weight_generator.append(None)
                     weight_multiplier.append(None)
                     continue
-                mpl_tri, _, _ = srcmesh.mpl_tri(gear=gear[0], tri_mask=hitidx)
+                mpl_tri, hit_vidx, _ = srcmesh.mpl_tri(gear=gear[0], tri_mask=hitidx)
                 collision_region.append(srcmesh.shapely_regions(gear=gear[0], tri_mask=hitidx))
                 try:
                     mpl_tri.get_trifinder()
                 except RuntimeError:
                     mpl_tri = mattri
                     hitidx = tidx
+                    hit_vidx = vidx
                 if weight_params == const.MESH_TRIFINDER_INNERMOST:
-                    cx = mpl_tri.x
-                    cy = mpl_tri.y
-                    mpts = list(shpgeo.MultiPoint(np.stack((cx, cy), axis=-1)).geoms)
-                    dis0 = region.boundary.distance(mpts) + 1
-                    inside = region.intersects(mpts)
-                    dis0[~inside] *= -1
+                    # distances measured where the mesh has no overlaps (initial gear),
+                    # interpolated in the output space to select the pixels.
+                    dis0 = innermost_distance(tidx, hit_vidx) + 1
                     weight_generator.append(matplotlib.tri.LinearTriInterpolator(mpl_tri, dis0))
                 elif weight_params == const.MESH_TRIFINDER_LEAST_DEFORM:
                     deform = srcmesh.triangle_tform_deform(gear=gear[::-1], tri_mask=hitidx)
@@ -208,6 +268,54 @@ class MeshRenderer:
             geodesic_info=geodesic_info, affine_approximator=affine_approximator,
             affine_approx_tol=affine_approx_tol, covered_region=covered_region,
             **kwargs)
+
+
+    @staticmethod
+    def _innermost_distance_func(srcmesh):
+        """
+        f(tidx, vidx): distance (MESH_GEAR_INITIAL) from vertices vidx to the
+        boundary of the region formed by triangles tidx. Edges cut when srcmesh
+        was divided from a larger mesh are not boundaries; the real boundary of
+        that mesh beyond the cut comes from srcmesh._boundary_seeds.
+        """
+        v0 = srcmesh.vertices(gear=const.MESH_GEAR_INITIAL)
+        nv = srcmesh.num_vertices
+        cut_keys = np.unique(Mesh._edge_keys(srcmesh.cut_segments(), nv))
+        seeds = srcmesh._boundary_seeds
+        if (seeds is not None) and (len(seeds) > 0):
+            seed_tree = shapely.STRtree(shapely.linestrings(seeds))
+        else:
+            seed_tree = None
+
+        def nearest_distance(tree, pts):
+            dis = np.full(len(pts), np.inf)
+            if tree is not None:
+                (ip, _), d = tree.query_nearest(pts, return_distance=True, all_matches=False)
+                np.minimum.at(dis, ip, d)
+            return dis
+
+        def segment_tree(segs):
+            if segs.shape[0] == 0:
+                return None
+            return shapely.STRtree(shapely.linestrings(v0[segs]))
+
+        def innermost_distance(tidx, vidx):
+            edges = Mesh.triangle2edge(srcmesh.triangles[tidx], directional=True)
+            keys = Mesh._edge_keys(edges, nv)
+            ukeys, indx, cnt = np.unique(keys, return_index=True, return_counts=True)
+            border = cnt == 1
+            real = border & ~np.isin(ukeys, cut_keys, assume_unique=True)
+            pts = shapely.points(v0[vidx])
+            dis = nearest_distance(segment_tree(edges[indx[real]]), pts)
+            if seed_tree is not None:
+                dis = np.minimum(dis, nearest_distance(seed_tree, pts))
+            invalid = ~np.isfinite(dis)
+            if np.any(invalid):
+                # no boundary information beyond the cut: fall back to the cut edges
+                dis[invalid] = nearest_distance(segment_tree(edges[indx[border]]), pts[invalid])
+            return dis
+
+        return innermost_distance
 
 
     def link_image_loader(self, imgloader):
@@ -920,7 +1028,7 @@ def render_whole_mesh(mesh, image_loader, prefix, **kwargs):
                 filenames_list.append(filenames[idx0:idx1])
             else:
                 bboxes_out_list.append(bboxes_out[idx0:idx1])
-        submeshes = mesh.submeshes_from_regions(bbox_unions, save_material=None, buffer=tile_size[0]//2)
+        submeshes = render_submeshes_from_regions(mesh, bbox_unions, save_material=None, buffer=tile_size[0]//2, **kwargs)
         args_list = []
         for k in range(len(submeshes)):
             msh = submeshes[k]
@@ -1072,6 +1180,7 @@ class VolumeRenderer:
         num_workers = kwargs.get('num_workers', 1)
         max_tile_per_job = kwargs.get('max_tile_per_job', None)
         cache_capacity = kwargs.pop('cache_capacity', None)
+        render_config = kwargs.get('render_config', {})   # MeshRenderer.from_mesh settings in the workers
         _, _, Z0, _, _, Z1 = self.writer.write_grids
         z0, z1 = Z0[z_ind], Z1[z_ind]
         flag_name = kwargs.get('flag_name', f'z{z0}_{z1}')
@@ -1164,7 +1273,7 @@ class VolumeRenderer:
             for bkw in render_seriers:
                 bkw['loaders'] = dict(loaders)
         for z, mesh in full_meshes.items():
-            submeshes = mesh.submeshes_from_regions(bboxes_unions, save_material=None, buffer=b_dilate)
+            submeshes = render_submeshes_from_regions(mesh, bboxes_unions, save_material=None, buffer=b_dilate, **render_config)
             if is_montage_spec(loaders[z]):
                 # each task only receives the raw tiles its part of the section needs
                 montage = VolumeRenderer._get_loader(loaders[z])
@@ -1199,7 +1308,8 @@ class VolumeRenderer:
             flag_name = f'z{Z0[z_ind]}_{Z1[z_ind]}'
             flag_file = storage.join_paths(self.flag_dir, flag_name + '.json')
             checkpoint_file = storage.join_paths(self.checkpoint_dir, flag_name + '.h5')
-            render_seriers, checkpoints = self.plan_one_slab(z_ind=z_ind, num_workers=num_workers, flag_name=flag_name, max_tile_per_job=max_tile_per_job, cache_capacity=cache_capacity)
+            render_seriers, checkpoints = self.plan_one_slab(z_ind=z_ind, num_workers=num_workers, flag_name=flag_name, max_tile_per_job=max_tile_per_job, cache_capacity=cache_capacity,
+                                                             render_config=kwargs.get('loader_config', {}))
             if len(render_seriers) == 0:
                 continue
             morton_LUT = {s['task_id']: s['morton_indx'] for s in render_seriers}
