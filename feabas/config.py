@@ -51,10 +51,23 @@ def parallel_framework():
 
 @lru_cache(maxsize=1)
 def get_work_dir():
-    conf = general_settings()
-    work_dir = conf.get('working_directory', './work_dir')
+    # FEABAS_WORKING_DIRECTORY overrides the config file (e.g. set per container/job)
+    work_dir = os.environ.get('FEABAS_WORKING_DIRECTORY')
+    if not work_dir:
+        conf = general_settings()
+        work_dir = conf.get('working_directory', './work_dir')
     work_dir = storage.expand_dir(work_dir)
     return work_dir
+
+
+def default_task_start():
+    """default --start: task index of a Google Cloud Batch job, else 0"""
+    return int(os.environ.get('BATCH_TASK_INDEX', 0))
+
+
+def default_task_step():
+    """default --step: task count of a Google Cloud Batch job, else 1"""
+    return int(os.environ.get('BATCH_TASK_COUNT', 1))
 
 
 @lru_cache(maxsize=1)

@@ -19,8 +19,8 @@ import time
 
 def parse_args(args=None):
     parser = argparse.ArgumentParser(description="generate ITO masks")
-    parser.add_argument("--start", metavar="start", type=int, default=0)
-    parser.add_argument("--step", metavar="step", type=int, default=1)
+    parser.add_argument("--start", metavar="start", type=int, default=config.default_task_start())
+    parser.add_argument("--step", metavar="step", type=int, default=config.default_task_step())
     parser.add_argument("--stop", metavar="stop", type=int)
     return parser.parse_args(args)
 

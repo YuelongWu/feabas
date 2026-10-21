@@ -451,8 +451,8 @@ def render_one_aligned_thumbnail(tform_name, thumbnail_dir, out_dir, **kwargs):
 def parse_args(args=None):
     parser = argparse.ArgumentParser(description="Align thumbnails")
     parser.add_argument("--mode", metavar="mode", type=str, default='match')
-    parser.add_argument("--start", metavar="start", type=int, default=0)
-    parser.add_argument("--step", metavar="step", type=int, default=1)
+    parser.add_argument("--start", metavar="start", type=int, default=config.default_task_start())
+    parser.add_argument("--step", metavar="step", type=int, default=config.default_task_step())
     parser.add_argument("--stop", metavar="stop", type=int, default=0)
     parser.add_argument("--reverse",  action='store_true')
     return parser.parse_args(args)

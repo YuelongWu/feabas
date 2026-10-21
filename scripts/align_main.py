@@ -421,8 +421,8 @@ def generate_aligned_mipmaps(render_dir, max_mip, meta_list=None, **kwargs):
 def parse_args(args=None):
     parser = argparse.ArgumentParser(description="Run alignment")
     parser.add_argument("--mode", metavar="mode", type=str, default='matching')
-    parser.add_argument("--start", metavar="start", type=int, default=0)
-    parser.add_argument("--step", metavar="step", type=int, default=1)
+    parser.add_argument("--start", metavar="start", type=int, default=config.default_task_start())
+    parser.add_argument("--step", metavar="step", type=int, default=config.default_task_step())
     parser.add_argument("--stop", metavar="stop", type=int)
     parser.add_argument("--reverse",  action='store_true')
     parser.add_argument("--slurm_config", metavar="slurm_config", type=str, 

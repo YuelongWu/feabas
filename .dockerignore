@@ -1,0 +1,10 @@
+.git
+work_dir
+logs
+**/__pycache__
+**/*.pyc
+*.egg-info
+build
+dist
+.vscode
+.claude

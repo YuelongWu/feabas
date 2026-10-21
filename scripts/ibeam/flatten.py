@@ -94,8 +94,8 @@ def flatten_single_chunks(bboxes_in, zs_out, src_loader, ito_loader, out_writer,
 
 def parse_args(args=None):
     parser = argparse.ArgumentParser(description="flatten aligned volume")
-    parser.add_argument("--start", metavar="start", type=int, default=0)
-    parser.add_argument("--step", metavar="step", type=int, default=1)
+    parser.add_argument("--start", metavar="start", type=int, default=config.default_task_start())
+    parser.add_argument("--step", metavar="step", type=int, default=config.default_task_step())
     parser.add_argument("--stop", metavar="stop", type=int)
     parser.add_argument("--zmax", metavar="zmax", type=int)
     parser.add_argument("--write_batch", metavar="write_batch", type=int, default=1)
