@@ -2743,37 +2743,83 @@ class Mesh:
 
 
     def find_triangle_overlaps(self, gear=None, tri_mask=None, check_first=True):
+        """
+        pairs of triangles whose interiors overlap, as (N x 2) local indices
+        into the masked triangles (integer masks taken in ascending order),
+        each row sorted, rows unique.
+        """
         collisions = np.empty((0,2), dtype=self.triangles.dtype)
         if gear is None:
             gear = self._current_gear
         if (not check_first) or (not self.is_valid(gear=gear, tri_mask=tri_mask)):
-            p_cover = shpgeo.Polygon()
-            flip_tids, pp = self.locate_flipped_triangles(gear=gear, tri_mask=tri_mask)
-            if flip_tids.size > 0:
-                p_cover = p_cover.union(pp)
-            collided_segs, pp = self.locate_segment_collision(gear=gear, tri_mask=tri_mask, check_first=(flip_tids.size>0))
-            if collided_segs.size > 0:
-                p_cover = p_cover.union(pp)
-            if not p_cover.is_empty:
-                collisions_list = []
-                str_tree, _ = self.triangles_STRtree(gear=gear, tri_mask=tri_mask)
-                ggs0 = str_tree.geometries
-                tid_p, tid_tr = str_tree.query(shapely.get_parts(p_cover), predicate='intersects')
-                for id_p in np.unique(tid_p):
-                    id_tr = tid_tr[tid_p == id_p]
-                    ggs = ggs0[id_tr]
-                    for k in range(len(ggs)-1):
-                        # flags_t = shapely.relate_pattern(ggs[k], ggs[(k+1):], 'T********')
-                        flags_t = shapely.area(shapely.intersection(ggs[k], ggs[(k+1):])) > 0
-                        if np.any(flags_t):
-                            id1 = id_tr[(k+1):][flags_t]
-                            id0 = np.full_like(id1, id_tr[k])
-                            collisions_list.append(np.stack((id0, id1), axis=-1))
-                if len(collisions_list) > 0:
-                    collisions = np.concatenate(collisions_list, axis=0)
-                    collisions = np.sort(collisions, axis=-1)
-                    collisions = np.unique(collisions, axis=0)
+            if Mesh._masked_all(tri_mask):
+                T = self.triangles
+            elif tri_mask.dtype == bool:
+                T = self.triangles[tri_mask]
+            else:
+                T = self.triangles[np.unique(tri_mask)]
+            pairs = Mesh._overlapping_triangle_pairs(self.vertices(gear=gear), T)
+            collisions = pairs.astype(self.triangles.dtype, copy=False)
         return collisions
+
+
+    @staticmethod
+    def _overlapping_triangle_pairs(vertices, T, chunk_size=1000000):
+        """
+        pairs of triangles (row indices into T, i < j) whose interiors overlap.
+        All the pairs with overlapping bounding boxes are tested, so no
+        assumption is made about the mesh boundary. Two triangles have
+        disjoint interiors iff all the vertices of one lie on the outer closed
+        side of the line through an edge of the other. The side is evaluated
+        as (b-a)x(q-a), exactly 0 when q is a or b, so triangles that only
+        share vertices are never reported.
+        """
+        vertices = np.asarray(vertices, dtype=np.float64)
+        out = np.empty((0,2), dtype=np.int64)
+        sgn = np.sign(common.signed_area(vertices, T))
+        tid = np.flatnonzero(sgn != 0)    # degenerate triangles have no interior
+        if tid.size < 2:
+            return out
+        V = vertices[T[tid]]
+        sgn = sgn[tid]
+        xy_min = V.min(axis=1)
+        xy_max = V.max(axis=1)
+        boxes = shapely.box(xy_min[:,0], xy_min[:,1], xy_max[:,0], xy_max[:,1])
+        tree = shapely.STRtree(boxes)
+        qchunk = max(1, chunk_size // 16)
+        def outside_an_edge(P, Q, sP):
+            sep = np.zeros(P.shape[0], dtype=bool)
+            for k in range(3):
+                a = P[:, k:(k+1)]
+                d = P[:, ((k+1)%3):((k+1)%3+1)] - a
+                q = Q - a
+                o = (d[...,0] * q[...,1] - d[...,1] * q[...,0]) * sP.reshape(-1,1)
+                sep |= np.all(o <= 0, axis=-1)
+            return sep
+        hits = []
+        for s in range(0, tid.size, qchunk):
+            ii, jj = tree.query(boxes[s:(s+qchunk)])
+            ii = ii + s
+            kk = ii < jj
+            ii, jj = ii[kk], jj[kk]
+            for s1 in range(0, ii.size, chunk_size):
+                i1 = ii[s1:(s1+chunk_size)]
+                j1 = jj[s1:(s1+chunk_size)]
+                P, Q = V[i1], V[j1]
+                ovlp = ~(outside_an_edge(P, Q, sgn[i1]) | outside_an_edge(Q, P, sgn[j1]))
+                if np.any(ovlp):
+                    hits.append(np.stack((i1[ovlp], j1[ovlp]), axis=-1))
+        if len(hits) == 0:
+            return out
+        hits = np.concatenate(hits, axis=0)
+        # positive-area intersections only, as decided by GEOS (near-collinear contacts)
+        pps = shapely.polygons(V[np.unique(hits)])
+        _, hits_loc = np.unique(hits, return_inverse=True)
+        hits_loc = hits_loc.reshape(hits.shape)
+        areas = shapely.area(shapely.intersection(pps[hits_loc[:,0]], pps[hits_loc[:,1]]))
+        out = tid[hits[areas > 0]]
+        out = np.unique(out, axis=0)
+        return out
 
 
     def locate_segment_collision_legacy(self, gear=None, tri_mask=None, check_flipped=True):
@@ -2925,7 +2971,7 @@ class Mesh:
         else:
             mindindx = indx_loc[np.argmin(deforms)]
             D = self._triangle_distances(tri_mask=tri_mask)
-            d0 = csgraph.shortest_path(D, directed=False, indices=mindindx)[indx_loc]
+            d0 = csgraph.dijkstra(D, directed=False, indices=mindindx)[indx_loc]
             order = np.argsort(d0)
         deforms_ordered = deforms[order]
         order_nonflip = order[deforms_ordered<1]
@@ -2933,11 +2979,11 @@ class Mesh:
         N_ov = order.size
         colors = np.full(N_ov, -1, dtype=self.triangles.dtype)
         G = sparse.csr_matrix((np.ones(collisions.shape[0], dtype=bool), (collisions_loc[:,0],collisions_loc[:,1])), shape=(N_ov, N_ov))
-        G = G + G.transpose()
+        G = (G + G.transpose()).tocsr()
         available_color0 = np.ones(N_ov+1, dtype=bool)
         for t0 in order_nonflip:
             available_color = available_color0.copy()
-            _, neighbors = G[t0].nonzero()
+            neighbors = G.indices[G.indptr[t0]:G.indptr[t0+1]]
             connected_color = colors[neighbors]
             available_color[connected_color] = False
             group_id = np.min(np.nonzero(available_color)[0])
@@ -2946,7 +2992,7 @@ class Mesh:
             available_color0[:(colors.max()+1)] = False
             for t0 in order_flip:
                 available_color = available_color0.copy()
-                _, neighbors = G[t0].nonzero()
+                neighbors = G.indices[G.indptr[t0]:G.indptr[t0+1]]
                 connected_color = colors[neighbors]
                 available_color[connected_color] = False
                 group_id = np.min(np.nonzero(available_color)[0])
@@ -2960,8 +3006,7 @@ class Mesh:
             dis = []
             for c in np.unique(colors[colors >= 0]):
                 start_pos = indx_loc[colors == c]
-                d0 = csgraph.shortest_path(D, directed=False, indices=start_pos)
-                dis.append(d0.min(axis=0))
+                dis.append(csgraph.dijkstra(D, directed=False, indices=start_pos, min_only=True))
             if len(dis) > 0:
                 groupings = np.argmin(dis, axis=0)
             groupings[indx_loc[colors < 0]] = -1
@@ -2982,7 +3027,19 @@ class Mesh:
                 False, the group id for all the flipped triangles will be -1.
         """
         if contigeous:
+            if (tri_mask is not None) and (tri_mask.dtype != bool):
+                tri_mask = common.indices_to_bool_mask(tri_mask, size=self.num_triangles)
             N_conn0, T_conn0 = self.connected_triangles(tri_mask=tri_mask)
+            # detect once for all the components; pairs across components are
+            # separated anyway.
+            collisions = self.triangle_collisions(gear=gear, tri_mask=tri_mask)
+            collisions = collisions[T_conn0[collisions[:,0]] == T_conn0[collisions[:,1]]]
+            coll_lbl = T_conn0[collisions[:,0]]
+            # local index of each triangle within its component
+            order = np.argsort(T_conn0, kind='stable')
+            comp_start = np.searchsorted(T_conn0[order], np.arange(N_conn0))
+            rank = np.empty_like(order)
+            rank[order] = np.arange(order.size) - comp_start[T_conn0[order]]
             groupings0 = np.full(self.num_triangles, -1, dtype=self.triangles.dtype)
             num_groups0 = 0
             for lbl in range(N_conn0):
@@ -2990,10 +3047,11 @@ class Mesh:
                 if tri_mask is not None:
                     l_mask = np.nonzero(l_mask)[0]
                     l_mask = Mesh.masked_index_to_global_index(tri_mask, l_mask)
-                if self.is_valid(gear=gear, tri_mask=l_mask):
+                l_coll = collisions[coll_lbl == lbl]
+                if l_coll.size == 0:
                     grp = np.full(self._num_masked_tri(l_mask), num_groups0, dtype=groupings0.dtype)
                 else:
-                    grp = self._graph_coloring_overlapped_triangles(gear=gear, tri_mask=l_mask, include_flipped=include_flipped, asymmetry=asymmetry)
+                    grp = self._graph_coloring_overlapped_triangles(collisions=rank[l_coll], gear=gear, tri_mask=l_mask, include_flipped=include_flipped, asymmetry=asymmetry)
                     grp[grp >= 0] += num_groups0
                 groupings0[l_mask] = grp
                 num_groups0 = grp.max() + 1

@@ -1,5 +1,6 @@
 from collections import defaultdict
 from functools import partial
+import hashlib
 import matplotlib.tri
 import numpy as np
 import json
@@ -9,6 +10,7 @@ import shapely.geometry as shpgeo
 from shapely.ops import unary_union
 import tensorstore as ts
 import time
+import warnings
 
 from feabas.caching import CacheFIFO
 from feabas.concurrent import submit_to_workers
@@ -57,6 +59,26 @@ def montage_job_source(montage, msh, margin=16):
     if len(hits) == 0:
         return None
     return montage.init_dict(selected=hits)
+
+
+class InvalidTriangulationError(RuntimeError):
+    """a render group that matplotlib cannot use as a triangulation."""
+
+
+def perturbed_mesh(mesh, gear, scale=0.1):
+    """
+    copy of mesh with the vertices of gear moved by a seeded random amount of
+    up to scale * mesh epsilon in x and y, to break exact contacts between
+    triangles (e.g. distinct vertices at the same position). The seed comes
+    from the mesh name, so reruns give the same result.
+    """
+    msh = mesh.copy(override_dict={'locked': False})
+    seed = int.from_bytes(hashlib.md5(msh.name.encode()).digest()[:8], 'little')
+    rng = np.random.default_rng(seed)
+    v = msh.vertices(gear=gear).astype(np.float64)
+    amp = scale * msh._epsilon
+    msh.set_vertices(v + rng.uniform(-amp, amp, size=v.shape), gear)
+    return msh
 
 
 def _weight_params_code(weight_params):
@@ -150,6 +172,21 @@ class MeshRenderer:
 
     @classmethod
     def from_mesh(cls, srcmesh, gear=(const.MESH_GEAR_MOVING, const.MESH_GEAR_INITIAL), **kwargs):
+        """
+        renderer from a mesh. If a render group is not a valid matplotlib
+        triangulation (exact contacts between triangles, e.g. distinct vertices
+        at the same position), retry once on a copy of the mesh whose gear[0]
+        vertices are perturbed by less than the mesh epsilon (perturbed_mesh).
+        """
+        try:
+            return cls._from_mesh(srcmesh, gear=gear, **kwargs)
+        except InvalidTriangulationError as err:
+            warnings.warn(f'{err}; retrying with vertices perturbed by up to {0.1*srcmesh._epsilon:g}', RuntimeWarning)
+        return cls._from_mesh(perturbed_mesh(srcmesh, gear[0]), gear=gear, **kwargs)
+
+
+    @classmethod
+    def _from_mesh(cls, srcmesh, gear=(const.MESH_GEAR_MOVING, const.MESH_GEAR_INITIAL), **kwargs):
         include_flipped = kwargs.get('include_flipped', False)
         weight_params = kwargs.pop('weight_params', const.MESH_TRIFINDER_INNERMOST)
         local_cache = kwargs.get('cache', False)
@@ -220,7 +257,11 @@ class MeshRenderer:
             innermost_distance = cls._innermost_distance_func(srcmesh)
         for mattri, tidx, vidx in zip(mattri_list, tidx_list, vidx_list):
             v0 = vertices_img[vidx]
-            xinterp = matplotlib.tri.LinearTriInterpolator(mattri, v0[:,0])
+            try:
+                xinterp = matplotlib.tri.LinearTriInterpolator(mattri, v0[:,0])
+            except RuntimeError as err:
+                raise InvalidTriangulationError(f'mesh {srcmesh.name}: a render group of {tidx.size} triangles is not a valid '
+                                   f'triangulation (overlapping triangles or distinct vertices at the same position): {err}') from err
             yinterp = matplotlib.tri.LinearTriInterpolator(mattri, v0[:,1])
             interpolators.append((xinterp, yinterp))
             if weight_params == const.MESH_TRIFINDER_WHATEVER:
