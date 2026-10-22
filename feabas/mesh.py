@@ -2923,7 +2923,7 @@ class Mesh:
         if asymmetry:
             order = np.argsort(deforms) # start from good ones
         else:
-            mindindx = np.argmin(deforms)
+            mindindx = indx_loc[np.argmin(deforms)]
             D = self._triangle_distances(tri_mask=tri_mask)
             d0 = csgraph.shortest_path(D, directed=False, indices=mindindx)[indx_loc]
             order = np.argsort(d0)
