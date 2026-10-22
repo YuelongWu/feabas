@@ -258,12 +258,10 @@ class MeshRenderer:
         for mattri, tidx, vidx in zip(mattri_list, tidx_list, vidx_list):
             v0 = vertices_img[vidx]
             try:
-                xinterp = matplotlib.tri.LinearTriInterpolator(mattri, v0[:,0])
+                interpolators.append(spatial.TriFieldInterpolator(mattri, v0))
             except RuntimeError as err:
                 raise InvalidTriangulationError(f'mesh {srcmesh.name}: a render group of {tidx.size} triangles is not a valid '
                                    f'triangulation (overlapping triangles or distinct vertices at the same position): {err}') from err
-            yinterp = matplotlib.tri.LinearTriInterpolator(mattri, v0[:,1])
-            interpolators.append((xinterp, yinterp))
             if weight_params == const.MESH_TRIFINDER_WHATEVER:
                 weight_generator.append(None)
                 weight_multiplier.append(None)
@@ -485,7 +483,7 @@ class MeshRenderer:
             region_id = self.region_finder_for_points(bcntr, offsetting=False).item()
         if region_id == -1:
             return invalid_output
-        interpX, interpY = self._interpolators[region_id]
+        interp = self._interpolators[region_id]
         xs = np.linspace(bbox0[0], bbox0[2], num=round(bbox0[2]-bbox0[0]), endpoint=False, dtype=float)
         ys = np.linspace(bbox0[1], bbox0[3], num=round(bbox0[3]-bbox0[1]), endpoint=False, dtype=float)
         if out_resolution is not None:
@@ -493,13 +491,11 @@ class MeshRenderer:
             xs = spatial.scale_coordinates(xs, scale)
             ys = spatial.scale_coordinates(ys, scale)
         xx, yy = np.meshgrid(xs, ys)
-        map_x = interpX(xx, yy)
-        map_y = interpY(xx, yy)
-        mask = map_x.mask | map_y.mask
+        (x_field, y_field), mask = interp(xx, yy)
         if np.all(mask, axis=None):
             return invalid_output
-        x_field = np.nan_to_num(map_x.data, copy=False)
-        y_field = np.nan_to_num(map_y.data, copy=False)
+        x_field = np.nan_to_num(x_field, copy=False)
+        y_field = np.nan_to_num(y_field, copy=False)
         weight = 1 - mask.astype(np.float32)
         if self._geodesic_mask and (self._geodesic_info is not None):
             if self._geodesic_info['seg_line'].intersects(shpgeo.box(*bbox0)):
@@ -568,12 +564,12 @@ class MeshRenderer:
         if offsetting:
             pt0 = pt0 - self._offset.ravel()
         region_id = self.region_finder_for_points(pt0, offsetting=False).item()
-        interpX, interpY = self._interpolators[region_id]
-        axx, axy = interpX.gradient(pt0[0], pt0[1])
-        if axx.mask:
+        interp = self._interpolators[region_id]
+        tid = interp.find_triangles(pt0[0], pt0[1])
+        ((axx, axy), (ayx, ayy)), outside = interp.gradient(pt0[0], pt0[1], tri_index=tid)
+        if outside:
             return None, None
-        ayx, ayy = interpY.gradient(pt0[0], pt0[1])
-        A = np.array([[axx.data, ayx.data], [axy.data, ayy.data]])
+        A = np.array([[axx, ayx], [axy, ayy]])
         if svd_clip is not None:
             u, s, vh = np.linalg.svd(A, compute_uv=True)
             if hasattr(svd_clip, '__len__'):
@@ -581,9 +577,8 @@ class MeshRenderer:
             else:
                 s = s.clip(1/(1+svd_clip), 1+svd_clip)
             A = u @ np.diag(s) @ vh
-        pt1_x = interpX(pt0[0], pt0[1])
-        pt1_y = interpY(pt0[0], pt0[1])
-        pt1 = np.array([pt1_x.data, pt1_y.data])
+        (pt1_x, pt1_y), _ = interp(pt0[0], pt0[1], tri_index=tid)
+        pt1 = np.array([pt1_x, pt1_y])
         t = pt1 - pt0 @ A
         return A, t
 

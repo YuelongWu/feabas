@@ -22,7 +22,7 @@ from feabas.matcher import stitching_matcher
 from feabas.mesh import Mesh
 from feabas.optimizer import SLM, relax_mesh_most_deformed
 from feabas import common, caching, storage, logging
-from feabas.spatial import scale_coordinates, fit_affine
+from feabas.spatial import scale_coordinates, fit_affine, TriFieldInterpolator
 import feabas.constant as const
 from feabas.config import SECTION_THICKNESS, data_resolution, mip0_resolution, CHECKPOINT_TIME_INTERVAL, MAXIMUM_DEFORM_ALLOWED, get_numpy_thread
 
@@ -1719,14 +1719,9 @@ class MontageRenderer:
                         y_field = xxt * A[0,1] + yyt * A[1,1] + t[1]
                         field_generated = True
                 if not field_generated:
-                    x_interp, y_interp = self.interpolators[indx]
-                    map_x = x_interp(xxt, yyt)
-                    mask = map_x.mask
-                    if np.all(mask, axis=None):
+                    (x_field, y_field), outside = self.interpolators[indx](xxt, yyt)
+                    if np.all(outside, axis=None):
                         continue
-                    map_y = y_interp(xxt, yyt)
-                    x_field = map_x.data
-                    y_field = map_y.data
                 if np.any(np.isnan(x_field)):
                     x_field = np.nan_to_num(x_field, nan=-1, copy=False)
                     y_field = np.nan_to_num(y_field, nan=-1, copy=False)
@@ -1760,12 +1755,9 @@ class MontageRenderer:
             x_s = xx * A[0,0] + yy * A[1,0] + t[0]
             y_s = xx * A[0,1] + yy * A[1,1] + t[1]
         else:
-            x_interp, y_interp = self.interpolators[indx]
-            x_s = x_interp(xx, yy)
-            if np.all(x_s.mask, axis=None):
+            (x_s, y_s), outside = self.interpolators[indx](xx, yy)
+            if np.all(outside, axis=None):
                 return None, None
-            x_s = np.ma.filled(x_s, np.nan)
-            y_s = np.ma.filled(y_interp(xx, yy), np.nan)
             invalid = np.isnan(x_s) | np.isnan(y_s)
             if np.any(invalid):
                 common.extrapolate_field_border(x_s, y_s, xx, yy, A, invalid=invalid)
@@ -1815,12 +1807,9 @@ class MontageRenderer:
             x_s = xt * A[0,0] + yt * A[1,0] + t[0]
             y_s = xt * A[0,1] + yt * A[1,1] + t[1]
         else:
-            x_interp, y_interp = self.interpolators[indx]
-            x_s = x_interp(xt, yt)
-            if np.all(x_s.mask, axis=None):
+            (x_s, y_s), outside = self.interpolators[indx](xt, yt)
+            if np.all(outside, axis=None):
                 return None, None
-            x_s = np.ma.filled(x_s, np.nan)
-            y_s = np.ma.filled(y_interp(xt, yt), np.nan)
         return x_s, y_s
 
 
@@ -2252,9 +2241,7 @@ class MontageRenderer:
         msh = self._mesh_info[indx]
         v1, T, v0 = msh.moving_vertices, msh.triangles, msh.fixed_vertices
         mattri = matplotlib.tri.Triangulation(v1[:,0], v1[:,1], triangles=T)
-        xinterp = matplotlib.tri.LinearTriInterpolator(mattri, v0[:,0])
-        yinterp = matplotlib.tri.LinearTriInterpolator(mattri, v0[:,1])
-        return xinterp, yinterp
+        return TriFieldInterpolator(mattri, v0)
 
 
     def _tile_affine_approximator(self, indx):

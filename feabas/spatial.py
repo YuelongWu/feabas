@@ -87,6 +87,77 @@ def scale_coordinates(coordinates, scale):
 
 
 
+class TriFieldInterpolator:
+    """
+    piecewise-linear interpolation of several values per vertex (N x C) on one
+    matplotlib Triangulation, e.g. the x and y of a deformation field. The
+    points are located in the triangulation once for all the values; each
+    value is the same as from its own matplotlib.tri.LinearTriInterpolator.
+    Raise RuntimeError (from matplotlib) if the triangulation is invalid.
+    """
+    def __init__(self, triangulation, values):
+        values = np.asarray(values)
+        if values.ndim == 1:
+            values = values.reshape(-1, 1)
+        self.triangulation = triangulation
+        self.trifinder = triangulation.get_trifinder()
+        # C x Ntri x 3: value = a*x + b*y + c in each triangle
+        self.plane_coefficients = np.stack([triangulation.calculate_plane_coefficients(values[:,k])
+                                            for k in range(values.shape[1])], axis=0)
+
+
+    def find_triangles(self, x, y):
+        """index of the triangle containing each point (shaped as x), -1 outside."""
+        x = np.asarray(x, dtype=np.float64)
+        y = np.asarray(y, dtype=np.float64)
+        return self.trifinder(x.ravel(), y.ravel()).reshape(x.shape)
+
+
+    def __call__(self, x, y, tri_index=None):
+        """
+        Return:
+            values (list of C float64 arrays shaped as x): nan outside.
+            outside (bool array shaped as x): points outside the triangulation.
+        """
+        x = np.asarray(x, dtype=np.float64)
+        y = np.asarray(y, dtype=np.float64)
+        if tri_index is None:
+            tri_index = self.find_triangles(x, y)
+        outside = tri_index < 0
+        inside = ~outside
+        tid = tri_index[inside]
+        xv = x[inside]
+        yv = y[inside]
+        values = []
+        for coef in self.plane_coefficients:
+            z = np.empty(x.shape, dtype=np.float64)
+            z[outside] = np.nan
+            z[inside] = coef[tid, 0] * xv + coef[tid, 1] * yv + coef[tid, 2]
+            values.append(z)
+        return values, outside
+
+
+    def gradient(self, x, y, tri_index=None):
+        """
+        Return:
+            gradients (list of C (dz/dx, dz/dy) tuples of float64 arrays shaped
+                as x): nan outside.
+            outside (bool array shaped as x).
+        """
+        x = np.asarray(x, dtype=np.float64)
+        y = np.asarray(y, dtype=np.float64)
+        if tri_index is None:
+            tri_index = self.find_triangles(x, y)
+        outside = tri_index < 0
+        tid = np.where(outside, 0, tri_index)
+        gradients = []
+        for coef in self.plane_coefficients:
+            gx = np.where(outside, np.nan, coef[tid, 0])
+            gy = np.where(outside, np.nan, coef[tid, 1])
+            gradients.append((gx, gy))
+        return gradients, outside
+
+
 def find_contours(mask):
     """
     wrapper of findContour function in opencv to accommodate version change.
