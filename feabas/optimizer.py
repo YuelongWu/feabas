@@ -1859,6 +1859,42 @@ class SLM:
 
 
     @staticmethod
+    def links_from_localization(mesh0_list, mesh1_list, loc0, loc1, weight=None, **kwargs):
+        """
+        build the links between two lists of (sub)meshes from points already
+        localized onto each list by localize_points. Reproduces the output of
+        distribute_link with exclusive=True.
+        Args:
+            mesh0_list, mesh1_list: the lists of meshes the points were
+                localized onto.
+            loc0, loc1: tuples of (sidx, tid, B) returned by localize_points
+                for the points in mesh0_list and mesh1_list respectively.
+        Kwargs:
+            weight (N ndarray): the weights of the matching points.
+            other kwargs are passed to Link constructor.
+        Return:
+            list of Link objects, in the same order as distribute_link.
+        """
+        sidx0, tid0, B0 = loc0
+        sidx1, tid1, B1 = loc1
+        valid = (sidx0 >= 0) & (sidx1 >= 0)
+        out_links = []
+        if not np.any(valid):
+            return out_links
+        for i0, m0 in enumerate(mesh0_list):
+            for i1, m1 in enumerate(mesh1_list):
+                sel = valid & (sidx0 == i0) & (sidx1 == i1)
+                if not np.any(sel):
+                    continue
+                if isinstance(weight, np.ndarray):
+                    wt = weight[sel]
+                else:
+                    wt = weight
+                out_links.append(Link(m0, m1, tid0[sel], tid1[sel], B0[sel], B1[sel], weight=wt, **kwargs))
+        return out_links
+
+
+    @staticmethod
     def expand_to_list(elem, list_len, kfunc=None):
         if (not hasattr(elem, '__len__')) or isinstance(elem, str) or (len(elem) == 0):
             out_lst =  [elem]
@@ -2078,6 +2114,50 @@ def solve(A, b, solver, x0=None, tol=1e-7, atol=None, maxiter=None, M=None, **kw
         x = np.zeros_like(b, shape=edc.shape)
         x[edc] = x0
     return x
+
+
+def localize_points(meshes, xy, gear=const.MESH_GEAR_INITIAL, **kwargs):
+    """
+    localize points onto a list of meshes. Each point is assigned to the first
+    mesh in the list that contains it.
+    Args:
+        meshes (list): Mesh objects or their initialization dicts.
+        xy (N x 2 ndarray): x-y coordinates of the points.
+    Kwargs:
+        gear: the vertex gear used for localization.
+        other kwargs are passed to Mesh.tri_finder.
+    Return:
+        sidx (N ndarray): index of the mesh containing each point, -1 if none.
+        tid (N ndarray): triangle index within that mesh, -1 if none.
+        B (N x 3 ndarray): barycentric coordinates, nan if none.
+    """
+    kwargs.setdefault('render_weight_threshold', 0.1)
+    xy = xy.reshape(-1, 2)
+    N = xy.shape[0]
+    sidx = np.full(N, -1, dtype=np.int32)
+    tid, B = None, None
+    pidx = np.arange(N)
+    for k, m in enumerate(meshes):
+        if pidx.size == 0:
+            break
+        if isinstance(m, dict):
+            m = Mesh(**m)
+        tid_k, B_k = m.cart2bary(xy[pidx], gear, tid=None, **kwargs)
+        found = tid_k >= 0
+        if not np.any(found):
+            continue
+        if tid is None:
+            tid = np.full(N, -1, dtype=tid_k.dtype)
+            B = np.full((N, 3), np.nan, dtype=B_k.dtype)
+        sel = pidx[found]
+        sidx[sel] = k
+        tid[sel] = tid_k[found]
+        B[sel] = B_k[found]
+        pidx = pidx[~found]
+    if tid is None:
+        tid = np.full(N, -1, dtype=np.int32)
+        B = np.full((N, 3), np.nan, dtype=np.float32)
+    return sidx, tid, B
 
 
 def transform_mesh(mesh_unlocked, mesh_locked, **kwargs):
