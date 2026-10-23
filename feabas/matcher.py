@@ -639,30 +639,27 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
                     batched_bboxes1.append(bboxes1[bidx0:bidx1])
                     batched_bboxes_union0.append(unary_union(bbox_regions0[bidx0:bidx1]))
                     batched_bboxes_union1.append(unary_union(bbox_regions1[bidx0:bidx1]))
-                target_func = partial(bboxes_mesh_renderer_matcher, pad=pad, subpixel=subpixel, affine_approx_tol=affine_approx_tol, **kwargs)
+                target_func = partial(_indexed_batch_matcher, pad=pad, subpixel=subpixel, affine_approx_tol=affine_approx_tol, **kwargs)
                 render_kw = {'render_weight_threshold': render_weight_threshold}
                 submeshes0 = render_submeshes_from_regions(mesh0, batched_bboxes_union0, save_material=False, **render_kw)
                 submeshes1 = render_submeshes_from_regions(mesh1, batched_bboxes_union1, save_material=False, **render_kw)
-                xy0 = []
-                xy1 = []
-                conf = []
                 args_list = []
                 for m0_p, m1_p, bboxes0_p, bboxes1_p in zip(submeshes0, submeshes1, batched_bboxes0, batched_bboxes1):
                     if (m0_p is None) or (m1_p is None):
                         continue
                     m0dict = m0_p.get_init_dict()
                     m1dict = m1_p.get_init_dict()
-                    args_list.append((m0dict, m1dict, loader_dict0, loader_dict1, bboxes0_p, bboxes1_p))
-                for res in submit_to_workers(target_func, args=args_list, num_workers=num_workers):
-                    pt0, pt1, cnf = res
-                    xy0.append(pt0)
-                    xy1.append(pt1)
-                    conf.append(cnf)
-                if len(xy0) == 0:
+                    args_list.append((len(args_list), m0dict, m1dict, loader_dict0, loader_dict1, bboxes0_p, bboxes1_p))
+                # reassemble in batch order so that the results do not depend on worker timing
+                batch_results = [None] * len(args_list)
+                for bid, res in submit_to_workers(target_func, args=args_list, num_workers=num_workers):
+                    batch_results[bid] = res
+                if len(batch_results) == 0:
                     return invalid_output
-                xy0 = np.concatenate(xy0, axis=0)
-                xy1 = np.concatenate(xy1, axis=0)
-                conf = np.concatenate(conf, axis=0)
+                xy0 = np.concatenate([res[0] for res in batch_results], axis=0)
+                xy1 = np.concatenate([res[1] for res in batch_results], axis=0)
+                conf = np.concatenate([res[2] for res in batch_results], axis=0)
+                del batch_results
         else:
             xy0, xy1, conf = bboxes_mesh_renderer_matcher(mesh0, mesh1,
                 image_loader0, image_loader1, bboxes0, bboxes1,
@@ -775,6 +772,10 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
                 Es0 += max(0, St.dot(v0.ravel()).dot(v0.ravel()))
         strain = (Es / Es0) ** 0.5
     return xy0, xy1, weight, strain
+
+
+def _indexed_batch_matcher(batch_id, *args, **kwargs):
+    return batch_id, bboxes_mesh_renderer_matcher(*args, **kwargs)
 
 
 def bboxes_mesh_renderer_matcher(mesh0, mesh1, image_loader0, image_loader1, bboxes0, bboxes1, **kwargs):
