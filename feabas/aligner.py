@@ -17,7 +17,7 @@ from feabas.mesh import Mesh, transform_mesh
 from feabas.concurrent import submit_to_workers, REMOTE_FRAMEWORKS, is_daemon_process
 from feabas.spatial import scale_coordinates
 from feabas.matcher import section_matcher
-from feabas.optimizer import SLM
+from feabas.optimizer import SLM, localize_points
 import feabas.constant as const
 from feabas.common import str_to_numpy_ascii, Match, rearrange_section_order, parse_json_file, numpy_array
 
@@ -42,6 +42,47 @@ def read_matches_from_h5(match_name, target_resolution=None):
         xy0 = scale_coordinates(xy0, scale)
         xy1 = scale_coordinates(xy1, scale)
     return Match(xy0, xy1, weight, strain)
+
+
+def _localize_section_points(secname, mesh_dicts, entries, resolution, **kwargs):
+    """
+    localize the matching points of one section onto its submeshes. Used by
+    Stack._prefetch_links to load the links of a window in parallel.
+    Args:
+        secname(str): name of the section.
+        mesh_dicts(list): initialization dicts of the submeshes of the section.
+        entries(list): list of (matchname, match_path, side) for the matches
+            the section is involved in. side is 0 if the section is the first
+            section of the match, otherwise 1.
+        resolution(float): the resolution of the meshes.
+    Kwargs:
+        passed to optimizer.localize_points.
+    Return:
+        secname(str): name of the section.
+        locs(dict): {(matchname, side): (sidx, tid, B)} localization results.
+        match_info(dict): {matchname: (weight, strain)} for side-0 entries.
+    """
+    meshes = [Mesh(**m) for m in mesh_dicts]
+    xy_list = []
+    keys = []
+    match_info = {}
+    for matchname, matchpath, side in entries:
+        mtch = read_matches_from_h5(matchpath, target_resolution=resolution)
+        if side == 0:
+            xy_list.append(mtch.xy0)
+            match_info[matchname] = (mtch.weight, mtch.strain)
+        else:
+            xy_list.append(mtch.xy1)
+        keys.append((matchname, side))
+        del mtch
+    seg_ends = np.cumsum([xy.shape[0] for xy in xy_list])
+    xy = np.concatenate(xy_list, axis=0)
+    del xy_list
+    sidx, tid, B = localize_points(meshes, xy, **kwargs)
+    locs = {}
+    for ky, sidx_k, tid_k, B_k in zip(keys, np.split(sidx, seg_ends[:-1]), np.split(tid, seg_ends[:-1]), np.split(B, seg_ends[:-1])):
+        locs[ky] = (sidx_k, tid_k, B_k)
+    return secname, locs, match_info
 
 
 def match_section_from_initial_matches(match_name, meshes, loaders, out_dir, conf=None, ignore_initial_match=False):
@@ -448,24 +489,93 @@ class Stack:
         else:
             mesh_list0 = self._mesh_cache[names[0]]
             mesh_list1 = self._mesh_cache[names[1]]
+        matchpath = self.match_path(matchname)
+        mtch = read_matches_from_h5(matchpath, target_resolution=self._resolution)
+        links = SLM.distribute_link(mesh_list0, mesh_list1, mtch)
+        self._cache_link(matchname, links)
+        return links
+
+
+    def match_path(self, matchname):
         if self._match_dir is None:
             raise RuntimeError('match_dir not defined.')
+        if Stack.DUPLICATED_SUFIX in matchname:
+            matchname_t = matchname.replace(Stack.DUPLICATED_SUFIX, '')
         else:
-            if Stack.DUPLICATED_SUFIX in matchname:
-                matchname_t = matchname.replace(Stack.DUPLICATED_SUFIX, '')
-            else:
-                matchname_t = matchname
-            matchpath = storage.join_paths(self._match_dir, matchname_t+'.h5')
-            if not storage.file_exists(matchpath):
-                raise RuntimeError(f'{matchpath} not found.')
-            mtch = read_matches_from_h5(matchpath, target_resolution=self._resolution)
-            links = SLM.distribute_link(mesh_list0, mesh_list1, mtch)
-            if (self._link_cache_size is None) or (self._link_cache_size > 0):
-                self._link_cache[matchname] = links
-            if self._link_cache_size is not None:
-                while len(self._link_cache) > self._link_cache_size:
-                    self.dump_link()
-            return links
+            matchname_t = matchname
+        matchpath = storage.join_paths(self._match_dir, matchname_t+'.h5')
+        if not storage.file_exists(matchpath):
+            raise RuntimeError(f'{matchpath} not found.')
+        return matchpath
+
+
+    def _cache_link(self, matchname, links):
+        if (self._link_cache_size is None) or (self._link_cache_size > 0):
+            self._link_cache[matchname] = links
+        if self._link_cache_size is not None:
+            while len(self._link_cache) > self._link_cache_size:
+                self.dump_link()
+
+
+    def _prefetch_links(self, match_list, num_workers=1, min_points=None):
+        """
+        localize the matching points of the uncached links in match_list onto
+        the cached meshes in worker processes, one task per section, and put
+        the resulting links into the link cache. Gives the same links as
+        get_link. Does nothing if parallelization is not worthwhile, leaving
+        the links to get_link.
+        Args:
+            match_list(list): names of the matches to load.
+        Kwargs:
+            num_workers(int): number of worker processes.
+            min_points(int): minimum number of matching points to load for
+                the parallelization to kick in. None to disable.
+        """
+        if (min_points is None) or (num_workers <= 1) or is_daemon_process():
+            return
+        pending = OrderedDict()
+        for matchname in match_list:
+            if matchname in self._link_cache:
+                continue
+            names = self.matchname_to_secnames(matchname)
+            if (names[0] not in self._mesh_cache) or (names[1] not in self._mesh_cache):
+                continue
+            pending[matchname] = (names, self.match_path(matchname))
+        sec_entries = OrderedDict()
+        for matchname, (names, matchpath) in pending.items():
+            for side, secname in enumerate(names):
+                sec_entries.setdefault(secname, []).append((matchname, matchpath, side))
+        if len(sec_entries) < 2:
+            return
+        num_points = 0
+        for _, matchpath in pending.values():
+            with H5File(matchpath, 'r') as f:
+                num_points += f['xy0'].shape[0]
+        if num_points < min_points:
+            return
+        # keep the cached links of this window from being evicted by the new ones
+        for matchname in match_list:
+            if matchname in self._link_cache:
+                self._link_cache.move_to_end(matchname, last=True)
+        args_list = []
+        for secname, entries in sec_entries.items():
+            mesh_dicts = [m.get_init_dict(save_material=True, vertex_flags=(const.MESH_GEAR_INITIAL,)) for m in self._mesh_cache[secname]]
+            args_list.append((secname, mesh_dicts, entries, self._resolution))
+        num_workers = min(num_workers, len(args_list))
+        locs = {}
+        match_info = {}
+        for secname, sec_locs, sec_info in submit_to_workers(_localize_section_points, args=args_list, num_workers=num_workers, parallel_framework='process', force_remote=False):
+            locs.update(sec_locs)
+            match_info.update(sec_info)
+            for matchname in {ky[0] for ky in sec_locs}:
+                if ((matchname, 0) not in locs) or ((matchname, 1) not in locs):
+                    continue
+                names, _ = pending[matchname]
+                weight, strain = match_info.pop(matchname)
+                links = SLM.links_from_localization(self._mesh_cache[names[0]], self._mesh_cache[names[1]],
+                                                    locs.pop((matchname, 0)), locs.pop((matchname, 1)),
+                                                    weight=weight, strain=strain, name=None)
+                self._cache_link(matchname, links)
 
 
     def dump_link(self, matchname=None):
@@ -524,12 +634,17 @@ class Stack:
         secnames = self.filter_section_list_from_matches(match_list=match_list)
         if mesh_cache_size0 is not None:
             self._mesh_cache_size = max(len(secnames), mesh_cache_size0)
+        num_workers = kwargs.pop('num_workers', 1)
+        link_parallel_min_points = kwargs.pop('link_parallel_min_points', None)
         meshes = []
         for secname in secnames:
             meshes.extend(self.get_mesh(secname))
+        t_link = time.time()
+        self._prefetch_links(match_list, num_workers=num_workers, min_points=link_parallel_min_points)
         links = []
         for matchname in match_list:
             links.extend(self.get_link(matchname))
+        self._link_loading_time = time.time() - t_link
         optm = SLM(meshes, links, **kwargs)
         self._mesh_cache_size = mesh_cache_size0
         self._link_cache_size = link_cache_size
@@ -611,7 +726,7 @@ class Stack:
                                 self._mesh_cache.pop(sn, None)
                         self._mesh_versions = None
                     else:
-                        res = self.optimize_section_list(seclist_w_ref, **kwargs)
+                        res = self.optimize_section_list(seclist_w_ref, link_num_workers=num_workers, **kwargs)
                         residues.update(res)
                         for secname in seclist0:
                             updated = self.save_mesh_for_one_section(secname)
@@ -665,7 +780,7 @@ class Stack:
                                 self._mesh_cache.pop(sn, None)
                         self._mesh_versions = None
                     else:
-                        res = self.optimize_section_list(seclist, **kwargs)
+                        res = self.optimize_section_list(seclist, link_num_workers=num_workers, **kwargs)
                         residues.update(res)
                         for secname in seclist_cmt:
                             updated = self.save_mesh_for_one_section(secname)
@@ -694,7 +809,10 @@ class Stack:
         if len(section_list) == 0:
             logger.info('no section to optimize.')
             return residue
-        optm = self.initialize_SLM(section_list)
+        link_num_workers = kwargs.get('link_num_workers', 1)
+        link_parallel_min_points = kwargs.get('link_parallel_min_points', None)
+        optm = self.initialize_SLM(section_list, num_workers=link_num_workers, link_parallel_min_points=link_parallel_min_points)
+        t_link = self._link_loading_time
         if len(optm.meshes) == 0:
             logger.info(f'{section_list[0]} -> {section_list[-1]}: all sections settled.')
             return residue
@@ -739,7 +857,7 @@ class Stack:
             dxy = np.concatenate([lnk.dxy(gear=1) for lnk in lnks], axis=0)
             dis = np.sum(dxy ** 2, axis=1)**0.5
             residue[matchname] = (dis.max(), dis.mean())
-        logger.info(f"{optm.meshes[0].name.replace(Stack.DUPLICATED_SUFIX,'')} -> {optm.meshes[-1].name.replace(Stack.DUPLICATED_SUFIX,'')}: cost {cost} | {time.time()-t0} sec")
+        logger.info(f"{optm.meshes[0].name.replace(Stack.DUPLICATED_SUFIX,'')} -> {optm.meshes[-1].name.replace(Stack.DUPLICATED_SUFIX,'')}: cost {cost} | {time.time()-t0} sec | links {t_link:.1f} sec")
         return residue
 
 

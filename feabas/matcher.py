@@ -12,7 +12,7 @@ from feabas.config import DEFAULT_AVG_DEFORM, data_resolution, section_thickness
 from feabas.concurrent import submit_to_workers
 from feabas.mesh import Mesh
 from feabas.renderer import MeshRenderer, render_submeshes_from_regions
-from feabas import optimizer, dal, common, spatial
+from feabas import optimizer, dal, common, spatial, logging
 import feabas.constant as const
 
 Nthreads = get_numpy_thread()
@@ -503,6 +503,7 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
     render_weight_threshold = kwargs.get('render_weight_threshold', 0)
     stiffness_lambda = kwargs.pop('stiffness_lambda', 1)
     affine_approximated_render = kwargs.pop('affine_approximated_render', True)
+    worker_localization = kwargs.pop('worker_localization', True)
     # if num_workers > 1 and batch_size is not None:
     #     batch_size = max(1, batch_size / num_workers)
     if isinstance(image_loader0, dal.AbstractImageLoader):
@@ -574,6 +575,7 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
         pad = to_pad
     kwargs_opt["tolerated_perturbation"] = 0.5
     while sp_indx < spacings.size:
+        localized = None
         if sp == spacings[-1]:
             mnb = min_num_blocks
             rfm = refine_mode
@@ -639,30 +641,34 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
                     batched_bboxes1.append(bboxes1[bidx0:bidx1])
                     batched_bboxes_union0.append(unary_union(bbox_regions0[bidx0:bidx1]))
                     batched_bboxes_union1.append(unary_union(bbox_regions1[bidx0:bidx1]))
-                target_func = partial(bboxes_mesh_renderer_matcher, pad=pad, subpixel=subpixel, affine_approx_tol=affine_approx_tol, **kwargs)
+                target_func = partial(_indexed_batch_matcher, pad=pad, subpixel=subpixel, affine_approx_tol=affine_approx_tol, **kwargs)
                 render_kw = {'render_weight_threshold': render_weight_threshold}
-                submeshes0 = render_submeshes_from_regions(mesh0, batched_bboxes_union0, save_material=False, **render_kw)
-                submeshes1 = render_submeshes_from_regions(mesh1, batched_bboxes_union1, save_material=False, **render_kw)
-                xy0 = []
-                xy1 = []
-                conf = []
+                submeshes0, tri_indices0 = render_submeshes_from_regions(mesh0, batched_bboxes_union0, save_material=False, return_indices=True, **render_kw)
+                submeshes1, tri_indices1 = render_submeshes_from_regions(mesh1, batched_bboxes_union1, save_material=False, return_indices=True, **render_kw)
                 args_list = []
-                for m0_p, m1_p, bboxes0_p, bboxes1_p in zip(submeshes0, submeshes1, batched_bboxes0, batched_bboxes1):
+                kwargs_list = []
+                for m0_p, m1_p, tidx0_p, tidx1_p, bboxes0_p, bboxes1_p in zip(submeshes0, submeshes1, tri_indices0, tri_indices1, batched_bboxes0, batched_bboxes1):
                     if (m0_p is None) or (m1_p is None):
                         continue
                     m0dict = m0_p.get_init_dict()
                     m1dict = m1_p.get_init_dict()
-                    args_list.append((m0dict, m1dict, loader_dict0, loader_dict1, bboxes0_p, bboxes1_p))
-                for res in submit_to_workers(target_func, args=args_list, num_workers=num_workers):
-                    pt0, pt1, cnf = res
-                    xy0.append(pt0)
-                    xy1.append(pt1)
-                    conf.append(cnf)
-                if len(xy0) == 0:
+                    args_list.append((len(args_list), m0dict, m1dict, loader_dict0, loader_dict1, bboxes0_p, bboxes1_p))
+                    if worker_localization:
+                        kwargs_list.append({'localize': True, 'tri_index0': tidx0_p, 'tri_index1': tidx1_p})
+                    else:
+                        kwargs_list.append({})
+                # reassemble in batch order so that the results do not depend on worker timing
+                batch_results = [None] * len(args_list)
+                for bid, res in submit_to_workers(target_func, args=args_list, kwargs=kwargs_list, num_workers=num_workers):
+                    batch_results[bid] = res
+                if len(batch_results) == 0:
                     return invalid_output
-                xy0 = np.concatenate(xy0, axis=0)
-                xy1 = np.concatenate(xy1, axis=0)
-                conf = np.concatenate(conf, axis=0)
+                xy0 = np.concatenate([res[0] for res in batch_results], axis=0)
+                xy1 = np.concatenate([res[1] for res in batch_results], axis=0)
+                conf = np.concatenate([res[2] for res in batch_results], axis=0)
+                if worker_localization:
+                    localized = tuple(np.concatenate([res[3][k] for res in batch_results], axis=0) for k in range(4))
+                del batch_results
         else:
             xy0, xy1, conf = bboxes_mesh_renderer_matcher(mesh0, mesh1,
                 image_loader0, image_loader1, bboxes0, bboxes1,
@@ -677,6 +683,8 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
         else:
             for lnk in opt.links:
                 lnk._weight = lnk._weight * link_weight_decay
+        if localized is not None:
+            localized = tuple(lc[conf > conf_thresh] for lc in localized)
         xy0 = xy0[conf > conf_thresh]
         xy1 = xy1[conf > conf_thresh]
         wt = conf[conf > conf_thresh]
@@ -713,9 +721,17 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
             if to_pad is None:
                 pad = True
             dwelled += 1
-        opt.add_link_from_coordinates(mesh0.uid, mesh1.uid, xy0, xy1,
-                        gear=(const.MESH_GEAR_MOVING, const.MESH_GEAR_MOVING), weight=wt,
-                        check_duplicates=False, render_weight_threshold=render_weight_threshold)
+        if localized is None:
+            opt.add_link_from_coordinates(mesh0.uid, mesh1.uid, xy0, xy1,
+                            gear=(const.MESH_GEAR_MOVING, const.MESH_GEAR_MOVING), weight=wt,
+                            check_duplicates=False, render_weight_threshold=render_weight_threshold)
+        else:
+            tid0, B0, num_fb0 = _resolve_batch_localization(mesh0, xy0, localized[0], localized[1], render_weight_threshold=render_weight_threshold)
+            tid1, B1, num_fb1 = _resolve_batch_localization(mesh1, xy1, localized[2], localized[3], render_weight_threshold=render_weight_threshold)
+            logging.get_logger(kwargs.get('logger', None)).debug(f'worker localization fallback: {num_fb0} | {num_fb1} of {xy0.shape[0]} points')
+            opt.add_link_from_localization(mesh0.uid, mesh1.uid, tid0, tid1, B0, B1, weight=wt,
+                            render_weight_threshold=render_weight_threshold)
+            localized = None
         if len(opt.links) == 0:
             if not initialized:
                 return invalid_output
@@ -777,7 +793,98 @@ def iterative_xcorr_matcher_w_mesh(mesh0, mesh1, image_loader0, image_loader1, s
     return xy0, xy1, weight, strain
 
 
+def _indexed_batch_matcher(batch_id, *args, **kwargs):
+    return batch_id, bboxes_mesh_renderer_matcher(*args, **kwargs)
+
+
+def _localize_batch_points(mesh, xy, bboxes, tri_index=None, gear=const.MESH_GEAR_MOVING):
+    """
+    localize the matched points of a matching batch on the batch submesh, so
+    that the result is the same as Mesh.tri_finder on the parent mesh (without
+    the render weight filtering). Every triangle of the parent containing a
+    point inside the batch region (union of bboxes) is in the submesh, and
+    non-flipped triangles are always eligible in tri_finder. Points outside the
+    region, or inside a flipped triangle (whose eligibility depends on
+    triangles possibly outside the submesh), are left undecided.
+    Args:
+        mesh (feabas.mesh.Mesh): the batch submesh.
+        xy (N x 2 ndarray): coordinates of the points.
+        bboxes (M x 4 ndarray): the bounding boxes of the batch.
+    Kwargs:
+        tri_index (ndarray): indices of the submesh triangles in the parent
+            mesh. None if mesh is the parent.
+        gear: the vertex gear.
+    Return:
+        tid (N ndarray): triangle indices in the parent mesh. -1 if not in the
+            mesh, -2 if undecided.
+        B (N x 3 ndarray): barycentric coordinates.
+    """
+    N = xy.shape[0]
+    tid = np.full(N, -2, dtype=np.int64)
+    B = np.full((N, 3), np.nan, dtype=np.float64)
+    if N == 0:
+        return tid, B
+    offset = mesh.offset(gear=gear).ravel()
+    # same arithmetic as the region transformation in Mesh.submeshes_from_regions
+    bxs = bboxes - np.tile(offset, 2)
+    pts = shapely.points(xy - offset)
+    box_tree = shapely.STRtree(shapely.box(bxs[:,0], bxs[:,1], bxs[:,2], bxs[:,3]))
+    inside = np.zeros(N, dtype=bool)
+    inside[box_tree.query(pts, predicate='intersects')[0]] = True
+    try:
+        flipped = np.flatnonzero(mesh.triangle_tform_deform(gear=(const.MESH_GEAR_INITIAL, gear)) >= 1)
+    except np.linalg.LinAlgError:
+        return tid, B
+    if flipped.size > 0:
+        flip_tree, _ = mesh.triangles_STRtree(gear=gear, tri_mask=flipped)
+        inside[flip_tree.query(pts, predicate='intersects')[0]] = False
+    if np.any(inside):
+        tid_l, B_l = mesh.cart2bary(xy[inside], gear, tid=None, render_weight_threshold=0)
+        if tri_index is not None:
+            tid_l = np.where(tid_l >= 0, tri_index[np.maximum(tid_l, 0)], -1)
+        tid[inside] = tid_l
+        B[inside] = B_l
+    return tid, B
+
+
+def _resolve_batch_localization(mesh, xy, tid, B, render_weight_threshold=0, gear=const.MESH_GEAR_MOVING):
+    """
+    finish the localization done by _localize_batch_points: localize the
+    undecided points and apply the render weight filter, so that the result is
+    the same as Mesh.cart2bary on the whole mesh.
+    Return:
+        tid (N ndarray): triangle indices, -1 if not found.
+        B (N x 3 ndarray): barycentric coordinates.
+        num_fallback (int): number of undecided points.
+    """
+    tid = tid.astype(mesh.triangles.dtype)
+    undecided = tid == -2
+    num_fallback = int(np.sum(undecided))
+    if render_weight_threshold > 0:
+        render_weight = mesh.weight_multiplier_for_render()[np.maximum(tid, 0)]
+        tid[(tid >= 0) & (render_weight <= render_weight_threshold)] = -1
+    if num_fallback > 0:
+        xy_u = xy[undecided]
+        tid_u = mesh.tri_finder_by_candidates(xy_u, gear=gear, render_weight_threshold=render_weight_threshold)
+        tid_u, B_u = mesh.cart2bary(xy_u, gear, tid=tid_u)
+        tid[undecided] = tid_u
+        B[undecided] = B_u
+    return tid, B, num_fallback
+
+
 def bboxes_mesh_renderer_matcher(mesh0, mesh1, image_loader0, image_loader1, bboxes0, bboxes1, **kwargs):
+    """
+    template matching of the blocks defined by bboxes0 and bboxes1.
+    Kwargs:
+        localize(bool): also localize the matched points on the meshes with
+            _localize_batch_points, and return the results as a 4th element
+            (tid0, B0, tid1, B1).
+        tri_index0, tri_index1: indices of the mesh triangles in their parent
+            meshes, used to map the localization results.
+    """
+    localize = kwargs.get('localize', False)
+    tri_index0 = kwargs.get('tri_index0', None)
+    tri_index1 = kwargs.get('tri_index1', None)
     batch_size = kwargs.get('batch_size', None)
     sigma = kwargs.get('sigma', 0.0)
     render_mode = kwargs.get('render_mode', const.RENDER_FULL)
@@ -825,6 +932,8 @@ def bboxes_mesh_renderer_matcher(mesh0, mesh1, image_loader0, image_loader1, bbo
         xy0 = np.empty((0,2))
         xy1 = np.empty((0,2))
         conf = np.empty(0)
+        if localize:
+            return xy0, xy1, conf, (np.empty(0, dtype=np.int64), np.empty((0,3)), np.empty(0, dtype=np.int64), np.empty((0,3)))
         return xy0, xy1, conf
     xy0 = []
     xy1 = []
@@ -857,6 +966,10 @@ def bboxes_mesh_renderer_matcher(mesh0, mesh1, image_loader0, image_loader1, bbo
         xy0 = np.empty((0,2))
         xy1 = np.empty((0,2))
         conf = np.empty(0)
+    if localize:
+        tid0, B0 = _localize_batch_points(mesh0, xy0, bboxes0, tri_index=tri_index0)
+        tid1, B1 = _localize_batch_points(mesh1, xy1, bboxes1, tri_index=tri_index1)
+        return xy0, xy1, conf, (tid0, B0, tid1, B1)
     return xy0, xy1, conf
 
 

@@ -694,8 +694,13 @@ class Mesh:
     def submeshes_from_regions(self, regions, gear=const.MESH_GEAR_MOVING, save_material=True, append_name=False, **kwargs):
         """
         get submeshes that intersects with given regions.
+        Kwargs:
+            return_indices(bool): also return the sorted indices of the
+                triangles in each submesh (None for empty regions), so that
+                triangle k of a submesh is triangle indices[k] of this mesh.
         """
         buffer = kwargs.pop('buffer', 0)
+        return_indices = kwargs.pop('return_indices', False)
         tree, _ = self.triangles_STRtree(gear=gear)
         regions = shapely.transform(regions, lambda x: x - self.offset(gear=gear))
         regions = np.atleast_1d(regions)
@@ -715,12 +720,17 @@ class Mesh:
             np.logical_or.at(save_material, indx_b, abnormal_mat[indx_t])
         else:
             save_material = np.full(regions.size, save_material)
+        tri_indices = []
         for k in range(regions.size):
             idx = np.sort(indx_t[indx_b == k])
             if idx.size == 0:
                 submeshes.append(None)
+                tri_indices.append(None)
             else:
                 submeshes.append(self.submesh(idx, save_material=save_material[k], append_name=append_name, **kwargs))
+                tri_indices.append(idx)
+        if return_indices:
+            return submeshes, tri_indices
         return submeshes
 
 
@@ -2297,6 +2307,71 @@ class Mesh:
         if (not extrapolate) and (render_weight_threshold > 0):
             render_weight = self.weight_multiplier_for_render()[tid_out]
             tid_out[render_weight<=render_weight_threshold] = -1
+        return tid_out
+
+
+    def tri_finder_by_candidates(self, pts, gear=None, **kwargs):
+        """
+        same as tri_finder with its default settings (LEAST_DEFORM, contigeous,
+        flipped triangles excluded, no extrapolation), but only examines the
+        triangles containing the query points, so that the cost scales with the
+        number of points instead of the size of the mesh. Each point gets the
+        least deformed eligible triangle containing it. A triangle is eligible
+        unless it is flipped and its interior overlaps another triangle of the
+        same connected component, which is the rule nonoverlap_triangle_groups
+        uses to exclude flipped triangles. The result equals tri_finder's except
+        for points exactly on triangle edges and exact ties of deformation.
+        Args:
+            pts (N x 2 ndarray): x-y coordinates of querry points
+        Kwargs:
+            render_weight_threshold(float): points landing on triangles with
+                render weight not larger than this are dropped.
+        Return:
+            tid (N ndarray): triangle index of each point, -1 if not found.
+        """
+        render_weight_threshold = kwargs.get('render_weight_threshold', 0)
+        if gear is None:
+            gear = self._current_gear
+        pts = np.atleast_2d(pts).reshape(-1, 2)
+        tid_out = np.full(pts.shape[0], -1, dtype=self.triangles.dtype)
+        if pts.shape[0] == 0:
+            return tid_out
+        tree, tree_tids = self.triangles_STRtree(gear=gear)
+        pidx, cidx = tree.query(shapely.points(pts - self.offset(gear=gear)), predicate='intersects')
+        if pidx.size == 0:
+            return tid_out
+        cand, cinv = np.unique(tree_tids[cidx], return_inverse=True)
+        try:
+            deforms = self.triangle_tform_deform(gear=(const.MESH_GEAR_INITIAL, gear), tri_mask=cand)
+        except np.linalg.LinAlgError:
+            # degenerate triangles: fall back to the whole-mesh search
+            return self.tri_finder(pts, gear=gear, render_weight_threshold=render_weight_threshold)
+        eligible = np.ones(cand.size, dtype=bool)
+        flipped = np.flatnonzero(deforms >= 1)
+        if flipped.size > 0:
+            ftids = cand[flipped]
+            fpos = np.searchsorted(tree_tids, ftids)
+            _, nidx = tree.query(tree.geometries[fpos], predicate='intersects')
+            tids_t = np.union1d(ftids, tree_tids[nidx])
+            pairs = Mesh._overlapping_triangle_pairs(self.vertices(gear=gear), self.triangles[tids_t])
+            if pairs.size > 0:
+                pairs = tids_t[pairs]
+                _, T_conn = self.connected_triangles()
+                pairs = pairs[T_conn[pairs[:,0]] == T_conn[pairs[:,1]]]
+                eligible[flipped] = ~np.isin(ftids, pairs)
+        keep = eligible[cinv]
+        pidx = pidx[keep]
+        cinv = cinv[keep]
+        if pidx.size == 0:
+            return tid_out
+        idxt = np.argsort(deforms[cinv])
+        pidx = pidx[idxt]
+        cinv = cinv[idxt]
+        pidx, uidx = np.unique(pidx, return_index=True)
+        tid_out[pidx] = cand[cinv[uidx]]
+        if render_weight_threshold > 0:
+            render_weight = self.weight_multiplier_for_render()[tid_out]
+            tid_out[(tid_out >= 0) & (render_weight <= render_weight_threshold)] = -1
         return tid_out
 
 
