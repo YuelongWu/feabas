@@ -685,6 +685,51 @@ class SLM:
         return link_added
 
 
+    def add_link_from_localization(self, uid0, uid1, tid0, tid1, B0, B1, weight=None, **kwargs):
+        """
+        add link from matching points already localized on the meshes. Same as
+        add_link_from_coordinates with check_duplicates=False when each uid
+        selects a single mesh in the system.
+        Args:
+            uid0, uid1: the uid of meshes. The meshes must already loaded into
+                the SLM.
+            tid0, tid1 (N ndarray): triangle indices of the points in the two
+                meshes. Points with negative indices are dropped.
+            B0, B1 (N x 3 ndarray): barycentric coordinates of the points.
+        Kwargs:
+            weight: ndarray of shape (N,) giving the weights for the matching
+                points.
+            other kwargs are passed to Link constructor.
+        """
+        link_added = False
+        mesh0_list, _ = self.select_mesh_from_uid(uid0)
+        mesh1_list, _ = self.select_mesh_from_uid(uid1)
+        if (len(mesh0_list) == 0) or (len(mesh1_list) == 0):
+            return link_added
+        if (len(mesh0_list) > 1) or (len(mesh1_list) > 1):
+            raise ValueError('localized links only support undivided meshes.')
+        m0, m1 = mesh0_list[0], mesh1_list[0]
+        # same dropping order as Link.from_coordinates
+        indx0 = tid0 >= 0
+        if not np.any(indx0):
+            return link_added
+        elif not np.all(indx0):
+            tid0, B0, tid1, B1 = tid0[indx0], B0[indx0], tid1[indx0], B1[indx0]
+            if isinstance(weight, np.ndarray):
+                weight = weight[indx0]
+        indx1 = tid1 >= 0
+        if not np.any(indx1):
+            return link_added
+        elif not np.all(indx1):
+            tid0, B0, tid1, B1 = tid0[indx1], B0[indx1], tid1[indx1], B1[indx1]
+            if isinstance(weight, np.ndarray):
+                weight = weight[indx1]
+        link = Link(m0, m1, tid0, tid1, B0, B1, weight=weight, **kwargs)
+        self.add_link(link, check_relevance=False, check_duplicates=False)
+        link_added = True
+        return link_added
+
+
     def prune_links(self, **kwargs):
         """
         prune links so that irrelevant links are removed and links associated

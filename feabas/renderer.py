@@ -106,20 +106,24 @@ def render_boundary_segments(mesh, render_weight_threshold=0, include_flipped=Fa
     return mesh.vertices(gear=const.MESH_GEAR_INITIAL)[segs]
 
 
-def render_submeshes_from_regions(mesh, regions, save_material=None, buffer=0, **kwargs):
+def render_submeshes_from_regions(mesh, regions, save_material=None, buffer=0, return_indices=False, **kwargs):
     """
     divide a mesh into submeshes for rendering jobs (same as
     Mesh.submeshes_from_regions). With INNERMOST collision resolution, the edges
     cut by the division are flagged, and each submesh gets the real-boundary
     segments of the whole mesh nearest to its cut edges, so that the distances
     to the boundary computed in a worker do not depend on the division.
+    If return_indices, also return the triangle indices of each submesh in the
+    mesh (see Mesh.submeshes_from_regions).
     kwargs are the MeshRenderer.from_mesh settings used in the workers.
     """
     weight_params = _weight_params_code(kwargs.get('weight_params', const.MESH_TRIFINDER_INNERMOST))
     innermost = weight_params == const.MESH_TRIFINDER_INNERMOST
-    submeshes = mesh.submeshes_from_regions(regions, save_material=save_material,
-                                            buffer=buffer, mark_cuts=innermost)
+    submeshes, tri_indices = mesh.submeshes_from_regions(regions, save_material=save_material,
+                                            buffer=buffer, mark_cuts=innermost, return_indices=True)
     if not innermost:
+        if return_indices:
+            return submeshes, tri_indices
         return submeshes
     seg_xy = None
     for msh in submeshes:
@@ -138,6 +142,8 @@ def render_submeshes_from_regions(mesh, regions, save_material=None, buffer=0, *
         probes = np.concatenate((v0[np.unique(cut_segs)], v0[cut_segs].mean(axis=1)), axis=0)
         _, sidx = seg_tree.query_nearest(shapely.points(probes), all_matches=False)
         msh._boundary_seeds = seg_xy[np.unique(sidx)]
+    if return_indices:
+        return submeshes, tri_indices
     return submeshes
 
 

@@ -26,6 +26,7 @@ matching:
         min_boundary_distance: 20   # minimum distance allowed from a matching point to the boundary of the meshes
         stiffness_multiplier_threshold: 0.1 # material with stiffness multiplier smaller than this will not be considered during the matching process
         render_weight_threshold: 0.1  # material with render weight smaller than this will not be rendered during the matching process
+        worker_localization: true  # parallel matching workers also locate their matched points on the mesh, so the main process skips the whole-mesh triangle search after each round
 
 optimization:
     num_workers: 5
