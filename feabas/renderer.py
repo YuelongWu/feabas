@@ -1033,6 +1033,12 @@ class VolumeRenderer:
                         check_points[z] = f[str(z)][()]
         id_x, id_y = self.writer.morton_xy_grid()
         bboxes = self.writer.grid_indices_to_bboxes(id_x, id_y)
+        # grid_indices_to_bboxes returns bboxes in the output TensorStore's local
+        # (canvas-offset) coordinate frame, but region_generator()/submeshes_from_regions()
+        # work in the mesh's own world coordinate frame. Convert here so the hit-test
+        # and submesh selection below line up with the mesh geometry (mirrors the
+        # bboxes_out -> bboxes conversion done in subprocess_render_partial_ts_slab).
+        bboxes = bboxes - np.tile(self._offset.ravel(), 2).reshape(1, 4)
         shapely_boxes = shapely.box(bboxes[:,0], bboxes[:,1], bboxes[:,2], bboxes[:,3])
         bboxes_tree = shapely.STRtree(list(shapely_boxes))
         num_xy_grids = id_x.size
