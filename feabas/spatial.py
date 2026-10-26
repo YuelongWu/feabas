@@ -158,6 +158,24 @@ class TriFieldInterpolator:
         return gradients, outside
 
 
+def triangulation_boundary_segments(triangulation):
+    """
+    edges of a matplotlib Triangulation that have no neighbouring triangle
+    (outer boundary and holes), skipping masked triangles.
+    Return:
+        segs (N x 2 x 2 ndarray): end points (x, y) of the edges.
+    """
+    T = triangulation.triangles
+    nb = triangulation.neighbors
+    if triangulation.mask is not None:
+        T = T[~triangulation.mask]
+        nb = nb[~triangulation.mask]
+    # neighbors[i, j] is across the edge from T[i, j] to T[i, (j+1) % 3]
+    ii, jj = np.nonzero(nb == -1)
+    xy = np.stack((triangulation.x, triangulation.y), axis=-1)
+    return np.stack((xy[T[ii, jj]], xy[T[ii, (jj + 1) % 3]]), axis=1)
+
+
 def find_contours(mask):
     """
     wrapper of findContour function in opencv to accommodate version change.

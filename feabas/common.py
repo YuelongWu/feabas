@@ -742,6 +742,65 @@ def upsample_grid_field(field, rows, cols, dtype=np.float32):
     return _lerp_rows(np.ascontiguousarray(g), rows, dtype)
 
 
+def grid_cell_index(idx, n):
+    """
+    index of the grid interval each position 0..n-1 along an axis belongs to,
+    for the increasing integer sample positions idx (idx[0] == 0, idx[-1] ==
+    n-1, see stride_grid): [idx[k], idx[k+1]) -> k, and the last position to
+    the last interval, as in upsample_grid_field.
+    """
+    k = np.searchsorted(idx, np.arange(n), side='right') - 1
+    return np.clip(k, 0, max(idx.size - 2, 0))
+
+
+def segments_grid_cells(segs, xs, ys, rows, cols):
+    """
+    cells of a rectilinear sample grid that line segments cross, dilated by
+    one cell.
+    Args:
+        segs (N x 2 x 2 ndarray): end points (x, y) of the segments, in the
+            coordinates of xs, ys.
+        xs, ys (ndarray): increasing, uniformly spaced coordinates of the pixel
+            columns and rows.
+        rows, cols (ndarray): increasing pixel indices of the grid samples (e.g.
+            a contiguous part of a stride_grid). Cell (i, j) spans the pixel
+            rows rows[i]..rows[i+1] and columns cols[j]..cols[j+1].
+    Return:
+        crossed ((rows.size-1) x (cols.size-1) ndarray of bool)
+    """
+    nr, nc = rows.size - 1, cols.size - 1
+    crossed = np.zeros((nr + 2, nc + 2), dtype=bool)  # padded by one cell on each side
+    segs = np.asarray(segs, dtype=np.float64).reshape(-1, 2, 2)
+    if (segs.shape[0] > 0) and (nr > 0) and (nc > 0):
+        dx = (xs[1] - xs[0]) if xs.size > 1 else 1.0
+        dy = (ys[1] - ys[0]) if ys.size > 1 else 1.0
+        gap = max(np.max(np.diff(rows)), np.max(np.diff(cols)))
+        px = (segs[..., 0] - xs[0]) / dx  # in pixels
+        py = (segs[..., 1] - ys[0]) / dy
+        keep = (px.max(axis=1) >= cols[0] - gap) & (px.min(axis=1) <= cols[-1] + gap)
+        keep &= (py.max(axis=1) >= rows[0] - gap) & (py.min(axis=1) <= rows[-1] + gap)
+        px, py = px[keep], py[keep]
+        if px.shape[0] > 0:
+            # points along each segment at most gap/2 apart: a cell the segment
+            # crosses contains one of them or neighbours a cell that does.
+            step = max(1.0, gap / 2)
+            n = np.ceil(np.hypot(px[:,1] - px[:,0], py[:,1] - py[:,0]) / step).astype(np.int64) + 1
+            k = np.repeat(np.arange(n.size), n)
+            t = (np.arange(k.size) - np.repeat(np.cumsum(n) - n, n)) / np.repeat(np.maximum(n - 1, 1), n)
+            qx = px[k,0] + t * (px[k,1] - px[k,0])
+            qy = py[k,0] + t * (py[k,1] - py[k,0])
+            ci = np.clip(np.searchsorted(cols, qx, side='right'), 0, nc + 1)  # cell index + 1
+            ri = np.clip(np.searchsorted(rows, qy, side='right'), 0, nr + 1)
+            crossed[ri, ci] = True
+    dilated = crossed.copy()
+    dilated[1:] |= crossed[:-1]
+    dilated[:-1] |= crossed[1:]
+    out = dilated.copy()
+    out[:, 1:] |= dilated[:, :-1]
+    out[:, :-1] |= dilated[:, 1:]
+    return out[1:-1, 1:-1]
+
+
 def extrapolate_field_border(field_x, field_y, xx, yy, A, invalid=None):
     """
     fill the invalid (NaN) samples of a gridded deformation field that border

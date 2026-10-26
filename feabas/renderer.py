@@ -26,6 +26,10 @@ MONTAGE_SOURCE_KWARGS = ('remap_interp', 'fillval', 'dtype_out')
 # when rendering tensorstore slabs from montage sources, a task keeps its whole
 # output in memory: cap its size (in MiB) if cache_capacity is not set.
 MONTAGE_TASK_BUFFER_MB = 2048
+# MeshRenderer.crop_field with stride > 1: a grid cell is bilinearly
+# interpolated only if the field at its edge midpoints and centre is within
+# this many pixels of the interpolation; otherwise its pixels are evaluated exactly.
+STRIDE_TOLERANCE = 0.25
 
 
 def get_image_source(ldr, **kwargs):
@@ -147,6 +151,102 @@ def render_submeshes_from_regions(mesh, regions, save_material=None, buffer=0, r
     return submeshes
 
 
+def _blend_fields(x_acc, y_acc, w_acc, xf, yf, wt, blend):
+    """
+    blend the field (xf, yf) of a render region with weight wt into the
+    accumulated field (x_acc, y_acc) and weight w_acc, in place.
+    """
+    if blend == const.BLEND_LINEAR:
+        x_acc += xf * wt
+        y_acc += yf * wt
+        w_acc += wt
+        return
+    if blend == const.BLEND_MAX:
+        tmask = wt >= w_acc
+    else:
+        tmask = wt > 0
+    x_acc[tmask] = xf[tmask]
+    y_acc[tmask] = yf[tmask]
+    w_acc[tmask] = wt[tmask]
+
+
+def _blended_fields_result(x_field, y_field, weight, blend):
+    """finalize the fields accumulated by _blend_fields; return x_field, y_field, mask."""
+    mask = weight > 0
+    if blend == const.BLEND_LINEAR:
+        x_field[mask] /= weight[mask]
+        y_field[mask] /= weight[mask]
+    return x_field, y_field, mask
+
+
+def _half_grid(v, idx):
+    """
+    values v at the sample positions idx and at the midpoints between
+    consecutive ones: (2*idx.size-1) ndarray, samples at the even indices.
+    """
+    out = np.empty(2 * idx.size - 1, dtype=np.float64)
+    out[0::2] = v[idx]
+    out[1::2] = (v[idx[:-1]] + v[idx[1:]]) / 2
+    return out
+
+
+def _cell_reduce(v, ufunc):
+    """
+    combine with ufunc (e.g. np.logical_or) the 3 x 3 samples of each cell of
+    a half grid ((2n+1) x (2m+1), see _half_grid): corners, edge midpoints and
+    centre. Return (n x m) ndarray.
+    """
+    n, m = (v.shape[0] - 1) // 2, (v.shape[1] - 1) // 2
+    out = v[0:2*n:2, 0:2*m:2].copy()
+    for di in range(3):
+        for dj in range(3):
+            if di or dj:
+                ufunc(out, v[di:di+2*n:2, dj:dj+2*m:2], out=out)
+    return out
+
+
+def _grid_cell_pixels(cells, rows, cols, H, W):
+    """
+    row and column indices of the pixels in the selected cells (nr x nc bool)
+    of the grid sampled at rows x cols (see common.grid_cell_index: a cell
+    spans [rows[i], rows[i+1]), the last one up to H), sorted by row. Avoids
+    expanding the selection to the whole H x W grid when few cells are selected.
+    """
+    ci, cj = np.nonzero(cells)
+    nr, nc = cells.shape
+    r0 = rows[ci]
+    r1 = np.where(ci + 1 < nr, rows[np.minimum(ci + 1, nr)], H)
+    c0 = cols[cj]
+    c1 = np.where(cj + 1 < nc, cols[np.minimum(cj + 1, nc)], W)
+    ht = r1 - r0
+    wd = c1 - c0
+    npx = ht * wd
+    k = np.repeat(np.arange(ci.size), npx)
+    local = np.arange(k.size) - np.repeat(np.cumsum(npx) - npx, npx)
+    rr = r0[k] + local // wd[k]
+    cc = c0[k] + local % wd[k]
+    order = np.argsort(rr, kind='stable')
+    return rr[order], cc[order]
+
+
+def _bilinear_midpoint_error(f):
+    """
+    largest difference, at the edge midpoints and centre of each cell of a
+    half grid ((2n+1) x (2m+1) values, see _half_grid), between f and the
+    bilinear interpolation of f at the cell corners. Return (n x m) ndarray,
+    inf if any of the values of a cell is NaN.
+    """
+    a, b = f[0:-1:2, 0:-1:2], f[0:-1:2, 2::2]
+    c, d = f[2::2, 0:-1:2], f[2::2, 2::2]
+    err = np.abs(f[0:-1:2, 1::2] - (a + b) / 2)
+    np.maximum(err, np.abs(f[2::2, 1::2] - (c + d) / 2), out=err)
+    np.maximum(err, np.abs(f[1::2, 0:-1:2] - (a + c) / 2), out=err)
+    np.maximum(err, np.abs(f[1::2, 2::2] - (b + d) / 2), out=err)
+    np.maximum(err, np.abs(f[1::2, 1::2] - (a + b + c + d) / 4), out=err)
+    err[np.isnan(err)] = np.inf
+    return err
+
+
 def is_montage_spec(ldr):
     """whether an image source is a montage of raw tiles (or its description)."""
     return hasattr(ldr, 'crop_from_field') or (isinstance(ldr, dict) and
@@ -174,6 +274,10 @@ class MeshRenderer:
         self._affine_approximator = kwargs.get('affine_approximator', None)
         self._affine_approx_tol = kwargs.get('affine_approx_tol', 0)
         self._covered_region = kwargs.get('covered_region', None)
+        # triangulation of the colliding triangles of each region (None if none)
+        self._collision_tri = kwargs.get('collision_triangulation', [None for _ in range(n_region)])
+        self._region_bbox_cache = {}
+        self._boundary_seg_cache = {}
 
 
     @classmethod
@@ -259,6 +363,7 @@ class MeshRenderer:
         weight_generator = []
         collision_region = []
         weight_multiplier = []
+        collision_tri = []
         if weight_params == const.MESH_TRIFINDER_INNERMOST:
             innermost_distance = cls._innermost_distance_func(srcmesh)
         for mattri, tidx, vidx in zip(mattri_list, tidx_list, vidx_list):
@@ -271,25 +376,29 @@ class MeshRenderer:
             if weight_params == const.MESH_TRIFINDER_WHATEVER:
                 weight_generator.append(None)
                 weight_multiplier.append(None)
+                collision_tri.append(None)
             else:
                 hitidx = np.intersect1d(tidx, collision_tidx)
                 if hitidx.size == 0:
                     weight_generator.append(None)
                     weight_multiplier.append(None)
+                    collision_tri.append(None)
                     continue
                 mpl_tri, hit_vidx, _ = srcmesh.mpl_tri(gear=gear[0], tri_mask=hitidx)
-                collision_region.append(srcmesh.shapely_regions(gear=gear[0], tri_mask=hitidx))
+                # without offset, like the boxes bbox_hit_collision compares it with
+                collision_region.append(srcmesh.shapely_regions(gear=gear[0], tri_mask=hitidx, offsetting=False))
                 try:
                     mpl_tri.get_trifinder()
                 except RuntimeError:
                     mpl_tri = mattri
                     hitidx = tidx
                     hit_vidx = vidx
+                collision_tri.append(mpl_tri)
                 if weight_params == const.MESH_TRIFINDER_INNERMOST:
                     # distances measured where the mesh has no overlaps (initial gear),
                     # interpolated in the output space to select the pixels.
                     dis0 = innermost_distance(tidx, hit_vidx) + 1
-                    weight_generator.append(matplotlib.tri.LinearTriInterpolator(mpl_tri, dis0))
+                    weight_generator.append(spatial.TriFieldInterpolator(mpl_tri, dis0))
                 elif weight_params == const.MESH_TRIFINDER_LEAST_DEFORM:
                     deform = srcmesh.triangle_tform_deform(gear=gear[::-1], tri_mask=hitidx)
                     wt = np.exp(-2 * deform**2)
@@ -308,7 +417,7 @@ class MeshRenderer:
         resolution = srcmesh.resolution
         return cls(interpolators, offset=offset0, region_tree=region_tree,
             weight_params=weight_params, weight_generator=weight_generator,
-            weight_multiplier=weight_multiplier,
+            weight_multiplier=weight_multiplier, collision_triangulation=collision_tri,
             collision_region=collision_region, resolution=resolution,
             geodesic_info=geodesic_info, affine_approximator=affine_approximator,
             affine_approx_tol=affine_approx_tol, covered_region=covered_region,
@@ -403,10 +512,9 @@ class MeshRenderer:
                         if wg is None:
                             continue
                         if self._weight_params == const.MESH_TRIFINDER_INNERMOST:
-                            dis_m = wg(pxy[0], pxy[1])
-                            if dis_m.mask:
+                            (dis,), outside = wg(pxy[0], pxy[1])
+                            if outside:
                                 continue
-                            dis = dis_m.data
                         else:
                             trfd, wt0 = wg
                             tid = trfd(pxy[0], pxy[1])
@@ -481,21 +589,13 @@ class MeshRenderer:
         out_resolution = kwargs.get('out_resolution', None)
         offsetting = kwargs.get('offsetting', True)
         invalid_output = (None, None, None)
-        bbox0 = common.numpy_array(bbox, copy=False).reshape(4)
-        if offsetting:
-            bbox0 = bbox0 - np.tile(self._offset.ravel(), 2)
-        bcntr = ((bbox0[0] + bbox0[2] - 1)/2, (bbox0[1] + bbox0[3] - 1)/2)
+        bbox0, bbox_r, bcntr = self._output_bbox(bbox, offsetting=offsetting, out_resolution=out_resolution)
         if region_id is None:
             region_id = self.region_finder_for_points(bcntr, offsetting=False).item()
         if region_id == -1:
             return invalid_output
         interp = self._interpolators[region_id]
-        xs = np.linspace(bbox0[0], bbox0[2], num=round(bbox0[2]-bbox0[0]), endpoint=False, dtype=float)
-        ys = np.linspace(bbox0[1], bbox0[3], num=round(bbox0[3]-bbox0[1]), endpoint=False, dtype=float)
-        if out_resolution is not None:
-            scale = out_resolution / self.resolution
-            xs = spatial.scale_coordinates(xs, scale)
-            ys = spatial.scale_coordinates(ys, scale)
+        xs, ys = self._output_coordinates(bbox0, out_resolution=out_resolution)
         xx, yy = np.meshgrid(xs, ys)
         (x_field, y_field), mask = interp(xx, yy)
         if np.all(mask, axis=None):
@@ -504,7 +604,7 @@ class MeshRenderer:
         y_field = np.nan_to_num(y_field, copy=False)
         weight = 1 - mask.astype(np.float32)
         if self._geodesic_mask and (self._geodesic_info is not None):
-            if self._geodesic_info['seg_line'].intersects(shpgeo.box(*bbox0)):
+            if self._geodesic_info['seg_line'].intersects(shpgeo.box(*bbox_r)):
                 if not hasattr(self, '_cached_geodesic_distance'):
                     self._cached_geodesic_distance = CacheFIFO(maxlen=5)
                 if bcntr in self._cached_geodesic_distance:
@@ -542,10 +642,10 @@ class MeshRenderer:
             weight_multiplier = self.weight_multiplier[region_id]
             if compute_wt and (weight_generator is not None):
                 if self._weight_params == const.MESH_TRIFINDER_INNERMOST:
-                    wt = weight_generator(xx, yy)
-                    if not np.all(wt.mask, axis=None):
-                        wtmx = wt.max()
-                        weight = weight * np.nan_to_num(wt.data, copy=False, nan=wtmx)
+                    (wt,), wt_out = weight_generator(xx, yy)
+                    if not np.all(wt_out, axis=None):
+                        wt[wt_out] = np.max(wt[~wt_out])
+                        weight = weight * wt
                 elif self._weight_params == const.MESH_TRIFINDER_LEAST_DEFORM:
                     trfd, wt0 = weight_generator
                     tid = trfd(xx, yy)
@@ -563,6 +663,313 @@ class MeshRenderer:
                     wt[omask] = 1
                     weight = weight * wt
         return x_field, y_field, weight
+
+
+    def _output_bbox(self, bbox, offsetting=True, out_resolution=None):
+        """
+        a bounding box of output pixels (xmin, ymin, xmax, ymax), given at
+        out_resolution (default: the renderer resolution) and with the
+        renderer offset if offsetting, in the frames used by the renderer.
+        Return:
+            bbox0 (ndarray): the box in output pixels, shifted so that
+                _output_coordinates(bbox0, out_resolution) gives the renderer
+                coordinates (without offset) of the output pixels.
+            bbox_r (ndarray): the box in renderer coordinates without offset,
+                to look up regions.
+            bcntr (tuple): the center of the box in renderer coordinates
+                without offset.
+        """
+        bbox0 = common.numpy_array(bbox, copy=False).reshape(4).astype(np.float64)
+        if out_resolution is None:
+            scale = 1
+        else:
+            scale = out_resolution / self.resolution
+        if offsetting:
+            # scale_coordinates(x - offset/scale, scale) == scale_coordinates(x, scale) - offset
+            bbox0 = bbox0 - np.tile(self._offset.ravel(), 2) / scale
+        bbox_r = spatial.scale_coordinates(bbox0, scale)
+        bcntr = spatial.scale_coordinates(np.array([(bbox0[0] + bbox0[2] - 1)/2, (bbox0[1] + bbox0[3] - 1)/2]), scale)
+        return bbox0, bbox_r, tuple(bcntr)
+
+
+    def _output_coordinates(self, bbox0, out_resolution=None):
+        """
+        coordinates (in the renderer resolution, without offset) of the output
+        pixel columns and rows of a bounding box (already without offset).
+        """
+        xs = np.linspace(bbox0[0], bbox0[2], num=round(bbox0[2]-bbox0[0]), endpoint=False, dtype=float)
+        ys = np.linspace(bbox0[1], bbox0[3], num=round(bbox0[3]-bbox0[1]), endpoint=False, dtype=float)
+        if out_resolution is not None:
+            scale = out_resolution / self.resolution
+            xs = spatial.scale_coordinates(xs, scale)
+            ys = spatial.scale_coordinates(ys, scale)
+        return xs, ys
+
+
+    def _region_bbox(self, rid):
+        """bounding box (xmin, ymin, xmax, ymax) of region rid, without offset."""
+        if rid not in self._region_bbox_cache:
+            tri = self._interpolators[rid].triangulation
+            self._region_bbox_cache[rid] = (tri.x.min(), tri.y.min(), tri.x.max(), tri.y.max())
+        return self._region_bbox_cache[rid]
+
+
+    def _region_windows(self, regions, xs, ys):
+        """
+        the output pixels each region can cover.
+        Return:
+            list of (rid, r0, r1, c0, c1): region id and its output rows r0:r1,
+                columns c0:c1, for the regions intersecting the output grid.
+        """
+        windows = []
+        for rid in regions:
+            xmin, ymin, xmax, ymax = self._region_bbox(rid)
+            c0 = np.searchsorted(xs, xmin - 1, side='left')
+            c1 = np.searchsorted(xs, xmax + 1, side='right')
+            r0 = np.searchsorted(ys, ymin - 1, side='left')
+            r1 = np.searchsorted(ys, ymax + 1, side='right')
+            if (c1 > c0) and (r1 > r0):
+                windows.append((rid, r0, r1, c0, c1))
+        return windows
+
+
+    def _region_values(self, rid, x, y):
+        """
+        deformation field and render weight of region rid at points (x, y)
+        (without offset, any shape). The weights are those of field_w_weight
+        without geodesic mask; outside the colliding triangles, an INNERMOST
+        weight takes the maximum over the points (only this region covers them,
+        so any positive value selects the same pixels).
+        Return:
+            x_field, y_field (float64 ndarrays shaped as x): 0 outside region.
+            weight (float64 ndarray shaped as x): 0 outside region.
+        """
+        (x_field, y_field), outside = self._interpolators[rid](x, y)
+        x_field[outside] = 0
+        y_field[outside] = 0
+        weight = (~outside).astype(np.float64)
+        weight_generator = self.weight_generator[rid]
+        weight_multiplier = self.weight_multiplier[rid]
+        if weight_generator is not None:
+            if self._weight_params == const.MESH_TRIFINDER_INNERMOST:
+                (wt,), wt_out = weight_generator(x, y)
+                if not np.all(wt_out, axis=None):
+                    wt[wt_out] = np.max(wt[~wt_out])
+                    weight *= wt
+            elif self._weight_params == const.MESH_TRIFINDER_LEAST_DEFORM:
+                trfd, wt0 = weight_generator
+                tid = trfd(x, y)
+                omask = tid < 0
+                if not np.all(omask, axis=None):
+                    wt = wt0[tid]
+                    wt[omask] = 1
+                    weight *= wt
+        if weight_multiplier is not None:
+            trfd, wt0 = weight_multiplier
+            tid = trfd(x, y)
+            omask = tid < 0
+            if not np.all(omask, axis=None):
+                wt = wt0[tid]
+                wt[omask] = 1
+                weight *= wt
+        return x_field, y_field, weight
+
+
+    def _boundary_segments(self, rid, collision=False):
+        """
+        boundary edges (N x 2 x 2 ndarray, without offset) of the triangulation
+        of region rid, or of its colliding triangles if collision is True.
+        """
+        key = (rid, collision)
+        if key not in self._boundary_seg_cache:
+            if collision:
+                tri = self._collision_tri[rid]
+            else:
+                tri = self._interpolators[rid].triangulation
+            self._boundary_seg_cache[key] = spatial.triangulation_boundary_segments(tri)
+        return self._boundary_seg_cache[key]
+
+
+    def _crop_field_regions(self, regions, xs, ys, blend, **kwargs):
+        """
+        deformation field on the output grid xs (columns) x ys (rows), from
+        the render regions blended as in crop_field (RENDER_FULL). Each region
+        is only evaluated on the output pixels within its bounding box.
+        Kwargs:
+            stride (int): if > 1, see _crop_field_strided.
+            stride_tolerance (float): see _crop_field_strided.
+        Return:
+            x_field, y_field (H x W float64 ndarray), mask (H x W bool ndarray),
+            or None if no region covers any output pixel.
+        """
+        stride = kwargs.get('stride', 1)
+        windows = self._region_windows(regions, xs, ys)
+        if len(windows) == 0:
+            return None
+        H, W = ys.size, xs.size
+        if (stride > 1) and (H > 1) and (W > 1):
+            tol = kwargs.get('stride_tolerance', STRIDE_TOLERANCE)
+            return self._crop_field_strided(windows, xs, ys, blend, stride, tol)
+        if (len(windows) == 1) and (blend != const.BLEND_LINEAR):
+            # a single region: its own arrays, without blending accumulators
+            rid, r0, r1, c0, c1 = windows[0]
+            xx, yy = np.meshgrid(xs[c0:c1], ys[r0:r1])
+            xf, yf, wt = self._region_values(rid, xx, yy)
+            del xx, yy
+            mask = wt > 0
+            del wt
+            if blend == const.BLEND_NONE:
+                outside = ~mask
+                xf[outside] = 0
+                yf[outside] = 0
+            if (r1 - r0 == H) and (c1 - c0 == W):
+                return xf, yf, mask
+            slc = (slice(r0, r1), slice(c0, c1))
+            x_field = np.zeros((H, W), dtype=np.float64)
+            y_field = np.zeros((H, W), dtype=np.float64)
+            mask_out = np.zeros((H, W), dtype=bool)
+            x_field[slc] = xf
+            y_field[slc] = yf
+            mask_out[slc] = mask
+            return x_field, y_field, mask_out
+        x_field = np.zeros((H, W), dtype=np.float64)
+        y_field = np.zeros((H, W), dtype=np.float64)
+        weight = np.zeros((H, W), dtype=np.float64)
+        for rid, r0, r1, c0, c1 in windows:
+            xx, yy = np.meshgrid(xs[c0:c1], ys[r0:r1])
+            xf, yf, wt = self._region_values(rid, xx, yy)
+            slc = (slice(r0, r1), slice(c0, c1))
+            _blend_fields(x_field[slc], y_field[slc], weight[slc], xf, yf, wt, blend)
+        return _blended_fields_result(x_field, y_field, weight, blend)
+
+
+    def _crop_field_strided(self, windows, xs, ys, blend, stride, tol):
+        """
+        _crop_field_regions with the field sampled every `stride` output pixels.
+        The output grid is divided into cells by common.stride_grid, and each
+        region is sampled at the corners, edge midpoints and centres of the
+        cells it can cover. A cell is bilinearly interpolated from its corners
+        if exactly one region touches it (a sample inside, or one of its
+        boundary edges within one cell), that region covers it entirely (all
+        9 samples inside, no boundary edge within one cell, and if the region
+        has zero render weights, no colliding triangle near it), and the field
+        at the midpoints and centre is within tol pixels of the interpolation.
+        The pixels of the other touched cells are evaluated exactly, so the
+        mask and the seams between overlapping regions are the same as with
+        stride 1.
+        Args:
+            windows: output of _region_windows.
+            xs, ys (ndarray): coordinates of the output columns / rows.
+            blend: blending of the regions, see crop_field.
+            stride (int): sample spacing in output pixels.
+            tol (float): tolerance of the bilinear interpolation in pixels.
+        Return:
+            same as _crop_field_regions.
+        """
+        H, W = ys.size, xs.size
+        rows = common.stride_grid(H, stride)
+        cols = common.stride_grid(W, stride)
+        nr, nc = rows.size - 1, cols.size - 1
+        r_cell = common.grid_cell_index(rows, H)
+        c_cell = common.grid_cell_index(cols, W)
+        yh = _half_grid(ys, rows)
+        xh = _half_grid(xs, cols)
+        touch = np.zeros((nr, nc), dtype=np.int32)   # number of regions touching each cell
+        simple_k = np.full((nr, nc), -1, dtype=np.int32)    # window that can interpolate each cell
+        corners = []
+        for k, (rid, r0, r1, c0, c1) in enumerate(windows):
+            i0, i1 = r_cell[r0], r_cell[r1 - 1] + 1
+            j0, j1 = c_cell[c0], c_cell[c1 - 1] + 1
+            xx, yy = np.meshgrid(xh[2*j0:2*j1+1], yh[2*i0:2*i1+1])
+            (xf, yf), outside = self._interpolators[rid](xx, yy)
+            inside = ~outside
+            crossed = common.segments_grid_cells(self._boundary_segments(rid), xs, ys,
+                                                 rows[i0:i1+1], cols[j0:j1+1])
+            touched = _cell_reduce(inside, np.logical_or) | crossed
+            ok = _cell_reduce(inside, np.logical_and) & ~crossed
+            ok &= np.maximum(_bilinear_midpoint_error(xf), _bilinear_midpoint_error(yf)) <= tol
+            weight_multiplier = self.weight_multiplier[rid]
+            if (weight_multiplier is not None) and np.any(weight_multiplier[1] <= 0):
+                # zero render weights mask out pixels: keep the colliding triangles exact
+                near_collision = _cell_reduce(weight_multiplier[0](xx, yy) >= 0, np.logical_or)
+                near_collision |= common.segments_grid_cells(self._boundary_segments(rid, collision=True),
+                                                             xs, ys, rows[i0:i1+1], cols[j0:j1+1])
+                ok &= ~near_collision
+            touch[i0:i1, j0:j1] += touched
+            simple_k[i0:i1, j0:j1][ok] = k
+            corners.append((i0, i1, j0, j1, xf[0::2, 0::2], yf[0::2, 0::2]))
+        if not np.any(touch):
+            return None
+        simple = (touch == 1) & (simple_k >= 0)
+        if len(windows) == 1:
+            # a single region: interpolate over the whole grid directly into the
+            # output (cells outside its window are NaN), then clear the cells
+            # that are not interpolated.
+            i0, i1, j0, j1, cx, cy = corners[0]
+            gx = np.full((nr + 1, nc + 1), np.nan)
+            gy = np.full((nr + 1, nc + 1), np.nan)
+            gx[i0:i1+1, j0:j1+1] = cx
+            gy[i0:i1+1, j0:j1+1] = cy
+            x_field = common.upsample_grid_field(gx, rows, cols, dtype=np.float64)
+            y_field = common.upsample_grid_field(gy, rows, cols, dtype=np.float64)
+            if np.all(simple):
+                mask = np.ones((H, W), dtype=bool)
+            else:
+                mask = simple[r_cell][:, c_cell]
+                outside = ~mask
+                x_field[outside] = 0
+                y_field[outside] = 0
+                del outside
+            corners = []
+        else:
+            x_field = np.zeros((H, W), dtype=np.float64)
+            y_field = np.zeros((H, W), dtype=np.float64)
+            mask = np.zeros((H, W), dtype=bool)
+        for k, (i0, i1, j0, j1, cx, cy) in enumerate(corners):
+            sel = simple[i0:i1, j0:j1] & (simple_k[i0:i1, j0:j1] == k)
+            si = np.flatnonzero(np.any(sel, axis=1))
+            if si.size == 0:
+                continue
+            sj = np.flatnonzero(np.any(sel, axis=0))
+            a0, a1, b0, b1 = si[0], si[-1] + 1, sj[0], sj[-1] + 1
+            sel = sel[a0:a1, b0:b1]
+            cx = cx[a0:a1+1, b0:b1+1]
+            cy = cy[a0:a1+1, b0:b1+1]
+            i0, i1, j0, j1 = i0 + a0, i0 + a1, j0 + b0, j0 + b1
+            p0, p1 = rows[i0], (rows[i1] if i1 < nr else H)
+            q0, q1 = cols[j0], (cols[j1] if j1 < nc else W)
+            ux = common.upsample_grid_field(cx, rows[i0:i1+1] - p0, cols[j0:j1+1] - q0, dtype=np.float64)[:p1-p0, :q1-q0]
+            uy = common.upsample_grid_field(cy, rows[i0:i1+1] - p0, cols[j0:j1+1] - q0, dtype=np.float64)[:p1-p0, :q1-q0]
+            slc = (slice(p0, p1), slice(q0, q1))
+            if np.all(sel):
+                x_field[slc] = ux
+                y_field[slc] = uy
+                mask[slc] = True
+            else:
+                psel = sel[r_cell[p0:p1] - i0][:, c_cell[q0:q1] - j0]
+                x_field[slc][psel] = ux[psel]
+                y_field[slc][psel] = uy[psel]
+                mask[slc] |= psel
+        exact = (touch > 0) & ~simple
+        if np.any(exact):
+            rr, cc = _grid_cell_pixels(exact, rows, cols, H, W)   # sorted by row
+            bx = np.zeros(rr.size, dtype=np.float64)
+            by = np.zeros(rr.size, dtype=np.float64)
+            bw = np.zeros(rr.size, dtype=np.float64)
+            for rid, r0, r1, c0, c1 in windows:
+                lo, hi = np.searchsorted(rr, (r0, r1), side='left')
+                idx = lo + np.flatnonzero((cc[lo:hi] >= c0) & (cc[lo:hi] < c1))
+                if idx.size == 0:
+                    continue
+                xf, yf, wt = self._region_values(rid, xs[cc[idx]], ys[rr[idx]])
+                tx, ty, tw = bx[idx], by[idx], bw[idx]
+                _blend_fields(tx, ty, tw, xf, yf, wt, blend)
+                bx[idx], by[idx], bw[idx] = tx, ty, tw
+            bx, by, bmask = _blended_fields_result(bx, by, bw, blend)
+            x_field[rr, cc] = bx
+            y_field[rr, cc] = by
+            mask[rr, cc] = bmask
+        return x_field, y_field, mask
 
 
     def local_affine_tform(self, pt, offsetting=True, svd_clip=None):
@@ -618,19 +1025,18 @@ class MeshRenderer:
         bbox0 = np.array(bbox).reshape(4)
         outwd = round(bbox0[2]-bbox0[0])
         outht = round(bbox0[3]-bbox0[1])
-        if offsetting:
-            bbox0 = bbox0 - np.tile(self._offset.ravel(), 2)
+        bbox0, _, _ = self._output_bbox(bbox0, offsetting=offsetting, out_resolution=out_resolution)
         xs = np.linspace(bbox0[0], bbox0[2], num=outwd, endpoint=False, dtype=float)
         ys = np.linspace(bbox0[1], bbox0[3], num=outht, endpoint=False, dtype=float)
-        if out_resolution is not None:
-            scale = out_resolution / self.resolution
-            xs = spatial.scale_coordinates(xs, scale)
-            ys = spatial.scale_coordinates(ys, scale)
+        scale = 1 if out_resolution is None else out_resolution / self.resolution
+        xs = spatial.scale_coordinates(xs, scale)
+        ys = spatial.scale_coordinates(ys, scale)
         xx, yy = np.meshgrid(xs, ys)
         x_field = xx * A[0,0] + yy * A[1,0] + t[0]
         y_field = xx * A[0,1] + yy * A[1,1] + t[1]
         if precise_mask and (self._covered_region is not None):
-            shpbox0 = shpgeo.box(*(bbox0-0.5))
+            # pixel edges, in renderer coordinates
+            shpbox0 = shpgeo.box(*spatial.scale_coordinates(bbox0 - 0.5, scale))
             mtrx = np.concatenate((A.T, t), axis=None)
             shpbox = shapely.affinity.affine_transform(shpbox0,mtrx)
             covered = self._covered_region
@@ -654,6 +1060,13 @@ class MeshRenderer:
         Kwargs:
             out_resolution: output resolution. If set to None, assume the output
                 resolution is the same as the intrinsic renderer resoluton.
+            stride (int): if > 1, evaluate the field every `stride` output
+                pixels and interpolate bilinearly in between, except near the
+                region boundaries, at the seams between overlapping regions and
+                where the interpolation is off by more than stride_tolerance
+                (see _crop_field_strided). Ignored with geodesic mask and by
+                the affine modes.
+            stride_tolerance (float): in pixels, default STRIDE_TOLERANCE.
         Return:
             x-field (ndarray): deformation field in x direction. None if
                 bounding box not intersecting the interpolator.
@@ -666,18 +1079,20 @@ class MeshRenderer:
         out_resolution = kwargs.get('out_resolution', None)
         affine_tolerance = kwargs.get('affine_tolerance', self._affine_approx_tol)
         log_sigma = kwargs.get('log_sigma', 0)
+        stride = max(1, int(round(kwargs.get('stride', 1))))
+        stride_tolerance = kwargs.get('stride_tolerance', STRIDE_TOLERANCE)
         bbox0 = np.array(bbox).reshape(4)
         outwd = round(bbox0[2]-bbox0[0])
         outht = round(bbox0[3]-bbox0[1])
         empty_output = (np.zeros((outht, outwd), dtype=np.float32),
                         np.zeros((outht, outwd), dtype=np.float32),
                         np.zeros((outht, outwd), dtype=bool))
-        if offsetting:
-            bbox0 = bbox0 - np.tile(self._offset.ravel(), 2)
-        if (mode == const.RENDER_CONTIGEOUS) and (not self.bbox_hit_collision(bbox0, offsetting=False)):
+        # bbox0: output pixels (for the output grid); bbox_r, bcntr: renderer
+        # coordinates (for the region lookups)
+        bbox0, bbox_r, bcntr = self._output_bbox(bbox0, offsetting=offsetting, out_resolution=out_resolution)
+        if (mode == const.RENDER_CONTIGEOUS) and (not self.bbox_hit_collision(bbox_r, offsetting=False)):
             mode = const.RENDER_FULL
         if mode in (const.RENDER_LOCAL_RIGID, const.RENDER_LOCAL_AFFINE):
-            bcntr = ((bbox0[0] + bbox0[2] - 1)/2, (bbox0[1] + bbox0[3] - 1)/2)
             if mode == const.RENDER_LOCAL_RIGID:
                 svd_clip = 0
             else:
@@ -688,7 +1103,7 @@ class MeshRenderer:
             x_field, y_field, mask = self.crop_field_affine(bbox0, A, t, offsetting=False, out_resolution=out_resolution, precise_mask=log_sigma>0)
         else:
             if self._geodesic_mask and (self._geodesic_info is not None):
-                if self._geodesic_info['seg_line'].intersects(shpgeo.box(*bbox0)):
+                if self._geodesic_info['seg_line'].intersects(shpgeo.box(*bbox_r)):
                     affine_tolerance = 0
             field_generated = False
             if (affine_tolerance > 0) and (self._affine_approximator is not None):
@@ -699,11 +1114,22 @@ class MeshRenderer:
                     x_field, y_field, mask = self.crop_field_affine(bbox0, A, t, offsetting=False, out_resolution=out_resolution, precise_mask=log_sigma>0)
                     field_generated = True
                 else:
-                    A, t, res = self.bbox_affine_tform(bbox0, offsetting=False)
+                    A, t, res = self.bbox_affine_tform(bbox_r, offsetting=False)
                     if res < affine_tolerance:
                         x_field, y_field, mask = self.crop_field_affine(bbox0, A, t, offsetting=False, out_resolution=out_resolution, precise_mask=log_sigma>0)
                         field_generated = True
             if not field_generated:
+                if (mode == const.RENDER_CONTIGEOUS) and (stride > 1) and (not self._geodesic_mask):
+                    # the region at the centre of the bounding box, as in field_w_weight
+                    region_id = self.region_finder_for_points(bcntr, offsetting=False).item()
+                    if region_id == -1:
+                        return None, None, None
+                    xs, ys = self._output_coordinates(bbox0, out_resolution=out_resolution)
+                    fields = self._crop_field_regions([region_id], xs, ys, const.BLEND_NONE,
+                                                      stride=stride, stride_tolerance=stride_tolerance)
+                    if fields is None:
+                        return None, None, None
+                    return fields
                 if mode == const.RENDER_CONTIGEOUS:
                     x_field, y_field, weight = self.field_w_weight(bbox0, region_id=None,
                         out_resolution=out_resolution, offsetting=False, compute_wt=True)
@@ -712,13 +1138,20 @@ class MeshRenderer:
                     else:
                         mask = weight > 0
                 elif mode == const.RENDER_FULL:
-                    regions = self.region_finder_for_bbox(bbox0, offsetting=False)
+                    regions = self.region_finder_for_bbox(bbox_r, offsetting=False)
                     if regions.size == 0:
                         return empty_output
                     elif regions.size == 1:
                         blend = const.BLEND_NONE
                     else:
                         blend = kwargs.get('blend', const.BLEND_MAX)
+                    if not self._geodesic_mask:
+                        xs, ys = self._output_coordinates(bbox0, out_resolution=out_resolution)
+                        fields = self._crop_field_regions(regions, xs, ys, blend, stride=stride,
+                                                          stride_tolerance=stride_tolerance)
+                        if fields is None:
+                            return empty_output
+                        return fields
                     initialized = False
                     for rid in regions:
                         xf, yf, wt = self.field_w_weight(bbox0, region_id=rid,
