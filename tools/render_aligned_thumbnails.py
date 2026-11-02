@@ -55,6 +55,7 @@ def parse_args(args=None):
     parser.add_argument("--src_resolution", metavar="src_resolution", type=float, default=0)
     parser.add_argument("--src_dir",  metavar="src_dir", type=str, default='none')
     parser.add_argument("--tgt_dir",  metavar="tgt_dir", type=str, default='none')
+    parser.add_argument("--tform_dir",  metavar="tform_dir", type=str, default='none', help="aligned transformations (default: align/tform)")
     parser.add_argument("--worker",  metavar="worker", type=int, default=1)
     parser.add_argument("--start", metavar="start", type=int, default=config.default_task_start())
     parser.add_argument("--step", metavar="step", type=int, default=config.default_task_step())
@@ -69,6 +70,8 @@ def parse_args(args=None):
 
 if __name__ == '__main__':
     args = parse_args()
+    # cap the numpy/BLAS threads of each worker (inherited by the spawned workers)
+    config.set_numpy_thread_from_num_workers(args.worker)
 
     if args.src_resolution <= 0:
         src_resolution = default_thumbnail_resolution
@@ -94,7 +97,10 @@ if __name__ == '__main__':
         tgt_dir = args.tgt_dir
     storage.makedirs(tgt_dir, exist_ok=True)
 
-    tform_dir = storage.join_paths(root_dir, 'align', 'tform')
+    if args.tform_dir.lower() == 'none':
+        tform_dir = storage.join_paths(root_dir, 'align', 'tform')
+    else:
+        tform_dir = args.tform_dir
     tlist = sorted(storage.list_folder_content(storage.join_paths(tform_dir, '*.h5')))
 
     if len(tlist) == 0:

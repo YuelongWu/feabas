@@ -269,6 +269,18 @@ python scripts/align_main.py --mode tsr
 
 The details of the rendering process are controlled by the `tensorstore_rendering` settings in `alignment_configs.yaml`. Note that currently the `rendering` settings and `tensorstore_rendering` are independent, i.e. change to one will not affect the behavior of the other alternative rendering format. The TensorStore rendering supports both local storage and Google Cloud storage destinations.
 
+#### intensity normalization (optional)
+
+The brightness and contrast of the sections can be normalized across the stack before rendering, with a linear adjustment per section applied on top of the per-tile adjustment of the stitching:
+
+```bash
+python tools/render_aligned_thumbnails.py --worker 32 --xmin 0 --ymin 0 --xmax <W> --ymax <H>
+python tools/intensity_masks.py --worker 32 --overlay
+python tools/compute_intensity_adjust.py --worker 32 --preview
+```
+
+`render_aligned_thumbnails.py` renders the aligned thumbnails to `align/aligned_<resolution>nm` (the bounding box is the canvas at the thumbnail resolution). `intensity_masks.py` writes a mask per section to `align/intensity_masks`, in the geometry of the unaligned thumbnails: 0 outside the imaged area, 100 tissue, 200 uncertain, 255 resin. Only the tissue and resin pixels are used, so the masks can be edited by hand (e.g. paint 200 over doubtful areas); existing masks are not overwritten unless `--overwrite` is given. `compute_intensity_adjust.py` writes the adjustment of each section to `align/intensity_adjust` (resin -> `--bg_target`, tissue -> `--fg_target`), by matching each section to its z-neighbors (`--method zmatch`, default) or from the statistics of each section alone (`--method stats`), and with `--preview` the adjusted aligned thumbnails to `align/aligned_<resolution>nm_adjusted` for checking. To apply the adjustment when rendering, set `rendering: intensity_adjust_dir` in `alignment_configs.yaml` to `default` (or to another folder).
+
 
 #### generate mipmaps
 

@@ -276,7 +276,24 @@ def check_stitch_up_to_date(secnames, logger=None):
     return stale
 
 
-def get_section_source(secname, mip, stitch_source='auto', loader_config=None):
+def resolve_adjust_dir(adjust_dir):
+    """rendering: intensity_adjust_dir config -> folder (None: off)."""
+    if (adjust_dir is None) or (str(adjust_dir).lower() in ('none', 'null', '')):
+        return None
+    if str(adjust_dir).lower() == 'default':
+        return storage.join_paths(config.get_work_dir(), 'align', 'intensity_adjust')
+    return adjust_dir
+
+
+def intensity_adjust_file(secname, adjust_dir):
+    """per-section intensity adjustment file in adjust_dir, or None."""
+    if adjust_dir is None:
+        return None
+    tf_json = storage.join_paths(adjust_dir, secname + '.json')
+    return tf_json if storage.file_exists(tf_json) else None
+
+
+def get_section_source(secname, mip, stitch_source='auto', loader_config=None, adjust_dir=None):
     """
     image source to render an aligned section at mip level `mip`:
         - the stitched images, if rendered at that level (unless stitch_source
@@ -290,8 +307,13 @@ def get_section_source(secname, mip, stitch_source='auto', loader_config=None):
             resampled once. Tile preprocessing (CLAHE, inverse, transfer
             functions) and blending follow the stitching final_rendering
             configs (merged over rendering).
+    If adjust_dir has an intensity adjustment file of the section, it is
+    applied on top of the stitching per-tile adjustment (already in the
+    stitched images, or applied to the raw tiles); a tensorstore source is then
+    returned as a loader dict instead of the spec file.
     Return None if no source is available.
     """
+    adj = intensity_adjust_file(secname, adjust_dir)
     stitch_source = str(stitch_source).lower()
     if stitch_source not in ('auto', 'stitched', 'tiles'):
         raise ValueError(f'unsupported stitch_source {stitch_source}')
@@ -305,9 +327,16 @@ def get_section_source(secname, mip, stitch_source='auto', loader_config=None):
     if use_stitched and stitched_level_available(secname, mip, exact=True):
         if stitch_render_config.get('driver', 'image') == 'image':
             stitched_image_dir = storage.join_paths(config.stitch_render_dir(), 'mip'+str(mip))
+            if adj is not None:
+                loader_config = dict(loader_config, intensity_adjust=adj)
             return get_image_loader(storage.join_paths(stitched_image_dir, secname), **loader_config)
         else:
-            return storage.join_paths(stitch_spec_dir, secname + '.json')
+            spec_file = storage.join_paths(stitch_spec_dir, secname + '.json')
+            if adj is None:
+                return spec_file
+            with storage.File(spec_file, 'r') as f:
+                specs = json.load(f)
+            return {'ImageLoaderType': 'TensorStoreLoader', 'json_spec': specs[str(mip)], 'intensity_adjust': adj}
     if stitch_source == 'stitched':
         return None
     tform_name = storage.join_paths(stitch_tform_dir, secname + '.h5')
@@ -320,6 +349,9 @@ def get_section_source(secname, mip, stitch_source='auto', loader_config=None):
         loader_settings['cache_size'] = loader_settings['cache_size'] * cache_scale
     if loader_config.get('fillval', None) is not None:
         loader_settings['fillval'] = loader_config['fillval']
+    if adj is not None:
+        # after the per-tile transfer functions of the stitching
+        loader_settings['intensity_adjust'] = adj
     render_settings = dict(stitch_render_config.get('render_settings', {}))
     tf_json = storage.join_paths(stitch_histeq_dir, secname + '.json')
     if not storage.file_exists(tf_json):
@@ -349,14 +381,17 @@ def render_one_section(h5name, z_prefix='', **kwargs):
     loader_config = kwargs.pop('loader_config', {}).copy()
     loader_config.update({key: val for key, val in stitch_config.items() if key in ('pattern', 'one_based', 'fillval')})
     loader_config['resolution'] = resolution
+    from feabas.renderer import is_montage_spec
     stitch_source = kwargs.pop('stitch_source', 'auto')
-    loader = get_section_source(secname, mip_level, stitch_source=stitch_source, loader_config=loader_config)
-    if isinstance(loader, str):
+    adjust_dir = resolve_adjust_dir(kwargs.pop('intensity_adjust_dir', None))
+    loader = get_section_source(secname, mip_level, stitch_source=stitch_source, loader_config=loader_config,
+                                adjust_dir=adjust_dir)
+    if isinstance(loader, str) or (isinstance(loader, dict) and not is_montage_spec(loader)):
         loader = VolumeRenderer._get_loader(loader, mip=mip_level, **loader_config)
     if loader is None:
         logger.error(f'{secname}: no stitched images at mip{mip_level} or stitching transformation found.')
         return 0
-    if isinstance(loader, dict):
+    if is_montage_spec(loader):
         logger.info(f'{secname}: render from the raw tiles')
         check_stitch_up_to_date(secname, logger=logger_info)
     M = Mesh.from_h5(h5name, locked=False)
@@ -626,16 +661,25 @@ if __name__ == '__main__':
         tform_list, z_indx = common.rearrange_section_order(tform_list, section_order_file)
         if (args.filter is not None) and len(tform_list) > 0:
             z_indx = z_indx - np.min(z_indx)
+        from feabas.renderer import is_montage_spec
         stitch_source = align_config.pop('stitch_source', 'auto')
+        adjust_dir = resolve_adjust_dir(align_config.pop('intensity_adjust_dir', None))
         secnames = [os.path.basename(s).replace('.h5', '') for s in tform_list]
         loader_list = storage.map_io(partial(get_section_source, mip=mip_level, stitch_source=stitch_source,
-                                             loader_config=align_config.get('loader_config', {})),
+                                             loader_config=align_config.get('loader_config', {}),
+                                             adjust_dir=adjust_dir),
                                      secnames)
-        num_from_tiles = sum(isinstance(ldr, dict) for ldr in loader_list)
-        check_stitch_up_to_date([s for s, ldr in zip(secnames, loader_list) if isinstance(ldr, dict)],
+        num_from_tiles = sum(is_montage_spec(ldr) for ldr in loader_list)
+        check_stitch_up_to_date([s for s, ldr in zip(secnames, loader_list) if is_montage_spec(ldr)],
                                 logger=logger_info[0])
         if num_from_tiles > 0:
             logger.info(f'{num_from_tiles}/{len(loader_list)} sections rendered from the raw tiles')
+        if adjust_dir is not None:
+            num_adjusted = sum(intensity_adjust_file(s, adjust_dir) is not None for s in secnames)
+            if num_adjusted == 0:
+                logger.warning(f'no intensity adjustment found in {adjust_dir}')
+            else:
+                logger.info(f'intensity adjustment for {num_adjusted}/{len(secnames)} sections from {adjust_dir}')
         resolution = config.mip0_resolution() * (2 ** mip_level)
         vol_renderer = VolumeRenderer(tform_list, loader_list, tensorstore_render_dir,
                                       z_indx=z_indx, resolution=resolution,

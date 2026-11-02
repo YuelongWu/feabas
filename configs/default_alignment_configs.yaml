@@ -62,6 +62,7 @@ rendering:  # rendering of the aligned stack. settings here are shared by both o
     remap_interp: LANCZOS # LANCZOS | CUBIC | LINEAR | NEAREST
     stride: 1   # (integer) evaluate the alignment deformation field every this many output pixels and interpolate bilinearly in between; mesh/region boundaries, fold seams and grid cells off by more than 0.25 px are still evaluated exactly. 8-16 makes the field computation several times faster with < 1 px offset
     stitch_source: auto # auto: use the stitched sections if rendered at mip_level as final output, otherwise render from the raw tiles (composing stitching and alignment). stitched | tiles: force one of them
+    intensity_adjust_dir: null  # folder of per-section intensity adjustments <section>.json (from tools/compute_intensity_adjust.py), applied on top of the stitching per-tile adjustment for any section source. default: working_directory/align/intensity_adjust; null: off
     loader_config:  # loader of the stitched sections, if used
         cache_capacity: 2048    # RAM (MiB) per worker to cache the stitched images (tensorstore: chunk cache shared by the worker's tasks)
         fillval: 0

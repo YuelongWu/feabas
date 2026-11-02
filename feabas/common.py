@@ -250,12 +250,36 @@ def remap(image, map_x, map_y, **kwargs):
         return imgt.reshape(out_sz)
 
 
+def _keep_extremes(imgtt, img0, map_xt, map_yt, fillval):
+    """
+    after remapping an integer image: the output pixels whose nearest source
+    pixel is at an extreme of the dtype (e.g. 0 fill or 255 saturation, also
+    outside the source) take that value; the others are clipped within the
+    extremes, so interpolation over/undershoots don't create them.
+    """
+    if not np.issubdtype(imgtt.dtype, np.integer):
+        return imgtt
+    vmin, vmax = np.iinfo(imgtt.dtype).min, np.iinfo(imgtt.dtype).max
+    nearest = remap(img0, map_xt, map_yt, interpolation=cv2.INTER_NEAREST,
+                    borderMode=cv2.BORDER_CONSTANT, borderValue=fillval).reshape(imgtt.shape)
+    keep = (nearest == vmin) | (nearest == vmax)
+    return np.where(keep, nearest, imgtt.clip(vmin + 1, vmax - 1)).astype(imgtt.dtype, copy=False)
+
+
 def render_by_subregions(map_x, map_y, mask, img_loader, fileid=None,  **kwargs):
     """
     break the render job to small regions in case the target source image is
     too large to fit in RAM.
+    Kwargs:
+        keep_extremes(bool): for integer images, keep the output pixels at the
+            extremes of the dtype (e.g. 0 / 255) only where the nearest source
+            pixel has them: interpolation (e.g. Lanczos) over/undershoots are
+            clipped within the extremes instead. Default: if the loader
+            applies an intensity_adjust (so that adjusted tissue can't turn
+            into the 0 fill).
     """
     rintp = kwargs.get('remap_interp', cv2.INTER_LANCZOS4)
+    keep_extremes = kwargs.get('keep_extremes', getattr(img_loader, 'intensity_adjust', None) is not None)
     mx_dis = kwargs.get('mx_dis', 16300)
     fillval = kwargs.get('fillval', img_loader.default_fillval)
     dtype_out = kwargs.get('dtype_out', img_loader.dtype)
@@ -338,6 +362,8 @@ def render_by_subregions(map_x, map_y, mask, img_loader, fileid=None,  **kwargs)
             map_yt = map_y - ymin
             imgtt = remap(img0, map_xt.astype(np.float32, copy=False), map_yt.astype(np.float32, copy=False),
                 interpolation=rintp, borderMode=cv2.BORDER_CONSTANT, borderValue=fillval)
+            if keep_extremes:
+                imgtt = _keep_extremes(imgtt, img0, map_xt, map_yt, fillval)
             if multichannel:
                 mskt3 = np.stack((mskt, )*num_channel, axis=-1)
                 imgtt = imgtt.reshape(mskt3.shape)
@@ -348,6 +374,8 @@ def render_by_subregions(map_x, map_y, mask, img_loader, fileid=None,  **kwargs)
             map_xt = map_x_sel - xmin
             map_yt = map_y_sel - ymin
             imgtt = remap(img0, map_xt, map_yt, interpolation=rintp, borderMode=cv2.BORDER_CONSTANT, borderValue=fillval)
+            if keep_extremes:
+                imgtt = _keep_extremes(imgtt, img0, map_xt, map_yt, fillval)
             if multichannel:
                 mskt3 = np.stack((mskt, )*imgtt.shape[-1], axis=-1)
                 imgt[mskt3] = imgtt.ravel()

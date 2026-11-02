@@ -90,6 +90,35 @@ def _bboxes_overlap(bbox0, bbox1):
     return (bbox0[0] < bbox1[2]) and (bbox1[0] < bbox0[2]) and (bbox0[1] < bbox1[3]) and (bbox1[1] < bbox0[3])
 
 
+def _parse_transfer_functions(tf_json):
+    """
+    intensity transfer functions from a dict or json file of the format
+    {"__TYPE__": "INTERP1D" | "BRIGHTNESS_CONTRAST_ADJUST", name: params}.
+    Return:
+        dict of name: callable.
+    """
+    out = {}
+    if not tf_json:
+        return out
+    tf_dict, _ = common.parse_json_file(tf_json)
+    if not tf_dict:
+        return out
+    tf_type = tf_dict.get('__TYPE__', 'INTERP1D')
+    for nm, vals in tf_dict.items():
+        if nm == '__TYPE__':
+            continue
+        if tf_type == 'INTERP1D':
+            src_gs, tgt_gs = vals
+            src_gs = np.array(src_gs).ravel()
+            tgt_gs = np.array(tgt_gs).ravel()
+            fillval = (np.min(tgt_gs), np.max(tgt_gs))
+            out[nm] = interp1d(src_gs, tgt_gs, kind='linear', bounds_error=False, fill_value=fillval)
+        elif tf_type == 'BRIGHTNESS_CONTRAST_ADJUST':
+            bc, cc = vals
+            out[nm] = np.polynomial.Polynomial([bc, cc])
+    return out
+
+
 ##------------------------------ image loaders -------------------------------##
 
 def get_loader_from_json(json_info, loader_type=None, **kwargs):
@@ -145,7 +174,16 @@ class AbstractImageLoader(ABC):
         resolution(float): resolution of the images. default to 4nm
         tf_lut(dict|str): intensity transfer function (by 1d linear
             interpolation) for each image. format
-            {filename_substr: ([src_grayscales], [targt_grayscales])} 
+            {filename_substr: ([src_grayscales], [targt_grayscales])}
+            or, with "__TYPE__": "BRIGHTNESS_CONTRAST_ADJUST",
+            {filename_substr: [b, a]} for y = b + a * x. The key '' matches
+            every image.
+        intensity_adjust(dict|str): one more transfer function of the same
+            format for all the images (the '' entry, or the only one), applied
+            after tf_lut, e.g. a section-level adjustment on top of the
+            per-tile ones. For both, integer pixels at the extremes of the
+            dtype keep their values, and the transformed ones are clipped
+            within the extremes (e.g. [1, 254] for uint8).
     """
     def __init__(self, **kwargs):
         self._dtype = kwargs.get('dtype', None)
@@ -170,6 +208,7 @@ class AbstractImageLoader(ABC):
         self.resolution = kwargs.get('resolution', data_resolution())
         self._read_counter = 0
         self._tf_lut = kwargs.get('tf_lut', {})
+        self._intensity_adjust = kwargs.get('intensity_adjust', None)
         self._source_resolution = kwargs.get('source_resolution', self.resolution)
 
 
@@ -353,6 +392,8 @@ class AbstractImageLoader(ABC):
             out['fillval'] = self._default_fillval
             out['apply_CLAHE'] = self._apply_CLAHE
             out['tf_lut'] = self._tf_lut
+            if getattr(self, '_intensity_adjust', None) is not None:
+                out['intensity_adjust'] = self._intensity_adjust
             if hasattr(self, '_clahe_clip_limit'):
                 out['CLAHE_cliplimit'] = self._clahe_clip_limit
             out['inverse'] = self._inverse
@@ -428,6 +469,8 @@ class AbstractImageLoader(ABC):
             settings['cache_block_size'] = json_obj['cache_block_size']
         if 'tf_lut' in json_obj:
             settings['tf_lut'] = json_obj['tf_lut']
+        if 'intensity_adjust' in json_obj:
+            settings['intensity_adjust'] = json_obj['intensity_adjust']
         return settings, json_obj
 
 
@@ -454,24 +497,14 @@ class AbstractImageLoader(ABC):
                 img = img.mean(axis=-1).astype(dtype)
         if len(self.tf_lut) > 0:
             mbname = os.path.basename(imgpath)
-            if np.issubdtype(dtype, np.integer):
-                mask_t = (img == np.iinfo(dtype).min) | (img == np.iinfo(dtype).max)
-                if np.any(mask_t):
-                    mask_t = cv2.dilate(mask_t.astype(np.uint8), np.ones((3,3), dtype=np.uint8))
-                    mask_t = cv2.erode(mask_t.astype(np.uint8), np.ones((3,3), dtype=np.uint8))>0
-                val_t = img[mask_t]
-            if mbname in self.tf_lut:
-                tf = self.tf_lut[mbname]
-                img = tf(img)
-            else:
-                for nm, tf in self.tf_lut.items():
-                    if nm in os.path.basename(imgpath):
-                        img = tf(img)
+            tf_key = mbname if mbname in self.tf_lut else None
+            if tf_key is None:
+                for nm in self.tf_lut:
+                    if nm in mbname:
+                        tf_key = nm
                         break
-            if np.issubdtype(dtype, np.integer):
-                img[mask_t] = val_t
-                img = img.clip(np.iinfo(dtype).min, np.iinfo(dtype).max)
-            img = img.astype(dtype)
+            if tf_key is not None:
+                img = self._apply_tf(img, self.tf_lut[tf_key], dtype, key=('tf_lut', tf_key))
         if apply_CLAHE:
             if (len(img.shape) > 2) and (img.shape[-1] == 3):
                 img = cv2.cvtColor(img, cv2.COLOR_RGB2Lab)
@@ -494,7 +527,12 @@ class AbstractImageLoader(ABC):
             h, w = img.shape[:2]
             new_h, new_w = int(np.round(h * scale)), int(np.round(w * scale))
             img = cv2.resize(img, (new_w, new_h), interpolation=interp)
-        return img.astype(dtype, copy=False)
+        img = img.astype(dtype, copy=False)
+        if self.intensity_adjust is not None:
+            # last, on the image as it will be sampled (e.g. after downscaling the raw tiles):
+            # clipping before averaging would bias the result and make new extremes
+            img = self._apply_tf(img, self.intensity_adjust, dtype, key=('intensity_adjust',))
+        return img
 
 
     def _export_dict(self, **kwargs):
@@ -543,25 +581,55 @@ class AbstractImageLoader(ABC):
     @property
     def tf_lut(self):
         if (not hasattr(self, '_tf_lut_cache')) or (self._tf_lut_cache is None):
-            self._tf_lut_cache = {}
-            tf_lut_dict, _ = common.parse_json_file(self._tf_lut)
-            if tf_lut_dict is not None:
-                tf_type = tf_lut_dict.get('__TYPE__', 'INTERP1D')
-                for nm, vals in tf_lut_dict.items():
-                    if nm == '__TYPE__':
-                        continue
-                    if tf_type == 'INTERP1D':
-                        src_gs, tgt_gs = vals
-                        src_gs = np.array(src_gs).ravel()
-                        tgt_gs = np.array(tgt_gs).ravel()
-                        fillval = (np.min(tgt_gs), np.max(tgt_gs))
-                        tf0 = interp1d(src_gs, tgt_gs, kind='linear', bounds_error=False, fill_value=fillval)
-                        self._tf_lut_cache[nm] = tf0
-                    elif tf_type == 'BRIGHTNESS_CONTRAST_ADJUST':
-                        bc, cc = vals
-                        tf0 = np.polynomial.Polynomial([bc, cc])
-                        self._tf_lut_cache[nm] = tf0
+            self._tf_lut_cache = _parse_transfer_functions(self._tf_lut)
         return self._tf_lut_cache
+
+
+    @property
+    def intensity_adjust(self):
+        if not hasattr(self, '_intensity_adjust_cache'):
+            tfs = _parse_transfer_functions(getattr(self, '_intensity_adjust', None))
+            if len(tfs) == 0:
+                self._intensity_adjust_cache = None
+            elif '' in tfs:
+                self._intensity_adjust_cache = tfs['']
+            else:
+                self._intensity_adjust_cache = next(iter(tfs.values()))
+        return self._intensity_adjust_cache
+
+
+    def _apply_tf(self, img, tf, dtype=None, key=None):
+        """
+        apply an intensity transfer function. For integer dtypes, pixels at
+        the extremes of the dtype (with a 3x3 closing) keep their values and
+        the others are clipped within the extremes; uint8/uint16 images go
+        through a lookup table, cached under key.
+        """
+        if dtype is None:
+            dtype = img.dtype
+        dtype = np.dtype(dtype)
+        if not np.issubdtype(dtype, np.integer):
+            return np.asarray(tf(img)).astype(dtype)
+        vmin, vmax = np.iinfo(dtype).min, np.iinfo(dtype).max
+        mask_t = (img == vmin) | (img == vmax)
+        if np.any(mask_t):
+            mask_t = cv2.dilate(mask_t.astype(np.uint8), np.ones((3,3), dtype=np.uint8))
+            mask_t = cv2.erode(mask_t.astype(np.uint8), np.ones((3,3), dtype=np.uint8))>0
+        val_t = img[mask_t]
+        if (img.dtype == dtype) and (dtype in (np.uint8, np.uint16)):
+            if not hasattr(self, '_tf_table_cache'):
+                self._tf_table_cache = {}
+            lut = self._tf_table_cache.get((key, dtype.str), None) if key is not None else None
+            if lut is None:
+                lut = np.asarray(tf(np.arange(vmin, vmax + 1, dtype=np.float64)))
+                lut = lut.clip(vmin + 1, vmax - 1).astype(dtype)
+                if key is not None:
+                    self._tf_table_cache[(key, dtype.str)] = lut
+            img = lut[img]
+        else:
+            img = np.asarray(tf(img)).clip(vmin + 1, vmax - 1).astype(dtype)
+        img[mask_t] = val_t
+        return img
 
 
 
@@ -1097,6 +1165,7 @@ class StreamLoader(AbstractImageLoader):
         self.x0 = kwargs.get('x0', 0)
         self.y0 = kwargs.get('y0', 0)
         self._tf_lut = {}
+        self._intensity_adjust = None
 
 
     @classmethod
@@ -1241,6 +1310,15 @@ def _ts_cache_context(cache_capacity):
     return ctx
 
 
+def _json_numpy_default(obj):
+    """json.dumps default for the numpy scalars and arrays found in generated specs"""
+    if isinstance(obj, np.generic):
+        return obj.item()
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    raise TypeError(f'Object of type {obj.__class__.__name__} is not JSON serializable')
+
+
 def release_tensorstore_handles():
     """drop the tensorstore volumes kept open for reuse (their cached chunks are freed)"""
     _TS_HANDLES.clear()
@@ -1322,7 +1400,7 @@ class TensorStoreLoader(AbstractImageLoader):
         spec, context, key = self._spec, None, None
         if cache_capacity is not None:
             if self._reuse_handles:
-                key = (json.dumps(self._spec, sort_keys=True), cache_capacity)
+                key = (json.dumps(self._spec, sort_keys=True, default=_json_numpy_default), cache_capacity)
                 if reuse and (key in _TS_HANDLES):
                     _TS_HANDLES.move_to_end(key)
                     self.dataset = _TS_HANDLES[key]
@@ -1384,6 +1462,9 @@ class TensorStoreLoader(AbstractImageLoader):
             elif (number_of_channels == 1):
                 while len(img_crp.shape) > 2:
                     img_crp = img_crp.mean(axis=-1).astype(img_crp.dtype)
+        if self.intensity_adjust is not None:
+            # stitched volumes already include the per-tile adjustment (tf_lut): only the section-level one
+            img_crp = self._apply_tf(img_crp, self.intensity_adjust, img_crp.dtype, key=('intensity_adjust',))
         if apply_CLAHE:
             if (len(img_crp.shape) > 2) and (img_crp.shape[-1] == 3):
                 img_crp = cv2.cvtColor(img_crp, cv2.COLOR_RGB2Lab)
