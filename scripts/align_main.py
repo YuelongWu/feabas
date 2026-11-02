@@ -260,9 +260,15 @@ def check_stitch_up_to_date(secnames, logger=None):
     working_mip = config.align_configs().get('matching', {}).get('working_mip_level', 0)
     record_files = {s: storage.join_paths(root_dir, 'stitch', 'provenance', s + '.json') for s in secnames}
     records = provenance.load_all(list(record_files.values()))
+    if config.stitch_configs().get('rendering', {}).get('driver', 'image') == 'image':
+        # only probe the levels used here: each probe is a file_exists (slow on GCS)
+        probe_mips = tuple(range(working_mip + 1))
+        mips_list = storage.map_io(lambda s: mipmap.stitched_mips(s, img_dir=config.stitch_render_dir(), mips=probe_mips), secnames)
+    else:
+        mips_list = storage.map_io(rendered_stitched_mips, secnames)
     recorded = {}
-    for s in secnames:
-        rendered = [m for m in rendered_stitched_mips(s) if m <= working_mip]
+    for s, mips in zip(secnames, mips_list):
+        rendered = [m for m in mips if m <= working_mip]
         if len(rendered) > 0:
             fp = records[record_files[s]].get(str(max(rendered)), None)
             if fp is not None:  # None: rendered by an older version
