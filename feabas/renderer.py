@@ -1033,6 +1033,7 @@ class VolumeRenderer:
                         check_points[z] = f[str(z)][()]
         id_x, id_y = self.writer.morton_xy_grid()
         bboxes = self.writer.grid_indices_to_bboxes(id_x, id_y)
+        bboxes = bboxes - np.tile(self._offset.ravel(), 2).reshape(1, 4)
         shapely_boxes = shapely.box(bboxes[:,0], bboxes[:,1], bboxes[:,2], bboxes[:,3])
         bboxes_tree = shapely.STRtree(list(shapely_boxes))
         num_xy_grids = id_x.size
