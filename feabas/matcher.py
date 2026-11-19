@@ -297,7 +297,7 @@ def stitching_matcher(img0, img1, **kwargs):
             mask_p = mask_p & mask0_g[indx0]
         if mask1_g is not None:
             mask_p = mask_p & mask1_g[indx1]
-        ds_scl = 1/max(2, min(16 * coarse_downsample, (im0.size / 100)**0.5))
+        ds_scl = max(2, min(16 * coarse_downsample, (im0.size / 100)**0.5))
         mask_p = cv2.resize(mask_p.astype(np.float32), None, fx=1/ds_scl, fy=1/ds_scl, interpolation=cv2.INTER_AREA)
         if np.sum(mask_p) > 4:
             mask_p = mask_p / np.sum(mask_p)
