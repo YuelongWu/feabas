@@ -18,7 +18,7 @@ import uuid
 
 from feabas.concurrent import submit_to_workers
 from feabas.dal import StaticImageLoader, TensorStoreWriter
-from feabas.matcher import stitching_matcher
+from feabas.matcher import stitching_matcher, PHOTOMETRIC_BLOCKS
 from feabas.mesh import Mesh
 from feabas.optimizer import SLM, relax_mesh_most_deformed
 from feabas import common, caching, storage, logging
@@ -204,6 +204,8 @@ class Stitcher:
         groupings = kwargs.get('groupings', None)
         self._connected_subsystem = kwargs.get('connected_subsystem', None)
         self.resolution = kwargs.get('resolution', data_resolution())
+        # shading profile file of the tiles (feabas.shading), relative to the working directory if within it
+        self.shading_file = kwargs.get('shading_file', None)
         if bool(root_dir):
             self.imgrootdir = root_dir
             self.imgrelpaths = imgpaths
@@ -259,6 +261,10 @@ class Stitcher:
                 resolution = f['resolution'][()]
             else:
                 resolution = data_resolution()
+            if 'shading_file' in f:
+                shading_file = common.numpy_to_str_ascii(f['shading_file'][()])
+            else:
+                shading_file = None
         if selected is not None:
             if isinstance(selected, (set, tuple)):
                 selected = list(selected)
@@ -269,7 +275,8 @@ class Stitcher:
         else:
             check_order = False
         obj = cls(imgpaths, bboxes, root_dir=root_dir, groupings=groupings,
-            connected_subsystem=connected_subsystem, resolution=resolution)
+            connected_subsystem=connected_subsystem, resolution=resolution,
+            shading_file=shading_file)
         if load_matches:
             obj.load_matches_from_h5(filename, check_order=check_order)
         if load_meshes:
@@ -288,6 +295,8 @@ class Stitcher:
                 create_dataset = f.create_dataset
             f.create_dataset('imgrootdir', data=common.str_to_numpy_ascii(self.imgrootdir))
             f.create_dataset('resolution', data=self.resolution)
+            if self.shading_file:
+                f.create_dataset('shading_file', data=common.str_to_numpy_ascii(self.shading_file))
             imgnames_encoded = common.str_to_numpy_ascii('\n'.join(self.imgrelpaths))
             create_dataset('imgrelpaths', data=imgnames_encoded)
             create_dataset('init_bboxes', data=self._init_bboxes)
@@ -305,7 +314,7 @@ class Stitcher:
                     create_dataset(prefix, data=data)
             if save_matches and (len(self.match_brightness_contrast) > 0):
                 bc_keys = np.array(list(self.match_brightness_contrast.keys()))
-                bc_vals = np.array(list(self.match_brightness_contrast.values()))
+                bc_vals = _stack_padded(list(self.match_brightness_contrast.values()))
                 create_dataset('matches_brightness_contrast_keys', data=bc_keys)
                 create_dataset('matches_brightness_contrast_vals', data=bc_vals)
             if save_meshes and (self.meshes is not None):
@@ -499,6 +508,8 @@ class Stitcher:
         loader_config = loader_config0.copy()
         logger_info = kwargs.get('logger', None)
         second_chance = kwargs.pop('second_chance', self.meshes is None)
+        # callable(tile_index, small_tile) receiving downsampled copies of the tiles read (shading estimation)
+        tile_sink = kwargs.pop('tile_sink', None)
         logger = logging.get_logger(logger_info)
         loader_config['number_of_channels'] = 1 # only gray-scale matching are supported
         if self.meshes is not None:
@@ -520,7 +531,10 @@ class Stitcher:
             return 0, False
         num_overlaps = len(overlaps)
         if ((num_workers is not None) and (num_workers <= 1)) or (num_overlaps <= 1):
-            new_matches, match_strains, brightness_contrast, err_raised = target_func(overlaps, self.imgrelpaths, self.init_bboxes)
+            new_matches, match_strains, brightness_contrast, err_raised, small_tiles = target_func(overlaps, self.imgrelpaths, self.init_bboxes)
+            if tile_sink is not None:
+                for tidx, tile in small_tiles.items():
+                    tile_sink(tidx, tile)
             self.matches.update(new_matches)
             self.match_strains.update(match_strains)
             self.match_brightness_contrast.update(brightness_contrast)
@@ -545,7 +559,10 @@ class Stitcher:
             kwargs_list.append({'index_mapper': mapper})
         matched_counter = 0
         for res in submit_to_workers(target_func, args=args_list, kwargs=kwargs_list, num_workers=num_workers):
-            matches, match_strains, brightness_contrast, ouch = res
+            matches, match_strains, brightness_contrast, ouch, small_tiles = res
+            if tile_sink is not None:
+                for tidx, tile in small_tiles.items():
+                    tile_sink(tidx, tile)
             err_raised = err_raised or ouch
             num_new_matches += len(matches)
             self.matches.update(matches)
@@ -562,7 +579,7 @@ class Stitcher:
             else:
                 kwargs['margin'] = 2 * margin
             self.refine_stage_positions()
-            num_new_matches_2nd, err_raised_2nd = self.dispatch_matchers(second_chance=False, loader_config=loader_config0, num_workers=num_workers, **kwargs)
+            num_new_matches_2nd, err_raised_2nd = self.dispatch_matchers(second_chance=False, loader_config=loader_config0, num_workers=num_workers, tile_sink=tile_sink, **kwargs)
             num_new_matches += num_new_matches_2nd
             err_raised = err_raised_2nd
         return num_new_matches, err_raised
@@ -666,11 +683,12 @@ class Stitcher:
         loader_config = kwargs.get('loader_config', {}).copy()
         matcher_config = kwargs.get('matcher_config', {}).copy()
         instant_gc = kwargs.get('instant_gc', False)
+        shading_collect = kwargs.get('shading_collect', None)   # working size of the tile copies to keep
         logger_info = kwargs.get('logger', None)
         logger = logging.get_logger(logger_info)
         err_raised = False
         if len(overlaps) == 0:
-            return {}, {}, {}, err_raised
+            return {}, {}, {}, err_raised, {}
         bboxes_overlap, wds = common.bbox_intersections(bboxes[overlaps[:,0]], bboxes[overlaps[:,1]])
         if 'cache_border_margin' not in loader_config:
             loader_config = loader_config.copy()
@@ -680,6 +698,25 @@ class Stitcher:
             else:
                 loader_config['cache_border_margin'] = int(overlap_wd0 + margin)
         image_loader = StaticImageLoader(imgpaths, bboxes, root_dir=root_dir, **loader_config)
+        small_tiles = {}
+        if shading_collect:
+            # shading_collect: a feabas.shading.TileStore to write the copies into directly (workers
+            # on the same machine), or the working size to return them with the results
+            from feabas.shading import downsample_tile
+            write_to = shading_collect if hasattr(shading_collect, 'write_shared') else None
+            working_size = write_to.working_size if write_to is not None else int(shading_collect)
+            local_index = {storage.join_paths(root_dir, s) if root_dir else s: k for k, s in enumerate(imgpaths)}
+            def _keep_copy(imgpath, img):
+                k = local_index.get(imgpath, None)
+                if (k is not None) and (k not in small_tiles):
+                    tile = downsample_tile(img, working_size)
+                    if write_to is not None:
+                        gk = int(index_mapper[k]) if index_mapper is not None else k
+                        write_to.write_shared(gk, tile)
+                        small_tiles[k] = None   # only the index is returned
+                    else:
+                        small_tiles[k] = tile
+            image_loader.read_hook = _keep_copy
         if image_to_mask_path is not None:
             if isinstance(image_to_mask_path[0], str):
                 mask_paths = [s.replace(image_to_mask_path[0], image_to_mask_path[1])
@@ -748,6 +785,11 @@ class Stitcher:
                     idx0 = index_mapper[idx0]
                     idx1 = index_mapper[idx1]
                 if phtm is not None:
+                    phtm = np.array(phtm, dtype=np.float64)
+                    if phtm.size >= 13:
+                        # overlapping regions in tile coordinates
+                        phtm[5:9] += np.tile(bbox_ov0[:2] - bbox0[:2], 2)
+                        phtm[9:13] += np.tile(bbox_ov1[:2] - bbox1[:2], 2)
                     brightness_contrast[(idx0, idx1)] = phtm
                 if xy0 is None:
                     continue
@@ -771,7 +813,11 @@ class Stitcher:
         image_loader.clear_cache()
         if instant_gc:
             gc.collect()
-        return matches, strains, brightness_contrast, err_raised
+        if index_mapper is not None:
+            small_tiles = {int(index_mapper[k]): t for k, t in small_tiles.items()}
+        if shading_collect and hasattr(shading_collect, 'flush_shared'):
+            shading_collect.flush_shared()
+        return matches, strains, brightness_contrast, err_raised, small_tiles
 
 
   ## -------------------------- mesh relaxation ---------------------------- ##
@@ -1297,13 +1343,50 @@ class Stitcher:
             gc.collect()
 
 
+    def correct_photometric_for_shading(self):
+        """
+        convert the overlap statistics measured on the raw tiles during
+        matching (mean, detrended std and the overlapping regions) to those of
+        the shading corrected tiles. Statistics without the regions (older
+        files, measured on corrected tiles) are kept as they are.
+        Return the number of corrected overlaps.
+        """
+        shading_file = resolve_shading_file(self.shading_file)
+        if (shading_file is None) or (len(self.match_brightness_contrast) == 0):
+            return 0
+        from feabas.shading import load_profiles, correct_photometric
+        profiles = load_profiles(shading_file)
+        num_corrected = 0
+        for (uid0, uid1), vals in self.match_brightness_contrast.items():
+            vals = np.asarray(vals, dtype=np.float64)
+            if (vals.size < 13) or (not np.all(np.isfinite(vals[5:13]))):
+                continue
+            vals = vals.copy()
+            nbk = PHOTOMETRIC_BLOCKS
+            has_blocks = (vals.size >= 16 + 5 * nbk) and np.isfinite(vals[13])
+            for k, uid in enumerate((uid0, uid1)):
+                box = vals[(5 + 4*k):(9 + 4*k)]
+                if has_blocks:
+                    b0 = 16 + 2 * k * nbk
+                    blocks = (vals[13], vals[14], vals[15], vals[b0:b0+nbk], vals[b0+nbk:b0+2*nbk], vals[16+4*nbk:16+5*nbk])
+                else:
+                    blocks = None
+                mean, std = correct_photometric(profiles, self.imgrelpaths[int(uid)], self.tile_sizes[int(uid)],
+                                                box, vals[k], vals[2 + k], blocks=blocks)
+                vals[k], vals[2 + k] = mean, std
+            vals[5:] = np.nan  # no longer raw
+            self.match_brightness_contrast[(uid0, uid1)] = vals
+            num_corrected += 1
+        return num_corrected
+
+
     def equalize_brightness_contrast(self, **kwargs):
         # xj_new = aj * xj + bj
         max_contrast_ratio = kwargs.get('max_contrast_ratio', 4)
         damp = kwargs.get('damp', 1.0)
         if len(self.match_brightness_contrast) > 0:
             bc_keys = np.array(list(self.match_brightness_contrast.keys()))
-            bc_vals = np.array(list(self.match_brightness_contrast.values()))
+            bc_vals = _stack_padded(list(self.match_brightness_contrast.values()))
             midx0, midx1 = bc_keys[:,0], bc_keys[:,1]
             av0, av1, std0, std1 = bc_vals[:,0], bc_vals[:,1], bc_vals[:,2], bc_vals[:,3]
             if bc_vals.shape[1] > 4:
@@ -1483,6 +1566,7 @@ class MontageRenderer:
             self.imgrootdir = os.path.dirname(os.path.commonprefix(imgpaths))
             self.imgrelpaths = [os.path.relpath(s, self.imgrootdir) for s in imgpaths]
         self._brightness_contrast_adjust = kwargs.get('brightness_contrast_adjust', None)
+        self._shading_file = kwargs.get('shading_file', None)
         self._render_settings = kwargs.get('render_settings', {}).copy()  # default settings for crop_from_field
         self._tile_sizes = tile_sizes.reshape(-1,2)
         self._identical_tile_size = np.all(np.ptp(self._tile_sizes, axis=0) == 0)
@@ -1509,6 +1593,7 @@ class MontageRenderer:
         tile_sizes = np.round(stitcher.tile_sizes * scale).astype(stitcher.tile_sizes.dtype)
         connected_subsystem = stitcher.connected_subsystem
         brightness_contrast_adjust = stitcher._brightness_contrast_adjust
+        shading_file = resolve_shading_file(stitcher.shading_file)
         mesh_info = []
         for M in stitcher.meshes:
             resolution0 = M.resolution
@@ -1522,7 +1607,8 @@ class MontageRenderer:
         return cls(imgpaths, mesh_info, tile_sizes, root_dir=root_dir,
                    connected_subsystem=connected_subsystem, resolution=resolution,
                    source_resolution=source_resolution,
-                   brightness_contrast_adjust=brightness_contrast_adjust, **kwargs)
+                   brightness_contrast_adjust=brightness_contrast_adjust,
+                   shading_file=shading_file, **kwargs)
 
 
     @classmethod
@@ -1598,6 +1684,14 @@ class MontageRenderer:
             tf_lut0.update({os.path.basename(mn): (bc, cc) for mn, bc, cc in zip(self.imgrelpaths, adj_b, adj_c)})
             self._loader_settings.setdefault('tf_lut', tf_lut0)
             self._brightness_contrast_adjust = None
+        # shading_correction: True (default) to apply the shading profile of the tiles if
+        # any, False/None not to, or a path to override; resolved to a path or None.
+        shading = self._loader_settings.get('shading_correction', True)
+        if shading is True:
+            shading = self._shading_file
+        if (not isinstance(shading, str)) or (not shading):
+            shading = None
+        self._loader_settings['shading_correction'] = shading
         return self._loader_settings
 
 
@@ -2427,6 +2521,27 @@ class MontageRenderer:
                     out_loader = StaticImageLoader(fnames, bboxes=bboxes, resolution=self.resolution)
                     out_loader.to_coordinate_file(meta_name)
         return num_chunks
+
+
+def _stack_padded(rows):
+    """stack 1d rows of possibly different lengths, padding with nan"""
+    rows = [np.asarray(r, dtype=np.float64).ravel() for r in rows]
+    width = max(r.size for r in rows)
+    out = np.full((len(rows), width), np.nan)
+    for k, r in enumerate(rows):
+        out[k, :r.size] = r
+    return out
+
+
+def resolve_shading_file(shading_file):
+    """full path of a shading profile file saved relative to the working directory"""
+    if not shading_file:
+        return None
+    driver, pth = storage.parse_file_driver(shading_file)
+    if (driver != 'file') or os.path.isabs(pth):
+        return shading_file
+    from feabas.config import get_work_dir
+    return storage.join_paths(get_work_dir(), shading_file)
 
 
 def montage_source_spec(tform_name, resolution, loader_settings=None, render_settings=None, tf_json=None):

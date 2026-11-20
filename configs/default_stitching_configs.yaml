@@ -19,6 +19,23 @@ matching:   # see stitcher.Stitcher.subprocess_match_list_of_overlaps for detail
         coarse_downsample: 0.5      # down-sample the images at the coase-level matching
         fine_downsample: 1.0        # down-sample the images at the fine-level matching to save time at the cost of accuracy
         compute_photometric: false   # compute brightness/contrast of the overlapping areas for later equalization
+    shading_correction: # background (flat-field/dark-field) shading correction with BaSiC, see feabas.shading. Estimated for each section from downsampled copies of the raw tiles read while matching (matching itself uses the raw tiles) and saved to working_directory/stitch/shading; applied to the raw tiles before the brightness/contrast adjustments for all the rendering, and the overlap statistics of the brightness/contrast equalization are converted accordingly. To turn on for sections already matched, delete their match_h5 and tform files (and the stitched images) first.
+        enabled: false
+        grouping: auto            # auto | beam | none. beam: one profile per MultiSEM beam number; none: one profile shared by all tiles; auto: beam if optimization: msem is true, otherwise none
+        get_darkfield: true       # also estimate the dark-field (additive offset)
+        working_size: 128         # tiles are downsampled to working_size x working_size for the estimation
+        max_images_per_group: 100 # maximum number of tiles used to estimate each profile (estimation time grows with it)
+        min_images_per_group: 16  # groups (beams) with fewer tiles use the profile estimated from all the tiles in the section
+        sort_intensity: true      # sort the intensities of each pixel across tiles before fitting (as the original BaSiC)
+        smoothness_flatfield: null   # regularization of the flat-field, larger for smoother. null: decided from the data
+        smoothness_darkfield: null   # regularization of the dark-field. null: decided from the data
+        max_iterations: 500
+        max_reweight_iterations: 10
+        local: false              # fit the profiles on spatial neighbourhoods of the section (per beam) and blend them for each tile, to follow shading that drifts across the section
+        local_neighbourhood: 50   # number of nearest positions (mFoVs for MultiSEM, tiles otherwise) in each neighbourhood, i.e. tiles per profile. Smaller follows the drift more closely but is noisier
+        local_anchors: auto       # number of neighbourhoods (k-means on the mFoV/tile positions); auto: ~2 x positions / local_neighbourhood
+        local_blend: 4            # number of nearest neighbourhoods blended for each tile
+        num_workers: null         # null: same as matching num_workers
 
 optimization:
     num_workers: 3
@@ -79,6 +96,7 @@ rendering:
         inverse: true          # whether to invert the grayscale
         fillval: 0             # grayscale value outside valid image areas
         dtype: null # can be uint8, uint16 etc. to use the src dtype, set to null 
+        shading_correction: true # apply the shading correction profiles estimated during matching (if any). false to render without
     render_settings:
         blend: PYRAMID  # options: LINEAR, NEAREST, PYRAMID, MAX, MIN, NONE
         stride: 1   # (integer) evaluate the deformation field every this many pixels and interpolate bilinearly in between, to speed things up at the cost of accuracy.

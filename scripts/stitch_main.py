@@ -10,18 +10,101 @@ from feabas import config, logging, storage
 MAX_CACHE_SCALE_MIP = 3 # stop growing the tile count of the render cache with the mip level beyond this
 
 
+SHADING_SUBDIR = 'stitch/shading'  # relative to the working directory
+
+
+def shading_locations(stitcher, grouping):
+    """
+    tile positions for the localized shading estimation: the tile centres, or
+    for MultiSEM beam grouping the centre of each tile's mFoV.
+    """
+    import numpy as np
+    bboxes = np.asarray(stitcher.init_bboxes, dtype=np.float64)
+    centres = (bboxes[:, :2] + bboxes[:, 2:]) / 2
+    if str(grouping).lower() == 'beam':
+        from feabas.multisem import mfovids_beamids_from_filenames
+        mfovs, _ = mfovids_beamids_from_filenames(stitcher.imgrelpaths)
+        _, mfov_idx = np.unique(mfovs, return_inverse=True)
+        mfov_idx = mfov_idx.ravel()
+        counts = np.bincount(mfov_idx)
+        mfov_ctr = np.stack([np.bincount(mfov_idx, weights=centres[:, k]) / counts for k in range(2)], axis=-1)
+        centres = mfov_ctr[mfov_idx]
+    return centres
+
+
+def estimate_shading(stitcher, secname, shading_config, tile_store=None, num_workers=1, logger_info=None):
+    """
+    estimate the shading profiles of a section from the tile copies collected
+    while matching (tile_store; the missing ones are read). Return the path
+    of the profile file relative to the working directory, or None.
+    """
+    from feabas import shading
+    logger = logging.get_logger(logger_info)
+    shading_rel = SHADING_SUBDIR + '/' + secname + '.h5'
+    shading_file = storage.join_paths(config.get_work_dir(), shading_rel)
+    t0 = time.time()
+    shading_config = shading_config.copy()
+    shading_config.pop('enabled', None)
+    grouping = shading_config.pop('grouping', 'none')
+    n_workers = shading_config.pop('num_workers', None) or num_workers
+    if shading_config.get('local', False):
+        shading_config['locations'] = shading_locations(stitcher, grouping)
+    saved = shading.estimate_section_shading(stitcher.imgrootdir, stitcher.imgrelpaths, shading_file,
+                                             grouping=grouping, num_workers=n_workers, tile_store=tile_store,
+                                             logger=logger_info, **shading_config)
+    if saved is None:
+        return None
+    logger.info(f'{secname}: shading profiles estimated | {(time.time()-t0)} sec')
+    return shading_rel
+
+
 def match_one_section(coordname, outname, **kwargs):
     logger_info = kwargs.get('logger', None)
     logger = logging.get_logger(logger_info)
+    shading_config = kwargs.pop('shading_correction', None) or {}
     stitcher = Stitcher.from_coordinate_file(coordname)
-    if storage.file_exists(outname + '_err'):
-        logger.info(f'loading previous results for {os.path.basename(coordname)}')
-        stitcher.load_matches_from_h5(outname + '_err', check_order=True)
-    if storage.file_exists(outname + '_mesh'):
-        msh_loaded = stitcher.load_meshes_from_h5(outname + '_mesh', check_order=True)
-        if msh_loaded:
-            logger.info(f'loading previous transformation for {os.path.basename(coordname)}')
-    _, err = stitcher.dispatch_matchers(verbose=False, **kwargs)
+    secname = os.path.basename(outname).replace('.h5', '')
+    tile_store = None
+    shading_rel = None
+    if shading_config.get('enabled', False):
+        # matching uses the raw tiles (the DoG filter removes the smooth shading anyway), measuring the
+        # overlap statistics for the brightness/contrast equalization with the slow gradients removed;
+        # they are converted to those of the corrected tiles at the optimization step. The shading is
+        # estimated afterwards from downsampled copies of the tiles read while matching.
+        from feabas import shading
+        shading_rel = SHADING_SUBDIR + '/' + secname + '.h5'
+        kwargs['matcher_config'] = dict(kwargs.get('matcher_config', {}), photometric_detrend=True)
+        if not storage.file_exists(storage.join_paths(config.get_work_dir(), shading_rel)):
+            from feabas.concurrent import DEFAUL_FRAMEWORK, REMOTE_FRAMEWORKS
+            working_size = int(shading_config.get('working_size', 128))
+            tile_store = shading.TileStore(stitcher.num_tiles, working_size)
+            if DEFAUL_FRAMEWORK not in REMOTE_FRAMEWORKS:
+                # workers on this machine write their copies into the store directly (read one tile
+                # here to know the dtype), so that only indices go through the main process
+                first = shading._read_downsampled_tile(storage.join_paths(stitcher.imgrootdir, stitcher.imgrelpaths[0]),
+                                                       working_size, keep_dtype=True)
+                tile_store.add(0, first)
+                kwargs['shading_collect'] = tile_store
+            else:
+                kwargs['shading_collect'] = working_size
+            kwargs['tile_sink'] = tile_store.mark
+    try:
+        if storage.file_exists(outname + '_err'):
+            logger.info(f'loading previous results for {os.path.basename(coordname)}')
+            stitcher.load_matches_from_h5(outname + '_err', check_order=True)
+        if storage.file_exists(outname + '_mesh'):
+            msh_loaded = stitcher.load_meshes_from_h5(outname + '_mesh', check_order=True)
+            if msh_loaded:
+                logger.info(f'loading previous transformation for {os.path.basename(coordname)}')
+        _, err = stitcher.dispatch_matchers(verbose=False, **kwargs)
+        if (tile_store is not None) and (not err):
+            shading_rel = estimate_shading(stitcher, secname, shading_config, tile_store=tile_store,
+                                           num_workers=kwargs.get('num_workers', 1), logger_info=logger_info)
+        if (shading_rel is not None) and storage.file_exists(storage.join_paths(config.get_work_dir(), shading_rel)):
+            stitcher.shading_file = shading_rel
+    finally:
+        if tile_store is not None:
+            tile_store.close()
     if err:
         outname = outname + '_err'
     stitcher.save_to_h5(outname, save_matches=True, save_meshes=False)
@@ -71,6 +154,9 @@ def optimize_one_section(matchname, outname, **kwargs):
     t0 = time.time()
     stitcher = Stitcher.from_h5(matchname, load_matches=True, load_meshes=False)
     if kwargs.get('equalize_brightness_contrast', False):
+        if stitcher.shading_file:
+            # overlap statistics measured on the raw tiles -> shading corrected tiles
+            stitcher.correct_photometric_for_shading()
         stitcher.equalize_brightness_contrast()
     if stitcher.num_links == 0:
         stitcher.initialize_meshes(mesh_sizes, **mesh_settings)
@@ -362,8 +448,15 @@ if __name__ == '__main__':
         stitch_configs = stitch_configs['optimization']
         mode = 'optimization'
     elif args.mode.lower().startswith('m'):
+        msem = stitch_configs.get('optimization', {}).get('msem', False)
         stitch_configs = stitch_configs['matching']
         mode = 'matching'
+        shading_config = stitch_configs.get('shading_correction', None)
+        if shading_config:
+            shading_config = dict(shading_config)
+            if str(shading_config.get('grouping', 'auto')).lower() == 'auto':
+                shading_config['grouping'] = 'beam' if msem else 'none'
+            stitch_configs['shading_correction'] = shading_config
     else:
         raise ValueError(f'{args.mode} not supported mode.')
     num_workers = stitch_configs.get('num_workers', 1)

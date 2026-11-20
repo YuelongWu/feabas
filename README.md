@@ -119,6 +119,14 @@ The script parses the coordinate files in `(work_dir)/stitch/stitch_coord` folde
 
 If it encounters any errors during the matching step, FEABAS will still try to save whatever results it has but with `.h5_err` extension instead of the usual `.h5`, and at the same time register an error entry in the log file. In our experience, the most common failure case is a corrupted raw image file. After the issue is resolved, the user can run the matching command again, and FEABAS will pick up where it left by loading in the `.h5_err` file and only matching the remaining part. However, if tile arrangements in the stitch coordinate files were modified, or the contents of the existing images were changed, the user should delete the `.h5_err` file and start fresh for that section.
 
+#### shading correction (optional)
+
+FEABAS can correct the background shading of the raw tiles (the flat-field/dark-field pattern repeated in every image) using the [BaSiC](https://www.nature.com/articles/ncomms14836) method. It is off by default; turn it on with `matching: shading_correction: enabled: true` in `(work_dir)/configs/stitching_configs.yaml`. The shading profiles of each section are then estimated during the matching step and saved to `(work_dir)/stitch/shading`. For MultiSEM data, each beam gets its own profile; otherwise one profile is shared by all the tiles of a section (see `grouping`). If the shading drifts across a section, set `local: true` to estimate profiles on spatial neighbourhoods of `local_neighbourhood` mFoVs (or tiles) and blend them for each tile; smaller neighbourhoods follow the drift more closely but are noisier. The other options are documented in `configs/default_stitching_configs.yaml`.
+
+The correction is applied to all rendered images, both stitched and aligned. To render without it, set `rendering: loader_settings: shading_correction: false` (also in `final_rendering` if it overrides `loader_settings`). Keep in mind:
+- To turn the correction on for sections that are already matched, delete their files in `(work_dir)/stitch/match_h5` and `(work_dir)/stitch/tform` (and the stitched images rendered from them), then rerun stitching.
+- If the render-time `shading_correction` option is changed after some stitched levels are rendered, delete those levels so they stay consistent with aligned images rendered directly from the raw tiles.
+
 #### optimization
 
 To launch the optimization step, navigate to the FEABAS root directory, and run:

@@ -221,6 +221,64 @@ def global_translation_matcher(img0, img1, **kwargs):
     return tx, ty, conf
 
 
+def _slices_to_box(indx, shape):
+    """(xmin, ymin, xmax, ymax) of the region img[indx] in an image of the given shape"""
+    ys = indx[0].indices(shape[0])
+    xs = indx[1].indices(shape[1])
+    return np.array((xs[0], ys[0], xs[1], ys[1]), dtype=np.float64)
+
+
+PHOTOMETRIC_BLOCKS = 8  # number of blocks along each overlap for the detrended photometric statistics
+
+
+def _detrended_var(img, weight):
+    """
+    weighted variance of img after removing the best fitting plane (weights
+    are normalized), i.e. of its signal without the slow intensity gradient.
+    """
+    weight = weight / max(np.sum(weight), 1e-12)
+    ht, wd = img.shape[:2]
+    yy, xx = np.mgrid[0:ht, 0:wd].astype(np.float64)
+    xx = (xx - xx.mean()) / max(1, wd)
+    yy = (yy - yy.mean()) / max(1, ht)
+    A = np.stack((np.ones_like(xx), xx, yy), axis=-1).reshape(-1, 3)
+    w = weight.reshape(-1).astype(np.float64)
+    v = img.reshape(-1).astype(np.float64)
+    sw = np.sqrt(w)
+    coef = np.linalg.lstsq(A * sw[:, None], v * sw, rcond=None)[0]
+    res = v - A @ coef
+    return float(np.sum(res**2 * w))
+
+
+def _block_photometric(im0, im1, weight, num_blocks=PHOTOMETRIC_BLOCKS):
+    """
+    photometric statistics of the (same) overlapping region in two images, in
+    blocks along its long axis. Return a flat array:
+        [n_blocks, axis (1: x is the long axis, 0: y), length along the axis,
+         means0, detrended variances0, means1, detrended variances1, weights]
+    with num_blocks entries each (nan-padded); the weights are those of the
+    blocks in the whole region (sum 1).
+    """
+    axis = 1 if im0.shape[1] >= im0.shape[0] else 0
+    L = im0.shape[axis]
+    nb = int(max(1, min(num_blocks, L)))
+    out = np.full((5, num_blocks), np.nan)
+    wsum = max(np.sum(weight), 1e-12)
+    for b, idx in enumerate(np.array_split(np.arange(L), nb)):
+        slc = (slice(None), slice(idx[0], idx[-1] + 1)) if axis == 1 else (slice(idx[0], idx[-1] + 1), slice(None))
+        w = weight[slc]
+        wb = np.sum(w)
+        if wb <= 0:
+            out[4, b] = 0
+            continue
+        for k, im in enumerate((im0, im1)):
+            imb = im[slc]
+            out[2*k, b] = np.sum(imb * w) / wb
+            out[2*k + 1, b] = _detrended_var(imb, w)
+        out[4, b] = wb / wsum
+    return np.concatenate(([nb, axis, L], out.ravel()))
+
+
 def stitching_matcher(img0, img1, **kwargs):
     """
     given two images with rectangular shape, return the displacement vectors on a
@@ -230,6 +288,7 @@ def stitching_matcher(img0, img1, **kwargs):
     mask0 = kwargs.pop('mask0', None)
     mask1 = kwargs.pop('mask1', None)
     compute_photometric = kwargs.pop('compute_photometric', False)
+    photometric_detrend = kwargs.pop('photometric_detrend', False)
     coarse_downsample = kwargs.pop('coarse_downsample', 1)
     fine_downsample = kwargs.pop('fine_downsample', 1)
     spacings = kwargs.pop('spacings', None)
@@ -275,7 +334,9 @@ def stitching_matcher(img0, img1, **kwargs):
     tx0, ty0, conf0 = global_translation_matcher(img0_g, img1_g, conf_mode=conf_mode,
         conf_thresh=conf_thresh)
     phtm = None
-    if compute_photometric:
+    # without a coarse match the two crops do not image the same tissue: the detrended statistics
+    # (shading correction) are too sensitive to that to be useful, so they are skipped.
+    if compute_photometric and not (photometric_detrend and conf0 < conf_thresh):
         if conf0 < conf_thresh:
             indx0 = (slice(None), slice(None), Ellipsis)
             indx1 = (slice(None), slice(None), Ellipsis)
@@ -297,17 +358,32 @@ def stitching_matcher(img0, img1, **kwargs):
             mask_p = mask_p & mask0_g[indx0]
         if mask1_g is not None:
             mask_p = mask_p & mask1_g[indx1]
+        # downsample the overlapping regions to speed up (and to average out pixel noise)
         ds_scl = 1/max(2, min(16 * coarse_downsample, (im0.size / 100)**0.5))
-        mask_p = cv2.resize(mask_p.astype(np.float32), None, fx=1/ds_scl, fy=1/ds_scl, interpolation=cv2.INTER_AREA)
+        ds_size = (max(1, int(round(im0.shape[1] * ds_scl))), max(1, int(round(im0.shape[0] * ds_scl))))
+        mask_p = cv2.resize(mask_p.astype(np.float32), ds_size, interpolation=cv2.INTER_AREA)
         if np.sum(mask_p) > 4:
             mask_p = mask_p / np.sum(mask_p)
-            im0 = cv2.resize(im0.astype(np.float32), None, fx=1/ds_scl, fy=1/ds_scl, interpolation=cv2.INTER_AREA)
-            im1 = cv2.resize(im1.astype(np.float32), None, fx=1/ds_scl, fy=1/ds_scl, interpolation=cv2.INTER_AREA)
+            im0 = cv2.resize(im0.astype(np.float32), ds_size, interpolation=cv2.INTER_AREA)
+            im1 = cv2.resize(im1.astype(np.float32), ds_size, interpolation=cv2.INTER_AREA)
             av0 = np.sum(im0 * mask_p)
             av1 = np.sum(im1 * mask_p)
-            std0 = np.sum((im0 - av0)**2 * mask_p) ** 0.5
-            std1 = np.sum((im1 - av1)**2 * mask_p) ** 0.5
-            phtm = (av0, av1, std0, std1, area)
+            # the overlapping regions, in the coordinates of img0 / img1
+            box0 = _slices_to_box(indx0, img0_raw.shape) / coarse_downsample
+            box1 = _slices_to_box(indx1, img1_raw.shape) / coarse_downsample
+            if photometric_detrend:
+                # statistics in blocks along the overlap, with the slow gradient (e.g. from shading)
+                # removed in each block: the std is that of the high-frequency signal, and the
+                # statistics can be converted to those of shading corrected tiles block by block.
+                blocks = _block_photometric(im0, im1, mask_p)
+                wb = blocks[-PHOTOMETRIC_BLOCKS:]
+                std0 = np.nansum(wb * blocks[3+PHOTOMETRIC_BLOCKS:3+2*PHOTOMETRIC_BLOCKS]) ** 0.5
+                std1 = np.nansum(wb * blocks[3+3*PHOTOMETRIC_BLOCKS:3+4*PHOTOMETRIC_BLOCKS]) ** 0.5
+                phtm = (av0, av1, std0, std1, area, *box0, *box1, *blocks)
+            else:
+                std0 = np.sum((im0 - av0)**2 * mask_p) ** 0.5
+                std1 = np.sum((im1 - av1)**2 * mask_p) ** 0.5
+                phtm = (av0, av1, std0, std1, area, *box0, *box1)
     if conf0 < conf_thresh:
         return None, None, conf_thresh, None, phtm
     if fine_downsample == coarse_downsample:

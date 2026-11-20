@@ -14,6 +14,7 @@ from scipy.interpolate import interp1d
 import tensorstore as ts
 
 from feabas import common, caching
+from feabas.shading import preserve_extremes, load_profiles as load_shading_profiles
 from feabas.storage import File, join_paths, list_folder_content, file_exists
 from feabas.config import data_resolution, TS_TIMEOUT, TS_RETRY, get_numpy_thread
 
@@ -184,6 +185,10 @@ class AbstractImageLoader(ABC):
             per-tile ones. For both, integer pixels at the extremes of the
             dtype keep their values, and the transformed ones are clipped
             within the extremes (e.g. [1, 254] for uint8).
+        shading_correction(str): path to the shading profile file of the
+            images (see feabas.shading), applied right after reading the
+            images, before tf_lut. Anything other than a path (e.g. a bool
+            from the config files) is ignored.
     """
     def __init__(self, **kwargs):
         self._dtype = kwargs.get('dtype', None)
@@ -209,6 +214,10 @@ class AbstractImageLoader(ABC):
         self._read_counter = 0
         self._tf_lut = kwargs.get('tf_lut', {})
         self._intensity_adjust = kwargs.get('intensity_adjust', None)
+        shading_correction = kwargs.get('shading_correction', None)
+        self._shading_correction = shading_correction if isinstance(shading_correction, str) and shading_correction else None
+        # optional callable(imgpath, img) called with each raw image read (e.g. to keep downsampled copies)
+        self.read_hook = None
         self._source_resolution = kwargs.get('source_resolution', self.resolution)
 
 
@@ -394,6 +403,8 @@ class AbstractImageLoader(ABC):
             out['tf_lut'] = self._tf_lut
             if getattr(self, '_intensity_adjust', None) is not None:
                 out['intensity_adjust'] = self._intensity_adjust
+            if getattr(self, '_shading_correction', None) is not None:
+                out['shading_correction'] = self._shading_correction
             if hasattr(self, '_clahe_clip_limit'):
                 out['CLAHE_cliplimit'] = self._clahe_clip_limit
             out['inverse'] = self._inverse
@@ -471,6 +482,8 @@ class AbstractImageLoader(ABC):
             settings['tf_lut'] = json_obj['tf_lut']
         if 'intensity_adjust' in json_obj:
             settings['intensity_adjust'] = json_obj['intensity_adjust']
+        if 'shading_correction' in json_obj:
+            settings['shading_correction'] = json_obj['shading_correction']
         return settings, json_obj
 
 
@@ -495,6 +508,11 @@ class AbstractImageLoader(ABC):
         if (number_of_channels == 1):
             while (len(img.shape) > 2):
                 img = img.mean(axis=-1).astype(dtype)
+        if getattr(self, 'read_hook', None) is not None:
+            self.read_hook(imgpath, img)
+        if self.shading is not None:
+            # background shading correction of the raw tiles, before the per-tile adjustments
+            img = self.shading.correct(img, imgpath)
         if len(self.tf_lut) > 0:
             mbname = os.path.basename(imgpath)
             tf_key = mbname if mbname in self.tf_lut else None
@@ -586,6 +604,14 @@ class AbstractImageLoader(ABC):
 
 
     @property
+    def shading(self):
+        """feabas.shading.ShadingProfiles of the images, or None"""
+        if getattr(self, '_shading_correction', None) is None:
+            return None
+        return load_shading_profiles(self._shading_correction)
+
+
+    @property
     def intensity_adjust(self):
         if not hasattr(self, '_intensity_adjust_cache'):
             tfs = _parse_transfer_functions(getattr(self, '_intensity_adjust', None))
@@ -611,11 +637,6 @@ class AbstractImageLoader(ABC):
         if not np.issubdtype(dtype, np.integer):
             return np.asarray(tf(img)).astype(dtype)
         vmin, vmax = np.iinfo(dtype).min, np.iinfo(dtype).max
-        mask_t = (img == vmin) | (img == vmax)
-        if np.any(mask_t):
-            mask_t = cv2.dilate(mask_t.astype(np.uint8), np.ones((3,3), dtype=np.uint8))
-            mask_t = cv2.erode(mask_t.astype(np.uint8), np.ones((3,3), dtype=np.uint8))>0
-        val_t = img[mask_t]
         if (img.dtype == dtype) and (dtype in (np.uint8, np.uint16)):
             if not hasattr(self, '_tf_table_cache'):
                 self._tf_table_cache = {}
@@ -625,11 +646,10 @@ class AbstractImageLoader(ABC):
                 lut = lut.clip(vmin + 1, vmax - 1).astype(dtype)
                 if key is not None:
                     self._tf_table_cache[(key, dtype.str)] = lut
-            img = lut[img]
+            img_new = lut[img]
         else:
-            img = np.asarray(tf(img)).clip(vmin + 1, vmax - 1).astype(dtype)
-        img[mask_t] = val_t
-        return img
+            img_new = np.asarray(tf(img))
+        return preserve_extremes(img, img_new, dtype)
 
 
 
