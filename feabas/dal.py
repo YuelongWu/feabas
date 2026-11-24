@@ -1751,24 +1751,33 @@ class TensorStoreWriter(TensorStoreLoader):
 
 
     def sort_precomputed_scale(self):
-        num_scales = 0
-        url = self.dataset.kvstore.url
         if self.spec["driver"] == "neuroglancer_precomputed":
-            info_file = join_paths(url, 'info')
-            if file_exists(info_file):
-                with File(info_file, 'r') as f:
-                    spec = json.load(f)
-                scales = spec.pop("scales")
-                num_scales = len(scales)
-                resolutions = np.zeros(num_scales)
-                for m, scale in enumerate(scales):
-                    resolutions[m] = scale["resolution"][0]
-                idx = np.argsort(resolutions)
-                new_scales = [scales[m] for m in idx]
-                spec["scales"] = new_scales
-                with File(info_file, 'w') as f:
-                    json.dump(spec, f, indent=2)
-        return num_scales
+            return sort_precomputed_scales(self.dataset.kvstore.url)
+        return 0
+
+
+
+def sort_precomputed_scales(url):
+    """
+    order the scales in the info file of a neuroglancer precomputed volume
+    from fine to coarse (neuroglancer takes the first one as the base scale).
+    Scales are appended in the order they are created, so rendering a coarser
+    level before a finer one leaves them out of order. Only rewrites the file
+    when the order changes. Returns the number of scales.
+    """
+    info_file = join_paths(url, 'info')
+    if not file_exists(info_file):
+        return 0
+    with File(info_file, 'r') as f:
+        spec = json.load(f)
+    scales = spec["scales"]
+    resolutions = [tuple(scale["resolution"]) for scale in scales]
+    idx = sorted(range(len(scales)), key=lambda m: resolutions[m])
+    if idx != list(range(len(scales))):
+        spec["scales"] = [scales[m] for m in idx]
+        with File(info_file, 'w') as f:
+            json.dump(spec, f, indent=2)
+    return len(scales)
 
 
 

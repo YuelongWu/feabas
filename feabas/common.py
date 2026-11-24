@@ -266,6 +266,63 @@ def _keep_extremes(imgtt, img0, map_xt, map_yt, fillval):
     return np.where(keep, nearest, imgtt.clip(vmin + 1, vmax - 1)).astype(imgtt.dtype, copy=False)
 
 
+# rows per chunk of the cache-blocked passes: a few temporaries of 16 x 4096
+# float64 (512 KiB) stay in a core's L2 (1-2 MiB). Larger chunks spill to L3 /
+# memory and slow down a lot once many workers run concurrently.
+_ROW_CHUNK = 16
+
+
+def row_chunks(n, ch=None):
+    """slices of ch (default _ROW_CHUNK) rows covering range(n)."""
+    if ch is None:
+        ch = _ROW_CHUNK
+    for r in range(0, n, ch):
+        yield slice(r, min(n, r + ch))
+
+
+def _render_one_region(map_x, map_y, mask, img_loader, fileid, rintp, mx_dis,
+                       fillval, dtype_out, kwargs):
+    """
+    render_by_subregions when the masked part of the (2D) maps spans less than
+    mx_dis, so one source crop covers everything: no gathered copies of the
+    maps, and remap in cache-sized row chunks restricted to the masked
+    columns. Same output. Return False if not applicable (multichannel source
+    or too large a span), None if nothing rendered.
+    """
+    xmn = np.min(map_x, where=mask, initial=np.inf)
+    xmx = np.max(map_x, where=mask, initial=-np.inf)
+    ymn = np.min(map_y, where=mask, initial=np.inf)
+    ymx = np.max(map_y, where=mask, initial=-np.inf)
+    if (xmx - xmn >= mx_dis[-1]) or (ymx - ymn >= mx_dis[0]):
+        return False
+    xmin, xmax = np.floor(xmn) - 4, np.ceil(xmx) + 4 # Lanczos 8x8 kernel
+    ymin, ymax = np.floor(ymn) - 4, np.ceil(ymx) + 4
+    bbox = (int(xmin), int(ymin), int(xmax), int(ymax))
+    if fileid is None:
+        img0 = img_loader.crop(bbox, **kwargs)
+    else:
+        img0 = img_loader.crop(bbox, fileid, **kwargs)
+    if img0 is None:
+        return None
+    if img0.ndim > 2:
+        return False
+    imgt = np.full(map_x.shape, fillval, dtype=dtype_out)
+    mx = np.empty((min(_ROW_CHUNK, map_x.shape[0]), map_x.shape[1]), dtype=np.float32)
+    my = np.empty_like(mx)
+    for s in row_chunks(map_x.shape[0]):
+        cols = np.flatnonzero(np.any(mask[s], axis=0))
+        if cols.size == 0:
+            continue
+        c = slice(cols[0], cols[-1] + 1)
+        k, w = mask[s].shape[0], c.stop - c.start
+        np.subtract(map_x[s, c], xmin, out=mx[:k, :w], casting='unsafe')
+        np.subtract(map_y[s, c], ymin, out=my[:k, :w], casting='unsafe')
+        r = cv2.remap(img0, mx[:k, :w], my[:k, :w], interpolation=rintp,
+                      borderMode=cv2.BORDER_CONSTANT, borderValue=fillval)
+        np.copyto(imgt[s, c], r, where=mask[s, c], casting='unsafe')
+    return imgt
+
+
 def render_by_subregions(map_x, map_y, mask, img_loader, fileid=None,  **kwargs):
     """
     break the render job to small regions in case the target source image is
@@ -299,6 +356,11 @@ def render_by_subregions(map_x, map_y, mask, img_loader, fileid=None,  **kwargs)
             return np.full_like(map_x, fillval, dtype=dtype_out)
         else:
             return None
+    if (not keep_extremes) and (seeds is None) and (map_x.ndim == 2):
+        imgt = _render_one_region(map_x, map_y, mask, img_loader, fileid, rintp,
+                                  mx_dis, fillval, dtype_out, kwargs)
+        if imgt is not False:
+            return imgt
     tile_ht, tile_wd = mask.shape[:2]
     imgt = np.full_like(map_x, fillval, dtype=dtype_out)
     to_render = mask
@@ -747,8 +809,12 @@ def _lerp_rows(f, idx, dtype):
     K = nonuniform[0] if nonuniform.size else gaps.size  # leading intervals of length s
     blk = out[:K*s].reshape((K, s) + f.shape[1:])
     wr = (np.arange(s) / s).astype(dtype).reshape((1, s) + (1,) * (f.ndim - 1))
-    np.multiply(df[:K, None], wr, out=blk)
-    blk += f[:K, None]
+    G = max(1, _ROW_CHUNK // s)   # a few intervals at a time, while in cache
+    for g in range(0, K, G):
+        g1 = min(K, g + G)
+        b = blk[g:g1]
+        np.multiply(df[g:g1, None], wr, out=b)
+        b += f[g:g1, None]
     for k in range(K, gaps.size):
         r0, r1 = idx[k], idx[k+1]
         wr = (np.arange(r1 - r0) / (r1 - r0)).astype(dtype).reshape((-1,) + (1,) * (f.ndim - 1))

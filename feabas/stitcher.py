@@ -111,6 +111,9 @@ class _MontageBlender:
             if np.any(mask_backgrnd) and (not np.all(mask_backgrnd)):
                 dist_mask = distance_transform_cdt(~mask_backgrnd)
                 weight = np.minimum(weight, dist_mask-1)
+        if (blend == 'PYRAMID') and (imgt.ndim == 2):
+            self._add_pyramid_2d(slc, imgt, weight)
+            return False
         if not np.issubdtype(imgt.dtype, np.floating):
             imgt = imgt.astype(np.float32, copy=False)
         imgshp = imgt.shape
@@ -161,8 +164,68 @@ class _MontageBlender:
         return False
 
 
+    def _add_pyramid_2d(self, slc, imgt, weight):
+        """
+        PYRAMID add of a single-channel tile, the accumulation done in cache-sized
+        chunks of rows (the arrays are far larger than the caches, and separate
+        whole-array passes are limited by memory bandwidth). Same result.
+        """
+        if not np.issubdtype(imgt.dtype, np.floating):
+            imgt = imgt.astype(np.float32, copy=False)
+        if self.image_hp is None:
+            self.image_hp = np.zeros(self.out_shape, dtype=imgt.dtype)
+            self.image_lp = np.zeros_like(self.image_hp)
+            self.weight_sum = np.zeros(self.out_shape, dtype=np.float32)
+            self.weight_max = np.zeros_like(self.weight_sum)
+        imgt_f = _gaussian_blur(imgt, self.SIGMA)
+        hp, lp = self.image_hp[slc], self.image_lp[slc]
+        ws, wm = self.weight_sum[slc], self.weight_max[slc]
+        nrow, ncol = imgt.shape
+        ch = min(common._ROW_CHUNK, nrow)
+        tf = np.empty((ch, ncol), dtype=imgt.dtype)
+        tw = np.empty((ch, ncol), dtype=np.float32)
+        tm = np.empty((ch, ncol), dtype=bool)
+        for s in common.row_chunks(nrow):
+            k = s.stop - s.start
+            w, m, t = tw[:k], tm[:k], tf[:k]
+            np.maximum(weight[s], 0, out=w, casting='unsafe')   # clip(0, None)
+            ws[s] += w
+            np.greater(w, wm[s], out=m)
+            np.subtract(imgt[s], imgt_f[s], out=t)    # high-pass part, nearest blending
+            np.copyto(hp[s], t, where=m)
+            np.maximum(wm[s], w, out=wm[s])
+            np.multiply(imgt_f[s], w, out=t)
+            lp[s] += t
+
+
+    def _result_pyramid_2d(self):
+        """PYRAMID result to an integer dtype, in chunks of rows. Same result."""
+        eps = self.WEIGHT_EPS
+        iinfo = np.iinfo(self.dtype_out)
+        out = np.empty(self.out_shape, dtype=self.dtype_out)
+        t = np.empty((min(common._ROW_CHUNK, out.shape[0]), out.shape[1]),
+                     dtype=np.result_type(self.image_lp.dtype, self.weight_sum.dtype))
+        any_valid = False
+        for s in common.row_chunks(out.shape[0]):
+            ws = self.weight_sum[s]
+            tt = t[:ws.shape[0]]
+            np.maximum(ws, eps, out=tt)
+            np.divide(self.image_lp[s], tt, out=tt)
+            tt += self.image_hp[s]
+            tt[ws <= eps] = self.fillval
+            np.clip(tt, iinfo.min, iinfo.max, out=tt)
+            o = out[s]
+            o[...] = tt
+            if not any_valid:
+                any_valid = np.any(o != self.fillval)
+        return out if any_valid else None
+
+
     def result(self):
         blend = self.blend
+        if (blend == 'PYRAMID') and (self.image_hp is not None) and (self.image_hp.ndim == 2) \
+                and np.issubdtype(self.dtype_out, np.integer):
+            return self._result_pyramid_2d()
         image_hp, weight_sum = self.image_hp, self.weight_sum
         fillval, dtype_out = self.fillval, self.dtype_out
         weight_eps = self.WEIGHT_EPS
@@ -1802,21 +1865,21 @@ class MontageRenderer:
                 if x_field is None:
                     continue
             else:
-                xx, yy = np.meshgrid(x_msh, y_msh)
-                xxt = xx - offset[0]
-                yyt = yy - offset[1]
                 field_generated = False
                 if affine_tolerance > 0:
                     A, t, res = self.affine_approximators[indx]
                     if res < affine_tolerance:
+                        xx, yy = np.meshgrid(x_msh, y_msh)
+                        xxt = xx - offset[0]
+                        yyt = yy - offset[1]
                         x_field = xxt * A[0,0] + yyt * A[1,0] + t[0]
                         y_field = xxt * A[0,1] + yyt * A[1,1] + t[1]
                         field_generated = True
                 if not field_generated:
-                    (x_field, y_field), outside = self.interpolators[indx](xxt, yyt)
-                    if np.all(outside, axis=None):
+                    x_field, y_field = self._full_field(indx, x_msh - offset[0], y_msh - offset[1])
+                    if x_field is None:
                         continue
-                if np.any(np.isnan(x_field)):
+                elif np.any(np.isnan(x_field)):
                     x_field = np.nan_to_num(x_field, nan=-1, copy=False)
                     y_field = np.nan_to_num(y_field, nan=-1, copy=False)
             weight = self._border_weight(indx, x_field, y_field, clip_ltrb)
@@ -1829,6 +1892,58 @@ class MontageRenderer:
             if blender.add((slc_y, slc_x), imgt, weight):
                 break
         return blender.result()
+
+
+    def _full_field(self, indx, xt, yt):
+        """
+        deformation field of source tile indx at every output pixel, the output
+        coordinates (relative to the mesh offset) being xt (columns) by yt (rows),
+        from the tile mesh interpolator. Computed in cache-sized chunks of rows,
+        without full-size coordinate grids or gathered copies; same values as
+        interpolating the meshgrid, with -1 outside the mesh. Return float64
+        (x_field, y_field), or (None, None) if no pixel is inside the mesh.
+        """
+        interp = self.interpolators[indx]
+        cx, cy = interp.plane_coefficients[0], interp.plane_coefficients[-1]
+        xt = np.asarray(xt, dtype=np.float64)
+        yt = np.asarray(yt, dtype=np.float64)
+        nrow, ncol = yt.size, xt.size
+        x_field = np.empty((nrow, ncol), dtype=np.float64)
+        y_field = np.empty_like(x_field)
+        ch = min(common._ROW_CHUNK, nrow)
+        xx = np.empty((ch, ncol), dtype=np.float64)
+        yy = np.empty_like(xx)
+        tmp = np.empty_like(xx)
+        any_inside = False
+        for s in common.row_chunks(nrow):
+            k = s.stop - s.start
+            xc, yc, t = xx[:k], yy[:k], tmp[:k]
+            xc[...] = xt
+            yc[...] = yt[s, None]
+            tid = interp.find_triangles(xc, yc)
+            outside = tid < 0
+            n_out = np.count_nonzero(outside)
+            if n_out == outside.size:
+                x_field[s] = -1
+                y_field[s] = -1
+                continue
+            any_inside = True
+            if n_out > 0:
+                tid[outside] = 0
+            for coef, out in ((cx, x_field[s]), (cy, y_field[s])):
+                # (a * x + b * y) + c, as TriFieldInterpolator
+                np.take(coef[:, 0], tid, out=out)
+                out *= xc
+                np.take(coef[:, 1], tid, out=t)
+                t *= yc
+                out += t
+                np.take(coef[:, 2], tid, out=t)
+                out += t
+                if n_out > 0:
+                    out[outside] = -1
+        if not any_inside:
+            return None, None
+        return x_field, y_field
 
 
     def _subsampled_field(self, indx, xt, yt, stride, affine_tolerance):
@@ -1872,21 +1987,31 @@ class MontageRenderer:
         (non-positive outside of the tile).
         """
         # tile sizes are numpy integers, which would promote a float32 field to
-        # float64: use python scalars, and one scratch buffer instead of a
-        # temporary per term.
+        # float64: use python scalars.
         tile_ht, tile_wd = (float(s) for s in self.tile_size(indx))
         if any(clip_ltrb):
             # given in mip0 pixels, so that it crops the same part of the tiles at any mip level
             clip_scale = mip0_resolution() / self.resolution
             clip_ltrb = [c * clip_scale for c in clip_ltrb]
-        weight = x_field - clip_ltrb[0] + 0.5
-        wtmp = np.subtract(tile_wd - clip_ltrb[2] - 0.5, x_field)
-        np.minimum(weight, wtmp, out=weight)
-        np.subtract(y_field, clip_ltrb[1], out=wtmp)
-        wtmp += 0.5
-        np.minimum(weight, wtmp, out=weight)
-        np.subtract(tile_ht - clip_ltrb[3] - 0.5, y_field, out=wtmp)
-        np.minimum(weight, wtmp, out=weight)
+        a1 = tile_wd - clip_ltrb[2] - 0.5
+        b1 = tile_ht - clip_ltrb[3] - 0.5
+        dtype = np.result_type(x_field.dtype, np.float32)
+        weight = np.empty(x_field.shape, dtype=dtype)
+        # cache-blocked: all four terms of a chunk of rows before the next
+        nrow = x_field.shape[0]
+        wtmp = np.empty((min(common._ROW_CHUNK, nrow),) + x_field.shape[1:], dtype=dtype)
+        for s in common.row_chunks(nrow):
+            x, y, w = x_field[s], y_field[s], weight[s]
+            t = wtmp[:w.shape[0]]
+            np.subtract(x, clip_ltrb[0], out=w)
+            w += 0.5
+            np.subtract(a1, x, out=t)
+            np.minimum(w, t, out=w)
+            np.subtract(y, clip_ltrb[1], out=t)
+            t += 0.5
+            np.minimum(w, t, out=w)
+            np.subtract(b1, y, out=t)
+            np.minimum(w, t, out=w)
         return weight
 
 

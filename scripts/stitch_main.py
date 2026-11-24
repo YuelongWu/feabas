@@ -396,6 +396,14 @@ def render_main(tform_list, out_dir, **kwargs):
                 logger.error(f'{sec_name}: Tensorstore timed out.')
             except Exception as err:
                 logger.error(f'{sec_name}: {err}')
+        if driver == 'neuroglancer_precomputed':
+            # levels are appended to the info file in the order they are made
+            # (e.g. mip1 before mip0); neuroglancer expects fine to coarse.
+            try:
+                from feabas.dal import sort_precomputed_scales
+                sort_precomputed_scales(storage.join_paths(out_dir, sec_name))
+            except Exception as err:
+                logger.error(f'{sec_name}: failed to sort info scales: {err}')
     logger.info('finished.')
     logging.terminate_logger(*logger_info)
 
