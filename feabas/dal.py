@@ -1074,7 +1074,9 @@ class MosaicLoader(StaticImageLoader):
 
 
     def crop(self, bbox, return_empty=False, **kwargs):
-        hits = self._file_rtree.intersection(bbox, objects=False)
+        # rtree also returns tiles only touching bbox, which have no pixels in it
+        hits = [fileid for fileid in self._file_rtree.intersection(bbox, objects=False)
+                if _bboxes_overlap(self._file_bboxes[fileid], bbox)]
         initialized = False
         if hits:
             for fileid in hits:
